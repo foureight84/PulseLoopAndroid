@@ -8,3 +8,4 @@ build/
 .DS_Store
 app/.DS_Store
 gradle/.DS_Store
+.DS_Store
