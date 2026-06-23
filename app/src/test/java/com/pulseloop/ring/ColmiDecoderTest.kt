@@ -1,0 +1,321 @@
+package com.pulseloop.ring
+
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZoneOffset
+
+/**
+ * Ported from [ColmiDecoderTests] in ColmiDecoderTests.swift.
+ * Colmi R02 decoder/encoder parity tests. Pure — no hardware.
+ */
+class ColmiDecoderTest {
+    private val zone = ZoneOffset.UTC
+
+    // MARK: Framing / checksum
+
+    @Test
+    fun `frame appends checksum and is 16 bytes`() {
+        val framed = ColmiPacket.frame(byteArrayOf(0x03))
+        assertEquals(16, framed.size)
+        assertEquals(0x03.toByte(), framed[15])
+    }
+
+    @Test
+    fun `validating rejects bad checksum`() {
+        val bytes = ColmiPacket.frame(byteArrayOf(0x03))
+        bytes[15] = (bytes[15] + 1).toByte()
+        assertNull(ColmiPacket.validating(bytes))
+    }
+
+    @Test
+    fun `validating rejects wrong length`() {
+        assertNull(ColmiPacket.validating(byteArrayOf(0x03, 0x00)))
+    }
+
+    @Test
+    fun `bad checksum decodes as unknown`() {
+        val bytes = ColmiPacket.frame(byteArrayOf(0x03, 0x55))
+        bytes[15] = (bytes[15] + 1).toByte()
+        val events = ColmiDecoder.decodeNormal(bytes)
+        assertTrue(events.first() is RingDecodedEvent.Unknown)
+    }
+
+    // MARK: Normal-channel decode
+
+    @Test
+    fun `decode battery`() {
+        val frame = ColmiPacket.frame(byteArrayOf(0x03, 84, 1))
+        val events = ColmiDecoder.decodeNormal(frame)
+        val battery = events.first() as RingDecodedEvent.Battery
+        assertEquals(84, battery.percent)
+    }
+
+    @Test
+    fun `decode realtime heart rate`() {
+        val frame = ColmiPacket.frame(byteArrayOf(0x1E.toByte(), 72))
+        val events = ColmiDecoder.decodeNormal(frame)
+        val hr = events.first() as RingDecodedEvent.HeartRateSample
+        assertEquals(72, hr.bpm)
+    }
+
+    @Test
+    fun `realtime heart rate zero dropped`() {
+        val frame = ColmiPacket.frame(byteArrayOf(0x1E.toByte(), 0))
+        assertTrue(ColmiDecoder.decodeNormal(frame).isEmpty())
+    }
+
+    @Test
+    fun `manual heart rate error gives completion`() {
+        val frame = ColmiPacket.frame(byteArrayOf(0x69, 0, 1, 80))
+        val events = ColmiDecoder.decodeNormal(frame)
+        assertTrue(events.first() is RingDecodedEvent.HeartRateComplete)
+    }
+
+    @Test
+    fun `manual heart rate ok`() {
+        val frame = ColmiPacket.frame(byteArrayOf(0x69, 0, 0, 77))
+        val events = ColmiDecoder.decodeNormal(frame)
+        val hr = events.first() as RingDecodedEvent.HeartRateSample
+        assertEquals(77, hr.bpm)
+    }
+
+    @Test
+    fun `battery notification`() {
+        val frame = ColmiPacket.frame(byteArrayOf(0x73, 0x0C, 65, 0))
+        val events = ColmiDecoder.decodeNormal(frame)
+        val battery = events.first() as RingDecodedEvent.Battery
+        assertEquals(65, battery.percent)
+    }
+
+    @Test
+    fun `live activity notification`() {
+        // steps=500 (0xF4 0x01 0x00), cal=1234 (0xD2 0x04 0x00), dist=300 (0x2C 0x01 0x00)
+        val frame = ColmiPacket.frame(byteArrayOf(
+            0x73, 0x12,
+            0xF4.toByte(), 0x01, 0x00,
+            0xD2.toByte(), 0x04, 0x00,
+            0x2C.toByte(), 0x01, 0x00,
+        ))
+        val events = ColmiDecoder.decodeNormal(frame)
+        val activity = events.first() as RingDecodedEvent.ActivityUpdate
+        assertEquals(500, activity.steps)
+        assertEquals(300, activity.distanceMeters)
+        assertEquals(123, activity.calories)
+    }
+
+    // MARK: Big-data
+
+    private fun bigData(type: UByte, payload: ByteArray): ByteArray {
+        val len = payload.size
+        return byteArrayOf(
+            0xBC.toByte(), type.toByte(),
+            (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(),
+            0, 0
+        ) + payload
+    }
+
+    @Test
+    fun `temperature big data`() {
+        var payload = byteArrayOf(0x00, 0x1E.toByte())
+        payload += byteArrayOf(150.toByte()) // t00 = 150 → 35.0°C
+        payload += ByteArray(46) // pad
+        val frame = bigData(ColmiCommandID.BIG_DATA_TEMPERATURE, payload)
+        val events = ColmiDecoder.decodeBigData(frame, zone = zone)
+        val temps = events.filterIsInstance<RingDecodedEvent.TemperatureSample>()
+        assertEquals(35.0, temps.first().celsius, 0.01)
+    }
+
+    @Test
+    fun `spo2 big data`() {
+        var payload = byteArrayOf(0x00, 96, 98)
+        payload += ByteArray(46)
+        val frame = bigData(ColmiCommandID.BIG_DATA_SPO2, payload)
+        val events = ColmiDecoder.decodeBigData(frame, zone = zone)
+        val spo2s = events.filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+            .filter { it.kind_field == MeasurementKind.SPO2 }
+        assertEquals(97.0, spo2s.first().value, 0.01)
+    }
+
+    @Test
+    fun `sleep big data maps stages`() {
+        val start = 480; val end = 540
+        val payload = byteArrayOf(
+            0x01, 0x00, 0x08,
+            (start and 0xFF).toByte(), ((start shr 8) and 0xFF).toByte(),
+            (end and 0xFF).toByte(), ((end shr 8) and 0xFF).toByte(),
+            ColmiCommandID.SLEEP_DEEP.toByte(), 30,
+            ColmiCommandID.SLEEP_REM.toByte(), 30,
+        )
+        val len = payload.size
+        val bytes = byteArrayOf(
+            0xBC.toByte(), ColmiCommandID.BIG_DATA_SLEEP.toByte(),
+            (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(),
+            0, 0
+        ) + payload
+        val events = ColmiDecoder.decodeBigData(bytes, zone = zone)
+        val sleep = events.first() as RingDecodedEvent.SleepTimeline
+        assertTrue(sleep.stages.contains(SleepStage.DEEP))
+        assertTrue(sleep.stages.contains(SleepStage.REM))
+        assertEquals(30, sleep.stages.count { it == SleepStage.DEEP })
+        assertEquals(30, sleep.stages.count { it == SleepStage.REM })
+    }
+
+    // MARK: Reassembly
+
+    @Test
+    fun `big data reassembly across packets`() {
+        val writer = NullWriter()
+        val driver = ColmiDriver(writer)
+        val notifyV2 = ColmiUUIDs.NOTIFY_V2
+
+        var payload = byteArrayOf(0x00, 0x1E.toByte(), 150.toByte(), 0)
+        payload += ByteArray(46)
+        val full = bigData(ColmiCommandID.BIG_DATA_TEMPERATURE, payload)
+        val firstHalf = full.copyOfRange(0, 10)
+        val secondHalf = full.copyOfRange(10, full.size)
+
+        val firstEvents = driver.ingest(firstHalf, notifyV2)
+        assertTrue(firstEvents.isEmpty())
+
+        val secondEvents = driver.ingest(secondHalf, notifyV2)
+        val temps = secondEvents.filterIsInstance<RingDecodedEvent.TemperatureSample>()
+        assertFalse(temps.isEmpty())
+    }
+
+    @Test
+    fun `interleaved big data does not corrupt`() {
+        val driver = ColmiDriver(NullWriter())
+        val notifyV2 = ColmiUUIDs.NOTIFY_V2
+
+        // SpO2 frame: one day, min=96,max=98 at hour 0
+        var spo2Payload = byteArrayOf(0x00, 96, 98)
+        spo2Payload += ByteArray(46)
+        val spo2Full = bigData(ColmiCommandID.BIG_DATA_SPO2, spo2Payload)
+
+        // Sleep frame: complete in one notification
+        val start = 480; val end = 540
+        val sleepPayload = byteArrayOf(
+            0x01, 0x00, 0x08,
+            (start and 0xFF).toByte(), ((start shr 8) and 0xFF).toByte(),
+            (end and 0xFF).toByte(), ((end shr 8) and 0xFF).toByte(),
+            ColmiCommandID.SLEEP_DEEP.toByte(), 30,
+            ColmiCommandID.SLEEP_REM.toByte(), 30,
+        )
+        val len = sleepPayload.size
+        val sleepFull = byteArrayOf(
+            0xBC.toByte(), ColmiCommandID.BIG_DATA_SLEEP.toByte(),
+            (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(),
+            0, 0
+        ) + sleepPayload
+
+        // Interleave: SpO2 header → complete sleep → SpO2 continuation
+        val spo2First = spo2Full.copyOfRange(0, 12)
+        val spo2Rest = spo2Full.copyOfRange(12, spo2Full.size)
+
+        driver.ingest(spo2First, notifyV2)
+        val sleepEvents = driver.ingest(sleepFull, notifyV2)
+        val spo2Events = driver.ingest(spo2Rest, notifyV2)
+
+        assertTrue(sleepEvents.any { it is RingDecodedEvent.SleepTimeline })
+        val spo2Values = spo2Events.filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+            .filter { it.kind_field == MeasurementKind.SPO2 }
+        assertEquals(97.0, spo2Values.first().value, 0.01)
+    }
+
+    // MARK: Real R11 captures
+
+    private val realActivityBuckets = listOf(
+        "432606174c06072d05e800a9000000a2",
+        "43260617480507a32a8406670500009d",
+        "4326061744040776133b037a02000018",
+        "432606174003074714290393020000ec",
+        "432606173c02077f231f06860400001c",
+        "432606172c010757000f000b0000002b",
+        "4326061728000798001b00130000007b",
+    )
+
+    @Test
+    fun `real activity buckets decode without calories`() {
+        val now = Instant.parse("2026-06-18T00:00:00Z")
+        var totalSteps = 0
+        for (hex in realActivityBuckets) {
+            val data = hexToBytes(hex)
+            val events = ColmiDecoder.decodeHistory(
+                data, day = LocalDate.of(2026, 6, 18), now = now, zone = zone
+            )
+            assertEquals(1, events.size)
+            val bucket = events.first() as RingDecodedEvent.ActivityBucket
+            totalSteps += bucket.steps
+        }
+        assertEquals(5145, totalSteps)
+    }
+
+    @Test
+    fun `realtime heart rate no reading reply`() {
+        val frame = hexToBytes("9eee000000000000000000000000008c")
+        val events = ColmiDecoder.decodeNormal(frame)
+        assertFalse(events.any { it is RingDecodedEvent.HeartRateSample })
+    }
+
+    @Test
+    fun `manual heart rate warm-up emits nothing`() {
+        val warmUp = ColmiPacket.frame(byteArrayOf(0x69, 0x02, 0x00, 0x00))
+        assertTrue(ColmiDecoder.decodeNormal(warmUp).isEmpty())
+
+        val reading = ColmiPacket.frame(byteArrayOf(0x69, 0x02, 0x00, 0x4F))
+        assertTrue(ColmiDecoder.decodeNormal(reading).any {
+            it is RingDecodedEvent.HeartRateSample && it.bpm == 79
+        })
+
+        val errReply = ColmiPacket.frame(byteArrayOf(0x69, 0x02, 0x01, 0x4F))
+        assertTrue(ColmiDecoder.decodeNormal(errReply).any { it is RingDecodedEvent.HeartRateComplete })
+    }
+
+    // MARK: Command-channel routing
+
+    @Test
+    fun `colmi routes big data to command channel`() {
+        val driver = ColmiDriver(NullWriter())
+        assertTrue(driver.usesCommandChannel(byteArrayOf(0xBC.toByte(), ColmiCommandID.BIG_DATA_SLEEP.toByte())))
+        assertFalse(driver.usesCommandChannel(ColmiPacket.frame(byteArrayOf(0x03))))
+        assertEquals(ColmiUUIDs.COMMAND, driver.commandUUID)
+    }
+
+    @Test
+    fun `jring has no command channel`() {
+        val driver = JringDriver(NullWriter())
+        assertNull(driver.commandUUID)
+        assertFalse(driver.usesCommandChannel(byteArrayOf(0x14)))
+    }
+
+    // MARK: Encoder
+
+    @Test
+    fun `encoder phone name`() {
+        val cmd = ColmiEncoder.phoneName()
+        assertEquals(0x04.toByte(), cmd[0])
+        assertEquals('P'.code.toByte(), cmd[3])
+        assertEquals('L'.code.toByte(), cmd[4])
+    }
+
+    @Test
+    fun `goal command encodes u32le`() {
+        val cmd = RingEncoder.makeGoalCommand(10000)
+        assertEquals(0x1A.toByte(), cmd[0])
+        assertEquals(0x10.toByte(), cmd[1]) // 10000 & 0xff
+        assertEquals(0x27.toByte(), cmd[2]) // (10000 >> 8) & 0xff
+    }
+
+    // MARK: Helpers
+
+    private fun hexToBytes(hex: String): ByteArray =
+        hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+    private class NullWriter : RingCommandWriter {
+        override fun enqueue(command: ByteArray) {}
+    }
+}
