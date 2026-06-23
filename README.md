@@ -24,19 +24,59 @@ Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smar
 - Calibrated display pipeline: `bpAdjustSystolic`/`bpAdjustDiastolic` offsets applied in ViewModels, `glucoseOffsetMgdl` applied to blood sugar readings
 - Pull-to-refresh on Today dashboard triggers immediate ring sync
 
-## BLE Fixes (56ff / Jring)
+## BLE Protocol Implementation (56ff / Jring)
 
-Based on testing and protocol analysis:
+The Android port extends the iOS protocol implementation with additional sensor decodes, connection stability improvements, and on-ring calibration support.
 
-- **Stale-state guard** — on app restart, any persisted "CONNECTED" or "CONNECTING" state is reset to "DISCONNECTED" since the live GATT is gone. Prevents false "Connected" display after process restart.
-- **Keepalive ping (0x3A)** — sends every 15s to prevent the ring's ~20s idle timeout from dropping the link
-- **Write ACK timeout** — a 3-second timeout unblocks the command queue if the ring never acknowledges a write (prevents permanent deadlock of all subsequent commands)
-- **Connection watchdog** — monitors GATT activity; if no activity for 10-20s, forces a fresh reconnect
-- **Foreground reconnection** — on every `ON_START` lifecycle event, reconnects if the GATT silently dropped during Doze/idle
-- **No OS-level bonding** — intentionally skipped to avoid the Bluetooth status-bar icon and OS-level pairing instability
-- **High-priority connection interval** — requests `CONNECTION_PRIORITY_HIGH` on connect, matching the official app's behavior
-- **Firmware version read** — scans all services for 0x2A26/0x2A28 firmware characteristics, not just DIS
-- **Force-close stale GATT** — on reconnect, explicitly disconnects and closes any orphaned GATT handle before opening a new one
+### Extended Sensor Decoding
+
+**Combined measurement (0x24)** — 9-byte payload decoded vs iOS's 6 bytes:
+
+| Byte | Metric | iOS | Android |
+|---|---|---|---|
+| 0 | Command echo (0x24) | ✅ | ✅ |
+| 1 | Heart Rate (bpm) | ✅ | ✅ |
+| 2 | Systolic (mmHg) | ✅ | ✅ |
+| 3 | Diastolic (mmHg) | ✅ | ✅ |
+| 4 | SpO₂ (%) | ✅ | ✅ |
+| 5 | Fatigue (0–100) | — | ✅ |
+| 6 | Stress (0–100) | — | ✅ |
+| 7 | Blood Sugar (mmol/L ×10 → mg/dL) | — | ✅ |
+| 8 | HRV (ms) | — | ✅ |
+
+**Blood sugar conversion** — ring reports mmol/L × 10; Android converts to mg/dL for display.
+
+**Heart rate history (0x16)** — multi-packet protocol with sub-type routing:
+- `0xF0` header block: total packet count
+- `0xAA` index block: current position tracking
+- `0xA0` data block: 12 raw 1-min samples → 2 averaged readings (6 samples each)
+- `0xFF` sync complete marker
+
+**Device info (0x0C)** — builds firmware version from payload bytes in `CID + DID + V + version` format.
+
+**Activity history (0x10)** — 15× 1-min step buckets per packet, local-time boundary detection for day stream completion.
+
+### Ring Configuration
+
+**App identity (0x48)** — persistent app ID sent on connect so the ring routes data to this app.
+
+**User profile (0x02)** — age, gender, height, and weight pushed to the ring in metric units to feed on-device algorithms for BP, blood sugar, and calorie estimation.
+
+**BP calibration (0x33)** — systolic/diastolic reference values pushed to the ring for on-device offset correction, in addition to app-side display calibration.
+
+**Bind protocol (0x4B)** — ring-driven handshake (INIT → APP\_START → ACK → SUCCESS) for stable pairing, plus unbind (UNBOND → UNBOND\_ACK) on device forget.
+
+### Connection Reliability
+
+- **Keepalive ping (0x3A)** — every 15s to prevent the ring's ~20s idle timeout from dropping the link
+- **Write ACK timeout** — 3-second timeout unblocks the command queue on missed acknowledgements
+- **Connection watchdog** — monitors GATT activity; forces reconnect after 10–20s of silence
+- **Foreground reconnection** — reconnects on app resume if the GATT dropped during device sleep
+- **Stale-state guard** — resets persisted connection state on app restart since the live GATT is gone
+- **Force-close stale GATT** — explicitly disconnects and closes orphaned handles before opening a new connection
+- **No OS-level bonding** — avoids Bluetooth status-bar icon and OS-level pairing instability
+- **High-priority connection interval** — requests priority connection parameters on connect
+- **Firmware discovery** — scans all services for firmware characteristics, not just standard DIS
 
 ## Ring Support
 
