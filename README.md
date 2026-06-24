@@ -2,6 +2,33 @@
 
 Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smart ring companion app for the 56ff/Jring and Colmi/Yawell QRing platforms.
 
+## Pairing Your Ring
+
+1. Open PulseLoop and navigate to the **Today** tab.
+2. Tap the Bluetooth icon (top-right) to open the ring scanner.
+3. With your ring nearby and awake (take it out of the charging case briefly), tap your ring when it appears in the device list.
+4. The ring will connect, sync history, and metrics will begin populating.
+
+### Profile & Calibration
+
+For accurate readings, the ring needs your physical profile. Enter your **age, height, weight, and sex** in the Settings menu under Profile. This data is stored **only on your phone** — it is never transmitted off-device. The ring uses it to calibrate its on-board algorithms for blood pressure, blood sugar, and calorie estimation.
+
+For **blood pressure** and **blood sugar**, you can further improve accuracy by entering reference values from a cuff or lab work in Settings. These act as calibration offsets applied to the ring's raw readings.
+
+---
+
+## Screenshots
+
+| Pairing | Today Dashboard | Vitals Dashboard |
+|---|---|---|
+| ![Pairing](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/pairing-scan.png) | ![Today](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/today-dashboard.png) | ![Vitals](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/vitals-dashboard.png) |
+
+| Vitals Detail | Sleep Score |
+|---|---|
+| ![Detail](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/vitals-detail.png) | ![Sleep](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/sleep-score.png) |
+
+---
+
 ## Visual & UX Differences from iOS
 
 ### Vitals Dashboard
@@ -9,7 +36,16 @@ Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smar
 - **Tap-through detail screens** for every metric — tap any panel to open a full trend view with Today/Week/Month period selector, zone-colored line chart, current-value marker, stat tiles (Latest/Avg/Min/Max), and non-medical explainer + disclaimer
 - **Zone-colored trend charts** — detail screen charts color data points by threshold zone (green/amber/red) with a vertical gradient line at zone boundaries. A white-ringed marker highlights the most recent reading
 - **Range/avg summaries** — all panels display `Range: min – max · Avg: avg` below the value
-- **Combined measurement button** — one-tap spot measurement for BP, SpO₂, stress, fatigue, and blood sugar with countdown progress bar
+- **Combined measurement button** — one-tap spot measurement for BP, SpO₂, stress, fatigue, and blood sugar with a visible countdown progress bar. Found at the top of the Vitals screen.
+
+### Settings & Calibration
+- **User profile** — age, height, weight, and sex stored locally on-device and sent to the ring for on-board algorithm calibration. Never transmitted off the phone.
+- **Blood pressure calibration** — enter reference systolic/diastolic values from a cuff to apply an offset to the ring's readings, both on-device and app-side
+- **Blood sugar calibration** — enter a reference glucose reading from lab work or a glucometer to calibrate the ring's blood sugar estimates
+
+### Simplified Ring Management
+- **Forget ring** — removes the ring from the app in one tap. The unbind command is sent to the ring to release it for pairing with other apps.
+- **Improved Bluetooth keep-alive** — Android-specific connection reliability improvements including keepalive pings, connection watchdog with automatic recovery, and foreground reconnection on app resume to handle Doze and idle disconnects gracefully.
 
 ### Sleep Score
 - **Sleep stage breakdown** — Deep/Light/Awake percentage pills color-coded per stage
@@ -23,6 +59,14 @@ Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smar
 - Local-midnight-aligned day bucketing for consistent daily stats across timezones
 - Calibrated display pipeline: `bpAdjustSystolic`/`bpAdjustDiastolic` offsets applied in ViewModels, `glucoseOffsetMgdl` applied to blood sugar readings
 - Pull-to-refresh on Today dashboard triggers immediate ring sync
+
+---
+
+## Known Issues
+
+- **Forget ring may not fully clear the Bluetooth stack** — removing the ring via the Settings menu has a chance of leaving a stale entry in the Android Bluetooth stack, causing the ring to be invisible to PulseLoop and other apps during subsequent scans. **Restarting the phone resolves this.**
+
+---
 
 ## BLE Protocol Implementation (56ff / Jring)
 
@@ -78,6 +122,8 @@ The Android port extends the iOS protocol implementation with additional sensor 
 - **High-priority connection interval** — requests priority connection parameters on connect
 - **Firmware discovery** — scans all services for firmware characteristics, not just standard DIS
 
+---
+
 ## Ring Support
 
 | Capability | 56ff / Jring | Colmi QRing |
@@ -95,6 +141,8 @@ The Android port extends the iOS protocol implementation with additional sensor 
 | Skin Temperature | ❌ | ✅ |
 | Battery | ✅ | ✅ |
 | Find Device | ✅ | ✅ |
+
+---
 
 ## Build
 
