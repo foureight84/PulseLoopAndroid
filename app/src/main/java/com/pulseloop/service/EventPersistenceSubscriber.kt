@@ -25,6 +25,16 @@ class EventPersistenceSubscriber(
     fun stop() { job?.cancel(); job = null }
 
     private suspend fun persist(event: PulseEvent) {
+        try {
+            persistUnsafe(event)
+        } catch (e: Exception) {
+            // Swallow individual persistence failures so one bad event
+            // (malformed ring packet, DB constraint, etc.) never crashes the app.
+            android.util.Log.e("EventPersistence", "Failed to persist event", e)
+        }
+    }
+
+    private suspend fun persistUnsafe(event: PulseEvent) {
         when (event) {
             is PulseEvent.DeviceStateChanged -> {
                 val device = db.deviceDao().current() ?: DeviceEntity()

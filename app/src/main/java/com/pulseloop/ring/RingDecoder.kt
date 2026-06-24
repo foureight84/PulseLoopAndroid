@@ -12,6 +12,17 @@ import java.time.Instant
 object RingDecoder {
 
     fun decode(data: ByteArray): List<RingDecodedEvent> {
+        return try {
+            decodeUnsafe(data)
+        } catch (e: Exception) {
+            listOf(RingDecodedEvent.Unknown(
+                commandId = if (data.isNotEmpty()) data[0].toUByte() else 0u,
+                raw = data
+            ))
+        }
+    }
+
+    private fun decodeUnsafe(data: ByteArray): List<RingDecodedEvent> {
         val packet = RingPacket.fromData(data).getOrElse {
             return listOf(RingDecodedEvent.Unknown(
                 commandId = if (data.isNotEmpty()) data[0].toUByte() else 0u,
