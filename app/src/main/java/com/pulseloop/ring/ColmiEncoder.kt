@@ -162,10 +162,11 @@ object ColmiCoordinator : WearableCoordinator {
         WearableCapability.SLEEP, WearableCapability.BATTERY,
         WearableCapability.REM_SLEEP, WearableCapability.STRESS, WearableCapability.HRV,
         WearableCapability.TEMPERATURE,
-        WearableCapability.BLOOD_PRESSURE, WearableCapability.BLOOD_SUGAR,
         WearableCapability.MANUAL_HEART_RATE, WearableCapability.REALTIME_HEART_RATE,
         WearableCapability.REALTIME_STEPS,
         WearableCapability.FIND_DEVICE, WearableCapability.POWER_OFF, WearableCapability.FACTORY_RESET,
+        // NOTE: Colmi rings do NOT support blood pressure or blood sugar.
+        // See docs/ring-hardware-reference.md §3.
     )
 
     override val iconSystemName = "circle.circle.fill"

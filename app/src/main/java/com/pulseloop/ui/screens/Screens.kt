@@ -302,7 +302,8 @@ fun VitalsScreen(
                 }
                 // Combined spot measurement (0x23): one tap captures BP, SpO₂, stress,
                 // fatigue and blood sugar — the same flow the official app's "Measurement" button uses.
-                if (coordinator != null) {
+                // Only shown for rings that support BP or blood sugar (56ff/Jring).
+                if (coordinator != null && (state.supportsBP || state.supportsGlucose)) {
                     Button(
                         enabled = !measuring,
                         onClick = {

@@ -1,5 +1,9 @@
 # PulseLoop Android
 
+> ⚠️ **Disclaimer:** This app is provided as-is and is not a medical application.
+> The rings are not medical devices. This app does not replace professional
+> healthcare. Always consult your doctor for any medical concerns.
+
 Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smart ring companion app for the 56ff/Jring and Colmi/Yawell QRing platforms.
 
 ## Pairing Your Ring
@@ -11,9 +15,18 @@ Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smar
 
 ### Profile & Calibration
 
-For accurate readings, the ring needs your physical profile. Enter your **age, height, weight, and sex** in the Settings menu under Profile. This data is stored **only on your phone** — it is never transmitted off-device. The ring uses it to calibrate its on-board algorithms for blood pressure, blood sugar, and calorie estimation.
+For accurate blood sugar and calorie estimation on **56ff/Jring rings**, the ring
+needs your physical profile. Enter your **age, height, weight, and sex** in the
+Settings menu under Profile. This data is stored **only on your phone** — it is
+never transmitted off-device.
 
-For **blood pressure** and **blood sugar**, you can further improve accuracy by entering reference values from a cuff or lab work in Settings. These act as calibration offsets applied to the ring's raw readings.
+**Blood pressure is a direct sensor reading** — it does not require user profile.
+**Colmi rings do not need profile at all** — they measure all metrics directly
+from their sensors and do not support blood pressure or blood sugar.
+
+For **56ff/Jring rings**, you can optionally calibrate blood pressure by entering
+reference values from a cuff. For blood sugar, you can enter a reference lab/meter
+reading to apply a display offset. These are stored locally as calibration offsets.
 
 ---
 
@@ -39,9 +52,9 @@ For **blood pressure** and **blood sugar**, you can further improve accuracy by 
 - **Combined measurement button** — one-tap spot measurement for BP, SpO₂, stress, fatigue, and blood sugar with a visible countdown progress bar. Found at the top of the Vitals screen.
 
 ### Settings & Calibration
-- **User profile** — age, height, weight, and sex stored locally on-device and sent to the ring for on-board algorithm calibration. Never transmitted off the phone.
-- **Blood pressure calibration** — enter reference systolic/diastolic values from a cuff to apply an offset to the ring's readings, both on-device and app-side
-- **Blood sugar calibration** — enter a reference glucose reading from lab work or a glucometer to calibrate the ring's blood sugar estimates
+- **User profile** — age, height, weight, and sex stored locally on-device and sent to 56ff/Jring rings for blood sugar (profile-derived estimate) and calorie algorithms. Blood pressure is a direct sensor reading. Colmi rings do not use this.
+- **Blood pressure calibration** — enter reference systolic/diastolic values from a cuff to apply an offset. 56ff/Jring only.
+- **Blood sugar calibration** — enter a reference glucose reading from lab work or a glucometer to calibrate the ring's profile-derived blood sugar estimates. 56ff/Jring only.
 
 ### Simplified Ring Management
 - **Forget ring** — removes the ring from the app in one tap. The unbind command is sent to the ring to release it for pairing with other apps.
@@ -74,7 +87,8 @@ The Android port extends the iOS protocol implementation with additional sensor 
 
 ### Extended Sensor Decoding
 
-**Combined measurement (0x24)** — 9-byte payload decoded vs iOS's 6 bytes:
+**Combined measurement (0x24)** — 9-byte payload. Blood pressure (bytes[2]-[3]) is a
+direct PPG sensor reading. Blood sugar (byte[7]) is a profile-derived estimate.
 
 | Byte | Metric | iOS | Android |
 |---|---|---|---|
@@ -104,7 +118,10 @@ The Android port extends the iOS protocol implementation with additional sensor 
 
 **App identity (0x48)** — persistent app ID sent on connect so the ring routes data to this app.
 
-**User profile (0x02)** — age, gender, height, and weight pushed to the ring in metric units to feed on-device algorithms for BP, blood sugar, and calorie estimation.
+**User profile (0x02)** — age, gender, height, and weight pushed to the ring in metric
+units to feed the ring's on-device blood sugar (profile-derived estimate) and calorie
+algorithms. Blood pressure is a direct sensor reading and does not use user profile.
+This is only applicable to 56ff/Jring rings.
 
 **BP calibration (0x33)** — systolic/diastolic reference values pushed to the ring for on-device offset correction, in addition to app-side display calibration.
 
@@ -133,8 +150,8 @@ The Android port extends the iOS protocol implementation with additional sensor 
 | Steps / Distance / Calories | ✅ | ✅ |
 | Sleep (Light + Deep + Awake) | ✅ | ✅ |
 | Sleep (REM) | ❌ | ✅ |
-| Blood Pressure | ✅ | ✅ |
-| Blood Sugar | ✅ | ✅ |
+| Blood Pressure | ✅ | ❌ |
+| Blood Sugar | ✅ | ❌ |
 | HRV | ❌ | ✅ |
 | Stress | ✅ | ✅ |
 | Fatigue | ✅ | ✅ |

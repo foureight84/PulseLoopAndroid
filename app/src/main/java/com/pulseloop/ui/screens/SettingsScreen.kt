@@ -348,14 +348,27 @@ fun SettingsScreen(
             }
         }
 
-        // Profile — feeds the ring's BP / blood-sugar / calorie algorithms (setUserInfo 0x02)
-        // plus an optional BP calibration (setBPAdjust 0x33). Fields respect the unit setting.
+        // Profile — feeds the ring's blood-sugar (profile-derived) and calorie algorithms
+        // (setUserInfo 0x02). BP is a direct sensor reading, calibrated separately below.
+        // Optional BP calibration via setBPAdjust (0x33). Only applicable to 56ff/Jring
+        // rings; Colmi rings don't support blood pressure or blood sugar at all.
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
+                val device = db.deviceDao().currentFlow().collectAsState(initial = null)
+                val isColmi = device.value?.deviceType == com.pulseloop.ring.RingDeviceType.COLMI_R02
+
                 Text("Profile", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
+
+                if (isColmi) {
+                    Text(
+                        "Your Colmi ring measures heart rate, SpO\u2082, HRV, stress, temperature, and sleep directly from its sensors. Profile, blood pressure calibration, and blood sugar calibration are only needed for 56ff/Jring rings — your Colmi ring doesn't support blood pressure or blood sugar.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
                 Text(
-                    "Your age, sex, height and weight let the ring compute accurate blood pressure, blood sugar and calories.",
+                    "Your age, sex, height and weight let the ring compute accurate blood sugar and calories. Blood pressure is measured directly by the sensor.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -567,6 +580,7 @@ fun SettingsScreen(
                     Spacer(Modifier.height(6.dp))
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 }
+                } // end else (!isColmi)
             }
         }
 

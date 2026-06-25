@@ -45,7 +45,7 @@ interface RingSyncEngine {
     fun measureHeartRateSpot() { startHeartRate() }
     fun startSpO2()
     fun stopSpO2()
-    /** Combined spot measurement (BP + SpO₂ + stress + fatigue + blood sugar). No-op if unsupported. */
+    /** Combined measurement: HR + systolic + diastolic + SpO₂ + fatigue + stress + blood sugar + HRV. No-op if unsupported. */
     fun startCombinedMeasurement() {}
     fun stopCombinedMeasurement() {}
     fun findDevice()

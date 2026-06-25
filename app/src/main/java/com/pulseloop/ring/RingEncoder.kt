@@ -17,7 +17,17 @@ object RingEncoder {
         repeat(minOf(localeBytes.size, 19)) { cmd[it + 1] = localeBytes[it] }
         return cmd
     }
-    fun makeActivityQueryCommand(): ByteArray = hexToBytes("0299b85a00000000000000000000000000000000")
+    /**
+     * Default user info (0x02 CMD_SET_USER_INFO). Hardcoded fallback values
+     * (age 25, male, 184 cm, 90 kg, metric) sent on connect so the ring always
+     * has a baseline profile to compute blood sugar and calories from. These are
+     * overridden as soon as the user's real profile syncs from the database.
+     *
+     * NOT an activity query — the ring sends activity data (0x03) automatically
+     * on connect without an explicit query. The 0x02 opcode was misinterpreted
+     * during early reverse-engineering. See docs/protocol-discoveries.md.
+     */
+    fun makeDefaultUserInfoCommand(): ByteArray = hexToBytes("0299b85a00000000000000000000000000000000")
     /**
      * Request activity + sleep history for the last N days (0x10).
      * byte[1] = number of days (0-27). The ring sends back 0x10 (steps)
@@ -68,8 +78,10 @@ object RingEncoder {
     }
 
     /**
-     * User info / personal data (0x02). Feeds the ring's BP, blood-sugar and
-     * calorie algorithms. Mirrors the official SDK's setUserInfo (BluetoothLeService.a0):
+     * User info / personal data (0x02 CMD_SET_USER_INFO). Feeds the ring's
+     * blood-sugar (profile-derived estimate) and calorie algorithms. Blood
+     * pressure is a direct PPG sensor reading and does NOT use user info.
+     * Mirrors the official SDK's setUserInfo (BluetoothLeService.a0):
      *   byte[0] = 0x02
      *   byte[1] = age (low 7 bits) | 0x80 if male
      *   byte[2] = height (cm)

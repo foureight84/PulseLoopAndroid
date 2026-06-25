@@ -104,9 +104,10 @@ class RingSyncCoordinator(
         // id and otherwise can stay mute after another app (e.g. the official one) claimed it.
         apiKeyStore?.ringAppId?.let { engine?.setAppId(it) }
         engine?.runStartup()
-        // Push the user's anthropometrics + BP calibration so the ring's on-device
-        // BP/blood-sugar/calorie algorithms run on real inputs (matches the official
-        // app, which calls setUserInfo on every connect).
+        // Push the user's profile so the ring's blood-sugar (profile-derived) and
+        // calorie algorithms run on real inputs. BP is a direct sensor reading and
+        // does not depend on user info. Matches the official app, which calls
+        // setUserInfo on every connect anyway.
         pushUserSettingsFromStore()
         lastSyncAt = System.currentTimeMillis()
     }
@@ -124,8 +125,10 @@ class RingSyncCoordinator(
     }
 
     /**
-     * Send user info (0x02) and BP calibration (0x33) to the ring. Called on connect
-     * and immediately after the user edits their profile in Settings. Values must be
+     * Send user info (0x02) and BP calibration (0x33) to the ring. Called on
+     * connect and immediately after the user edits their profile in Settings.
+     * User info feeds the ring's blood-sugar (profile-derived estimate) and
+     * calorie algorithms only; BP is a direct sensor reading. Values must be
      * metric (cm / kg); [makeUserInfoCommand] transmits them with the metric flag.
      */
     fun applyUserSettings(profile: UserProfileEntity?, bpSystolic: Int, bpDiastolic: Int) {

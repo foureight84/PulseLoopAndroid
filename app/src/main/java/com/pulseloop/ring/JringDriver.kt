@@ -77,7 +77,7 @@ class JringSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         writer?.enqueue(encoder.makeStatusCommand())
         writer?.enqueue(encoder.makeTimeSyncCommand())
         writer?.enqueue(encoder.makeLocaleCommand())
-        writer?.enqueue(encoder.makeActivityQueryCommand())
+        writer?.enqueue(encoder.makeDefaultUserInfoCommand())
         writer?.enqueue(encoder.makeHistoryQueryCommand())
         writer?.enqueue(encoder.makeHistoryMeasurementQueryCommand())
     }
@@ -117,7 +117,7 @@ class JringSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         writer?.enqueue(encoder.makeSpO2StopCommand())
     }
 
-    /** Combined BP + HR + SpO₂ + stress + fatigue + blood-sugar measurement (0x23 → 0x24). */
+    /** Combined measurement (0x23 → 0x24): HR + systolic + diastolic + SpO₂ + fatigue + stress + blood sugar + HRV in one 20-byte notification. BP values are direct sensor readings. Blood sugar is a profile-derived estimate. */
     override fun startCombinedMeasurement() {
         writer?.enqueue(encoder.makeCombinedMeasurementStart())
     }
