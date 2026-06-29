@@ -2,13 +2,21 @@ package com.pulseloop.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -22,12 +30,21 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Builds hard-edged vertical-gradient color stops from a metric's threshold zones,
@@ -307,14 +324,49 @@ private fun formatTick(value: Double): String {
     else "%.1f".format(value)
 }
 
+/**
+ * Clean clock-time ticks for the X axis across the visible window [visStart, visEnd].
+ * Picks a step (15 min … 7 days) that yields ~5 labels, aligns ticks to local
+ * midnight, and returns a label formatter whose granularity matches the step
+ * (e.g. "2 PM" for hourly, "2:30 PM" sub-hour, "Jun 28" for multi-day).
+ */
+private fun timeAxisTicks(visStart: Long, visEnd: Long, zone: ZoneId): Pair<List<Long>, (Long) -> String> {
+    val rangeMs = (visEnd - visStart).coerceAtLeast(1L)
+    val stepsMin = longArrayOf(15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10080)
+    val stepMin = stepsMin.firstOrNull { rangeMs / (it * 60_000L) <= 5 } ?: stepsMin.last()
+    val stepMs = stepMin * 60_000L
+    val pattern = when {
+        stepMin >= 1440 -> "MMM d"
+        stepMin < 60 -> "h:mm a"
+        else -> "h a"
+    }
+    val fmt = DateTimeFormatter.ofPattern(pattern, Locale.getDefault())
+    // Align ticks to local midnight so labels land on clean boundaries.
+    val dayStart = Instant.ofEpochMilli(visStart).atZone(zone)
+        .truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()
+    val ticks = mutableListOf<Long>()
+    var t = dayStart
+    while (t < visStart) t += stepMs
+    while (t <= visEnd) { ticks.add(t); t += stepMs }
+    val formatter: (Long) -> String = { ms -> Instant.ofEpochMilli(ms).atZone(zone).format(fmt) }
+    return ticks to formatter
+}
+
 // ──────────────────────── TrendChart ────────────────────────
 
 /**
- * Enhanced line chart for the Vital Detail screen — adds gradient fill under the line,
- * gridlines, x-axis labels, and value-axis min/max annotations.
+ * Enhanced line chart for the Vital Detail screen — gradient fill under the line,
+ * gridlines, value (Y) axis labels, aligned time (X) axis labels, and touch interaction:
+ *   • single-finger drag → scrub: a guide line + tooltip showing the value and time
+ *     at the touched point;
+ *   • two-finger pinch / pan → zoom into and pan across the time domain.
  *
  * For BP, use [secondary] to overlay a second series with [colorSecondary] and show
  * [legendPrimary]/[legendSecondary] labels.
+ *
+ * @param timestamps optional epoch-ms per point (parallel to [points]); when present the
+ *   scrub tooltip shows a precise time via [tooltipTimeFormatter].
+ * @param valueFormatter formats Y-axis + tooltip values (default: integer / 1-dp).
  */
 @Composable
 fun TrendChart(
@@ -327,6 +379,10 @@ fun TrendChart(
     legendPrimary: String? = null,
     legendSecondary: String? = null,
     thresholds: MetricThresholds? = null,
+    timestamps: List<Long> = emptyList(),
+    valueFormatter: (Double) -> String = ::formatTick,
+    tooltipTimeFormatter: ((Long) -> String)? = null,
+    interactive: Boolean = true,
 ) {
     if (points.isEmpty()) return
 
@@ -336,6 +392,37 @@ fun TrendChart(
     val range = if (max == min) 1.0 else max - min
     // Zone-color the primary line only for single-series metrics (not BP's dual lines).
     val zoneColoring = thresholds != null && secondary.isEmpty()
+    val n = points.size
+
+    // Time domain: when we have a timestamp per point, plot on a real time axis so the
+    // x positions and labels reflect actual clock time (not even index spacing). The full
+    // domain is the data's time span (e.g. the last 24h); pinch zooms into it.
+    val useTime = timestamps.size == n && n >= 1
+    val tMin = if (useTime) timestamps.min() else 0L
+    val tMax = if (useTime) timestamps.max() else 0L
+    val tFullStart = if (useTime && tMax > tMin) tMin else tMin - 1_800_000L
+    val tFullEnd = if (useTime && tMax > tMin) tMax else tMax + 1_800_000L
+    val fullRangeMs = (tFullEnd - tFullStart).coerceAtLeast(1L)
+    val zone = ZoneId.systemDefault()
+
+    val textMeasurer = rememberTextMeasurer()
+    val axisColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+    val outlineColor = MaterialTheme.colorScheme.outline
+    val gridColor = Color.LightGray.copy(alpha = 0.3f)
+
+    // Zoom/pan window normalized to [0,1] over the time domain. windowSize = 1/zoom.
+    // Min visible window is 30 min; index fallback caps by point count.
+    val minWindowMs = 30 * 60 * 1000L
+    val maxZoom = if (useTime) (fullRangeMs.toFloat() / minWindowMs).coerceIn(1f, 24f)
+        else if (n > 2) minOf(8f, n / 2f) else 1f
+    var zoom by remember(points) { mutableStateOf(1f) }
+    var windowStart by remember(points) { mutableStateOf(0f) }
+    // Scrub touch x in px; null = no tooltip. Plot bounds shared with the gesture handler.
+    var scrubX by remember(points) { mutableStateOf<Float?>(null) }
+    var plotLeftPx by remember { mutableStateOf(0f) }
+    var plotRightPx by remember { mutableStateOf(0f) }
 
     Column(modifier = modifier) {
         // Legend row (for dual-series)
@@ -349,114 +436,256 @@ fun TrendChart(
             }
         }
 
-        Canvas(modifier = Modifier.fillMaxWidth().height(200.dp)) {
-            val w = size.width
-            val h = size.height
-            val pad = 32f
-            val topPad = 12f
-            val bottomPad = 24f
-
-            // Gridlines
-            val gridCount = 4
-            for (i in 0..gridCount) {
-                val y = topPad + (h - topPad - bottomPad) * i / gridCount
-                drawLine(
-                    color = Color.LightGray.copy(alpha = 0.3f),
-                    start = Offset(pad, y),
-                    end = Offset(w - pad, y),
-                    strokeWidth = 1f,
-                )
-            }
-
-            // Value axis annotations (min/max)
-            // (simplified — just show the extremes)
-
-            fun drawSeries(series: List<Double>, seriesColor: Color, zoneColored: Boolean = false) {
-                if (series.isEmpty()) return
-                val stepX = (w - pad * 2) / maxOf(1, series.size - 1)
-                val lineTop = topPad
-                val lineBottom = h - bottomPad
-
-                // Gradient fill under the line (kept single-color for readability)
-                val fillPath = Path()
-                series.forEachIndexed { i, value ->
-                    val x = pad + i * stepX
-                    val y = topPad + (h - topPad - bottomPad) * (1f - ((value - min) / range).toFloat())
-                    if (i == 0) fillPath.moveTo(x, y) else fillPath.lineTo(x, y)
-                }
-                val lastX = pad + (series.size - 1) * stepX
-                fillPath.lineTo(lastX, h - bottomPad)
-                fillPath.lineTo(pad, h - bottomPad)
-                fillPath.close()
-
-                drawPath(
-                    path = fillPath,
-                    brush = Brush.verticalGradient(
-                        colors = listOf(seriesColor.copy(alpha = 0.25f), seriesColor.copy(alpha = 0.02f)),
-                    ),
-                )
-
-                val lineBrush = if (zoneColored && thresholds != null) {
-                    Brush.verticalGradient(
-                        colorStops = zoneGradientStops(min, max, thresholds),
-                        startY = lineTop,
-                        endY = lineBottom,
-                    )
-                } else null
-
-                // The line itself
-                val linePath = Path()
-                series.forEachIndexed { i, value ->
-                    val x = pad + i * stepX
-                    val y = topPad + (h - topPad - bottomPad) * (1f - ((value - min) / range).toFloat())
-                    if (i == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
-                    val dotColor = if (zoneColored) thresholds?.zoneFor(value)?.color ?: seriesColor else seriesColor
-                    drawCircle(dotColor, 3f, Offset(x, y))
-                }
-                if (lineBrush != null) {
-                    drawPath(linePath, brush = lineBrush, style = Stroke(width = 2f, cap = StrokeCap.Round))
-                } else {
-                    drawPath(linePath, seriesColor, style = Stroke(width = 2f, cap = StrokeCap.Round))
-                }
-
-                // Current-value marker: larger highlighted dot at the last point
-                if (series.size >= 2) {
-                    val lastIdx = series.lastIndex
-                    val lastX = pad + lastIdx * stepX
-                    val lastY = topPad + (h - topPad - bottomPad) * (1f - ((series[lastIdx] - min) / range).toFloat())
-                    val lastColor = if (zoneColored) thresholds?.zoneFor(series[lastIdx])?.color ?: seriesColor else seriesColor
-                    // White ring
-                    drawCircle(Color.White, 7f, Offset(lastX, lastY))
-                    // Colored inner dot
-                    drawCircle(lastColor, 5f, Offset(lastX, lastY))
+        val canvasModifier = Modifier.fillMaxWidth().height(220.dp).let { base ->
+            if (!interactive) base else base.pointerInput(points) {
+                awaitEachGesture {
+                    val first = awaitFirstDown(requireUnconsumed = false)
+                    scrubX = first.position.x
+                    var multiTouch = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pressedCount = event.changes.count { it.pressed }
+                        if (pressedCount == 0) break
+                        if (pressedCount >= 2 && maxZoom > 1f) {
+                            // Pinch-zoom + pan, focal-stable around the gesture centroid.
+                            multiTouch = true
+                            scrubX = null
+                            val plotW = (plotRightPx - plotLeftPx).coerceAtLeast(1f)
+                            val oldWindow = 1f / zoom
+                            val focal = ((event.calculateCentroid().x - plotLeftPx) / plotW).coerceIn(0f, 1f)
+                            val focalData = windowStart + focal * oldWindow
+                            val newZoom = (zoom * event.calculateZoom()).coerceIn(1f, maxZoom)
+                            val newWindow = 1f / newZoom
+                            var newStart = focalData - focal * newWindow
+                            newStart -= (event.calculatePan().x / plotW) * newWindow
+                            windowStart = newStart.coerceIn(0f, (1f - newWindow).coerceAtLeast(0f))
+                            zoom = newZoom
+                            event.changes.forEach { it.consume() }
+                        } else if (!multiTouch && pressedCount == 1) {
+                            val change = event.changes.first { it.pressed }
+                            scrubX = change.position.x
+                            change.consume()
+                        }
+                    }
+                    scrubX = null  // hide tooltip when the finger lifts
                 }
             }
-
-            drawSeries(secondary, colorSecondary)
-            drawSeries(points, color, zoneColored = zoneColoring)
         }
 
-        // X-axis labels
-        if (labels.isNotEmpty()) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                // Show a subset of labels to avoid crowding
-                val labelInterval = maxOf(1, labels.size / 5)
-                labels.forEachIndexed { i, label ->
-                    if (i % labelInterval == 0 || i == labels.lastIndex) {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    } else {
-                        Spacer(Modifier.width(1.dp))
-                    }
+        Canvas(modifier = canvasModifier) {
+            val gutter = 36.dp.toPx()
+            val rightPad = 10.dp.toPx()
+            val topPad = 10.dp.toPx()
+            val bottomPad = 22.dp.toPx()
+            val w = size.width
+            val h = size.height
+            val plotLeft = gutter
+            val plotRight = w - rightPad
+            val plotTop = topPad
+            val plotBottom = h - bottomPad
+            val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
+            val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
+            plotLeftPx = plotLeft
+            plotRightPx = plotRight
+
+            val windowSize = 1f / zoom
+            val winStart = windowStart.coerceIn(0f, (1f - windowSize).coerceAtLeast(0f))
+
+            // Visible time window (time domain only).
+            val visStart = tFullStart + (winStart.toDouble() * fullRangeMs).toLong()
+            val visEnd = tFullStart + ((winStart + windowSize).toDouble() * fullRangeMs).toLong()
+            val visRangeMs = (visEnd - visStart).coerceAtLeast(1L)
+
+            fun xForTime(t: Long): Float =
+                plotLeft + ((t - visStart).toFloat() / visRangeMs.toFloat()) * plotW
+            fun xForFrac(p: Float): Float = plotLeft + ((p - winStart) / windowSize) * plotW
+            fun xForIndex(i: Int): Float =
+                if (useTime) xForTime(timestamps[i])
+                else xForFrac(if (n <= 1) 0f else i.toFloat() / (n - 1))
+            fun xForSecondary(j: Int): Float =
+                if (useTime && secondary.size == timestamps.size) xForTime(timestamps[j])
+                else xForFrac(if (secondary.size <= 1) 0f else j.toFloat() / (secondary.size - 1))
+            fun yForValue(v: Double): Float =
+                plotTop + plotH * (1f - ((v - min) / range).toFloat())
+            fun indexForX(x: Float): Int {
+                if (!useTime) {
+                    val frac = winStart + ((x - plotLeft) / plotW).coerceIn(0f, 1f) * windowSize
+                    return (frac * (n - 1)).roundToInt().coerceIn(0, n - 1)
+                }
+                val t = visStart + (((x - plotLeft) / plotW).coerceIn(0f, 1f) * visRangeMs).toLong()
+                var best = 0; var bestDist = Long.MAX_VALUE
+                timestamps.forEachIndexed { i, ts ->
+                    val d = abs(ts - t)
+                    if (d < bestDist) { bestDist = d; best = i }
+                }
+                return best
+            }
+
+            val labelStyle = TextStyle(fontSize = 10.sp, color = axisColor)
+
+            // Gridlines + Y-axis value labels (max at top → min at bottom)
+            val gridCount = 4
+            for (g in 0..gridCount) {
+                val y = plotTop + plotH * g / gridCount
+                drawLine(gridColor, Offset(plotLeft, y), Offset(plotRight, y), 1f)
+                val value = max - (max - min) * g / gridCount
+                val tl = textMeasurer.measure(valueFormatter(value), labelStyle)
+                drawText(tl, topLeft = Offset(plotLeft - 6.dp.toPx() - tl.size.width, y - tl.size.height / 2f))
+            }
+
+            // Series — clipped to the plot rect so zoomed-out points don't bleed over the axes.
+            val primaryOffsets = points.mapIndexed { i, v -> Offset(xForIndex(i), yForValue(v)) }
+            val secondaryOffsets = secondary.mapIndexed { i, v -> Offset(xForSecondary(i), yForValue(v)) }
+            clipRect(plotLeft, plotTop, plotRight, plotBottom) {
+                drawTrendSeries(secondaryOffsets, secondary, colorSecondary, false, thresholds, min, max, plotTop, plotBottom)
+                drawTrendSeries(primaryOffsets, points, color, zoneColoring, thresholds, min, max, plotTop, plotBottom)
+                // Current-value marker at the last primary point
+                primaryOffsets.lastOrNull()?.let { o ->
+                    val c = if (zoneColoring) thresholds?.zoneFor(points.last())?.color ?: color else color
+                    drawCircle(Color.White, 7f, o)
+                    drawCircle(c, 5f, o)
                 }
             }
+
+            // X-axis time labels — real clock times at clean intervals across the visible window.
+            if (useTime) {
+                val (ticks, fmt) = timeAxisTicks(visStart, visEnd, zone)
+                var lastRight = -Float.MAX_VALUE
+                for (t in ticks) {
+                    val text = fmt(t)
+                    val tl = textMeasurer.measure(text, labelStyle)
+                    val cx = xForTime(t)
+                    val tx = (cx - tl.size.width / 2f).coerceIn(plotLeft, plotRight - tl.size.width)
+                    if (tx <= lastRight + 6.dp.toPx()) continue  // avoid overlap
+                    lastRight = tx + tl.size.width
+                    drawText(tl, topLeft = Offset(tx, plotBottom + 4.dp.toPx()))
+                }
+            } else {
+                val slotCount = (plotW / 64.dp.toPx()).toInt().coerceIn(2, 6)
+                var lastDrawnIdx = -1
+                for (s in 0..slotCount) {
+                    val frac = s.toFloat() / slotCount
+                    val idx = ((winStart + frac * windowSize) * (n - 1)).roundToInt().coerceIn(0, n - 1)
+                    if (idx == lastDrawnIdx) continue
+                    lastDrawnIdx = idx
+                    val text = labels.getOrNull(idx) ?: continue
+                    if (text.isEmpty()) continue
+                    val tl = textMeasurer.measure(text, labelStyle)
+                    val tx = (xForIndex(idx) - tl.size.width / 2f).coerceIn(plotLeft, plotRight - tl.size.width)
+                    drawText(tl, topLeft = Offset(tx, plotBottom + 4.dp.toPx()))
+                }
+            }
+
+            // Scrub guide line + tooltip
+            val sx = scrubX
+            if (sx != null && n > 0) {
+                val idx = indexForX(sx.coerceIn(plotLeft, plotRight))
+                val px = xForIndex(idx).coerceIn(plotLeft, plotRight)
+                val py = yForValue(points[idx])
+                // Vertical guide
+                drawLine(outlineColor.copy(alpha = 0.6f), Offset(px, plotTop), Offset(px, plotBottom), 1.5f)
+                // Highlighted point(s)
+                drawCircle(Color.White, 7f, Offset(px, py))
+                drawCircle(if (zoneColoring) thresholds?.zoneFor(points[idx])?.color ?: color else color, 5f, Offset(px, py))
+                val secVal = secondary.getOrNull(idx)
+                if (secVal != null) {
+                    val py2 = yForValue(secVal)
+                    drawCircle(Color.White, 6f, Offset(px, py2))
+                    drawCircle(colorSecondary, 4f, Offset(px, py2))
+                }
+
+                // Tooltip text: value (bold) + time (muted)
+                val valueText = if (secVal != null)
+                    "${valueFormatter(points[idx])} / ${valueFormatter(secVal)}"
+                else valueFormatter(points[idx])
+                val timeText = timestamps.getOrNull(idx)?.let { tooltipTimeFormatter?.invoke(it) }
+                    ?: labels.getOrNull(idx) ?: ""
+                val valStyle = TextStyle(fontSize = 13.sp, color = onSurfaceColor, fontWeight = FontWeight.Bold)
+                val timeStyle = TextStyle(fontSize = 10.sp, color = axisColor)
+                val valTl = textMeasurer.measure(valueText, valStyle)
+                val timeTl = if (timeText.isNotEmpty()) textMeasurer.measure(timeText, timeStyle) else null
+                val padPx = 8.dp.toPx()
+                val gap = 2.dp.toPx()
+                val contentW = maxOf(valTl.size.width, timeTl?.size?.width ?: 0).toFloat()
+                val contentH = valTl.size.height + (timeTl?.let { it.size.height + gap } ?: 0f)
+                val boxW = contentW + padPx * 2
+                val boxH = contentH + padPx * 1.2f
+                val boxLeft = (px - boxW / 2f).coerceIn(plotLeft, plotRight - boxW)
+                val boxTop = if (py - boxH - 8.dp.toPx() >= plotTop) py - boxH - 8.dp.toPx() else py + 8.dp.toPx()
+                drawRoundRect(
+                    color = surfaceColor,
+                    topLeft = Offset(boxLeft, boxTop),
+                    size = Size(boxW, boxH),
+                    cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                )
+                drawRoundRect(
+                    color = outlineColor.copy(alpha = 0.4f),
+                    topLeft = Offset(boxLeft, boxTop),
+                    size = Size(boxW, boxH),
+                    cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                    style = Stroke(width = 1f),
+                )
+                drawText(valTl, topLeft = Offset(boxLeft + padPx, boxTop + padPx * 0.6f))
+                timeTl?.let {
+                    drawText(it, topLeft = Offset(boxLeft + padPx, boxTop + padPx * 0.6f + valTl.size.height + gap))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Draws one trend series (gradient fill under the line, the line itself, and per-point dots).
+ * Offsets are pre-projected screen coordinates; callers should [clipRect] to the plot bounds.
+ */
+private fun DrawScope.drawTrendSeries(
+    offsets: List<Offset>,
+    values: List<Double>,
+    seriesColor: Color,
+    zoneColored: Boolean,
+    thresholds: MetricThresholds?,
+    dataMin: Double,
+    dataMax: Double,
+    plotTop: Float,
+    plotBottom: Float,
+) {
+    if (offsets.isEmpty()) return
+
+    // Gradient fill under the line
+    val fill = Path()
+    offsets.forEachIndexed { i, o -> if (i == 0) fill.moveTo(o.x, o.y) else fill.lineTo(o.x, o.y) }
+    fill.lineTo(offsets.last().x, plotBottom)
+    fill.lineTo(offsets.first().x, plotBottom)
+    fill.close()
+    drawPath(
+        fill,
+        brush = Brush.verticalGradient(
+            colors = listOf(seriesColor.copy(alpha = 0.25f), seriesColor.copy(alpha = 0.02f)),
+        ),
+    )
+
+    val lineBrush = if (zoneColored && thresholds != null) {
+        Brush.verticalGradient(
+            colorStops = zoneGradientStops(dataMin, dataMax, thresholds),
+            startY = plotTop,
+            endY = plotBottom,
+        )
+    } else null
+
+    val line = Path()
+    offsets.forEachIndexed { i, o -> if (i == 0) line.moveTo(o.x, o.y) else line.lineTo(o.x, o.y) }
+    if (lineBrush != null) {
+        drawPath(line, brush = lineBrush, style = Stroke(width = 2f, cap = StrokeCap.Round))
+    } else {
+        drawPath(line, seriesColor, style = Stroke(width = 2f, cap = StrokeCap.Round))
+    }
+
+    // Per-point dots only when sparse — at high density they merge into a blob and
+    // just obscure the line (e.g. a month of raw samples).
+    if (offsets.size <= 60) {
+        offsets.forEachIndexed { i, o ->
+            val dotColor = if (zoneColored) thresholds?.zoneFor(values[i])?.color ?: seriesColor else seriesColor
+            drawCircle(dotColor, 3f, o)
         }
     }
 }
