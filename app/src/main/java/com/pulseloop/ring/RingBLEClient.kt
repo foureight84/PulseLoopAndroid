@@ -92,12 +92,30 @@ class RingBLEClient(private val context: Context) {
     private var forgetPending = false
     private var forgetJob: Job? = null
 
-    // MARK: Write serialization
+    // MARK: GATT operation serialization
+    //
+    // Android's BLE stack permits exactly ONE outstanding GATT operation at a time.
+    // Issuing a read / characteristic-write / descriptor-write while another is still
+    // in flight makes the new call return false and be silently dropped — the classic
+    // cause of a ring that connects and discovers services but never finishes enabling
+    // notifications, so it hangs forever on "Connecting…". (Seen on the Colmi R10, which
+    // — unlike the R02 — exposes a 0x180A DIS service, so a firmware read was issued and
+    // blocked the CCCD descriptor write that gates the CONNECTED transition.)
+    //
+    // Every GATT operation is funnelled through this single FIFO queue so they run
+    // strictly one-at-a-time, each retired by its matching callback (onCharacteristicWrite
+    // / onCharacteristicRead / onDescriptorWrite → completeOp) which pumps the next one.
 
-    private data class QueuedWrite(val data: ByteArray, val useCommandChannel: Boolean)
-    private val writeQueue = mutableListOf<QueuedWrite>()
-    private var writeInFlight = false
-    private var writeSeq = 0
+    private sealed interface GattOp {
+        /** A command/keepalive payload for the write (or command) channel. */
+        class CommandWrite(val data: ByteArray, val useCommandChannel: Boolean) : GattOp
+        class Read(val characteristic: BluetoothGattCharacteristic) : GattOp
+        class DescriptorWrite(val descriptor: BluetoothGattDescriptor, val value: ByteArray) : GattOp
+    }
+
+    private val opQueue = ArrayDeque<GattOp>()
+    private var opInFlight = false
+    private var opSeq = 0
 
     // MARK: Connection state
 
@@ -317,7 +335,7 @@ class RingBLEClient(private val context: Context) {
         }
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
-        writeInFlight = false; writeQueue.clear()
+        opInFlight = false; opQueue.clear()
         prefs.edit().remove(LAST_PERIPHERAL_KEY).remove(LAST_DEVICE_TYPE_KEY).apply()
         updateState { copy(connectionState = RingConnectionState.IDLE, activeDeviceType = null, activeCapabilities = emptySet()) }
     }
@@ -325,14 +343,12 @@ class RingBLEClient(private val context: Context) {
     fun enqueueWrite(data: ByteArray) {
         val framed = activeDriver?.frame(data) ?: data
         val useCommand = activeDriver?.usesCommandChannel(framed) ?: false
-        writeQueue.add(QueuedWrite(framed, useCommand))
-        pumpWrites()
+        enqueueOp(GattOp.CommandWrite(framed, useCommand))
     }
 
     fun readBattery() {
-        val gatt = bluetoothGatt ?: return
         val ch = batteryChar ?: return
-        gatt.readCharacteristic(ch)
+        enqueueOp(GattOp.Read(ch))
     }
 
     private val lastKnownIdentifier: String?
@@ -356,7 +372,7 @@ class RingBLEClient(private val context: Context) {
         }
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
-        writeInFlight = false; writeQueue.clear()
+        opInFlight = false; opQueue.clear()
         val coordinator = coordinators.firstOrNull { it.deviceType == deviceType } ?: JringCoordinator
         installDriver(coordinator)
         connectingStartedAt = System.currentTimeMillis()
@@ -412,33 +428,70 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
-    private fun pumpWrites() {
+    private fun enqueueOp(op: GattOp) {
+        opQueue.addLast(op)
+        pumpOps()
+    }
+
+    /** Retire the in-flight op (from a GATT callback or the timeout) and pump the next. */
+    private fun completeOp() {
+        opInFlight = false
+        pumpOps()
+    }
+
+    private fun pumpOps() {
         val gatt = bluetoothGatt ?: return
-        val wChar = writeChar ?: return
-        if (writeInFlight || writeQueue.isEmpty()) return
+        if (opInFlight || opQueue.isEmpty()) return
 
-        val item = writeQueue.removeFirst()
-        val target = if (item.useCommandChannel) commandChar ?: wChar else wChar
-        target.value = item.data
-        writeInFlight = true
+        val op = opQueue.first()
+        val issued: Boolean = when (op) {
+            is GattOp.CommandWrite -> {
+                val wChar = writeChar
+                if (wChar == null) {
+                    // Write channel not bound yet (services not discovered) — leave the op
+                    // queued; onServicesDiscovered will pump again once chars are wired up.
+                    return
+                }
+                opQueue.removeFirst()
+                val target = if (op.useCommandChannel) commandChar ?: wChar else wChar
+                target.value = op.data
+                PulseEventBus.publishBlocking(
+                    PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
+                        RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
+                )
+                gatt.writeCharacteristic(target)
+            }
+            is GattOp.Read -> {
+                opQueue.removeFirst()
+                gatt.readCharacteristic(op.characteristic)
+            }
+            is GattOp.DescriptorWrite -> {
+                opQueue.removeFirst()
+                op.descriptor.value = op.value
+                gatt.writeDescriptor(op.descriptor)
+            }
+        }
 
-        PulseEventBus.publishBlocking(
-            PulseEvent.RawPacket(PacketDirection.OUTGOING, item.data,
-                RingDecodedEvent.CommandAck(commandId = if (item.data.isNotEmpty()) item.data[0].toUByte() else 0u))
-        )
-        gatt.writeCharacteristic(target)
+        if (!issued) {
+            // The stack rejected the op at issue time (characteristic not readable/writable,
+            // or a transient busy state). Don't strand the queue — log and move to the next.
+            Log.w("RingBLEClient", "GATT op rejected at issue: ${op::class.simpleName}")
+            pumpOps()
+            return
+        }
 
-        // Guard against a missing onCharacteristicWrite callback. If the ACK never comes,
-        // writeInFlight would stay true forever and the entire command queue (history
-        // queries, keepalive, …) would deadlock — exactly the "one command then silence"
-        // failure. Time the write out and unblock the queue.
-        val seq = ++writeSeq
+        opInFlight = true
+
+        // Guard against a missing completion callback. If the ACK never comes, opInFlight
+        // would stay true forever and the entire queue (history queries, keepalive,
+        // notification setup, …) would deadlock — exactly the "one command then silence"
+        // failure. Time the op out and unblock the queue.
+        val seq = ++opSeq
         scope.launch {
-            delay(WRITE_TIMEOUT_MS)
-            if (writeInFlight && seq == writeSeq) {
-                Log.w("RingBLEClient", "Write ACK timed out — unblocking queue")
-                writeInFlight = false
-                pumpWrites()
+            delay(OP_TIMEOUT_MS)
+            if (opInFlight && seq == opSeq) {
+                Log.w("RingBLEClient", "GATT op ACK timed out — unblocking queue")
+                completeOp()
             }
         }
     }
@@ -548,47 +601,13 @@ class RingBLEClient(private val context: Context) {
 
             val driver = activeDriver ?: return
 
-            // Standard BLE health services — blood pressure (0x1810) + glucose (0x1808)
-            val bpServiceUuid = java.util.UUID.fromString("00001810-0000-1000-8000-00805f9b34fb")
-            val bpMeasureUuid = java.util.UUID.fromString("00002a35-0000-1000-8000-00805f9b34fb")
-            val glucoseServiceUuid = java.util.UUID.fromString("00001808-0000-1000-8000-00805f9b34fb")
-            val glucoseMeasureUuid = java.util.UUID.fromString("00002a18-0000-1000-8000-00805f9b34fb")
-            for (service in gatt.services) {
-                when (service.uuid) {
-                    bpServiceUuid -> {
-                        service.getCharacteristic(bpMeasureUuid)?.let {
-                            gatt.setCharacteristicNotification(it, true)
-                            it.getDescriptor(CCCD_UUID)?.let { desc ->
-                                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                                gatt.writeDescriptor(desc)
-                            }
-                        }
-                    }
-                    glucoseServiceUuid -> {
-                        service.getCharacteristic(glucoseMeasureUuid)?.let {
-                            gatt.setCharacteristicNotification(it, true)
-                            it.getDescriptor(CCCD_UUID)?.let { desc ->
-                                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                                gatt.writeDescriptor(desc)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Read firmware: scan ALL services for 0x2A26/0x2A28.
-            // The 56ff ring exposes these even without advertising 0x180A DIS.
-            val fwUuid = java.util.UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
-            val swUuid = java.util.UUID.fromString("00002a28-0000-1000-8000-00805f9b34fb")
-            var fwRead = false
-            for (service in gatt.services) {
-                if (service.uuid == DIS_SERVICE_UUID) {
-                    service.getCharacteristic(FW_REV_UUID)?.let { gatt.readCharacteristic(it); fwRead = true }
-                }
-                service.getCharacteristic(fwUuid)?.let { gatt.readCharacteristic(it); fwRead = true }
-                service.getCharacteristic(swUuid)?.let { gatt.readCharacteristic(it) }
-            }
-
+            // Bind the ring's own service first and enable its notifications BEFORE any
+            // other GATT work. The CONNECTED transition is gated on a notify-CCCD descriptor
+            // write completing (see onDescriptorWrite), and every GATT op now runs strictly
+            // one-at-a-time via the op queue — so queuing the notify writes first means the
+            // ring becomes usable as soon as possible instead of waiting behind firmware/
+            // battery reads. (This is the R10 fix: its 0x180A DIS firmware read used to be
+            // issued ahead of the CCCD write and silently dropped it, so it never connected.)
             for (service in gatt.services) {
                 val svcUuid = service.uuid.toString()
                 val isRingSvc = driver.serviceUUIDs.any { it == svcUuid }
@@ -604,23 +623,54 @@ class RingBLEClient(private val context: Context) {
                             notifyChars[ch.uuid] = ch
                             gatt.setCharacteristicNotification(ch, true)
                             ch.getDescriptor(CCCD_UUID)?.let { desc ->
-                                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                                gatt.writeDescriptor(desc)
+                                enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
                             }
                         }
-                        uuid == driver.batteryCharUUID -> {
-                            batteryChar = ch
-                            gatt.readCharacteristic(ch)
-                        }
+                        uuid == driver.batteryCharUUID -> batteryChar = ch
                     }
                 }
+            }
+
+            // Standard BLE health services — blood pressure (0x1810) + glucose (0x1808).
+            val bpServiceUuid = java.util.UUID.fromString("00001810-0000-1000-8000-00805f9b34fb")
+            val bpMeasureUuid = java.util.UUID.fromString("00002a35-0000-1000-8000-00805f9b34fb")
+            val glucoseServiceUuid = java.util.UUID.fromString("00001808-0000-1000-8000-00805f9b34fb")
+            val glucoseMeasureUuid = java.util.UUID.fromString("00002a18-0000-1000-8000-00805f9b34fb")
+            for (service in gatt.services) {
+                val measureUuid = when (service.uuid) {
+                    bpServiceUuid -> bpMeasureUuid
+                    glucoseServiceUuid -> glucoseMeasureUuid
+                    else -> null
+                } ?: continue
+                service.getCharacteristic(measureUuid)?.let { ch ->
+                    gatt.setCharacteristicNotification(ch, true)
+                    ch.getDescriptor(CCCD_UUID)?.let { desc ->
+                        enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
+                    }
+                }
+            }
+
+            // Informational reads come last so they never block the notify-CCCD writes that
+            // gate CONNECTED. Battery first, then firmware (scan ALL services for 0x2A26/0x2A28;
+            // the 56ff ring exposes these even without advertising the 0x180A DIS service).
+            batteryChar?.let { enqueueOp(GattOp.Read(it)) }
+
+            val fwUuid = java.util.UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+            val swUuid = java.util.UUID.fromString("00002a28-0000-1000-8000-00805f9b34fb")
+            for (service in gatt.services) {
+                if (service.uuid == DIS_SERVICE_UUID) {
+                    service.getCharacteristic(FW_REV_UUID)?.let { enqueueOp(GattOp.Read(it)) }
+                }
+                service.getCharacteristic(fwUuid)?.let { enqueueOp(GattOp.Read(it)) }
+                service.getCharacteristic(swUuid)?.let { enqueueOp(GattOp.Read(it)) }
             }
         }
 
         override fun onCharacteristicRead(
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
         ) {
-            lastActivityAt = System.currentTimeMillis()
+            lastActivityAt = System.currentTimeMillis()  // GATT read completed — link is alive
+            completeOp()  // retire the in-flight op regardless of payload, before any early return
             if (status != BluetoothGatt.GATT_SUCCESS) return
             if (characteristic.uuid.toString() == activeDriver?.batteryCharUUID) {
                 val value = characteristic.value
@@ -644,8 +694,7 @@ class RingBLEClient(private val context: Context) {
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
         ) {
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
-            writeInFlight = false
-            pumpWrites()
+            completeOp()
         }
 
         override fun onCharacteristicChanged(
@@ -702,6 +751,9 @@ class RingBLEClient(private val context: Context) {
         override fun onDescriptorWrite(
             gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
         ) {
+            lastActivityAt = System.currentTimeMillis()  // descriptor ACK — link is alive
+            completeOp()  // retire the in-flight op before any early return, so the queue drains
+
             // Notification enabled — fire onConnected once at least one notify is live
             val driver = activeDriver ?: return
             val ch = descriptor.characteristic
@@ -728,7 +780,6 @@ class RingBLEClient(private val context: Context) {
             readBattery()
 
             scope.launch { onConnected?.invoke() }
-            pumpWrites()
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
@@ -744,7 +795,7 @@ class RingBLEClient(private val context: Context) {
             try { gatt.close() } catch (_: Exception) {}
             return
         }
-        writeInFlight = false; writeQueue.clear()
+        opInFlight = false; opQueue.clear()
         stopKeepalive()
 
         PulseEventBus.publishBlocking(
@@ -773,8 +824,9 @@ class RingBLEClient(private val context: Context) {
         private const val LINK_STALE_MS = 50_000L
         /** A CONNECTING attempt that hasn't completed in this long is retried from scratch. */
         private const val CONNECT_TIMEOUT_MS = 30_000L
-        /** Max wait for a write ACK before unblocking the queue (prevents a stuck writeInFlight). */
-        private const val WRITE_TIMEOUT_MS = 4_000L
+        /** Max wait for any GATT op's completion callback before unblocking the queue
+         *  (prevents a stuck opInFlight stranding every subsequent operation). */
+        private const val OP_TIMEOUT_MS = 4_000L
         /** Max wait for the ring's UNBOND_ACK after a forget before forcing teardown. */
         private const val UNBIND_ACK_TIMEOUT_MS = 1_500L
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")

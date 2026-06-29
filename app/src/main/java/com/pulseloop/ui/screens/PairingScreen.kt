@@ -13,7 +13,31 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pulseloop.ring.RingBLEClient
+import com.pulseloop.ring.RingDeviceType
 import kotlinx.coroutines.flow.collectLatest
+
+/**
+ * Friendly model label for the pairing badge.
+ *
+ * The whole Colmi/Yawell family (R02, R03, R06, R07, R09, R10, R11, R12, H59…) is served by
+ * a single driver whose [RingDeviceType] is [RingDeviceType.COLMI_R02], so its `displayName`
+ * would mislabel e.g. an R10 as "Colmi R02". Derive the real model from the advertised BLE
+ * name instead ("COLMI R10_1203" → "Colmi R10", "R02_AB12" → "Colmi R02"), falling back to
+ * the family display name when the name carries no recognizable model token.
+ */
+private fun ringModelLabel(name: String, deviceType: RingDeviceType): String {
+    if (deviceType != RingDeviceType.COLMI_R02) return deviceType.displayName
+    val token = name.trim()
+        .removePrefix("COLMI ").removePrefix("Colmi ")
+        .substringBefore('_')
+        .trim()
+    // Colmi model tokens look like R02 / R10 / R11C / H59 — letter(s) + digits (+ optional letter).
+    return if (token.matches(Regex("^[A-Za-z]{1,2}[0-9]{2,3}[A-Za-z]?$"))) {
+        "Colmi ${token.uppercase()}"
+    } else {
+        deviceType.displayName
+    }
+}
 
 /**
  * Pairing screen — scan for nearby rings and connect.
@@ -165,7 +189,7 @@ fun PairingScreen(
                                     Text("${ring.rssi} dBm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     ring.deviceType?.let {
                                         Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.small) {
-                                            Text(it.displayName, Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                                            Text(ringModelLabel(ring.name, it), Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
                                         }
                                     }
                                 }
