@@ -63,6 +63,26 @@ object ColmiEncoder {
     fun realtimeHeartRateContinue(): ByteArray =
         byteArrayOf(ColmiCommandID.REALTIME_HEART_RATE.toByte(), 0x03)
 
+    /**
+     * On-demand SpO₂ spot measurement via the real-time command family (0x69/0x6A).
+     * Start: [0x69, reading_type=SPO2(3), action=START(1)]; the ring streams
+     * [0x69, 3, error, value, …] frames until stopped. Stop: [0x6A, 3, 0, 0].
+     * From colmi_r02_client real_time.py (CMD_START_REAL_TIME=105 / CMD_STOP_REAL_TIME=106).
+     */
+    fun manualSpO2(enable: Boolean): ByteArray = if (enable) {
+        byteArrayOf(
+            ColmiCommandID.MANUAL_HEART_RATE.toByte(),
+            ColmiCommandID.RT_SPO2.toByte(),
+            ColmiCommandID.RT_ACTION_START.toByte(),
+        )
+    } else {
+        byteArrayOf(
+            ColmiCommandID.REALTIME_STOP.toByte(),
+            ColmiCommandID.RT_SPO2.toByte(),
+            0x00, 0x00,
+        )
+    }
+
     fun findDevice(): ByteArray = byteArrayOf(ColmiCommandID.FIND_DEVICE.toByte(), 0x55, 0xAA.toByte())
     fun powerOff(): ByteArray = byteArrayOf(ColmiCommandID.POWER_OFF.toByte(), 0x01)
     fun factoryReset(): ByteArray = byteArrayOf(ColmiCommandID.FACTORY_RESET.toByte(), 0x66, 0x66)
@@ -162,7 +182,8 @@ object ColmiCoordinator : WearableCoordinator {
         WearableCapability.SLEEP, WearableCapability.BATTERY,
         WearableCapability.REM_SLEEP, WearableCapability.STRESS, WearableCapability.HRV,
         WearableCapability.TEMPERATURE,
-        WearableCapability.MANUAL_HEART_RATE, WearableCapability.REALTIME_HEART_RATE,
+        WearableCapability.MANUAL_HEART_RATE, WearableCapability.MANUAL_SPO2,
+        WearableCapability.REALTIME_HEART_RATE,
         WearableCapability.REALTIME_STEPS,
         WearableCapability.FIND_DEVICE, WearableCapability.POWER_OFF, WearableCapability.FACTORY_RESET,
         // NOTE: Colmi rings do NOT support blood pressure or blood sugar.

@@ -77,8 +77,12 @@ fun PulseLoopApp() {
 
         // ── Start services (one-shot on composition) ─────────────────────
         LaunchedEffect(Unit) {
-            // Wire onConnected → run startup sequence
-            bleClient.onConnected = { coordinator.runStartupSequence() }
+            // Wire onConnected → run startup sequence, then a one-shot spot measurement
+            // so fresh HR/SpO₂ appear right after pairing without a manual tap.
+            bleClient.onConnected = {
+                coordinator.runStartupSequence()
+                coordinator.autoMeasureOnConnect()
+            }
 
             // Wire firmware read → persist to DB
             bleClient.onFirmwareRead = { fw ->

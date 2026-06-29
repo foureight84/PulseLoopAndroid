@@ -25,11 +25,19 @@ object ColmiDecoder {
         return when (v[0]) {
             ColmiCommandID.BATTERY -> listOf(RingDecodedEvent.Battery(percent = v[1].toInt()))
             ColmiCommandID.MANUAL_HEART_RATE -> {
+                // Real-time stream: [0x69, reading_type, error, value, …].
+                // reading_type selects the metric (HR=1, SpO2=3); error!=0 ends the run.
+                val readingType = v[1]
                 val errorCode = v[2].toInt()
-                val bpm = v[3].toInt()
+                val value = v[3].toInt()
+                if (readingType == ColmiCommandID.RT_SPO2) {
+                    if (errorCode != 0 || value !in 70..100) return emptyList()  // warm-up / noise
+                    return listOf(RingDecodedEvent.Spo2Result(value = value, _timestamp = now))
+                }
+                // Default: heart rate (reading_type == RT_HEART_RATE, or legacy 2-byte request).
                 if (errorCode != 0) return listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
-                if (bpm !in 30..220) return emptyList()  // warm-up (bpm 0) or noise
-                listOf(RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
+                if (value !in 30..220) return emptyList()  // warm-up (bpm 0) or noise
+                listOf(RingDecodedEvent.HeartRateSample(bpm = value, _timestamp = now))
             }
             ColmiCommandID.REALTIME_HEART_RATE -> {
                 val bpm = v[1].toInt()

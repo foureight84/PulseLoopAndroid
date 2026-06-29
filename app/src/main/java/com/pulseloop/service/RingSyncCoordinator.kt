@@ -73,6 +73,9 @@ class RingSyncCoordinator(
     companion object {
         /** Duration of a combined spot measurement (0x23→0x24); also drives the UI countdown. */
         const val COMBINED_MEASURE_SECONDS = 45
+        /** Upper-bound for a sequential HR+SpO₂ spot measurement; drives the UI countdown.
+         *  Each leg returns early once it gets a reading, so it usually finishes well sooner. */
+        const val SPOT_MEASURE_SECONDS = 75
     }
 
     private val engine: RingSyncEngine? get() = client.syncEngine
@@ -220,6 +223,34 @@ class RingSyncCoordinator(
     }
 
     // MARK: - Spot measurements
+
+    /**
+     * Fire a one-shot spot measurement right after connect so fresh vitals appear
+     * immediately, without the user tapping "Measure". Capability-gated: HR for any
+     * ring that supports a manual reading, SpO₂ for rings that support a manual SpO₂.
+     * Delayed briefly so the startup/time-sync commands drain through the write queue
+     * first. Best-effort — failures just leave the previous values in place.
+     */
+    fun autoMeasureOnConnect() {
+        if (!isConnected) return
+        scope.launch {
+            delay(2000)
+            measureSpot()
+        }
+    }
+
+    /**
+     * Manual spot measurement for rings without the combined 0x23 packet (e.g. Colmi):
+     * live HR then live SpO₂, each capability-gated, run sequentially through the same
+     * paths the Today/Vitals views read. Each leg returns early once it gets a reading.
+     * Used by both [autoMeasureOnConnect] and the Vitals "Measure" button.
+     */
+    suspend fun measureSpot() {
+        if (!isConnected) return
+        val caps = client.state.value.activeCapabilities
+        if (caps.contains(WearableCapability.MANUAL_HEART_RATE)) measureHR()
+        if (caps.contains(WearableCapability.MANUAL_SPO2)) measureSpO2()
+    }
 
     suspend fun measureHR(): Int? {
         if (hrState == MeasureState.MEASURING) return null

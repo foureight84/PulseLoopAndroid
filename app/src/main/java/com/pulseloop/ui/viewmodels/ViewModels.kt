@@ -230,6 +230,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val supportsTemp: Boolean = false,
         val supportsBP: Boolean = false,
         val supportsGlucose: Boolean = false,
+        val supportsManualHr: Boolean = false,
+        val supportsManualSpo2: Boolean = false,
     )
 
     private val _state = MutableStateFlow(VitalsState())
@@ -303,6 +305,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             supportsTemp = caps.contains(WearableCapability.TEMPERATURE),
             supportsBP = caps.contains(WearableCapability.BLOOD_PRESSURE),
             supportsGlucose = caps.contains(WearableCapability.BLOOD_SUGAR),
+            supportsManualHr = caps.contains(WearableCapability.MANUAL_HEART_RATE),
+            supportsManualSpo2 = caps.contains(WearableCapability.MANUAL_SPO2),
         )
     }
 }
