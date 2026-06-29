@@ -80,10 +80,16 @@ object ColmiDecoder {
     private fun decodeNotification(v: List<UByte>, now: Instant): List<RingDecodedEvent> = when (v[1]) {
         ColmiCommandID.NOTIF_BATTERY -> listOf(RingDecodedEvent.Battery(percent = v[2].toInt()))
         ColmiCommandID.NOTIF_LIVE_ACTIVITY -> {
-            val steps = ColmiBytes.u24(v[2], v[3], v[4])
-            val calories = ColmiBytes.u24(v[5], v[6], v[7]).toInt() / 10
-            val distance = ColmiBytes.u24(v[8], v[9], v[10]).toInt()
-            listOf(RingDecodedEvent.ActivityUpdate(
+            // Live activity (0x73 0x12) packs steps / calories / distance as BIG-endian u24
+            // (verified against on-ring frames). Reading them little-endian inflated steps to
+            // millions and, via the daily max-merge, locked in a garbage Today total.
+            val steps = ColmiBytes.u24be(v[2], v[3], v[4])
+            val calories = ColmiBytes.u24be(v[5], v[6], v[7]) / 1000   // field is in calories → kcal
+            val distance = ColmiBytes.u24be(v[8], v[9], v[10])          // meters
+            // Plausibility guard: drop any frame with an impossible step count so a single
+            // bad packet can never poison the day's total again.
+            if (steps !in 0..200_000) listOf(RingDecodedEvent.CommandAck(commandId = v[0]))
+            else listOf(RingDecodedEvent.ActivityUpdate(
                 _timestamp = now, steps = steps, distanceMeters = distance, calories = calories
             ))
         }

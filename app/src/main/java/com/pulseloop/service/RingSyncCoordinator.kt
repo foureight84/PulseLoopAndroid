@@ -11,6 +11,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 
 /**
  * Ported from [RingSyncCoordinator] in RingSyncCoordinator.swift.
@@ -76,6 +77,8 @@ class RingSyncCoordinator(
         /** Upper-bound for a sequential HR+SpO₂ spot measurement; drives the UI countdown.
          *  Each leg returns early once it gets a reading, so it usually finishes well sooner. */
         const val SPOT_MEASURE_SECONDS = 75
+        /** Max time to wait for the pre-factory-reset history sync before resetting anyway. */
+        const val SYNC_BEFORE_RESET_TIMEOUT_MS = 30_000L
     }
 
     private val engine: RingSyncEngine? get() = client.syncEngine
@@ -193,17 +196,43 @@ class RingSyncCoordinator(
 
     /** Send ring-side unpair commands (power-off, factory reset if supported),
      *  then disconnect and forget. */
+    /**
+     * Non-destructive: unbind + disconnect + drop the ring from the app. The ring keeps all
+     * of its on-device data, stays powered on, and can be re-paired immediately. Does NOT
+     * power off or factory-reset — that would wipe a Colmi ring's unsynced history and leave
+     * it dark until charged. For a true wipe use [factoryResetRing].
+     */
     fun forgetRing(onCleared: () -> Unit) {
-        val caps = client.state.value.activeCapabilities
-        if (caps.contains(WearableCapability.POWER_OFF)) {
-            engine?.powerOff()
-        }
-        if (caps.contains(WearableCapability.FACTORY_RESET)) {
-            engine?.factoryReset()
-        }
-        // Give the ring a moment to process, then disconnect + forget
+        // client.forget() already sends the protocol unbind, waits for the ack, removes any
+        // OS bond, and clears the stored peripheral. That is the whole forget.
         scope.launch {
-            kotlinx.coroutines.delay(500)
+            client.forget()
+            stop()
+            onCleared()
+        }
+    }
+
+    /**
+     * Destructive: wipe the ring's on-device storage. Because a Colmi ring buffers days of
+     * unsynced history, we sync the latest data into the app FIRST, then send the factory
+     * reset, then forget. Gate this on the ring's FACTORY_RESET capability at the call site.
+     * [onProgress] receives a short status for the UI; [onCleared] fires when fully done.
+     */
+    fun factoryResetRing(onProgress: (String) -> Unit = {}, onCleared: () -> Unit) {
+        scope.launch {
+            if (isConnected) {
+                onProgress("Syncing latest data…")
+                runStartupSequence()
+                // Wait for the history sync to drain (progress reaches 100 or clears), capped
+                // so a stale link can never hang the reset.
+                kotlinx.coroutines.withTimeoutOrNull(SYNC_BEFORE_RESET_TIMEOUT_MS) {
+                    syncProgress.first { it == null || it >= 100 }
+                }
+                kotlinx.coroutines.delay(800)  // let the final history writes flush
+                onProgress("Resetting ring…")
+                engine?.factoryReset()
+                kotlinx.coroutines.delay(600)  // let the reset command reach the ring
+            }
             client.forget()
             stop()
             onCleared()
@@ -225,25 +254,13 @@ class RingSyncCoordinator(
     // MARK: - Spot measurements
 
     /**
-     * Fire a one-shot spot measurement right after connect so fresh vitals appear
-     * immediately, without the user tapping "Measure". Capability-gated: HR for any
-     * ring that supports a manual reading, SpO₂ for rings that support a manual SpO₂.
-     * Delayed briefly so the startup/time-sync commands drain through the write queue
-     * first. Best-effort — failures just leave the previous values in place.
-     */
-    fun autoMeasureOnConnect() {
-        if (!isConnected) return
-        scope.launch {
-            delay(2000)
-            measureSpot()
-        }
-    }
-
-    /**
      * Manual spot measurement for rings without the combined 0x23 packet (e.g. Colmi):
      * live HR then live SpO₂, each capability-gated, run sequentially through the same
      * paths the Today/Vitals views read. Each leg returns early once it gets a reading.
-     * Used by both [autoMeasureOnConnect] and the Vitals "Measure" button.
+     *
+     * Triggered only by the Vitals "Measure" button. Matching iOS, connecting does NOT
+     * auto-measure — the ring does its own low-power periodic monitoring (pulled in via the
+     * history sync), so we never pin the optical sensor on just for connecting.
      */
     suspend fun measureSpot() {
         if (!isConnected) return

@@ -14,9 +14,19 @@ android {
         applicationId = "com.pulseloop"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.0"
+        // versionCode/versionName are overridable from Gradle properties so the release CI
+        // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
+        // Local builds fall back to the literals below.
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 4
+        versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Repo the self-updater polls for new releases.
+        buildConfigField("String", "GITHUB_REPO", "\"foureight84/PulseLoopAndroid\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     splits {
@@ -30,10 +40,13 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("pulseloop-release.keystore")
-            storePassword = "pulseloop"
-            keyAlias = "pulseloop"
-            keyPassword = "pulseloop"
+            // Keystore + passwords are overridable from the environment so CI can supply a
+            // decoded keystore + secrets without committing them. Local builds fall back to
+            // the checked-out keystore and the existing literals.
+            storeFile = file(System.getenv("RELEASE_STORE_FILE") ?: "pulseloop-release.keystore")
+            storePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: "pulseloop"
+            keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: "pulseloop"
+            keyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: "pulseloop"
         }
     }
 
@@ -42,6 +55,13 @@ android {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            // Distinct applicationId so a debug build installs ALONGSIDE the release app
+            // (com.pulseloop.debug) instead of replacing it — which would wipe the release
+            // app's data, since the two are signed with different keys.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
         }
     }
 

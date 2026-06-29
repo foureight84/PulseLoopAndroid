@@ -77,12 +77,10 @@ fun PulseLoopApp() {
 
         // ── Start services (one-shot on composition) ─────────────────────
         LaunchedEffect(Unit) {
-            // Wire onConnected → run startup sequence, then a one-shot spot measurement
-            // so fresh HR/SpO₂ appear right after pairing without a manual tap.
-            bleClient.onConnected = {
-                coordinator.runStartupSequence()
-                coordinator.autoMeasureOnConnect()
-            }
+            // Wire onConnected → run the startup/history sync only (matches iOS). Connecting
+            // does NOT force a measurement; the ring's own periodic monitoring is pulled in via
+            // history, and on-demand readings come from the Vitals "Measure" button.
+            bleClient.onConnected = { coordinator.runStartupSequence() }
 
             // Wire firmware read → persist to DB
             bleClient.onFirmwareRead = { fw ->
@@ -154,6 +152,11 @@ fun PulseLoopApp() {
             Tab("activity", "Activity", Icons.Filled.DirectionsRun, Icons.Outlined.DirectionsRun),
             Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
+
+        // ── Self-update: release-only, throttled to once/day. Surfaces a dialog when a
+        // newer GitHub release is published; Settings also has a manual "Check for updates".
+        var pendingUpdate by remember { mutableStateOf<com.pulseloop.update.UpdateInfo?>(null) }
+        LaunchedEffect(Unit) { pendingUpdate = com.pulseloop.update.UpdateChecker.check(context) }
 
         Scaffold(
             bottomBar = {
@@ -238,6 +241,10 @@ fun PulseLoopApp() {
                     )
                 }
             }
+        }
+
+        pendingUpdate?.let { info ->
+            com.pulseloop.update.UpdateDialog(info) { pendingUpdate = null }
         }
     }
 }

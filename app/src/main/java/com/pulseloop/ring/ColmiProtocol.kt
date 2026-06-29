@@ -117,4 +117,6 @@ object ColmiBytes {
         a.toInt() or (b.toInt() shl 8) or (c.toInt() shl 16) or (d.toInt() shl 24)
     fun u24(a: UByte, b: UByte, c: UByte): Int =
         a.toInt() or (b.toInt() shl 8) or (c.toInt() shl 16)
+    fun u24be(a: UByte, b: UByte, c: UByte): Int =
+        (a.toInt() shl 16) or (b.toInt() shl 8) or c.toInt()
 }

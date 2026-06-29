@@ -75,6 +75,9 @@ class RingBLEClient(private val context: Context) {
 
     private var bluetoothGatt: BluetoothGatt? = null
     private var discoveredPeripherals: MutableMap<String, BluetoothDevice> = mutableMapOf()
+    // Advertised name of the device we're connecting to, captured at connect time so it can be
+    // persisted as the device's display name (the connect callbacks otherwise only know the MAC).
+    private var connectingName: String? = null
 
     // Characteristics
     private var writeChar: BluetoothGattCharacteristic? = null
@@ -185,6 +188,7 @@ class RingBLEClient(private val context: Context) {
             return
         }
         val matchedType = _state.value.discovered.firstOrNull { it.id == id }?.deviceType
+        connectingName = _state.value.discovered.firstOrNull { it.id == id }?.name ?: target.name
         beginConnect(target, matchedType)
     }
 
@@ -770,7 +774,9 @@ class RingBLEClient(private val context: Context) {
                 .apply()
 
             PulseEventBus.publishBlocking(
-                PulseEvent.DeviceStateChanged(RingConnectionState.CONNECTED, device.address)
+                PulseEvent.DeviceStateChanged(
+                    RingConnectionState.CONNECTED, device.address, name = device.name ?: connectingName
+                )
             )
             activeCoordinator?.let { coord ->
                 PulseEventBus.publishBlocking(
