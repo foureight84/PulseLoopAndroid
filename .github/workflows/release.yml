@@ -54,18 +54,17 @@ jobs:
           ./gradlew --no-daemon \
             -PappVersionName=${{ steps.ver.outputs.name }} \
             -PappVersionCode=${{ steps.ver.outputs.code }} \
-            :app:assembleRelease :app:assembleDebug
+            :app:assembleRelease
 
-      - name: Stage APKs for upload
+      - name: Stage APK for upload
         id: stage
         run: |
           V="${{ steps.ver.outputs.name }}+${{ steps.ver.outputs.code }}"
           mkdir -p dist
-          # The universal release APK is the one the in-app updater installs (must keep
-          # "universal" in the name so the updater's asset selector picks it).
+          # Only the signed universal release APK is published — it's what the in-app updater
+          # installs (must keep "universal" in the name so the updater's asset selector picks it).
+          # End users get diagnostics from the in-app export, so no debug APK is distributed.
           cp app/build/outputs/apk/release/app-universal-release.apk "dist/pulseloop-${V}-universal.apk"
-          # Debug universal APK: a coexisting (.debug) build for gathering diagnostics.
-          cp app/build/outputs/apk/debug/app-universal-debug.apk "dist/pulseloop-${V}-debug.apk"
           ls -la dist
 
       - name: Create / update release and attach APKs
