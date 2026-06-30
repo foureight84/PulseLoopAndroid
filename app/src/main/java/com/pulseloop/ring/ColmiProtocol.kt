@@ -36,7 +36,8 @@ object ColmiCommandID {
     const val BP_READ: UByte = 0x14u
     const val BP_CONFIRM: UByte = 0x0Eu
     const val FIND_DEVICE: UByte = 0x50u
-    const val MANUAL_HEART_RATE: UByte = 0x69u
+    const val MANUAL_HEART_RATE: UByte = 0x69u   // CMD_START_REAL_TIME (105)
+    const val REALTIME_STOP: UByte = 0x6Au       // CMD_STOP_REAL_TIME (106)
     const val NOTIFICATION: UByte = 0x73u
     const val BIG_DATA_V2: UByte = 0xBCu
     const val FACTORY_RESET: UByte = 0xFFu
@@ -44,6 +45,14 @@ object ColmiCommandID {
     const val PREF_READ: UByte = 0x01u
     const val PREF_WRITE: UByte = 0x02u
     const val PREF_DELETE: UByte = 0x03u
+
+    // Real-time measurement reading types (0x69/0x6A payload byte 0).
+    // From the colmi_r02_client RealTimeReading enum.
+    const val RT_HEART_RATE: UByte = 0x01u
+    const val RT_SPO2: UByte = 0x03u
+    // Real-time actions (0x69/0x6A payload byte 1).
+    const val RT_ACTION_START: UByte = 0x01u
+    const val RT_ACTION_STOP: UByte = 0x02u
 
     // 0x73 notification subtypes
     const val NOTIF_NEW_HR: UByte = 0x01u
@@ -108,4 +117,6 @@ object ColmiBytes {
         a.toInt() or (b.toInt() shl 8) or (c.toInt() shl 16) or (d.toInt() shl 24)
     fun u24(a: UByte, b: UByte, c: UByte): Int =
         a.toInt() or (b.toInt() shl 8) or (c.toInt() shl 16)
+    fun u24be(a: UByte, b: UByte, c: UByte): Int =
+        (a.toInt() shl 16) or (b.toInt() shl 8) or c.toInt()
 }

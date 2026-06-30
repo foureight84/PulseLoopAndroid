@@ -173,19 +173,38 @@ fun DebugScreen(
 
             // ── Diagnostics Export ──────────────────────────────────────
             item {
+                // Default ON every time: the export is always privacy-safe unless the user
+                // explicitly opts out for this export. Never persists "off".
+                var maskSensitive by remember { mutableStateOf(true) }
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text("Diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
-                        Text("Export diagnostics report with app, device, and wearable log info as JSON.",
+                        Text("Export app, device, and wearable logs as JSON.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Mask sensitive data", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    if (maskSensitive)
+                                        "Removes health values, ring serial & MAC addresses. Keeps models, opcodes & errors."
+                                    else
+                                        "OFF — includes full unmasked BLE frames (for protocol debugging only).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (maskSensitive) MaterialTheme.colorScheme.onSurfaceVariant
+                                            else MaterialTheme.colorScheme.error,
+                                )
+                            }
+                            Switch(checked = maskSensitive, onCheckedChange = { maskSensitive = it })
+                        }
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = {
                                 scope.launch {
                                     val db = PulseLoopDatabase.getInstance(context)
                                     try {
-                                        val intent = DiagnosticsExporter.shareIntent(context, db)
+                                        val intent = DiagnosticsExporter.shareIntent(context, db, mask = maskSensitive)
                                         context.startActivity(intent)
                                     } catch (_: Exception) {}
                                 }
@@ -194,7 +213,7 @@ fun DebugScreen(
                         ) {
                             Icon(Icons.Filled.Share, null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Export Diagnostics")
+                            Text(if (maskSensitive) "Export Diagnostics" else "Export Full (Unmasked)")
                         }
                     }
                 }

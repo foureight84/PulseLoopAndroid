@@ -288,7 +288,16 @@ fun VitalsScreen(
     val scope = rememberCoroutineScope()
     var measuring by remember { mutableStateOf(false) }
     var remaining by remember { mutableStateOf(0) }
-    val measureSeconds = com.pulseloop.service.RingSyncCoordinator.COMBINED_MEASURE_SECONDS
+    // Two measurement flavours:
+    //  • combined (56ff/Jring): one 0x23 packet → BP + SpO₂ + stress + fatigue + blood sugar
+    //  • spot (Colmi): sequential live HR + SpO₂ via the real-time command (0x69)
+    // Colmi has no BP/glucose hardware, so it never qualifies for the combined flow.
+    val combinedMode = state.supportsBP || state.supportsGlucose
+    val spotMode = !combinedMode && (state.supportsManualHr || state.supportsManualSpo2)
+    val measureSeconds = if (combinedMode)
+        com.pulseloop.service.RingSyncCoordinator.COMBINED_MEASURE_SECONDS
+    else
+        com.pulseloop.service.RingSyncCoordinator.SPOT_MEASURE_SECONDS
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -300,10 +309,9 @@ fun VitalsScreen(
                     Text("Vitals", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                     Text("Live measurements and trends", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                // Combined spot measurement (0x23): one tap captures BP, SpO₂, stress,
-                // fatigue and blood sugar — the same flow the official app's "Measurement" button uses.
-                // Only shown for rings that support BP or blood sugar (56ff/Jring).
-                if (coordinator != null && (state.supportsBP || state.supportsGlucose)) {
+                // Measure button: combined (0x23) for 56ff/Jring, or sequential live
+                // HR + SpO₂ (0x69) for Colmi. Hidden for rings that support neither.
+                if (coordinator != null && (combinedMode || spotMode)) {
                     Button(
                         enabled = !measuring,
                         onClick = {
@@ -314,7 +322,7 @@ fun VitalsScreen(
                                     while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
                                 }
                                 try {
-                                    coordinator.measureCombined()
+                                    if (combinedMode) coordinator.measureCombined() else coordinator.measureSpot()
                                 } finally {
                                     ticker.cancel()
                                     remaining = 0
@@ -338,7 +346,10 @@ fun VitalsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "Keep still — measuring blood pressure, SpO₂, stress, fatigue & blood sugar…",
+                    if (combinedMode)
+                        "Keep still — measuring blood pressure, SpO₂, stress, fatigue & blood sugar…"
+                    else
+                        "Keep still — measuring heart rate & SpO₂…",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),

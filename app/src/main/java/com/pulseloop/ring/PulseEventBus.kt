@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.asSharedFlow
  * Typed events published on the bus for subscribers to consume.
  */
 sealed class PulseEvent {
-    data class DeviceStateChanged(val state: RingConnectionState, val address: String?, val firmware: String? = null) : PulseEvent()
+    data class DeviceStateChanged(val state: RingConnectionState, val address: String?, val firmware: String? = null, val name: String? = null) : PulseEvent()
     data class DeviceIdentified(val deviceType: RingDeviceType, val capabilities: Set<WearableCapability>) : PulseEvent()
     data class BatteryLevel(val percent: Int) : PulseEvent()
     data class RawPacket(val direction: PacketDirection, val data: ByteArray, val decoded: RingDecodedEvent) : PulseEvent() {

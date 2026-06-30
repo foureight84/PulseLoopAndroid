@@ -37,6 +37,7 @@ class ColmiSyncEngine(
     private var realtimeHRActive = false
     private var realtimeHRPacketCount = 0
     private var manualHRActive = false
+    private var manualSpO2Active = false
 
     companion object {
         fun isHistoryOpcode(op: UByte): Boolean =
@@ -235,10 +236,18 @@ class ColmiSyncEngine(
     }
 
     override fun startSpO2() {
-        writer?.enqueue(encoder.bigDataSpo2())
+        // On-demand live SpO₂ via the real-time command (0x69/3). The ring streams
+        // [0x69, 3, error, value] frames decoded to Spo2Result. (Historical SpO₂ is a
+        // separate big-data path, requestSpo2(), used by the startup history sync.)
+        manualSpO2Active = true
+        writer?.enqueue(encoder.manualSpO2(enable = true))
     }
 
-    override fun stopSpO2() {}
+    override fun stopSpO2() {
+        if (!manualSpO2Active) return
+        manualSpO2Active = false
+        writer?.enqueue(encoder.manualSpO2(enable = false))
+    }
 
     override fun findDevice() {
         writer?.enqueue(encoder.findDevice())

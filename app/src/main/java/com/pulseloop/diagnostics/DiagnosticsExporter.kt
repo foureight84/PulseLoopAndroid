@@ -18,15 +18,24 @@ object DiagnosticsExporter {
 
     /**
      * Serialize a diagnostics report to pretty-printed JSON.
+     *
+     * [mask] (default true) scrubs PHI/PII: physiological values, the ring serial suffix, and
+     * MAC addresses are removed while opcodes / decoded kinds / control frames / UUIDs / errors
+     * are kept (see [DiagnosticsRedactor]). Pass false only to capture full unmasked BLE frames
+     * for deep protocol debugging.
      */
-    suspend fun exportJSON(db: PulseLoopDatabase, maxLogs: Int = 500): String {
+    suspend fun exportJSON(context: Context, db: PulseLoopDatabase, mask: Boolean = true, maxLogs: Int = 500): String {
         val device = db.deviceDao().current()
         val logs = db.wearableLogDao().recent(maxLogs)
         val root = buildJsonObject {
             put("generatedAt", Instant.now().toString())
+            put("redacted", mask)
 
             putJsonObject("app") {
-                put("version", "1.0.0")
+                put("version", com.pulseloop.BuildConfig.VERSION_NAME)
+                put("versionCode", com.pulseloop.BuildConfig.VERSION_CODE)
+                put("buildType", if (com.pulseloop.BuildConfig.DEBUG) "debug" else "release")
+                put("applicationId", com.pulseloop.BuildConfig.APPLICATION_ID)
                 put("platform", "Android")
                 put("sdkVersion", Build.VERSION.SDK_INT)
             }
@@ -37,7 +46,7 @@ object DiagnosticsExporter {
                 put("osVersion", Build.VERSION.RELEASE)
                 if (device != null) {
                     put("wearableType", device.deviceTypeRaw)
-                    put("wearableName", device.name)
+                    put("wearableName", if (mask) DiagnosticsRedactor.maskRingName(device.name) else device.name)
                     put("capabilities", device.capabilitiesRaw)
                     put("firmware", device.firmwareVersion ?: "?")
                     put("lastSyncAt", device.lastSyncAt?.let { Instant.ofEpochMilli(it).toString() } ?: "")
@@ -50,39 +59,60 @@ object DiagnosticsExporter {
                         put("at", Instant.ofEpochMilli(log.timestamp).toString())
                         put("category", log.categoryRaw)
                         put("level", log.levelRaw)
-                        put("message", log.message)
-                        log.metadataJSON?.let { if (it != "null") put("metadata", it) }
+                        put("message", if (mask) DiagnosticsRedactor.scrubText(log.message) else log.message)
+                        log.metadataJSON?.let {
+                            if (it != "null") put("metadata", if (mask) DiagnosticsRedactor.scrubText(it) else it)
+                        }
                         if (log.deviceTypeRaw.isNotEmpty()) put("deviceType", log.deviceTypeRaw)
                     }
                 }
             }
 
-            // Raw BLE packets for protocol debugging
+            // Raw BLE packets for protocol debugging. When masking, health-measurement frames
+            // are reduced to their opcode (the values live in the payload); control frames stay
+            // whole so connection/pairing flow is still fully visible.
             val packets = db.rawPacketDao().recent(200)
             putJsonArray("rawPackets") {
                 packets.forEach { pkt ->
+                    val kind = pkt.decodedKind ?: ""
                     addJsonObject {
                         put("at", Instant.ofEpochMilli(pkt.timestamp).toString())
                         put("direction", pkt.directionRaw)
-                        put("hex", pkt.hexPayload)
-                        put("decoded", pkt.decodedKind ?: "")
+                        put("hex", if (mask) DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind) else pkt.hexPayload)
+                        put("decoded", kind)
                     }
                 }
             }
+
+            // Recent crash stack traces (uncaught exceptions persisted by CrashLogger).
+            putJsonArray("crashes") {
+                CrashLogger.recentCrashes(context).forEach { (name, trace) ->
+                    addJsonObject {
+                        put("file", name)
+                        put("trace", trace)
+                    }
+                }
+            }
+
+            // This process's own logcat — app logs + in-process BluetoothGatt callbacks.
+            // MAC addresses are scrubbed when masking.
+            val logcat = LogcatCapture.ownProcessLog()
+            put("logcat", if (mask) DiagnosticsRedactor.scrubText(logcat) else logcat)
         }
         return json.encodeToString(JsonObject.serializer(), root)
     }
 
-    suspend fun exportFile(context: Context, db: PulseLoopDatabase): File {
-        val report = exportJSON(db)
+    suspend fun exportFile(context: Context, db: PulseLoopDatabase, mask: Boolean = true): File {
+        val report = exportJSON(context, db, mask)
         val stamp = Instant.now().toString().replace(":", "-")
-        val file = File(context.cacheDir, "pulseloop-diagnostics-$stamp.json")
+        val suffix = if (mask) "" else "-full"
+        val file = File(context.cacheDir, "pulseloop-diagnostics-$stamp$suffix.json")
         file.writeText(report)
         return file
     }
 
-    suspend fun shareIntent(context: Context, db: PulseLoopDatabase): Intent {
-        val file = exportFile(context, db)
+    suspend fun shareIntent(context: Context, db: PulseLoopDatabase, mask: Boolean = true): Intent {
+        val file = exportFile(context, db, mask)
         val uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",

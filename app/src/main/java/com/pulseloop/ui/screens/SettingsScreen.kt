@@ -594,6 +594,12 @@ fun SettingsScreen(
                 // rather than a value frozen at screen-open.
                 val device = db.deviceDao().currentFlow().collectAsState(initial = null)
                 val isConnected = device.value?.stateRaw == "CONNECTED"
+                val bleState = bleClient?.state?.collectAsState()
+                val supportsFactoryReset = bleState?.value?.activeCapabilities
+                    ?.contains(com.pulseloop.ring.WearableCapability.FACTORY_RESET) == true
+                var showFactoryReset by remember { mutableStateOf(false) }
+                var resetting by remember { mutableStateOf(false) }
+                var resetStatus by remember { mutableStateOf("") }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         Icons.Filled.Bluetooth, null, Modifier.size(18.dp),
@@ -601,8 +607,8 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        if (isConnected) "Connected — ${device.value?.name ?: "Ring"} · ${device.value?.batteryPercent ?: 0}%"
-                        else device.value?.let { "Last seen: ${it.name}" } ?: "No ring paired",
+                        if (isConnected) "Connected — ${com.pulseloop.ring.ringModelLabel(device.value?.name, device.value?.deviceType)} · ${device.value?.batteryPercent ?: 0}%"
+                        else device.value?.let { "Last seen: ${com.pulseloop.ring.ringModelLabel(it.name, it.deviceType)}" } ?: "No ring paired",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -651,6 +657,62 @@ fun SettingsScreen(
                         Spacer(Modifier.width(4.dp))
                         Text("Forget Ring")
                     }
+
+                    // Factory reset — destructive, ring-side wipe. Only for connected rings that
+                    // support it (Colmi). Syncs latest history first so nothing is lost.
+                    if (isConnected && supportsFactoryReset) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Factory reset erases all data stored on the ring itself and resets " +
+                                "it to factory state. Your synced data in the app is kept.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedButton(
+                            enabled = !resetting,
+                            onClick = { showFactoryReset = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        ) {
+                            Icon(Icons.Filled.Refresh, null, Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (resetting) (resetStatus.ifEmpty { "Resetting…" }) else "Factory Reset Ring")
+                        }
+                    }
+                }
+
+                if (showFactoryReset) {
+                    AlertDialog(
+                        onDismissRequest = { showFactoryReset = false },
+                        title = { Text("Factory reset ring?") },
+                        text = {
+                            Text(
+                                "This erases all data stored on the ring and resets it to factory " +
+                                    "state. We'll sync its latest data into the app first, but this " +
+                                    "can't be undone. The ring will need to be re-paired afterward."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showFactoryReset = false
+                                resetting = true
+                                resetStatus = "Syncing latest data…"
+                                RingSyncWorker.cancel(context)
+                                coordinator?.factoryResetRing(
+                                    onProgress = { resetStatus = it },
+                                ) {
+                                    scope.launch {
+                                        db.deviceDao().clear()
+                                        resetting = false
+                                    }
+                                }
+                            }) { Text("Reset ring", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showFactoryReset = false }) { Text("Cancel") }
+                        },
+                    )
                 }
             }
         }
@@ -699,12 +761,17 @@ fun SettingsScreen(
             Column(Modifier.padding(16.dp)) {
                 Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
-                Text("PulseLoop v1.0.0", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "PulseLoop v${com.pulseloop.BuildConfig.VERSION_NAME} (${com.pulseloop.BuildConfig.VERSION_CODE})",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
                 Text(
                     "Open-source health tracker. Ported from iOS.\nCC BY 4.0 · github.com/foureight84/PulseLoop",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.height(12.dp))
+                com.pulseloop.update.CheckForUpdatesButton()
             }
         }
 
