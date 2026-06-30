@@ -489,9 +489,13 @@ fun TrendChart(
                             windowStart = newStart.coerceIn(0f, (1f - newWindow).coerceAtLeast(0f))
                             zoom = newZoom
                             event.changes.forEach { it.consume() }
-                        } else if (!multiTouch && pressedCount == 1) {
+                        } else if (pressedCount == 1) {
                             val change = event.changes.first { it.pressed }
-                            scrubX = change.position.x
+                            // First single-finger frame right after a pinch: clear the flag and
+                            // skip one frame so the tooltip doesn't jump on release; subsequent
+                            // moves scrub normally, so you can pinch then drag without lifting.
+                            if (multiTouch) multiTouch = false
+                            else scrubX = change.position.x
                             change.consume()
                         }
                     }
