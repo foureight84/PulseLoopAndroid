@@ -1309,7 +1309,7 @@ private fun dateLabel(anchor: Long, period: Period): String {
 private fun tooltipTime(ts: Long, period: Period): String {
     val z = java.time.Instant.ofEpochMilli(ts).atZone(java.time.ZoneId.systemDefault())
     return when (period) {
-        Period.DAY -> "%02d:00".format(z.hour)
+        Period.DAY -> z.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.getDefault()))
         Period.WEEK -> "${z.dayOfWeek.name.take(3)} ${z.dayOfMonth}"
         Period.MONTH -> "${z.month.name.take(3)} ${z.dayOfMonth}"
     }
