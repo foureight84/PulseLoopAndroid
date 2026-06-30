@@ -54,8 +54,18 @@ object ColmiEncoder {
 
     fun readGoals(): ByteArray = byteArrayOf(ColmiCommandID.GOALS.toByte(), ColmiCommandID.PREF_READ.toByte())
 
-    fun manualHeartRate(enable: Boolean = true): ByteArray =
-        byteArrayOf(ColmiCommandID.MANUAL_HEART_RATE.toByte(), if (enable) 0x01 else 0x02)
+    fun manualHeartRate(enable: Boolean = true): ByteArray = if (enable) {
+        byteArrayOf(ColmiCommandID.MANUAL_HEART_RATE.toByte(), ColmiCommandID.RT_HEART_RATE.toByte())
+    } else {
+        // Stop MUST use CMD_STOP_REAL_TIME (0x6A). The old [0x69, 0x02] was another
+        // CMD_START_REAL_TIME (reading type 2), so the optical sensor never switched off
+        // and the ring kept pulsing until it timed out. Mirror the SpO₂ stop frame.
+        byteArrayOf(
+            ColmiCommandID.REALTIME_STOP.toByte(),
+            ColmiCommandID.RT_HEART_RATE.toByte(),
+            0x00, 0x00,
+        )
+    }
 
     fun realtimeHeartRate(enable: Boolean): ByteArray =
         byteArrayOf(ColmiCommandID.REALTIME_HEART_RATE.toByte(), if (enable) 0x01 else 0x02)

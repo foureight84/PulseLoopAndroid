@@ -277,17 +277,22 @@ class RingSyncCoordinator(
         measurementReceivedReading = false
 
         engine?.measureHeartRateSpot()
-        pollForValue(hrMeasureSeconds, { if (measurementReceivedReading) latestHRValue else null }, { hrNoReadingReported })
-
-        var result = if (measurementReceivedReading) latestHRValue else null
-        if (result != null) {
-            repeat(hrSettleSeconds * 2) {   // 0.5s granularity
-                delay(500)
-                latestHRValue?.let { result = it }
+        var result: Int? = null
+        try {
+            pollForValue(hrMeasureSeconds, { if (measurementReceivedReading) latestHRValue else null }, { hrNoReadingReported })
+            result = if (measurementReceivedReading) latestHRValue else null
+            if (result != null) {
+                repeat(hrSettleSeconds * 2) {   // 0.5s granularity
+                    delay(500)
+                    latestHRValue?.let { result = it }
+                }
             }
+        } finally {
+            // Always switch the optical sensor off — even if the caller's coroutine is
+            // cancelled (e.g. the user navigates away mid-measurement) — or the ring keeps pulsing.
+            engine?.stopHeartRate()
+            hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
         }
-        engine?.stopHeartRate()
-        hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
         return result
     }
 
@@ -297,9 +302,13 @@ class RingSyncCoordinator(
         spo2State = MeasureState.MEASURING
         latestSpO2Value = null
         engine?.startSpO2()
-        val result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { false })
-        engine?.stopSpO2()
-        spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
+        var result: Int? = null
+        try {
+            result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { false })
+        } finally {
+            engine?.stopSpO2()   // stop the sensor even on cancellation (see measureHR)
+            spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
+        }
         return result
     }
 
@@ -314,9 +323,12 @@ class RingSyncCoordinator(
         if (!isConnected) { combinedState = MeasureState.FAILED; return }
         combinedState = MeasureState.MEASURING
         engine?.startCombinedMeasurement()
-        repeat(combinedMeasureSeconds.toInt()) { delay(1000) }
-        engine?.stopCombinedMeasurement()
-        combinedState = MeasureState.DONE
+        try {
+            repeat(combinedMeasureSeconds.toInt()) { delay(1000) }
+        } finally {
+            engine?.stopCombinedMeasurement()   // stop even on cancellation (see measureHR)
+            combinedState = MeasureState.DONE
+        }
     }
 
     private suspend fun pollForValue(
