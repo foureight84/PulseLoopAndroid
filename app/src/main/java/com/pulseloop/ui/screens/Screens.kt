@@ -1107,7 +1107,7 @@ fun VitalDetailScreen(
                     }
                 }
 
-                // 3. Trend chart
+                // 3. Trend chart (pinch to zoom, drag to scrub)
                 item {
                     TrendChart(
                         points = state.points,
@@ -1119,6 +1119,8 @@ fun VitalDetailScreen(
                         legendPrimary = if (state.isBP) "Systolic" else null,
                         legendSecondary = if (state.isBP) "Diastolic" else null,
                         thresholds = state.thresholds,
+                        timestamps = state.timestamps,
+                        tooltipTimeFormatter = { ts -> tooltipTime(ts, state.period) },
                     )
                 }
 
@@ -1299,9 +1301,17 @@ private fun dateLabel(anchor: Long, period: Period): String {
             val end = dt.plusDays(6)
             "${dt.toLocalDate()} – ${end.toLocalDate()}"
         }
-        Period.MONTH -> {
-            "${dt.month.name.take(3)} ${dt.year}"
-        }
+        Period.MONTH -> "${dt.month.name.take(3)} ${dt.year}"
+    }
+}
+
+/** Precise time label for the chart scrub tooltip, formatted per aggregation period. */
+private fun tooltipTime(ts: Long, period: Period): String {
+    val z = java.time.Instant.ofEpochMilli(ts).atZone(java.time.ZoneId.systemDefault())
+    return when (period) {
+        Period.DAY -> z.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.getDefault()))
+        Period.WEEK -> "${z.dayOfWeek.name.take(3)} ${z.dayOfMonth}"
+        Period.MONTH -> "${z.month.name.take(3)} ${z.dayOfMonth}"
     }
 }
 
