@@ -50,6 +50,14 @@ import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * Delay before a touch that starts on the chart is claimed for scrub/zoom. Within this
+ * window a drag that passes touch-slop is treated as a parent-list scroll instead, so the
+ * chart can sit inside a scrollable column without trapping vertical swipes.
+ */
+private const val CHART_TOUCH_DELAY_MS = 160L
 
 /**
  * Builds hard-edged vertical-gradient color stops from a metric's threshold zones,
@@ -445,6 +453,21 @@ fun TrendChart(
             if (!interactive) base else base.pointerInput(points) {
                 awaitEachGesture {
                     val first = awaitFirstDown(requireUnconsumed = false)
+                    // Disambiguate scroll vs. scrub: wait briefly before claiming the gesture.
+                    // A second finger claims immediately (zoom); a drag past touch-slop or a
+                    // quick lift yields to the parent list; staying put past the delay scrubs.
+                    val slop = viewConfiguration.touchSlop
+                    var claimed = false
+                    withTimeoutOrNull(CHART_TOUCH_DELAY_MS) {
+                        while (true) {
+                            val ev = awaitPointerEvent()
+                            if (ev.changes.count { it.pressed } >= 2) { claimed = true; return@withTimeoutOrNull }
+                            val ch = ev.changes.firstOrNull { it.id == first.id }
+                            if (ch == null || !ch.pressed) return@withTimeoutOrNull
+                            if ((ch.position - first.position).getDistanceSquared() > slop * slop) return@withTimeoutOrNull
+                        }
+                    } ?: run { claimed = true }   // timed out with the finger held still → scrub
+                    if (!claimed) return@awaitEachGesture
                     scrubX = first.position.x
                     var multiTouch = false
                     while (true) {
