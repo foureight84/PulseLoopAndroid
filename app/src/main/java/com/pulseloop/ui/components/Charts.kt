@@ -10,7 +10,12 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -628,6 +633,33 @@ fun TrendChart(
                 drawText(valTl, topLeft = Offset(boxLeft + padPx, boxTop + padPx * 0.6f))
                 timeTl?.let {
                     drawText(it, topLeft = Offset(boxLeft + padPx, boxTop + padPx * 0.6f + valTl.size.height + gap))
+                }
+            }
+        }
+
+        // Scroll slider + zoom-reset — shown only while zoomed in. The slider pans the
+        // visible window across the time domain; reset returns to the full (unzoomed) view.
+        if (interactive && zoom > 1f) {
+            val sliderWindow = 1f / zoom
+            val maxStart = (1f - sliderWindow).coerceAtLeast(0f)
+            if (maxStart > 0f) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Slider(
+                        value = windowStart.coerceIn(0f, maxStart),
+                        onValueChange = { windowStart = it.coerceIn(0f, maxStart) },
+                        valueRange = 0f..maxStart,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = { zoom = 1f; windowStart = 0f }) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "Reset zoom",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
