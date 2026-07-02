@@ -167,7 +167,10 @@ class RingBLEClient(private val context: Context) {
             return
         }
         val matchedType = _state.value.discovered.firstOrNull { it.id == id }?.deviceType
-        beginConnect(target, matchedType)
+        // User-initiated connect: direct (autoConnect=false). A first-time autoConnect
+        // waits passively for a low-duty-cycle advertisement match and can hang for
+        // minutes against a never-bonded ring.
+        beginConnect(target, matchedType, autoConnect = false)
     }
 
     fun connectLastKnown() {
@@ -177,7 +180,7 @@ class RingBLEClient(private val context: Context) {
             bluetoothAdapter.getRemoteDevice(lastId)
         } catch (_: Exception) { null }
         if (device != null) {
-            beginConnect(device, lastKnownDeviceType)
+            beginConnect(device, lastKnownDeviceType, autoConnect = true)
         } else {
             startScanning()
         }
@@ -344,7 +347,7 @@ class RingBLEClient(private val context: Context) {
 
     // MARK: Internal
 
-    private fun beginConnect(target: BluetoothDevice, deviceType: RingDeviceType?) {
+    private fun beginConnect(target: BluetoothDevice, deviceType: RingDeviceType?, autoConnect: Boolean) {
         scanner?.stopScan(scanCallback)
         // Close any stale GATT from a previous (now-dead) connection before opening a new
         // one. Reconnect attempts after an idle drop would otherwise leak GATT clients and
@@ -368,12 +371,12 @@ class RingBLEClient(private val context: Context) {
         )
 
         bluetoothGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            // autoConnect=true matches the official app — connects silently
-            // in the background without showing the Bluetooth status bar icon
-            target.connectGatt(context, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            // autoConnect=true only for silent background reconnects to a known ring;
+            // user-initiated connects are direct (false) so they complete or fail fast.
+            target.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } else {
             @Suppress("DEPRECATION")
-            target.connectGatt(context, true, gattCallback)
+            target.connectGatt(context, autoConnect, gattCallback)
         }
     }
 
@@ -512,8 +515,11 @@ class RingBLEClient(private val context: Context) {
                         // Request a high-priority connection interval, matching the official app
                         // (BluetoothLeService.requestConnectionPriority(1) on connect).
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                        gatt.requestMtu(512)
-                        gatt.discoverServices()
+                        // Only one GATT procedure may be in flight: a discoverServices()
+                        // issued while the MTU exchange is pending is silently dropped
+                        // (observed on Pixel 6 Pro — onServicesDiscovered never fires).
+                        // Discovery is kicked off from onMtuChanged instead.
+                        if (!gatt.requestMtu(512)) gatt.discoverServices()
                     } else {
                         updateState { copy(lastError = "GATT connect failed: $status") }
                         handleDisconnect(gatt)
@@ -732,7 +738,8 @@ class RingBLEClient(private val context: Context) {
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            // No-op for Phase 2; MTU negotiation may be added later
+            // MTU exchange done (success or not) — the GATT queue is free, discover now.
+            gatt.discoverServices()
         }
     }
 
