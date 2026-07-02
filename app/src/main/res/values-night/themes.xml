@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark launch theme: matches the Compose dark tokens. -->
+    <style name="Theme.PulseLoop" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0F1115</item>
+        <item name="android:statusBarColor">#0F1115</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#0F1115</item>
+    </style>
+</resources>

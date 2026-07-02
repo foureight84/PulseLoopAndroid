@@ -388,7 +388,7 @@ fun TrendChart(
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.primary,
     secondary: List<Double> = emptyList(),
-    colorSecondary: Color = Color(0xFFB39DDB),
+    colorSecondary: Color = com.pulseloop.ui.theme.MetricColors.ZoneLow,
     legendPrimary: String? = null,
     legendSecondary: String? = null,
     thresholds: MetricThresholds? = null,
@@ -574,7 +574,7 @@ fun TrendChart(
                 // Current-value marker at the last primary point
                 primaryOffsets.lastOrNull()?.let { o ->
                     val c = if (zoneColoring) thresholds?.zoneFor(points.last())?.color ?: color else color
-                    drawCircle(Color.White, 7f, o)
+                    drawCircle(surfaceColor, 7f, o)
                     drawCircle(c, 5f, o)
                 }
             }
@@ -617,12 +617,12 @@ fun TrendChart(
                 // Vertical guide
                 drawLine(outlineColor.copy(alpha = 0.6f), Offset(px, plotTop), Offset(px, plotBottom), 1.5f)
                 // Highlighted point(s)
-                drawCircle(Color.White, 7f, Offset(px, py))
+                drawCircle(surfaceColor, 7f, Offset(px, py))
                 drawCircle(if (zoneColoring) thresholds?.zoneFor(points[idx])?.color ?: color else color, 5f, Offset(px, py))
                 val secVal = secondary.getOrNull(idx)
                 if (secVal != null) {
                     val py2 = yForValue(secVal)
-                    drawCircle(Color.White, 6f, Offset(px, py2))
+                    drawCircle(surfaceColor, 6f, Offset(px, py2))
                     drawCircle(colorSecondary, 4f, Offset(px, py2))
                 }
 

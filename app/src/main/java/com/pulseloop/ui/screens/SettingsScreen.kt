@@ -597,7 +597,7 @@ fun SettingsScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         Icons.Filled.Bluetooth, null, Modifier.size(18.dp),
-                        tint = if (isConnected) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (isConnected) com.pulseloop.ui.theme.MetricColors.ZoneGood else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(

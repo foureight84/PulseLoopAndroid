@@ -58,10 +58,10 @@ fun RecordScreen(
                 Spacer(Modifier.height(4.dp))
                 val hrText = heartRate?.let { "$it bpm" } ?: "-- bpm"
                 val zoneColor = when (hrZone) {
-                    HeartRateZones.Zone.REST, HeartRateZones.Zone.FAT_BURN -> Color(0xFF4CAF50)
-                    HeartRateZones.Zone.CARDIO -> Color(0xFFFFC107)
-                    HeartRateZones.Zone.PEAK -> Color(0xFFFF9800)
-                    HeartRateZones.Zone.MAX -> Color(0xFFF44336)
+                    HeartRateZones.Zone.REST, HeartRateZones.Zone.FAT_BURN -> com.pulseloop.ui.theme.MetricColors.ZoneGood
+                    HeartRateZones.Zone.CARDIO -> com.pulseloop.ui.theme.MetricColors.ZoneBorderline
+                    HeartRateZones.Zone.PEAK -> com.pulseloop.ui.theme.MetricColors.ZoneElevated
+                    HeartRateZones.Zone.MAX -> com.pulseloop.ui.theme.MetricColors.ZoneConcern
                 }
                 Text(hrText, style = MaterialTheme.typography.headlineLarge, color = zoneColor)
                 Text(hrZone.label, style = MaterialTheme.typography.labelMedium, color = zoneColor)
