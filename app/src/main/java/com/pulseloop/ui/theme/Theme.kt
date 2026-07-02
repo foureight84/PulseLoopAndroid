@@ -9,37 +9,40 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * PulseLoop design tokens.
+ * PulseLoop design tokens — "Porcelain & Steel".
+ *
+ * Premium / calm / clinical: porcelain and cool graphite surfaces, one
+ * desaturated surgical-steel accent, no saturated hue anywhere in the
+ * chrome — the loudest thing on screen is the user's own numbers.
  *
  * Every pairing below is WCAG-checked (scratchpad contrast.py):
  * text roles ≥ 4.5:1 on their surfaces, UI/graphic roles ≥ 3:1.
- * Purple stays the brand identity but is demoted to an accent —
- * it never carries body text; ink does.
+ * The accent never carries body text; ink does.
  */
 
 // ── Dark tokens ──
-private val DarkBg = Color(0xFF0F1115)
-private val DarkSurface = Color(0xFF171A21)
-private val DarkSurfaceVariant = Color(0xFF232733)
-private val DarkInk = Color(0xFFECEDF2)          // 14.9:1 on surface
-private val DarkInkMuted = Color(0xFFA9AEBF)     // 6.7:1 on surfaceVariant
-private val DarkPrimary = Color(0xFFB49CFF)      // 7.6:1 on surface as text
-private val DarkOnPrimary = Color(0xFF241352)    // 7.1:1 on primary
-private val DarkPrimaryContainer = Color(0xFF3B2C6E)
-private val DarkOnPrimaryContainer = Color(0xFFE5DCFF)
-private val DarkOutline = Color(0xFF454B5C)
+private val DarkBg = Color(0xFF0E1214)
+private val DarkSurface = Color(0xFF151A1D)
+private val DarkSurfaceVariant = Color(0xFF1F2529)
+private val DarkInk = Color(0xFFE8EDEF)          // 14.9:1 on surface
+private val DarkInkMuted = Color(0xFF9AA7AD)     // 7.1:1 on surface
+private val DarkPrimary = Color(0xFF8FBFD4)      // 8.8:1 on surface as text
+private val DarkOnPrimary = Color(0xFF06222C)    // 8.3:1 on primary
+private val DarkPrimaryContainer = Color(0xFF274B5C)
+private val DarkOnPrimaryContainer = Color(0xFFD3E7F0)  // 7.3:1
+private val DarkOutline = Color(0xFF46535A)
 
 // ── Light tokens ──
-private val LightBg = Color(0xFFF7F7FA)
+private val LightBg = Color(0xFFF6F8F9)
 private val LightSurface = Color(0xFFFFFFFF)
-private val LightSurfaceVariant = Color(0xFFECEBF2)
-private val LightInk = Color(0xFF16171D)         // 17.9:1 on surface
-private val LightInkMuted = Color(0xFF51566A)    // 6.1:1 on surfaceVariant
-private val LightPrimary = Color(0xFF5B2EBC)     // 8.2:1 on white as text
-private val LightOnPrimary = Color(0xFFFFFFFF)   // 8.2:1 on primary
-private val LightPrimaryContainer = Color(0xFFE7DDFF)
-private val LightOnPrimaryContainer = Color(0xFF2A1263)
-private val LightOutline = Color(0xFF9BA0B0)
+private val LightSurfaceVariant = Color(0xFFEAEFF1)
+private val LightInk = Color(0xFF14181A)         // 16.8:1 on surface
+private val LightInkMuted = Color(0xFF4E5A60)    // 7.1:1 on surface
+private val LightPrimary = Color(0xFF2E5A6B)     // 7.5:1 on white as text
+private val LightOnPrimary = Color(0xFFFFFFFF)   // 7.5:1 on primary
+private val LightPrimaryContainer = Color(0xFFD7E6ED)
+private val LightOnPrimaryContainer = Color(0xFF0E2A36)  // 11.7:1
+private val LightOutline = Color(0xFF8FA0A8)
 
 private val DarkColorScheme = darkColorScheme(
     primary = DarkPrimary,
@@ -57,7 +60,7 @@ private val DarkColorScheme = darkColorScheme(
     surfaceVariant = DarkSurfaceVariant,
     onSurfaceVariant = DarkInkMuted,
     outline = DarkOutline,
-    outlineVariant = Color(0xFF2E3340),
+    outlineVariant = Color(0xFF2A3338),
     error = Color(0xFFFF8A80),
     onError = Color(0xFF3D0A08),
     errorContainer = Color(0xFF5C1A17),
@@ -80,7 +83,7 @@ private val LightColorScheme = lightColorScheme(
     surfaceVariant = LightSurfaceVariant,
     onSurfaceVariant = LightInkMuted,
     outline = LightOutline,
-    outlineVariant = Color(0xFFDDDCE5),
+    outlineVariant = Color(0xFFCBD5DA),
     error = Color(0xFFB3261E),
     onError = Color(0xFFFFFFFF),
     errorContainer = Color(0xFFF9DEDC),

@@ -3,9 +3,9 @@
     <!-- Launch theme: window chrome matches the Compose light tokens so there is
          no flash of mismatched background before composition. -->
     <style name="Theme.PulseLoop" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">#F7F7FA</item>
-        <item name="android:statusBarColor">#F7F7FA</item>
+        <item name="android:windowBackground">#F6F8F9</item>
+        <item name="android:statusBarColor">#F6F8F9</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#F7F7FA</item>
+        <item name="android:navigationBarColor">#F6F8F9</item>
     </style>
 </resources>

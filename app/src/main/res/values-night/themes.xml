@@ -2,9 +2,9 @@
 <resources>
     <!-- Dark launch theme: matches the Compose dark tokens. -->
     <style name="Theme.PulseLoop" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#0F1115</item>
-        <item name="android:statusBarColor">#0F1115</item>
+        <item name="android:windowBackground">#0E1214</item>
+        <item name="android:statusBarColor">#0E1214</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:navigationBarColor">#0F1115</item>
+        <item name="android:navigationBarColor">#0E1214</item>
     </style>
 </resources>
