@@ -67,10 +67,10 @@ private const val CHART_TOUCH_DELAY_MS = 160L
  * 1f = bottom (min value). Hard edges come from duplicating the offset at each
  * in-range zone boundary (lower-zone color then upper-zone color at the same fraction).
  */
-fun zoneGradientStops(dataMin: Double, dataMax: Double, th: MetricThresholds): Array<Pair<Float, Color>> {
+fun zoneGradientStops(dataMin: Double, dataMax: Double, th: MetricThresholds, fallback: Color): Array<Pair<Float, Color>> {
     val range = dataMax - dataMin
     if (range <= 1e-6) {
-        val c = th.zoneFor(dataMin)?.color ?: Color.Gray
+        val c = th.zoneFor(dataMin)?.color ?: fallback
         return arrayOf(0f to c, 1f to c)
     }
     // Boundaries strictly inside the visible range, high → low (top → bottom).
@@ -80,7 +80,7 @@ fun zoneGradientStops(dataMin: Double, dataMax: Double, th: MetricThresholds): A
         .filter { it > dataMin + 1e-6 && it < dataMax - 1e-6 }
         .sortedDescending()
 
-    fun colorAt(v: Double): Color = th.zoneFor(v)?.color ?: Color.Gray
+    fun colorAt(v: Double): Color = th.zoneFor(v)?.color ?: fallback
     val eps = range * 1e-4
 
     val stops = mutableListOf<Pair<Float, Color>>()
@@ -114,6 +114,8 @@ fun SimpleLineChart(
     val min = points.min()
     val max = points.max()
     val range = if (max == min) 1.0 else max - min
+    // Read outside the Canvas draw scope — MaterialTheme is only available in composition.
+    val fallbackZoneColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Canvas(modifier = modifier.fillMaxWidth().height(100.dp)) {
         val w = size.width
@@ -122,10 +124,11 @@ fun SimpleLineChart(
         val stepX = (w - pad * 2) / maxOf(1, points.size - 1)
         val top = pad
         val bottom = h - pad
+        val strokePx = lineWidth.dp.toPx()
 
         val lineBrush = thresholds?.let {
             Brush.verticalGradient(
-                colorStops = zoneGradientStops(min, max, it),
+                colorStops = zoneGradientStops(min, max, it, fallbackZoneColor),
                 startY = top,
                 endY = bottom,
             )
@@ -143,9 +146,9 @@ fun SimpleLineChart(
             }
         }
         if (lineBrush != null) {
-            drawPath(path, brush = lineBrush, style = Stroke(width = lineWidth, cap = StrokeCap.Round))
+            drawPath(path, brush = lineBrush, style = Stroke(width = strokePx, cap = StrokeCap.Round))
         } else {
-            drawPath(path, color, style = Stroke(width = lineWidth, cap = StrokeCap.Round))
+            drawPath(path, color, style = Stroke(width = strokePx, cap = StrokeCap.Round))
         }
     }
 }
@@ -175,6 +178,7 @@ fun SimpleDualLineChart(
         val w = size.width
         val h = size.height
         val pad = 8f
+        val strokePx = lineWidth.dp.toPx()
 
         fun drawSeries(points: List<Double>, color: Color) {
             if (points.isEmpty()) return
@@ -186,7 +190,7 @@ fun SimpleDualLineChart(
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
                 if (showDots) drawCircle(color, 3f, Offset(x, y))
             }
-            drawPath(path, color, style = Stroke(width = lineWidth, cap = StrokeCap.Round))
+            drawPath(path, color, style = Stroke(width = strokePx, cap = StrokeCap.Round))
         }
 
         drawSeries(seriesA, colorA)
@@ -251,6 +255,9 @@ fun ThresholdBar(
     val textMeasurer = rememberTextMeasurer()
     val barHeight = 14.dp
     val tickStyle = TextStyle(fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    // The pill fill stays white (it sits on saturated zone colors, not a surface), but its
+    // border uses the outline token so it reads correctly in both light and dark mode.
+    val markerBorderColor = MaterialTheme.colorScheme.outline
     val zone = overrideZone ?: (value?.let { thresholds.zoneFor(it) })
     val zoneLabel = zone?.label
 
@@ -287,12 +294,13 @@ fun ThresholdBar(
                 val pillTop = -3.dp.toPx()
                 // Border
                 drawRoundRect(
-                    color = Color.Black.copy(alpha = 0.3f),
+                    color = markerBorderColor,
                     topLeft = Offset(markerX - pillW / 2f - 0.5f, pillTop - 0.5f),
                     size = Size(pillW + 1f, pillH + 1f),
                     cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
                 )
-                // Fill
+                // Fill — intentionally white in both themes: it sits on saturated zone
+                // colors, not app surfaces, so it needs to stay a fixed, neutral anchor.
                 drawRoundRect(
                     color = Color.White,
                     topLeft = Offset(markerX - pillW / 2f, pillTop),
@@ -423,7 +431,7 @@ fun TrendChart(
     val surfaceColor = MaterialTheme.colorScheme.surface
     val onSurfaceColor = MaterialTheme.colorScheme.onSurface
     val outlineColor = MaterialTheme.colorScheme.outline
-    val gridColor = Color.LightGray.copy(alpha = 0.3f)
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
 
     // Zoom/pan window normalized to [0,1] over the time domain. windowSize = 1/zoom.
     // Min visible window is 30 min; index fallback caps by point count.
@@ -569,8 +577,8 @@ fun TrendChart(
             val primaryOffsets = points.mapIndexed { i, v -> Offset(xForIndex(i), yForValue(v)) }
             val secondaryOffsets = secondary.mapIndexed { i, v -> Offset(xForSecondary(i), yForValue(v)) }
             clipRect(plotLeft, plotTop, plotRight, plotBottom) {
-                drawTrendSeries(secondaryOffsets, secondary, colorSecondary, false, thresholds, min, max, plotTop, plotBottom)
-                drawTrendSeries(primaryOffsets, points, color, zoneColoring, thresholds, min, max, plotTop, plotBottom)
+                drawTrendSeries(secondaryOffsets, secondary, colorSecondary, false, thresholds, min, max, plotTop, plotBottom, axisColor)
+                drawTrendSeries(primaryOffsets, points, color, zoneColoring, thresholds, min, max, plotTop, plotBottom, axisColor)
                 // Current-value marker at the last primary point
                 primaryOffsets.lastOrNull()?.let { o ->
                     val c = if (zoneColoring) thresholds?.zoneFor(points.last())?.color ?: color else color
@@ -707,6 +715,7 @@ private fun DrawScope.drawTrendSeries(
     dataMax: Double,
     plotTop: Float,
     plotBottom: Float,
+    fallbackZoneColor: Color,
 ) {
     if (offsets.isEmpty()) return
 
@@ -725,18 +734,19 @@ private fun DrawScope.drawTrendSeries(
 
     val lineBrush = if (zoneColored && thresholds != null) {
         Brush.verticalGradient(
-            colorStops = zoneGradientStops(dataMin, dataMax, thresholds),
+            colorStops = zoneGradientStops(dataMin, dataMax, thresholds, fallbackZoneColor),
             startY = plotTop,
             endY = plotBottom,
         )
     } else null
 
+    val strokePx = 2.dp.toPx()
     val line = Path()
     offsets.forEachIndexed { i, o -> if (i == 0) line.moveTo(o.x, o.y) else line.lineTo(o.x, o.y) }
     if (lineBrush != null) {
-        drawPath(line, brush = lineBrush, style = Stroke(width = 2f, cap = StrokeCap.Round))
+        drawPath(line, brush = lineBrush, style = Stroke(width = strokePx, cap = StrokeCap.Round))
     } else {
-        drawPath(line, seriesColor, style = Stroke(width = 2f, cap = StrokeCap.Round))
+        drawPath(line, seriesColor, style = Stroke(width = strokePx, cap = StrokeCap.Round))
     }
 
     // Per-point dots only when sparse — at high density they merge into a blob and
