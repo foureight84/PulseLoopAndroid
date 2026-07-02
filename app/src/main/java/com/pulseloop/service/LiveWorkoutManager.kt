@@ -46,9 +46,10 @@ class LiveWorkoutManager(
     }
 
     // ── Calories (Keytel et al. 2005 — kcal/min from HR + weight + age + sex) ──
-    // ponytail: HR-only estimate; overestimates at near-rest HR and ignores
-    // anaerobic load. Upgrade path: MET-based floor per activity type.
+    // Keytel is HR-only, so anaerobic work (Weights) gets a MET-based floor:
+    // between sets HR falls but the body is still working well above rest.
     private var kcalAccum = 0.0
+    private var activeType = "Workout"
     private var profileAge = 35
     private var profileWeightKg = 75.0
     private var profileMale = true
@@ -61,8 +62,10 @@ class LiveWorkoutManager(
         }
     }
 
-    private fun kcalPerMinute(hr: Int): Double =
-        keytelKcalPerMinute(hr, profileWeightKg, profileAge, profileMale)
+    private fun kcalPerMinute(hr: Int): Double = maxOf(
+        keytelKcalPerMinute(hr, profileWeightKg, profileAge, profileMale),
+        metFloorKcalPerMinute(activeType, profileWeightKg),
+    )
 
     init {
         polling.onPollCompleted = { refreshNotification() }
@@ -79,6 +82,7 @@ class LiveWorkoutManager(
         db.activitySessionDao().upsert(session)
 
         kcalAccum = 0.0
+        activeType = type
         loadProfile()
         coordinator.startWorkoutHeartRate()
         if (useGps) gps.start(session.id, type)
@@ -109,6 +113,7 @@ class LiveWorkoutManager(
         }
         val paused = session.statusRaw == "paused"
         kcalAccum = session.calories ?: 0.0  // restore what pause/finish persisted
+        activeType = session.type
         loadProfile()
         if (!paused) {
             coordinator.startWorkoutHeartRate()
@@ -232,6 +237,19 @@ class LiveWorkoutManager(
     }
 
     fun destroy() { scope.cancel(); tickJob?.cancel() }
+}
+
+/**
+ * MET-based kcal/min floor per activity type (Compendium of Physical Activities;
+ * kcal/min = MET × 3.5 × kg / 200). HR-based estimates miss anaerobic load, so
+ * resistance training gets a floor; aerobic types trust HR (floor 0).
+ */
+internal fun metFloorKcalPerMinute(type: String, weightKg: Double): Double {
+    val met = when (type) {
+        "Weights" -> 4.0  // resistance training, moderate effort (Compendium 02052)
+        else -> 0.0
+    }
+    return met * 3.5 * weightKg / 200.0
 }
 
 /** Keytel et al. 2005: energy expenditure from HR, floor at 0 (formula goes negative near rest). */

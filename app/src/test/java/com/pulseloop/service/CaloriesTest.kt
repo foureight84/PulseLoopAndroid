@@ -23,4 +23,19 @@ class CaloriesTest {
     fun `keytel never negative`() {
         assertTrue(keytelKcalPerMinute(40, 50.0, 20, male = false) >= 0.0)
     }
+
+    @Test
+    fun `weights MET floor beats keytel at resting HR`() {
+        // Between sets HR drops toward rest; the 4-MET floor must carry the burn.
+        // 75kg → 4.0 × 3.5 × 75 / 200 = 5.25 kcal/min
+        val floor = metFloorKcalPerMinute("Weights", 75.0)
+        assertEquals(5.25, floor, 0.01)
+        assertTrue(floor > keytelKcalPerMinute(70, 75.0, 35, male = true))
+    }
+
+    @Test
+    fun `aerobic types have no MET floor`() {
+        assertEquals(0.0, metFloorKcalPerMinute("Cycling", 75.0), 0.0)
+        assertEquals(0.0, metFloorKcalPerMinute("Workout", 75.0), 0.0)
+    }
 }

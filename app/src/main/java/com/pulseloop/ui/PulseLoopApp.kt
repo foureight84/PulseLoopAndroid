@@ -242,18 +242,20 @@ fun PulseLoopApp() {
                     )
                 }
                 composable("onboarding") { OnboardingScreen(onComplete = { navController.navigate("pairing") }) }
-                composable("record") {
+                composable("record/{type}") { backStackEntry ->
+                    val workoutType = backStackEntry.arguments?.getString("type") ?: "Workout"
                     val workoutState = liveWorkout.state.collectAsState().value
                     // Start the session on entry — RecordScreen is display-only and no
                     // other code path calls start(); without this the screen is a dead
-                    // dashboard and nothing is recorded. GPS only if already granted:
-                    // requestLocationUpdates throws SecurityException otherwise.
+                    // dashboard and nothing is recorded. GPS only if already granted
+                    // (requestLocationUpdates throws SecurityException otherwise) and
+                    // the type is outdoor — Weights doesn't need a route.
                     LaunchedEffect(Unit) {
                         if (!liveWorkout.state.value.isRecording) {
                             val hasLocation = androidx.core.content.ContextCompat.checkSelfPermission(
                                 context, android.Manifest.permission.ACCESS_FINE_LOCATION
                             ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                            liveWorkout.start("Workout", useGps = hasLocation)
+                            liveWorkout.start(workoutType, useGps = hasLocation && workoutType != "Weights")
                         }
                     }
                     RecordScreen(

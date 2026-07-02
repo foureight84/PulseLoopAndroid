@@ -912,11 +912,17 @@ fun ActivityScreen(
         }
 
         item {
-            Button(
-                onClick = { navController?.navigate("record") },
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-            ) {
-                Text("Start Workout")
+            // Type picks the calorie model and sensors: Weights gets a MET floor
+            // (HR misses anaerobic load), Cycling records a GPS route/distance.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Workout", "Cycling", "Weights").forEach { type ->
+                    Button(
+                        onClick = { navController?.navigate("record/$type") },
+                        modifier = Modifier.weight(1f).height(48.dp),
+                    ) {
+                        Text(type)
+                    }
+                }
             }
         }
     }
