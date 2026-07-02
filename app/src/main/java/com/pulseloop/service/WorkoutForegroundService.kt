@@ -38,7 +38,16 @@ class WorkoutForegroundService : Service() {
             ACTION_PAUSE -> { status = "paused"; updateNotification() }
             ACTION_RESUME -> { status = "recording"; updateNotification() }
         }
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // Never crash-loop again: if the OS rejects the FGS promotion (permission
+        // regression, background-start restriction), degrade to no-notification
+        // instead of throwing out of onStartCommand on every sticky restart.
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        } catch (e: Exception) {
+            android.util.Log.e("WorkoutFGS", "startForeground rejected — stopping service", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 

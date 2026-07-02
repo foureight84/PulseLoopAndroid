@@ -27,6 +27,7 @@ class LiveWorkoutManager(
         val latestHeartRate: Int? = null,
         val latestSpO2: Int? = null,
         val hrZone: HeartRateZones.Zone = HeartRateZones.Zone.REST,
+        val calories: Double = 0.0,
     )
 
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(WorkoutState())
@@ -38,6 +39,30 @@ class LiveWorkoutManager(
 
     // Foreground service intent for start/stop
     private val serviceIntent = Intent(context, WorkoutForegroundService::class.java)
+
+    companion object {
+        /** An "active" session older than this is a crash leftover, not a workout. */
+        private const val STALE_SESSION_MS = 12 * 60 * 60_000L
+    }
+
+    // ── Calories (Keytel et al. 2005 — kcal/min from HR + weight + age + sex) ──
+    // ponytail: HR-only estimate; overestimates at near-rest HR and ignores
+    // anaerobic load. Upgrade path: MET-based floor per activity type.
+    private var kcalAccum = 0.0
+    private var profileAge = 35
+    private var profileWeightKg = 75.0
+    private var profileMale = true
+
+    private suspend fun loadProfile() {
+        db.userProfileDao().get()?.let { p ->
+            p.age?.let { profileAge = it }
+            p.weightKg?.let { profileWeightKg = it }
+            p.sex?.let { profileMale = !it.startsWith("f", ignoreCase = true) }
+        }
+    }
+
+    private fun kcalPerMinute(hr: Int): Double =
+        keytelKcalPerMinute(hr, profileWeightKg, profileAge, profileMale)
 
     init {
         polling.onPollCompleted = { refreshNotification() }
@@ -53,6 +78,8 @@ class LiveWorkoutManager(
         )
         db.activitySessionDao().upsert(session)
 
+        kcalAccum = 0.0
+        loadProfile()
         coordinator.startWorkoutHeartRate()
         if (useGps) gps.start(session.id, type)
         polling.start(session.id)
@@ -63,12 +90,44 @@ class LiveWorkoutManager(
         return session
     }
 
+    /**
+     * Re-attach to an unfinished session after the Activity/process was recreated
+     * (rotation, memory pressure, crash). The session row survives in Room; the
+     * in-memory state and loops do not. Elapsed time needs no bookkeeping — the
+     * tick derives it from session.startedAt. Sessions too old to plausibly still
+     * be running are marked cancelled instead of resurrected.
+     */
+    suspend fun reattachIfActive() {
+        if (_state.value.isRecording) return
+        val session = db.activitySessionDao().active() ?: return
+        val now = System.currentTimeMillis()
+        if (now - session.startedAt > STALE_SESSION_MS) {
+            db.activitySessionDao().upsert(session.copy(
+                statusRaw = "cancelled", endedAt = session.updatedAt, updatedAt = now,
+            ))
+            return
+        }
+        val paused = session.statusRaw == "paused"
+        kcalAccum = session.calories ?: 0.0  // restore what pause/finish persisted
+        loadProfile()
+        if (!paused) {
+            coordinator.startWorkoutHeartRate()
+            // Permission may have been revoked while we were away — degrade to no-GPS.
+            if (session.useGps) try { gps.start(session.id, session.type) } catch (_: SecurityException) {}
+            polling.start(session.id)
+            startForegroundService(session.type)
+            startTick(session)
+        }
+        _state.value = _state.value.copy(isRecording = true, isPaused = paused, activeSession = session)
+    }
+
     suspend fun pause(session: ActivitySessionEntity) {
         val now = System.currentTimeMillis()
         val updated = session.copy(
             statusRaw = "paused",
             endedAt = now,
             totalPauseSeconds = session.totalPauseSeconds + ((now - session.startedAt) / 1000.0),
+            calories = kcalAccum,
             updatedAt = now,
         )
         db.activitySessionDao().upsert(updated)
@@ -98,6 +157,7 @@ class LiveWorkoutManager(
         db.activitySessionDao().upsert(session.copy(
             statusRaw = "finished", endedAt = now,
             distanceMeters = gps.state.value.totalDistance,
+            calories = kcalAccum,
             updatedAt = now,
         ))
         coordinator.stopWorkoutHeartRate()
@@ -127,12 +187,14 @@ class LiveWorkoutManager(
                 val distance = gps.state.value.totalDistance
                 val hr = coordinator.latestHRValue
                 val zone = hr?.let { HeartRateZones.zoneFor(it) } ?: HeartRateZones.Zone.REST
+                hr?.let { kcalAccum += kcalPerMinute(it) / 60.0 }  // 1s tick
 
                 _state.value = _state.value.copy(
                     elapsedSeconds = elapsed,
                     distanceMeters = distance,
                     latestHeartRate = hr,
                     hrZone = zone,
+                    calories = kcalAccum,
                 )
 
                 if (elapsed % 5 == 0) refreshNotification()
@@ -170,4 +232,13 @@ class LiveWorkoutManager(
     }
 
     fun destroy() { scope.cancel(); tickJob?.cancel() }
+}
+
+/** Keytel et al. 2005: energy expenditure from HR, floor at 0 (formula goes negative near rest). */
+internal fun keytelKcalPerMinute(hr: Int, weightKg: Double, age: Int, male: Boolean): Double {
+    val kjPerMin = if (male)
+        -55.0969 + 0.6309 * hr + 0.1988 * weightKg + 0.2017 * age
+    else
+        -20.4022 + 0.4472 * hr - 0.1263 * weightKg + 0.0740 * age
+    return (kjPerMin / 4.184).coerceAtLeast(0.0)
 }

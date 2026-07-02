@@ -17,9 +17,12 @@
     <!-- Phase 7: Notifications for coach check-ins (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Phase 4+: Foreground service for workout -->
+    <!-- Phase 4+: Foreground service for workout. Type connectedDevice, NOT health:
+         health requires a runtime permission (ACTIVITY_RECOGNITION/BODY_SENSORS) we
+         never request — startForeground then throws and the sticky service crash-loops.
+         connectedDevice's prerequisite is BLUETOOTH_CONNECT, which the ring needs anyway. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <application
         android:allowBackup="false"
@@ -53,7 +56,7 @@
         <!-- Phase 6: Workout foreground service -->
         <service
             android:name=".service.WorkoutForegroundService"
-            android:foregroundServiceType="health"
+            android:foregroundServiceType="connectedDevice"
             android:exported="false" />
     </application>
 </manifest>

@@ -102,6 +102,10 @@ fun PulseLoopApp() {
             coordinator.start()
             summaryCoordinator.start()
 
+            // Workout persistence: pick an unfinished session back up after the
+            // Activity/process was recreated (tab away, rotation, crash).
+            liveWorkout.reattachIfActive()
+
             // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
             // process restart — the live GATT is gone, so the views would otherwise show a
             // false "Connected". Reset until a real connection re-confirms it.
@@ -240,12 +244,25 @@ fun PulseLoopApp() {
                 composable("onboarding") { OnboardingScreen(onComplete = { navController.navigate("pairing") }) }
                 composable("record") {
                     val workoutState = liveWorkout.state.collectAsState().value
+                    // Start the session on entry — RecordScreen is display-only and no
+                    // other code path calls start(); without this the screen is a dead
+                    // dashboard and nothing is recorded. GPS only if already granted:
+                    // requestLocationUpdates throws SecurityException otherwise.
+                    LaunchedEffect(Unit) {
+                        if (!liveWorkout.state.value.isRecording) {
+                            val hasLocation = androidx.core.content.ContextCompat.checkSelfPermission(
+                                context, android.Manifest.permission.ACCESS_FINE_LOCATION
+                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            liveWorkout.start("Workout", useGps = hasLocation)
+                        }
+                    }
                     RecordScreen(
                         activityName = workoutState.activeSession?.type ?: "Workout",
                         elapsedSeconds = workoutState.elapsedSeconds,
                         distanceMeters = workoutState.distanceMeters,
                         heartRate = workoutState.latestHeartRate,
                         spO2 = workoutState.latestSpO2,
+                        calories = workoutState.calories,
                         isPaused = workoutState.isPaused,
                         hrZone = workoutState.hrZone,
                         onPause = {

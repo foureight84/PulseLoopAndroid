@@ -26,6 +26,7 @@ fun RecordScreen(
     distanceMeters: Double = 0.0,
     heartRate: Int? = null,
     spO2: Int? = null,
+    calories: Double = 0.0,
     isPaused: Boolean = false,
     hrZone: HeartRateZones.Zone = HeartRateZones.Zone.REST,
     onPause: () -> Unit = {},
@@ -73,7 +74,7 @@ fun RecordScreen(
             item { StatTile("Distance", if (distanceMeters >= 1000) "%.1f km".format(distanceMeters / 1000) else "%.0f m".format(distanceMeters)) }
             item { StatTile("Pace", pace) }
             item { StatTile("SpO₂", spO2?.let { "$it%" } ?: "--") }
-            item { StatTile("Calories", "--") }
+            item { StatTile("Calories", if (calories >= 1) "%.0f kcal".format(calories) else "--") }
         }
 
         Spacer(Modifier.weight(1f))
