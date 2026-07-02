@@ -278,6 +278,13 @@ fun TodayScreen(
  * Vitals dashboard — ported from VitalsView.swift.
  * Shows historical trends: HR, SpO2, HRV, stress, temperature with real data from Room.
  */
+/** Readings per HRV series (~45s each + gap → roughly a 10-minute pass). */
+private const val HRV_PASS_SAMPLES = 10
+/** Pause between series measurements — lets the ring's sensor settle. */
+private const val HRV_PASS_GAP_MS = 15_000L
+/** Hard cap on a series — retrying dropped windows must not run unbounded. */
+private const val HRV_PASS_MAX_MS = 20 * 60_000L
+
 @Composable
 fun VitalsScreen(
     navController: androidx.navigation.NavController? = null,
@@ -288,6 +295,7 @@ fun VitalsScreen(
     val scope = rememberCoroutineScope()
     var measuring by remember { mutableStateOf(false) }
     var remaining by remember { mutableStateOf(0) }
+    var passSample by remember { mutableStateOf(0) }  // >0 while an HRV series is running
     val measureSeconds = com.pulseloop.service.RingSyncCoordinator.COMBINED_MEASURE_SECONDS
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -304,30 +312,75 @@ fun VitalsScreen(
                 // fatigue and blood sugar — the same flow the official app's "Measurement" button uses.
                 // Only shown for rings that support BP or blood sugar (56ff/Jring).
                 if (coordinator != null && (state.supportsBP || state.supportsGlucose)) {
-                    Button(
-                        enabled = !measuring,
-                        onClick = {
-                            measuring = true
-                            remaining = measureSeconds
-                            scope.launch {
-                                val ticker = launch {
-                                    while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
+                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Button(
+                            enabled = !measuring,
+                            onClick = {
+                                measuring = true
+                                remaining = measureSeconds
+                                scope.launch {
+                                    val ticker = launch {
+                                        while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
+                                    }
+                                    try {
+                                        coordinator.measureCombined()
+                                    } finally {
+                                        ticker.cancel()
+                                        remaining = 0
+                                        measuring = false
+                                        viewModel?.refreshNow()  // show the new reading immediately
+                                    }
                                 }
-                                try {
-                                    coordinator.measureCombined()
-                                } finally {
-                                    ticker.cancel()
-                                    remaining = 0
-                                    measuring = false
-                                    viewModel?.refreshNow()  // show the new reading immediately
-                                }
+                            },
+                        ) {
+                            Text(
+                                if (measuring) "Measuring… ${remaining}s" else "Measure",
+                                color = androidx.compose.ui.graphics.Color.White,
+                            )
+                        }
+                        // HRV series: combined measurements until N discrete HRV readings
+                        // actually arrive (a window can silently produce nothing when the
+                        // BLE link drops mid-pass), capped at HRV_PASS_MAX_MS. Stay on
+                        // this screen; the loop lives in this screen's coroutine scope.
+                        if (state.supportsHrv) {
+                            OutlinedButton(
+                                enabled = !measuring,
+                                onClick = {
+                                    measuring = true
+                                    scope.launch {
+                                        val deadline = System.currentTimeMillis() + HRV_PASS_MAX_MS
+                                        var collected = 0
+                                        try {
+                                            while (collected < HRV_PASS_SAMPLES &&
+                                                System.currentTimeMillis() < deadline) {
+                                                passSample = collected + 1
+                                                val before = coordinator.hrvSampleCount
+                                                remaining = measureSeconds
+                                                val ticker = launch {
+                                                    while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
+                                                }
+                                                try {
+                                                    coordinator.measureCombined()
+                                                } finally {
+                                                    ticker.cancel()
+                                                    remaining = 0
+                                                }
+                                                if (coordinator.hrvSampleCount > before) {
+                                                    collected++
+                                                    viewModel?.refreshNow()
+                                                }
+                                                if (collected < HRV_PASS_SAMPLES) kotlinx.coroutines.delay(HRV_PASS_GAP_MS)
+                                            }
+                                        } finally {
+                                            passSample = 0
+                                            measuring = false
+                                        }
+                                    }
+                                },
+                            ) {
+                                Text(if (passSample > 0) "Sample $passSample/$HRV_PASS_SAMPLES" else "HRV ×$HRV_PASS_SAMPLES")
                             }
-                        },
-                    ) {
-                        Text(
-                            if (measuring) "Measuring… ${remaining}s" else "Measure",
-                            color = androidx.compose.ui.graphics.Color.White,
-                        )
+                        }
                     }
                 }
             }
@@ -338,7 +391,10 @@ fun VitalsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "Keep still — measuring blood pressure, SpO₂, stress, fatigue & blood sugar…",
+                    if (passSample > 0)
+                        "HRV series: sample $passSample of $HRV_PASS_SAMPLES — keep still and stay on this screen…"
+                    else
+                        "Keep still — measuring blood pressure, SpO₂, stress, fatigue & blood sugar…",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),

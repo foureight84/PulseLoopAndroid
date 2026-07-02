@@ -84,9 +84,11 @@ class RingDecoderTest {
         payload[4] = 40.toByte()   // fatigue at byte[5]
         payload[5] = 30.toByte()   // stress at byte[6]
         payload[6] = 51.toByte()   // blood sugar ×10 at byte[7] → 5.1 mmol/L → 91.88 mg/dL
+        payload[7] = 45.toByte()   // HRV at byte[8]
         val data = composeRingPacket(0x24, payload)
         val events = RingDecoder.decode(data)
-        assertTrue(events.size >= 6) // HR + systolic + diastolic + SpO2 + fatigue + stress + sugar
+        assertTrue(events.size >= 7) // HR + systolic + diastolic + SpO2 + fatigue + stress + sugar + HRV
+        assertTrue(events.any { it is RingDecodedEvent.HrvSample && (it as RingDecodedEvent.HrvSample).value == 45 })
         assertTrue(events.any { it is RingDecodedEvent.HeartRateSample && (it as RingDecodedEvent.HeartRateSample).bpm == 72 })
         assertTrue(events.any { it is RingDecodedEvent.Spo2Result && (it as RingDecodedEvent.Spo2Result).value == 97 })
         assertTrue(events.any { it is RingDecodedEvent.StressSample && (it as RingDecodedEvent.StressSample).value == 30 })

@@ -56,6 +56,10 @@ class RingSyncCoordinator(
     /** Latest live SpO2 %, mirrored for UI without a query. */
     var latestSpO2Value: Int? = null
         private set
+    /** Monotonic count of HRV samples seen this session — lets the HRV series
+     *  loop verify a measurement window actually produced a reading. */
+    var hrvSampleCount = 0
+        private set
 
     var workoutHRActive = false
         private set
@@ -300,6 +304,9 @@ class RingSyncCoordinator(
             }
             is PulseEvent.Spo2Result -> {
                 latestSpO2Value = event.value
+            }
+            is PulseEvent.HrvSample -> {
+                hrvSampleCount++
             }
             is PulseEvent.DeviceStateChanged -> {
                 when (event.state) {

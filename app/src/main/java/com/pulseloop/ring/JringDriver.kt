@@ -30,6 +30,9 @@ object JringCoordinator : WearableCoordinator {
         WearableCapability.BLOOD_SUGAR,      // combined measurement byte[7] (mmol/L ×10)
         WearableCapability.STRESS,           // combined measurement byte[6]
         WearableCapability.FATIGUE,          // combined measurement byte[5]
+        WearableCapability.HRV,              // combined measurement byte[8] — spot only;
+                                             // the jring protocol has no HRV history sync
+                                             // (Colmi 0x39 equivalent doesn't exist)
         WearableCapability.MANUAL_HEART_RATE,
         WearableCapability.MANUAL_SPO2,
         WearableCapability.REALTIME_HEART_RATE,

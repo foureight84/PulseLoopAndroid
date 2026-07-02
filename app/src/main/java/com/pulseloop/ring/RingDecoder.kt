@@ -230,6 +230,7 @@ object RingDecoder {
             val fatigue = bytes[5].toInt() and 0xFF
             val stress = if (bytes.size > 6) bytes[6].toInt() and 0xFF else 0
             val bloodSugarRaw = if (bytes.size > 7) bytes[7].toInt() and 0xFF else 0
+            val hrv = if (bytes.size > 8) bytes[8].toInt() and 0xFF else 0
 
             if (hr > 0) add(RingDecodedEvent.HeartRateSample(bpm = hr, _timestamp = now))
             if (systolic > 0 || diastolic > 0) add(RingDecodedEvent.HistoryMeasurement(
@@ -257,6 +258,9 @@ object RingDecoder {
                 value = (bloodSugarRaw / 10.0) * 18.016,
                 _timestamp = now,
             ))
+            // HRV (byte[8], i8 in onReceiveSensorData) — same HrvSample event the
+            // Colmi driver emits, so persistence/UI handle both families identically.
+            if (hrv > 0) add(RingDecodedEvent.HrvSample(value = hrv, _timestamp = now))
         }
     }
 
