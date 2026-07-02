@@ -7,8 +7,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.pulseloop.R
 
 /**
  * PulseLoop design tokens — "Porcelain & Steel".
@@ -95,20 +98,53 @@ private val LightColorScheme = lightColorScheme(
 )
 
 /**
- * Type scale: system sans, but deliberate. Metric numbers are the app's
+ * IBM Plex Sans — instrument-like clinical character, excellent tabular
+ * figures for the metric readouts. Bundled as static TTFs (res/font); the
+ * variable font isn't shipped, so weights are wired via distinct Font()
+ * entries per FontWeight.
+ */
+private val PlexSans = FontFamily(
+    Font(R.font.ibm_plex_sans_regular, FontWeight.Normal),
+    Font(R.font.ibm_plex_sans_medium, FontWeight.Medium),
+    Font(R.font.ibm_plex_sans_semibold, FontWeight.SemiBold),
+    Font(R.font.ibm_plex_sans_bold, FontWeight.Bold),
+)
+
+/**
+ * Type scale: IBM Plex Sans, but deliberate. Metric numbers are the app's
  * voice — large, tight, heavy. Labels are small and quiet; the contrast
  * in scale does the hierarchy work that color was failing to do.
  */
 private val PulseTypography = Typography().let { t ->
-    t.copy(
-        displayMedium = t.displayMedium.copy(
+    // Every default Material3 role gets the brand font first...
+    val withFont = Typography(
+        displayLarge = t.displayLarge.copy(fontFamily = PlexSans),
+        displayMedium = t.displayMedium.copy(fontFamily = PlexSans),
+        displaySmall = t.displaySmall.copy(fontFamily = PlexSans),
+        headlineLarge = t.headlineLarge.copy(fontFamily = PlexSans),
+        headlineMedium = t.headlineMedium.copy(fontFamily = PlexSans),
+        headlineSmall = t.headlineSmall.copy(fontFamily = PlexSans),
+        titleLarge = t.titleLarge.copy(fontFamily = PlexSans),
+        titleMedium = t.titleMedium.copy(fontFamily = PlexSans),
+        titleSmall = t.titleSmall.copy(fontFamily = PlexSans),
+        bodyLarge = t.bodyLarge.copy(fontFamily = PlexSans),
+        bodyMedium = t.bodyMedium.copy(fontFamily = PlexSans),
+        bodySmall = t.bodySmall.copy(fontFamily = PlexSans),
+        labelLarge = t.labelLarge.copy(fontFamily = PlexSans),
+        labelMedium = t.labelMedium.copy(fontFamily = PlexSans),
+        labelSmall = t.labelSmall.copy(fontFamily = PlexSans),
+    )
+    // ...then the existing weight/letterSpacing/lineHeight overrides layer
+    // back on top, unchanged.
+    withFont.copy(
+        displayMedium = withFont.displayMedium.copy(
             fontWeight = FontWeight.Bold, letterSpacing = (-1).sp),
-        headlineLarge = t.headlineLarge.copy(
+        headlineLarge = withFont.headlineLarge.copy(
             fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp),
-        headlineMedium = t.headlineMedium.copy(fontWeight = FontWeight.Bold),
-        titleMedium = t.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-        labelSmall = t.labelSmall.copy(letterSpacing = 0.6.sp),
-        bodySmall = t.bodySmall.copy(lineHeight = 18.sp),
+        headlineMedium = withFont.headlineMedium.copy(fontWeight = FontWeight.Bold),
+        titleMedium = withFont.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        labelSmall = withFont.labelSmall.copy(letterSpacing = 0.6.sp),
+        bodySmall = withFont.bodySmall.copy(lineHeight = 18.sp),
     )
 }
 
