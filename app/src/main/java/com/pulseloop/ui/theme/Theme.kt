@@ -3,6 +3,8 @@ package com.pulseloop.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -26,8 +28,8 @@ private val DarkSurface = Color(0xFF151A1D)
 private val DarkSurfaceVariant = Color(0xFF1F2529)
 private val DarkInk = Color(0xFFE8EDEF)          // 14.9:1 on surface
 private val DarkInkMuted = Color(0xFF9AA7AD)     // 7.1:1 on surface
-private val DarkPrimary = Color(0xFFA5D3E7)      // 10.9:1 on surface as text
-private val DarkOnPrimary = Color(0xFF06222C)    // 8.3:1 on primary
+private val DarkPrimary = Color(0xFF4DE8FF)      // 11.9:1 on surface — bright cyan for glossy-screen legibility
+private val DarkOnPrimary = Color(0xFF05303B)    // 9.6:1 on primary
 private val DarkPrimaryContainer = Color(0xFF274B5C)
 private val DarkOnPrimaryContainer = Color(0xFFD3E7F0)  // 7.3:1
 private val DarkOutline = Color(0xFF46535A)
@@ -110,11 +112,44 @@ private val PulseTypography = Typography().let { t ->
     )
 }
 
+/**
+ * User theme override: SYSTEM follows the OS, LIGHT/DARK force a mode.
+ * Backed by SharedPreferences; the mutableStateOf makes every
+ * PulseLoopTheme recompose when the user changes it in Settings.
+ */
+object ThemeController {
+    enum class Mode { SYSTEM, LIGHT, DARK }
+
+    var mode by androidx.compose.runtime.mutableStateOf(Mode.SYSTEM)
+        private set
+    private var loaded = false
+
+    fun load(context: android.content.Context) {
+        if (loaded) return
+        loaded = true
+        val raw = context.getSharedPreferences("ui_prefs", android.content.Context.MODE_PRIVATE)
+            .getString("themeMode", null)
+        mode = try { Mode.valueOf(raw ?: "SYSTEM") } catch (_: Exception) { Mode.SYSTEM }
+    }
+
+    fun set(context: android.content.Context, newMode: Mode) {
+        mode = newMode
+        context.getSharedPreferences("ui_prefs", android.content.Context.MODE_PRIVATE)
+            .edit().putString("themeMode", newMode.name).apply()
+    }
+}
+
 @Composable
 fun PulseLoopTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.remember { ThemeController.load(context); Unit }
+    val darkTheme = when (ThemeController.mode) {
+        ThemeController.Mode.LIGHT -> false
+        ThemeController.Mode.DARK -> true
+        ThemeController.Mode.SYSTEM -> isSystemInDarkTheme()
+    }
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
     MaterialTheme(
         colorScheme = colorScheme,

@@ -70,6 +70,24 @@ fun SettingsScreen(
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
 
+        // Appearance — user theme override (System / Light / Dark)
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Appearance", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.pulseloop.ui.theme.ThemeController.Mode.entries.forEach { m ->
+                        FilterChip(
+                            selected = com.pulseloop.ui.theme.ThemeController.mode == m,
+                            onClick = { com.pulseloop.ui.theme.ThemeController.set(context, m) },
+                            label = { Text(m.name.lowercase().replaceFirstChar { it.uppercase() }) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+
         // AI Coach section — ported from CoachSettingsSection.swift
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
