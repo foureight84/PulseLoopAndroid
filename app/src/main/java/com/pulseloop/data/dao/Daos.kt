@@ -133,6 +133,10 @@ interface SleepSessionDao {
 
     @Query("DELETE FROM sleep_sessions")
     suspend fun clear()
+
+    /** Demo-seeded rows never get syncedAt; ring-synced rows always do. */
+    @Query("DELETE FROM sleep_sessions WHERE syncedAt IS NULL")
+    suspend fun clearDemo()
 }
 
 @Dao

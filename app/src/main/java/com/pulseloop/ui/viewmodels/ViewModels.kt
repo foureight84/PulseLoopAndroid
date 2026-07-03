@@ -412,13 +412,22 @@ class VitalDetailViewModel(
         }
     }
 
+    /**
+     * The latest (resting) anchor per period. The anchor is the window START,
+     * so the resting WEEK/MONTH window must TRAIL: it ends after today, not
+     * start at today — [today, today+7) is a forward-looking window of future
+     * days that structurally contains no data.
+     */
+    private fun latestAnchor(p: Period): Long = when (p) {
+        Period.DAY   -> System.currentTimeMillis()                       // rolling last 24h, ending now
+        Period.WEEK  -> TimeUtil.startOfTodayLocal() - 6 * 86_400_000L   // last 7 days incl. today
+        Period.MONTH -> Instant.ofEpochMilli(TimeUtil.startOfTodayLocal())
+            .atZone(ZoneId.systemDefault()).minusMonths(1).plusDays(1)
+            .toInstant().toEpochMilli()                                  // last month incl. today
+    }
+
     fun setPeriod(p: Period) {
-        val anchor = when (p) {
-            Period.DAY   -> System.currentTimeMillis()   // rolling last 24h, ending now
-            Period.WEEK  -> TimeUtil.startOfDayLocal(System.currentTimeMillis())
-            Period.MONTH -> TimeUtil.startOfDayLocal(System.currentTimeMillis())
-        }
-        _state.update { it.copy(period = p, anchor = anchor) }
+        _state.update { it.copy(period = p, anchor = latestAnchor(p)) }
         viewModelScope.launch { refresh() }
     }
 
@@ -446,16 +455,7 @@ class VitalDetailViewModel(
                 i.plusMonths(1).toInstant().toEpochMilli()
             }
         }
-        val todayStart = TimeUtil.startOfTodayLocal()
-        val maxAnchor = when (st.period) {
-            Period.DAY -> System.currentTimeMillis()  // rolling: end can reach now
-            Period.WEEK -> todayStart
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                i.withDayOfMonth(1).toInstant().toEpochMilli()
-            }
-        }
-        if (newAnchor > maxAnchor) return
+        if (newAnchor > latestAnchor(st.period)) return
         _state.update { it.copy(anchor = newAnchor) }
         viewModelScope.launch { refresh() }
     }
@@ -463,15 +463,10 @@ class VitalDetailViewModel(
     /** Whether forward navigation is allowed (disabled at the present/latest window). */
     fun canGoForward(): Boolean {
         val st = _state.value
-        val todayStart = TimeUtil.startOfTodayLocal()
         return when (st.period) {
             // Enabled only if a full 24h step still fits before now (i.e. we're paged back).
-            Period.DAY   -> st.anchor + 86_400_000L <= System.currentTimeMillis()
-            Period.WEEK  -> st.anchor < todayStart
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                st.anchor < i.withDayOfMonth(1).toInstant().toEpochMilli()
-            }
+            Period.DAY -> st.anchor + 86_400_000L <= System.currentTimeMillis()
+            else -> st.anchor < latestAnchor(st.period)
         }
     }
 

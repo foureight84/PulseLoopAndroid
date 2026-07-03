@@ -42,7 +42,14 @@ class EventPersistenceSubscriber(
                     RingConnectionState.CONNECTED -> {
                         db.measurementDao().clearDemo()
                         db.activityDailyDao().clearDemo()
-                        db.sleepSessionDao().clear()
+                        // Demo rows only. This fires on every 0x0C status packet
+                        // (~every 30-min background sync) — an unconditional clear()
+                        // here was erasing ALL sleep history, of which only the last
+                        // day ever got re-synced. Stage blocks cascade with sessions.
+                        db.sleepSessionDao().clearDemo()
+                        // New sync pass: the ring will replay the full 0x10 history
+                        // stream, so restart the per-day bucket accumulators.
+                        bucketDaySums.clear()
                         "CONNECTED"
                     }
                     RingConnectionState.DISCONNECTED -> "DISCONNECTED"
@@ -128,7 +135,19 @@ class EventPersistenceSubscriber(
                 upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
             }
             is PulseEvent.ActivityBucket -> {
-                upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, 0.0, event.distanceMeters)
+                // 0x10 history buckets are per-minute DELTAS, not cumulative totals.
+                // Sum them per local day across this sync pass, and let
+                // upsertActivityDaily's maxOf compare the running day-sum against the
+                // stored total. A re-synced stream reproduces the same sum, so this is
+                // idempotent — no double counting — while a bucket-only day (yesterday,
+                // synced today) now gets its true total instead of its largest single
+                // minute, which is what maxOf-per-bucket used to store.
+                val ts = event.timestamp.toEpochMilli()
+                val day = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+                val sums = bucketDaySums.getOrPut(day) { BucketSums() }
+                sums.steps += event.steps
+                sums.distanceM += event.distanceMeters
+                upsertActivityDaily(ts, sums.steps, 0.0, sums.distanceM)
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)
@@ -156,6 +175,10 @@ class EventPersistenceSubscriber(
             }
         }
     }
+
+    /** Running per-day sums for 0x10 history buckets within one sync pass. */
+    private data class BucketSums(var steps: Int = 0, var distanceM: Double = 0.0)
+    private val bucketDaySums = mutableMapOf<Long, BucketSums>()
 
     private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double) {
         // Key the daily row by local midnight so it matches the Today dashboard and
