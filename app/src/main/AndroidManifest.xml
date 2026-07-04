@@ -24,7 +24,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <!-- Cleartext allowed for LAN LLM endpoints (e.g. llama.cpp on :8090).
+         ponytail: blanket flag; tighten to a networkSecurityConfig scoped to
+         private ranges if this app ever ships beyond personal use. -->
     <application
+        android:usesCleartextTraffic="true"
         android:allowBackup="false"
         android:label="PulseLoop"
         android:supportsRtl="true"

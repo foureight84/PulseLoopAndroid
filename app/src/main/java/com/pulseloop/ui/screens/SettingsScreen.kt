@@ -44,6 +44,8 @@ fun SettingsScreen(
 
     var apiKey by remember { mutableStateOf(keyStore.apiKey) }
     var apiKeyVisible by remember { mutableStateOf(false) }
+    var apiEndpoint by remember { mutableStateOf(
+        if (keyStore.apiEndpoint == ApiKeyStore.DEFAULT_ENDPOINT) "" else keyStore.apiEndpoint) }
     var selectedModel by remember { mutableStateOf(keyStore.model) }
     var coachEnabled by remember { mutableStateOf(keyStore.coachEnabled) }
     var webSearch by remember { mutableStateOf(keyStore.webSearchEnabled) }
@@ -178,6 +180,26 @@ fun SettingsScreen(
                             }
                         }
                     }
+                    Spacer(Modifier.height(12.dp))
+                    // Local/custom OpenAI-compatible endpoint (llama.cpp, Ollama, LM Studio…)
+                    OutlinedTextField(
+                        value = apiEndpoint,
+                        onValueChange = { apiEndpoint = it },
+                        label = { Text("API endpoint (blank = OpenAI)") },
+                        placeholder = { Text("http://192.168.1.20:8090/v1/responses") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { keyStore.apiEndpoint = apiEndpoint }),
+                        trailingIcon = {
+                            TextButton(onClick = { keyStore.apiEndpoint = apiEndpoint }) { Text("Save") }
+                        },
+                    )
+                    Text(
+                        "Point at a local llama.cpp/Ollama server to keep coach analysis on your network. Restart the app after changing.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "Stored securely in Android Keystore. Never leaves your device except to call the model.",

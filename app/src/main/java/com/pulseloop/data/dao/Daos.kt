@@ -104,8 +104,14 @@ interface ActivitySessionDao {
     @Query("SELECT * FROM activity_sessions ORDER BY startedAt DESC LIMIT :limit")
     fun recentFlow(limit: Int = 10): Flow<List<ActivitySessionEntity>>
 
+    @Query("SELECT * FROM activity_sessions WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): ActivitySessionEntity?
+
     @Upsert
     suspend fun upsert(session: ActivitySessionEntity)
+
+    @Query("DELETE FROM activity_sessions WHERE id = :id")
+    suspend fun delete(id: String)
 }
 
 @Dao

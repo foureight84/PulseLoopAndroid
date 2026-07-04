@@ -862,6 +862,20 @@ fun ActivityScreen(
     val todaySteps = today?.steps ?: 0
     val todayDistance = today?.distanceMeters ?: 0.0
 
+    // History section pulls a wider 14-day window directly from the DB — the shared
+    // ActivityViewModel only keeps 7 days for the Today tiles above, which isn't enough
+    // for a progression view. Demo-seeded rows are excluded so a clean install shows an
+    // honest (possibly sparse) history instead of fabricated numbers.
+    val historyContext = LocalContext.current
+    var historyDays by remember { mutableStateOf<List<com.pulseloop.data.entity.ActivityDailyEntity>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        val db = com.pulseloop.data.PulseLoopDatabase.getInstance(historyContext)
+        historyDays = db.activityDailyDao().recent(30)
+            .filter { it.source != "demo" }
+            .take(14)
+    }
+    val maxHistorySteps = historyDays.maxOfOrNull { it.steps } ?: 0
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -895,11 +909,31 @@ fun ActivityScreen(
                         state.recentWorkouts.forEach { wo ->
                             val elapsed = wo.endedAt?.let { (it - wo.startedAt) / 1000 }?.toInt() ?: 0
                             val min = elapsed / 60
-                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            val startedAt = java.time.Instant.ofEpochMilli(wo.startedAt).atZone(java.time.ZoneId.systemDefault())
+                            val dateTimeText = startedAt.format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a", java.util.Locale.getDefault()))
+                            val caloriesText = wo.calories?.let { "%.0f kcal".format(it) } ?: "--"
+                            val distanceText = if (wo.useGps) wo.distanceMeters?.let { "%.1f km".format(it / 1000) } ?: "-- km" else null
+                            val secondaryLine = listOfNotNull(caloriesText, distanceText).joinToString(" · ")
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .let { m -> if (navController != null) m.clickable { navController.navigate("workout/${wo.id}") } else m }
+                                    .padding(vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 Column {
                                     Text(wo.type, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                                     Text(
-                                        "${wo.distanceMeters?.let { "%.1f km · ".format(it / 1000) } ?: ""}${min} min",
+                                        dateTimeText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text("$min min", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                    Text(
+                                        secondaryLine,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -921,6 +955,46 @@ fun ActivityScreen(
                         modifier = Modifier.weight(1f).height(48.dp),
                     ) {
                         Text(type)
+                    }
+                }
+            }
+        }
+
+        if (historyDays.isNotEmpty()) {
+            item {
+                Text("History", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+            historyDays.forEach { day ->
+                item {
+                    val zonedDate = java.time.Instant.ofEpochMilli(day.date).atZone(java.time.ZoneId.systemDefault())
+                    val weekdayLabel = zonedDate.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d", java.util.Locale.getDefault()))
+                    val distanceKm = day.distanceMeters / 1000
+                    val fraction = if (maxHistorySteps > 0) (day.steps.toFloat() / maxHistorySteps.toFloat()).coerceIn(0.03f, 1f) else 0.03f
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(weekdayLabel, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                Text(
+                                    "${formatNumber(day.steps)} steps · %.1f km".format(distanceKm),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp)),
+                            ) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth(fraction)
+                                        .height(8.dp)
+                                        .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp)),
+                                )
+                            }
+                        }
                     }
                 }
             }

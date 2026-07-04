@@ -50,6 +50,7 @@ fun PulseLoopApp() {
         val gpsRecorder = remember { GpsRouteRecorder(context) }
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
         val persistence = remember { EventPersistenceSubscriber(db) }
+        val derivedMetrics = remember { com.pulseloop.service.DerivedMetricsEngine(db) }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────
@@ -62,7 +63,7 @@ fun PulseLoopApp() {
                 liveMeasurementsEnabled = true,
                 model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
             )
-            val client = OpenAIResponsesClient(apiKey)
+            val client = OpenAIResponsesClient(apiKey, endpoint = apiKeyStore.apiEndpoint)
             val registry = ToolRegistry(flags)
             val toolContext = ToolExecutionContext(
                 db = db,
@@ -105,6 +106,9 @@ fun PulseLoopApp() {
             // Workout persistence: pick an unfinished session back up after the
             // Activity/process was recreated (tab away, rotation, crash).
             liveWorkout.reattachIfActive()
+
+            // App-side HRV/stress/sleep/fatigue estimates (sourceRaw="derived").
+            derivedMetrics.start()
 
             // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
             // process restart — the live GATT is gone, so the views would otherwise show a
@@ -239,6 +243,14 @@ fun PulseLoopApp() {
                         onBack = { navController.popBackStack() },
                         db = db,
                         apiKeyStore = apiKeyStore,
+                    )
+                }
+                composable("workout/{sessionId}") { backStackEntry ->
+                    val sessionId = backStackEntry.arguments?.getString("sessionId") ?: return@composable
+                    WorkoutDetailScreen(
+                        sessionId = sessionId,
+                        onBack = { navController.popBackStack() },
+                        db = db,
                     )
                 }
                 composable("onboarding") { OnboardingScreen(onComplete = { navController.navigate("pairing") }) }

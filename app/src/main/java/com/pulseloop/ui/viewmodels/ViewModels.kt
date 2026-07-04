@@ -58,13 +58,27 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
 
     init {
         viewModelScope.launch {
-            db.activityDailyDao().byDayFlow(todayStart).collect { activity ->
-                _state.update { it.copy(
-                    steps = activity?.steps,
-                    calories = activity?.calories,
-                    distanceMeters = activity?.distanceMeters,
-                    activeMinutes = activity?.activeMinutes,
-                ) }
+            // Re-resolve "today" every poll: a Flow keyed to a startup-time
+            // todayStart keeps showing yesterday's row after midnight.
+            var currentDay = 0L
+            var collectJob: kotlinx.coroutines.Job? = null
+            while (true) {
+                val day = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+                if (day != currentDay) {
+                    currentDay = day
+                    collectJob?.cancel()
+                    collectJob = viewModelScope.launch {
+                        db.activityDailyDao().byDayFlow(day).collect { activity ->
+                            _state.update { it.copy(
+                                steps = activity?.steps,
+                                calories = activity?.calories,
+                                distanceMeters = activity?.distanceMeters,
+                                activeMinutes = activity?.activeMinutes,
+                            ) }
+                        }
+                    }
+                }
+                kotlinx.coroutines.delay(30_000)
             }
         }
         viewModelScope.launch {

@@ -29,6 +29,15 @@ class ApiKeyStore(context: Context) {
         get() = prefs.getString(KEY_MODEL, "gpt-5.4") ?: "gpt-5.4"
         set(value) { prefs.edit().putString(KEY_MODEL, value).apply() }
 
+    /**
+     * OpenAI-compatible responses endpoint. Point at a local llama.cpp /
+     * Ollama-style server (e.g. http://192.168.1.20:8090/v1/responses) to run
+     * the coach fully on-LAN; blank restores the OpenAI default.
+     */
+    var apiEndpoint: String
+        get() = prefs.getString(KEY_API_ENDPOINT, "")?.ifBlank { DEFAULT_ENDPOINT } ?: DEFAULT_ENDPOINT
+        set(value) { prefs.edit().putString(KEY_API_ENDPOINT, value.trim()).apply() }
+
     var coachEnabled: Boolean
         get() = prefs.getBoolean(KEY_COACH_ENABLED, true)
         set(value) { prefs.edit().putBoolean(KEY_COACH_ENABLED, value).apply() }
@@ -117,6 +126,8 @@ class ApiKeyStore(context: Context) {
     companion object {
         private const val KEY_API_KEY = "openai_api_key"
         private const val KEY_MODEL = "coach_model"
+        private const val KEY_API_ENDPOINT = "coach_api_endpoint"
+        const val DEFAULT_ENDPOINT = "https://api.openai.com/v1/responses"
         private const val KEY_COACH_ENABLED = "coach_enabled"
         private const val KEY_WEB_SEARCH = "web_search_enabled"
         private const val KEY_WRITE_TOOLS = "write_tools_enabled"
