@@ -81,8 +81,16 @@ class JringSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         writer?.enqueue(encoder.makeTimeSyncCommand())
         writer?.enqueue(encoder.makeLocaleCommand())
         writer?.enqueue(encoder.makeDefaultUserInfoCommand())
-        writer?.enqueue(encoder.makeHistoryQueryCommand())
+        // 3 days: a days=1 window can clip the pre-midnight half of last night's
+        // sleep (firmware indexes by calendar day), and 0x11 sleep packets have
+        // never been observed with days=1 — field diagnosis 2026-07-04.
+        writer?.enqueue(encoder.makeHistoryQueryCommand(days = 3))
         writer?.enqueue(encoder.makeHistoryMeasurementQueryCommand())
+        // Arm the automatic HR schedule on every connect. It was previously only
+        // sent after a manual HR measurement ended — a ring that never got one
+        // does no periodic night sampling, and without night samples the
+        // firmware has nothing to stage sleep from.
+        writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 30))
     }
 
     override fun handle(event: RingDecodedEvent) {
