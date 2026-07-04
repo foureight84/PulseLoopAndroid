@@ -132,7 +132,20 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.ActivityUpdate -> {
-                upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
+                val ts = event.timestamp.toEpochMilli()
+                val today = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+                // The ring's cumulative 0x03 counter resets at the RING's midnight,
+                // which can lag the phone's. In the first hours of a new local day,
+                // a large total ≈ yesterday's row is yesterday's counter still
+                // ticking — writing it to today would seed the new day with
+                // yesterday's steps (maxOf never lets it drop back). Route it to
+                // yesterday until the counter visibly resets.
+                val yesterday = db.activityDailyDao().byDay(today - 86_400_000L)
+                val stillYesterdays = (ts - today) < MIDNIGHT_GRACE_MS &&
+                    yesterday != null && event.steps > 200 &&
+                    event.steps >= yesterday.steps * 9 / 10
+                val effectiveTs = if (stillYesterdays) today - 1 else ts
+                upsertActivityDaily(effectiveTs, event.steps, event.calories, event.distanceMeters)
             }
             is PulseEvent.ActivityBucket -> {
                 // 0x10 history buckets are per-minute DELTAS, not cumulative totals.
@@ -147,7 +160,10 @@ class EventPersistenceSubscriber(
                 val sums = bucketDaySums.getOrPut(day) { BucketSums() }
                 sums.steps += event.steps
                 sums.distanceM += event.distanceMeters
-                upsertActivityDaily(ts, sums.steps, 0.0, sums.distanceM)
+                // Active minutes: the protocol never reports them, so derive —
+                // a minute-bucket with a brisk cadence counts as active.
+                if (event.steps >= ACTIVE_MINUTE_STEPS) sums.activeMin += 1
+                upsertActivityDaily(ts, sums.steps, 0.0, sums.distanceM, sums.activeMin)
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)
@@ -177,10 +193,10 @@ class EventPersistenceSubscriber(
     }
 
     /** Running per-day sums for 0x10 history buckets within one sync pass. */
-    private data class BucketSums(var steps: Int = 0, var distanceM: Double = 0.0)
+    private data class BucketSums(var steps: Int = 0, var distanceM: Double = 0.0, var activeMin: Int = 0)
     private val bucketDaySums = mutableMapOf<Long, BucketSums>()
 
-    private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double) {
+    private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double, activeMinutes: Int = -1) {
         // Key the daily row by local midnight so it matches the Today dashboard and
         // MetricsService/notifications, which all read per-day rows by local-day boundary.
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
@@ -190,14 +206,24 @@ class EventPersistenceSubscriber(
                 steps = maxOf(existing.steps, steps),
                 calories = maxOf(existing.calories, calories),
                 distanceMeters = maxOf(existing.distanceMeters, distanceM),
+                activeMinutes = if (activeMinutes >= 0) maxOf(existing.activeMinutes, activeMinutes) else existing.activeMinutes,
                 updatedAt = System.currentTimeMillis(),
             ))
         } else {
             db.activityDailyDao().upsert(ActivityDailyEntity(
                 date = dayStart, steps = steps, calories = calories,
                 distanceMeters = distanceM, source = "ring",
+                activeMinutes = maxOf(activeMinutes, 0),
             ))
         }
+    }
+
+    companion object {
+        /** How long after local midnight the ring's un-reset counter may still
+         *  report yesterday's totals (ring resets at its own midnight). */
+        private const val MIDNIGHT_GRACE_MS = 2 * 3_600_000L
+        /** Steps in a 1-min bucket that qualify the minute as "active". */
+        private const val ACTIVE_MINUTE_STEPS = 60
     }
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>) {
