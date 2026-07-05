@@ -138,9 +138,10 @@ fun SettingsScreen(
                                         // "local" one-tap setup: point at the LAN llama server
                                         // unless a custom endpoint is already saved. No API key
                                         // needed — the coach gate exempts local mode.
+                                        // No endpoint saved yet: leave the field for the user's
+                                        // server address — LAN IPs are per-household, not code.
                                         if (model == "local" && keyStore.apiEndpoint == ApiKeyStore.DEFAULT_ENDPOINT) {
-                                            keyStore.apiEndpoint = "http://192.168.1.95:8080/v1/responses"
-                                            apiEndpoint = keyStore.apiEndpoint
+                                            apiEndpoint = ""
                                         }
                                     },
                                 )
@@ -195,7 +196,7 @@ fun SettingsScreen(
                         value = apiEndpoint,
                         onValueChange = { apiEndpoint = it },
                         label = { Text("API endpoint (blank = OpenAI)") },
-                        placeholder = { Text("e.g. http://192.168.1.95:8080/v1/responses") },
+                        placeholder = { Text("http://<desktop-ip>:8080/v1/responses") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
