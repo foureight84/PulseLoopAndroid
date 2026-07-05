@@ -50,6 +50,8 @@ class EventPersistenceSubscriber(
                         // New sync pass: the ring will replay the full 0x10 history
                         // stream, so restart the per-day bucket accumulators.
                         bucketDaySums.clear()
+                        // Diagnostics cap: raw packets grew to 800k+ rows in days.
+                        db.rawPacketDao().pruneOlderThan(System.currentTimeMillis() - 12 * 3_600_000L)
                         "CONNECTED"
                     }
                     RingConnectionState.DISCONNECTED -> "DISCONNECTED"
@@ -85,6 +87,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.HeartRateSample -> {
                 db.measurementDao().insert(MeasurementEntity(
+                    id = "hr-${event.timestamp.toEpochMilli()}-${event.bpm}",
                     kindRaw = MeasurementKind.HEART_RATE.name,
                     value = event.bpm.toDouble(), unit = "bpm",
                     timestamp = event.timestamp.toEpochMilli(),
@@ -93,6 +96,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.Spo2Result -> {
                 db.measurementDao().insert(MeasurementEntity(
+                    id = "spo2-${event.timestamp.toEpochMilli()}-${event.value}",
                     kindRaw = MeasurementKind.SPO2.name,
                     value = event.value.toDouble(), unit = "%",
                     timestamp = event.timestamp.toEpochMilli(),
@@ -101,6 +105,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.HistoryMeasurement -> {
                 db.measurementDao().insert(MeasurementEntity(
+                    id = "h-${event.kind.name}-${event.timestamp.toEpochMilli()}-${event.value}",
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
                     timestamp = event.timestamp.toEpochMilli(),
@@ -109,6 +114,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.StressSample -> {
                 db.measurementDao().insert(MeasurementEntity(
+                    id = "st-${event.timestamp.toEpochMilli()}-${event.value}",
                     kindRaw = MeasurementKind.STRESS.name,
                     value = event.value.toDouble(), unit = "",
                     timestamp = event.timestamp.toEpochMilli(),
@@ -117,6 +123,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.HrvSample -> {
                 db.measurementDao().insert(MeasurementEntity(
+                    id = "hrv-${event.timestamp.toEpochMilli()}-${event.value}",
                     kindRaw = MeasurementKind.HRV.name,
                     value = event.value.toDouble(), unit = "ms",
                     timestamp = event.timestamp.toEpochMilli(),
@@ -125,6 +132,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.TemperatureSample -> {
                 db.measurementDao().insert(MeasurementEntity(
+                    id = "t-${event.timestamp.toEpochMilli()}-${event.celsius}",
                     kindRaw = MeasurementKind.TEMPERATURE.name,
                     value = event.celsius, unit = "°C",
                     timestamp = event.timestamp.toEpochMilli(),
@@ -154,10 +162,14 @@ class EventPersistenceSubscriber(
                 val effDay = com.pulseloop.util.TimeUtil.startOfDayLocal(effectiveTs)
                 val hw = lastCumulative
                 if (hw == null || hw.day != effDay) {
-                    // First packet since app start / new day: baseline via maxOf.
+                    // First packet since app start / new day: baseline ONLY — never
+                    // write the absolute counter into a fresh day. With the ring's
+                    // clock lagging, the un-reset counter carries the previous day's
+                    // totals and was seeding each morning with multi-day calories/
+                    // distance. Bucket sums own the day's absolutes; 0x03 contributes
+                    // deltas above this baseline.
                     lastCumulative = CumulativeSnapshot(effDay, event.steps, event.calories, event.distanceMeters)
                     resetCandidateSince = 0L
-                    upsertActivityDaily(effectiveTs, event.steps, event.calories, event.distanceMeters)
                 } else if (event.steps >= hw.steps) {
                     // Rising counter: add the delta above the high-water mark.
                     // A half-rebooted ring BOUNCES between its old and new counter;

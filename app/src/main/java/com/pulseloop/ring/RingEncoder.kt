@@ -196,7 +196,11 @@ object RingEncoder {
     fun makeTimeSyncCommand(instant: Instant = Instant.now()): ByteArray {
         val cmd = ByteArray(20)
         cmd[0] = 0x01
-        val ts = instant.epochSecond.toUInt()
+        // The ring interprets the u32 as WALL-CLOCK seconds (field evidence:
+        // with UTC sent, the ring's midnight lagged the phone's by exactly the
+        // timezone offset, so daily counters reset 7h late). Send local epoch.
+        val offsetMs = TimeZone.getDefault().getOffset(instant.toEpochMilli())
+        val ts = ((instant.toEpochMilli() + offsetMs) / 1000).toUInt()
         cmd[1] = (ts and 0xFFu).toByte()
         cmd[2] = ((ts shr 8) and 0xFFu).toByte()
         cmd[3] = ((ts shr 16) and 0xFFu).toByte()

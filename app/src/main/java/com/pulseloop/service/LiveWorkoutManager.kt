@@ -166,6 +166,7 @@ class LiveWorkoutManager(
             statusRaw = "finished", endedAt = now,
             distanceMeters = gps.state.value.totalDistance,
             calories = kcalAccum,
+            notes = "steps=$workoutSteps",
             updatedAt = now,
         ))
         coordinator.stopWorkoutHeartRate()

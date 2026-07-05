@@ -78,6 +78,12 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
                         }
                     }
                 }
+                // Sleep tile: was never populated at all. Last night's session
+                // lives on today's date key (real or derived).
+                try {
+                    val sleep = db.sleepSessionDao().byDay(day)
+                    _state.update { it.copy(sleepMinutes = sleep?.totalMinutes, sleepScore = sleep?.score) }
+                } catch (_: Exception) {}
                 kotlinx.coroutines.delay(30_000)
             }
         }
@@ -377,6 +383,8 @@ enum class Period(val label: String) { DAY("Today"), WEEK("Week"), MONTH("Month"
  * VitalDetailViewModel — drives a single-metric detail screen with Today/Week/Month
  * aggregation, trend detection, and stats.
  */
+private const val MAX_CHART_POINTS = 2000
+
 class VitalDetailViewModel(
     private val db: PulseLoopDatabase,
     private val metric: String,
@@ -556,8 +564,12 @@ class VitalDetailViewModel(
                 else -> v
             }
 
-            // Every reading, at its real timestamp — no averaging.
-            val samples = dao.range(kindName, windowStart, windowEnd)
+            // Every reading, at its real timestamp — no averaging. Capped by
+            // stride-sampling: an unbounded window once OOM'd the chart label
+            // builder at 200k+ rows (2026-07-05 crash log).
+            val samplesAll = dao.range(kindName, windowStart, windowEnd)
+            val stride = (samplesAll.size / MAX_CHART_POINTS).coerceAtLeast(1)
+            val samples = if (stride > 1) samplesAll.filterIndexed { i, _ -> i % stride == 0 } else samplesAll
             val times = samples.map { it.timestamp }
             val points = samples.map { convert(it.value) }
             val labels = buildLabels(times, period)

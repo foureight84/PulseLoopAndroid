@@ -134,8 +134,9 @@ class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
         val minutes = bestLen * BUCKET_MS / 60_000
         if (minutes < MIN_SLEEP_MINUTES) return
         val startAt = windowStart + bestStart * BUCKET_MS
+        val sessionId = "derived-$dayStart"
         db.sleepSessionDao().upsert(SleepSessionEntity(
-            id = "derived-$dayStart",
+            id = sessionId,
             date = dayStart,
             startAt = startAt,
             endAt = startAt + bestLen * BUCKET_MS,
@@ -143,6 +144,31 @@ class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
             score = null,                      // estimates don't get a score
             syncedAt = System.currentTimeMillis(),  // non-null: survives demo clears
         ))
+        // Coarse derived stages: deep = HR well below daytime baseline, else light.
+        // Not polysomnography — but it gives the Sleep screen structure and is
+        // honest about what an HR-only estimate can see.
+        db.sleepStageBlockDao().deleteBySession(sessionId)
+        var blockStart = bestStart; var blockStage: String? = null
+        fun stageOf(i: Long): String {
+            val v = buckets[i] ?: return "LIGHT"
+            return if (v <= daytime * 0.82) "DEEP" else "LIGHT"
+        }
+        for (i in bestStart..(bestStart + bestLen)) {
+            val stg = if (i < bestStart + bestLen) stageOf(i) else null
+            if (stg != blockStage) {
+                if (blockStage != null) {
+                    val bs = windowStart + blockStart * BUCKET_MS
+                    db.sleepStageBlockDao().insert(com.pulseloop.data.entity.SleepStageBlockEntity(
+                        sessionId = sessionId,
+                        startAt = bs,
+                        startMinute = ((bs - startAt) / 60_000).toInt(),
+                        durationMinutes = ((i - blockStart) * BUCKET_MS / 60_000).toInt(),
+                        stageRaw = blockStage!!,
+                    ))
+                }
+                blockStart = i; blockStage = stg
+            }
+        }
     }
 
     private suspend fun deriveFatigueOncePerDay(dayStart: Long, now: Long) {
@@ -173,7 +199,7 @@ class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
         private const val TICK_MS = 30 * 60_000L
         private const val HRV_WINDOW_MS = 10 * 60_000L
         private const val BUCKET_MS = 10 * 60_000L
-        private const val SLEEP_HR_FACTOR = 0.92
+        private const val SLEEP_HR_FACTOR = 0.88  // 0.92 flagged quiet-awake time as sleep
         private const val MIN_SLEEP_MINUTES = 180
         private const val MIN_NIGHT_SAMPLES = 500
     }

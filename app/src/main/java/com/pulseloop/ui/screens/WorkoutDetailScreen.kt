@@ -124,8 +124,12 @@ fun WorkoutDetailScreen(
                                 StatRow("Date", "$dateText · $timeText")
                                 StatRow("Duration", "%d:%02d".format(minutes, seconds))
                                 StatRow("Calories", wo.calories?.let { "%.0f kcal".format(it) } ?: "--")
-                                if (wo.useGps) {
-                                    StatRow("Distance", wo.distanceMeters?.let { "%.2f km".format(it / 1000) } ?: "--")
+                                run {
+                                    StatRow("Distance", wo.distanceMeters?.takeIf { it > 0 }?.let { "%.2f km".format(it / 1000) } ?: "--")
+                                    // ponytail: workout steps ride in notes ("steps=N") — add a
+                                    // real column when the schema next migrates.
+                                    val steps = wo.notes?.let { Regex("steps=(\\d+)").find(it)?.groupValues?.get(1) }
+                                    StatRow("Steps", steps ?: "--")
                                 }
                                 if (wo.avgHeartRate != null) StatRow("Avg HR", "%.0f bpm".format(wo.avgHeartRate))
                                 if (wo.minHeartRate != null) StatRow("Min HR", "%.0f bpm".format(wo.minHeartRate))

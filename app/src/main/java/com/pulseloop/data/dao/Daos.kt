@@ -38,7 +38,10 @@ interface MeasurementDao {
     @Query("SELECT value FROM measurements WHERE kindRaw = :kind AND timestamp <= :before ORDER BY timestamp DESC LIMIT 1")
     suspend fun latest(kind: String, before: Long = System.currentTimeMillis()): Double?
 
-    @Insert
+    // REPLACE + deterministic ids at ring-data insert sites = idempotent
+    // history re-syncs. The 30-min background sync was re-inserting the full
+    // 3-day HR history every pass (203k rows, 3.4k distinct — the ANRs).
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(measurement: MeasurementEntity)
 
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
@@ -248,6 +251,9 @@ interface RawPacketDao {
 
     @Query("SELECT * FROM raw_packets ORDER BY timestamp DESC LIMIT :limit")
     suspend fun recent(limit: Int = 500): List<RawPacketEntity>
+
+    @Query("DELETE FROM raw_packets WHERE createdAt < :cutoff")
+    suspend fun pruneOlderThan(cutoff: Long)
 }
 
 @Dao
