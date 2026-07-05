@@ -42,7 +42,25 @@ jobs:
       - name: Decode release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-        run: echo "$KEYSTORE_BASE64" | base64 --decode > "${{ github.workspace }}/app/release-ci.keystore"
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          # Fail fast with a readable error when signing secrets aren't configured.
+          # Actions injects EMPTY strings for missing secrets (so the Gradle env
+          # fallbacks never apply), which otherwise surfaces much later as a cryptic
+          # "Tag number over 30 is not supported" keystore parse failure.
+          for s in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!s}" ]; then
+              echo "::error::Repo secret RELEASE_$s is not set — configure the four RELEASE_* signing secrets before tagging a release."
+              exit 1
+            fi
+          done
+          echo "$KEYSTORE_BASE64" | base64 --decode > "${{ github.workspace }}/app/release-ci.keystore"
+          # Prove the decoded keystore is readable and holds the expected key before
+          # spending minutes on the build.
+          keytool -list -keystore "${{ github.workspace }}/app/release-ci.keystore" \
+            -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null
 
       - name: Build signed release + debug universal APKs
         env:
