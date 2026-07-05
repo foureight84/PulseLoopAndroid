@@ -6,6 +6,10 @@
 
 Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smart ring companion app for the 56ff/Jring and Colmi/Yawell QRing platforms.
 
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/t9y85ebaKD)
+
+Questions, ring compatibility reports, or debugging help — join us on [Discord](https://discord.gg/t9y85ebaKD).
+
 ## Pairing Your Ring
 
 1. Open PulseLoop and navigate to the **Today** tab.
@@ -72,6 +76,38 @@ reading to apply a display offset. These are stored locally as calibration offse
 - Local-midnight-aligned day bucketing for consistent daily stats across timezones
 - Calibrated display pipeline: `bpAdjustSystolic`/`bpAdjustDiastolic` offsets applied in ViewModels, `glucoseOffsetMgdl` applied to blood sugar readings
 - Pull-to-refresh on Today dashboard triggers immediate ring sync
+
+---
+
+## Debug & Diagnostics
+
+PulseLoop Android ships a built-in diagnostics tool (an Android-only addition — iOS has a
+simpler debug view): **Settings → Debug**.
+
+The Debug screen shows a live view of what the app and ring are doing:
+
+- **Raw BLE packet trace** — every frame sent/received, with hex payload and the decoded packet kind
+- **Live event log** — the decoded event stream (measurements, sync stages, connection changes) as it flows through the app
+- **Database stats** — row counts per table, so you can see whether history sync is actually landing data
+
+### Exporting a diagnostics report
+
+The share button on the Debug screen produces a single JSON report you can attach to a
+[GitHub issue](https://github.com/foureight84/PulseLoopAndroid/issues) or share on
+[Discord](https://discord.gg/t9y85ebaKD) when reporting a bug. It contains:
+
+- App version/build info and phone model/OS version
+- Ring type, capabilities, firmware version, and last-sync time
+- The most recent wearable log entries and raw BLE packets
+- Recent crash stack traces (uncaught exceptions are persisted on-device by the built-in crash logger)
+- The app's own logcat, including in-process `BluetoothGatt` callbacks
+
+**Privacy redaction is ON by default** and resets to ON for every export — the report is
+privacy-safe unless you explicitly opt out for a single export. When redaction is on:
+health-measurement packet payloads are reduced to their opcode (connection/pairing control
+frames stay whole so protocol issues remain debuggable), the ring name is masked, and log/logcat
+text is scrubbed of identifiers. No health values, names, or addresses leave the report intact.
+Nothing is ever uploaded automatically — the export only goes where you share it.
 
 ---
 
