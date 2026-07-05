@@ -64,7 +64,7 @@ fun PulseLoopApp() {
                 val flags = CoachFeatureFlags(
                     coachEnabled = apiKeyStore.coachEnabled && (apiKey.isNotEmpty() || isLocal),
                     webSearchEnabled = apiKeyStore.webSearchEnabled && !isLocal,
-                    writeToolsEnabled = false,  // safe default
+                    writeToolsEnabled = apiKeyStore.writeToolsEnabled,
                     liveMeasurementsEnabled = true,
                     model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
                     // Local models think 60s+ per round; the default 15-round tool

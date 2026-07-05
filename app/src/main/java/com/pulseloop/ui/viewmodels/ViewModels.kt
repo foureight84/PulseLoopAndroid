@@ -343,11 +343,40 @@ class CoachViewModel(
 
     data class ChatMessage(val role: String, val text: String)
 
-    private val _state = MutableStateFlow(CoachState(
-        messages = listOf(ChatMessage("assistant",
-            "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
-    ))
+    private val greeting = ChatMessage("assistant",
+        "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?")
+
+    private val _state = MutableStateFlow(CoachState(messages = listOf(greeting)))
     val state: StateFlow<CoachState> = _state.asStateFlow()
+
+    /** The single ongoing conversation row — created lazily on the first persisted message. */
+    private var conversation: CoachConversationEntity? = null
+
+    init {
+        viewModelScope.launch {
+            val recent = db.coachConversationDao().recent(1).firstOrNull() ?: return@launch
+            val messages = db.coachMessageDao().forConversation(recent.id)
+            if (messages.isEmpty()) return@launch
+            conversation = recent
+            _state.update { it.copy(messages = messages.map { m -> ChatMessage(m.role, m.body) }) }
+        }
+    }
+
+    private suspend fun ensureConversation(): CoachConversationEntity {
+        conversation?.let { return it }
+        val conv = CoachConversationEntity()
+        db.coachConversationDao().upsert(conv)
+        conversation = conv
+        return conv
+    }
+
+    private suspend fun persistMessage(role: String, text: String) {
+        val conv = ensureConversation()
+        db.coachMessageDao().insert(CoachMessageEntity(conversationId = conv.id, role = role, body = text))
+        val updated = conv.copy(updatedAt = System.currentTimeMillis())
+        conversation = updated
+        db.coachConversationDao().upsert(updated)
+    }
 
     fun sendMessage(userText: String) {
         _state.update { it.copy(
@@ -355,6 +384,7 @@ class CoachViewModel(
             isThinking = true, error = null,
         ) }
         viewModelScope.launch {
+            persistMessage("user", userText)
             try {
                 val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db)
                 val priorMessages = _state.value.messages.dropLast(1).map {
@@ -365,11 +395,14 @@ class CoachViewModel(
                     messages = it.messages + ChatMessage("assistant", result.assistant.plainText),
                     isThinking = false,
                 ) }
+                persistMessage("assistant", result.assistant.plainText)
             } catch (e: Exception) {
+                val errText = "Sorry, something went wrong: ${e.message}"
                 _state.update { it.copy(
-                    messages = it.messages + ChatMessage("assistant", "Sorry, something went wrong: ${e.message}"),
+                    messages = it.messages + ChatMessage("assistant", errText),
                     isThinking = false, error = e.message,
                 ) }
+                persistMessage("assistant", errText)
             }
         }
     }

@@ -206,7 +206,9 @@ object RetrievalTools {
         sessions.forEachIndexed { i, s ->
             if (i > 0) sb.append(",")
             val dur = s.endedAt?.let { ((it - s.startedAt) / 60000.0).let { "%.1f".format(it) } } ?: "0"
-            sb.append("""{"id":"${s.id}","type":"${s.type}","duration_min":$dur,"distance_km":${s.distanceMeters?.div(1000)?.let { "%.2f".format(it) } ?: "null"},"avg_hr":${s.avgHeartRate ?: "null"},"notes":${s.notes?.let { "\"$it\"" } ?: "null"}}""")
+            val dateStr = java.time.Instant.ofEpochMilli(s.startedAt).atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+            sb.append("""{"id":"${s.id}","date":"$dateStr","type":"${s.type}","duration_min":$dur,"distance_km":${s.distanceMeters?.div(1000)?.let { "%.2f".format(it) } ?: "null"},"avg_hr":${s.avgHeartRate ?: "null"},"notes":${s.notes?.let { "\"$it\"" } ?: "null"}}""")
         }
         sb.append("]}")
         ToolResult(sb.toString())
@@ -231,7 +233,9 @@ object RetrievalTools {
         val sessions = kotlinx.coroutines.runBlocking { db.activitySessionDao().recent(200) }
         val s = sessions.firstOrNull { it.id == id } ?: return@CoachToolDef ToolResult("""{"error":"session not found"}""", isError = true)
         val dur = s.endedAt?.let { ((it - s.startedAt) / 60000.0).let { "%.1f".format(it) } } ?: "0"
-        ToolResult("""{"id":"${s.id}","type":"${s.type}","duration_min":$dur,"distance_km":${s.distanceMeters?.div(1000)?.let { "%.2f".format(it) } ?: "null"},"avg_hr":${s.avgHeartRate ?: "null"},"max_hr":${s.maxHeartRate ?: "null"},"notes":${s.notes?.let { "\"$it\"" } ?: "null"}}""")
+        val dateStr = java.time.Instant.ofEpochMilli(s.startedAt).atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        ToolResult("""{"id":"${s.id}","date":"$dateStr","type":"${s.type}","duration_min":$dur,"distance_km":${s.distanceMeters?.div(1000)?.let { "%.2f".format(it) } ?: "null"},"avg_hr":${s.avgHeartRate ?: "null"},"max_hr":${s.maxHeartRate ?: "null"},"notes":${s.notes?.let { "\"$it\"" } ?: "null"}}""")
     }
 
     // ── get_sync_status ────────────────────────────────────────────────
