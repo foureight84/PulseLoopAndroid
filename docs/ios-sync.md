@@ -40,11 +40,11 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | [#11](https://github.com/foureight84/PulseLoop/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | |
 | ☐ | [#43](https://github.com/foureight84/PulseLoop/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
 | ☐ | [#41](https://github.com/foureight84/PulseLoop/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | |
-| ☐ | [#35](https://github.com/foureight84/PulseLoop/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | |
-| ☐ | [#19](https://github.com/foureight84/PulseLoop/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | |
-| ☐ | [#9](https://github.com/foureight84/PulseLoop/pull/9) `cd62903` | 06-26 | Coach: multi-provider (Gemini) | **PORT** | L | |
-| ☐ | [#22](https://github.com/foureight84/PulseLoop/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | |
-| ☐ | [#31](https://github.com/foureight84/PulseLoop/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | |
+| ☑ | [#35](https://github.com/foureight84/PulseLoop/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
+| ☑ | [#19](https://github.com/foureight84/PulseLoop/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | `f4bcd47` |
+| ☑ | [#9](https://github.com/foureight84/PulseLoop/pull/9) `cd62903` | 06-26 | Coach: multi-provider (Gemini) | **PORT** | L | `049058d`+`4d81a07` |
+| ☑ | [#22](https://github.com/foureight84/PulseLoop/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | `049058d`+`4d81a07` |
+| ☑ | [#31](https://github.com/foureight84/PulseLoop/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
 | ☐ | [#24](https://github.com/foureight84/PulseLoop/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
 
 ### Porting notes per item
@@ -96,6 +96,22 @@ new metric-detail and activity-trends screens, Today screen re-laid-out as tiles
 Android's `VitalsScreen` has simple cards and a 6-color palette; none of the zone engine exists.
 This is the main *visual parity* item. Consider splitting into: (a) zone engine + palette,
 (b) VitalCard + Today tiles, (c) detail screens.
+**Constraint (owner, 2026-07-05): preserve the chart *interactivity* from
+[PulseLoopAndroid #5](https://github.com/foureight84/PulseLoopAndroid/pull/5) (merged contributor
+work) while adopting the new iOS visuals.** The interaction machinery stays functionally intact —
+raw-sample plotting, rolling-24h + day paging, X/Y axis labels, drag-to-scrub hover tooltip,
+pinch-zoom + pan-when-zoomed — but its rendering is restyled to the iOS #35 look (zone-split line
+colors, reference bands, palette, typography, tooltip/axis skins). Reskin the interaction layer,
+don't replace it.
+*Ported 2026-07-05 in three commits: `19aac67` (zone engine w/ exact iOS thresholds, 8-color
+palette, VitalCard/ActivityRings/VitalRingGauge components, 38 ported tests), `c978b32` (chart
+reskin per the constraint above — zone-split gap-broken line via ZoneLineSplitter, 8% reference
+bands, quiet trailing axes; PR #5 gesture code untouched), `f756010` (VitalsScreen cards →
+VitalCard chrome + iOS metric accents, Today activity rings). Deliberately NOT ported: iOS's
+metric-detail/activity-trends screen rebuilds (Android's interactive detail screen is the
+divergence we keep, now restyled), the Today tile re-layout beyond the rings, and the
+settings screen split. `VitalRingGauge` is available but not yet placed on a screen. Distance/
+calorie ring goals are fixed at iOS defaults until `UserGoalEntity` grows those columns.*
 
 **#19 — Settings redesign + measurement frequency.**
 iOS split the monolithic settings view into detail screens and added a per-device
@@ -106,6 +122,10 @@ already declares the `.measurementInterval` capability. Port the config entity +
 measurement screen first; the cosmetic screen-split can ride along with #35. Gate on device
 capability. Note: Android's existing personal-info settings (blood sugar calibration) stay —
 see intentional divergences.
+*Ported 2026-07-05 (`f4bcd47`): config entity + ring sync + Measurement settings card, gated on
+the new MEASUREMENT_INTERVAL capability. Deliberately NOT ported: the cosmetic split of Settings
+into detail screens (Android keeps its single scroll screen), and profile UI stays hidden for
+Colmi (Android divergence — the connect handshake still sends the stored profile when present).*
 
 **#9 / #22 / #31 — Coach provider expansion + images.**
 Android's coach is hardcoded to `OpenAIResponsesClient` (`CoachOrchestrator.kt`). iOS now has a
@@ -116,6 +136,10 @@ suffix for web search, `cache_control` prompt caching, privacy routing + provide
 slug field; DeepSeek preset slug is `deepseek/deepseek-v4-flash` per iOS #40), (4) image
 attachments (file-based store, ≤1024 px JPEG @ 70%, `attachmentsJson` on the message entity,
 camera/gallery pickers, per-provider payload converters, replay images only on latest user turn).
+*Ported 2026-07-05 (`049058d` backend, `4d81a07` UI). Adaptations: no Apple-on-device mode;
+per-provider model prefs instead of iOS's shared string; orchestrator takes a per-turn client
+factory. Follow-ups: `notifications/CoachNotifications.kt` still hardcodes the OpenAI client
+(should adopt `CoachClientResolver`); chat attach is gallery-only (camera + EXIF rotation TBD).*
 
 **#24 — Coach scheduler crash.**
 The iOS bug was `MainActor.assumeIsolated` on a background BGTask queue. No direct equivalent,
