@@ -174,6 +174,9 @@ class RingBLEClient(private val context: Context) {
             updateState { copy(lastError = "Bluetooth is not powered on") }
             return
         }
+        // A user-initiated scan (pairing screen) must never be hijacked by a leftover
+        // reconnect flag — sighting the known ring mid-pairing would auto-connect it.
+        reconnectScanPending = false
         updateState {
             copy(
                 connectionState = RingConnectionState.SCANNING,
@@ -190,6 +193,7 @@ class RingBLEClient(private val context: Context) {
     }
 
     fun stopScanning() {
+        reconnectScanPending = false
         scanner?.stopScan(scanCallback)
         if (_state.value.connectionState == RingConnectionState.SCANNING) {
             updateState { copy(connectionState = RingConnectionState.IDLE) }
@@ -243,8 +247,9 @@ class RingBLEClient(private val context: Context) {
         if (reconnectAttempts % 3 == 1) {
             beginConnect(device, lastKnownDeviceType)
         } else {
-            reconnectScanPending = true
             startScanning()
+            // Set AFTER startScanning (which clears it to protect pairing scans).
+            reconnectScanPending = true
         }
     }
 
@@ -968,6 +973,12 @@ class RingBLEClient(private val context: Context) {
         // CONNECTING state of the fresh attempt with a spurious DISCONNECTED.
         if (bluetoothGatt != null && gatt !== bluetoothGatt) {
             closeGattQuietly(gatt)
+            return
+        }
+        // Duplicate callback for a GATT we already tore down (bluetoothGatt is null
+        // after teardown): don't re-publish DISCONNECTED or re-close.
+        if (bluetoothGatt == null &&
+            _state.value.connectionState == RingConnectionState.DISCONNECTED) {
             return
         }
         resetOpQueue()
