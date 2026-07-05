@@ -18,6 +18,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.pulseloop.coach.config.CoachProviderMode
+import com.pulseloop.coach.config.CoachProviderSettingsStore
+import com.pulseloop.coach.config.GeminiModel
+import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.notifications.CoachNotifications
@@ -40,6 +44,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val keyStore = remember { ApiKeyStore(context) }
+    val providerStore = remember { CoachProviderSettingsStore(context) }
     val scope = rememberCoroutineScope()
 
     var apiKey by remember { mutableStateOf(keyStore.apiKey) }
@@ -100,20 +105,41 @@ fun SettingsScreen(
                 if (coachEnabled) {
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
-                    // Model picker as dropdown
-                    Text("Model", style = MaterialTheme.typography.labelMedium)
+                    // Provider picker — ported from CoachSettingsSection.swift (iOS #9/#22).
+                    // Key/model/provider changes apply from the next message (the orchestrator
+                    // resolves a fresh client per turn).
+                    var providerMode by remember { mutableStateOf(providerStore.providerMode) }
+                    var geminiKey by remember { mutableStateOf(providerStore.geminiApiKey) }
+                    var geminiKeyVisible by remember { mutableStateOf(false) }
+                    var orKey by remember { mutableStateOf(providerStore.openRouterApiKey) }
+                    var orKeyVisible by remember { mutableStateOf(false) }
+                    var geminiModel by remember { mutableStateOf(providerStore.geminiModel) }
+                    var orModel by remember { mutableStateOf(providerStore.openRouterModel) }
+                    var orPrivacy by remember { mutableStateOf(providerStore.orPrivacyRouting) }
+                    var orSort by remember { mutableStateOf(providerStore.orProviderSort) }
+                    var reasoningEffort by remember { mutableStateOf(providerStore.reasoningEffort) }
+                    var imageInput by remember { mutableStateOf(providerStore.imageInputEnabled) }
+
+                    val providerOptions = listOf(
+                        CoachProviderMode.USER_OPENAI_KEY to "OpenAI",
+                        CoachProviderMode.USER_GEMINI_KEY to "Google Gemini",
+                        CoachProviderMode.USER_OPENROUTER_KEY to "OpenRouter (100+ models)",
+                    )
+                    val providerLabel = providerOptions.firstOrNull { it.first == providerMode }?.second ?: "OpenAI"
+
+                    Text("Provider", style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(4.dp))
-                    var modelExpanded by remember { mutableStateOf(false) }
+                    var providerExpanded by remember { mutableStateOf(false) }
                     Box {
-                        OutlinedButton(onClick = { modelExpanded = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text(selectedModel, Modifier.weight(1f))
+                        OutlinedButton(onClick = { providerExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(providerLabel, Modifier.weight(1f))
                             Icon(Icons.Filled.ArrowDropDown, null)
                         }
-                        DropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
-                            models.forEach { model ->
+                        DropdownMenu(expanded = providerExpanded, onDismissRequest = { providerExpanded = false }) {
+                            providerOptions.forEach { (mode, label) ->
                                 DropdownMenuItem(
-                                    text = { Text(model) },
-                                    onClick = { selectedModel = model; keyStore.model = model; modelExpanded = false },
+                                    text = { Text(label) },
+                                    onClick = { providerMode = mode; providerStore.providerMode = mode; providerExpanded = false },
                                 )
                             }
                         }
@@ -121,53 +147,147 @@ fun SettingsScreen(
 
                     Spacer(Modifier.height(8.dp))
 
-                    // API Key field (ported from CoachSettingsSection keyField)
-                    OutlinedTextField(
-                        value = apiKey,
-                        onValueChange = { apiKey = it },
-                        label = { Text("OpenAI API Key") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        visualTransformation = if (apiKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None
-                            else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                        trailingIcon = {
-                            IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
-                                Icon(
-                                    if (apiKeyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                    contentDescription = "Toggle visibility"
-                                )
+                    // Reusable API-key field with visibility toggle + save/remove, matching the
+                    // original OpenAI key field (iOS CoachSettingsSection keyField).
+                    @Composable
+                    fun KeyField(
+                        label: String, value: String, visible: Boolean, saved: Boolean,
+                        onValue: (String) -> Unit, onVisibility: () -> Unit, onSave: () -> Unit, onRemove: () -> Unit,
+                    ) {
+                        OutlinedTextField(
+                            value = value,
+                            onValueChange = onValue,
+                            label = { Text(label) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = if (visible) androidx.compose.ui.text.input.VisualTransformation.None
+                                else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                            trailingIcon = {
+                                IconButton(onClick = onVisibility) {
+                                    Icon(
+                                        if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = "Toggle visibility"
+                                    )
+                                }
+                            },
+                            keyboardActions = KeyboardActions(onDone = { onSave() }),
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = onSave, enabled = value.isNotBlank(), modifier = Modifier.weight(1f)) {
+                                Text(if (saved) "Update Key" else "Save Key")
                             }
-                        },
-                        keyboardActions = KeyboardActions(onDone = {
-                            keyStore.apiKey = apiKey
-                        }),
-                    )
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { keyStore.apiKey = apiKey },
-                            enabled = apiKey.isNotBlank(),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(if (keyStore.apiKey.isNotBlank()) "Update Key" else "Save Key")
+                            if (saved) {
+                                OutlinedButton(onClick = onRemove, modifier = Modifier.weight(1f)) { Text("Remove") }
+                            }
                         }
-                        if (keyStore.apiKey.isNotBlank()) {
-                            OutlinedButton(
-                                onClick = { apiKey = ""; keyStore.apiKey = "" },
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text("Remove")
+                    }
+
+                    @Composable
+                    fun ModelDropdown(label: String, selected: String, options: List<Pair<String, String>>, onPick: (String) -> Unit) {
+                        Text(label, style = MaterialTheme.typography.labelMedium)
+                        Spacer(Modifier.height(4.dp))
+                        var expanded by remember { mutableStateOf(false) }
+                        Box {
+                            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                                Text(selected, Modifier.weight(1f))
+                                Icon(Icons.Filled.ArrowDropDown, null)
                             }
+                            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                options.forEach { (slug, blurb) ->
+                                    DropdownMenuItem(
+                                        text = { Column { Text(slug); if (blurb.isNotEmpty()) Text(blurb, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+                                        onClick = { onPick(slug); expanded = false },
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+
+                    when (providerMode) {
+                        CoachProviderMode.USER_GEMINI_KEY -> {
+                            ModelDropdown("Model", geminiModel, GeminiModel.entries.map { it.slug to it.blurb }) {
+                                geminiModel = it; providerStore.geminiModel = it
+                            }
+                            KeyField(
+                                label = "Gemini API Key", value = geminiKey, visible = geminiKeyVisible,
+                                saved = providerStore.hasGeminiKey,
+                                onValue = { geminiKey = it }, onVisibility = { geminiKeyVisible = !geminiKeyVisible },
+                                onSave = { providerStore.geminiApiKey = geminiKey },
+                                onRemove = { geminiKey = ""; providerStore.geminiApiKey = "" },
+                            )
+                        }
+                        CoachProviderMode.USER_OPENROUTER_KEY -> {
+                            ModelDropdown("Model", orModel, OpenRouterModel.entries.map { it.slug to it.blurb }) {
+                                orModel = it; providerStore.openRouterModel = it
+                            }
+                            // The OpenRouter catalog is huge and shifts often — any current
+                            // vendor/model slug from openrouter.ai/models works here.
+                            OutlinedTextField(
+                                value = orModel,
+                                onValueChange = { orModel = it; providerStore.openRouterModel = it },
+                                label = { Text("Custom model slug (vendor/model)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            KeyField(
+                                label = "OpenRouter API Key", value = orKey, visible = orKeyVisible,
+                                saved = providerStore.hasOpenRouterKey,
+                                onValue = { orKey = it }, onVisibility = { orKeyVisible = !orKeyVisible },
+                                onSave = { providerStore.openRouterApiKey = orKey },
+                                onRemove = { orKey = ""; providerStore.openRouterApiKey = "" },
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Privacy routing")
+                                    Text("Only providers that don't retain data", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(checked = orPrivacy, onCheckedChange = { orPrivacy = it; providerStore.orPrivacyRouting = it })
+                            }
+                            ModelDropdown(
+                                "Route by", orSort ?: "auto",
+                                listOf("auto" to "Balanced (default)", "price" to "Cheapest first", "throughput" to "Fastest first", "latency" to "Lowest latency first"),
+                            ) { providerStore.orProviderSort = it.takeIf { s -> s != "auto" }; orSort = providerStore.orProviderSort }
+                        }
+                        else -> {
+                            // OpenAI (and legacy modes): the original model picker + key field.
+                            ModelDropdown("Model", selectedModel, models.map { it to "" }) {
+                                selectedModel = it; keyStore.model = it
+                            }
+                            KeyField(
+                                label = "OpenAI API Key", value = apiKey, visible = apiKeyVisible,
+                                saved = keyStore.apiKey.isNotBlank(),
+                                onValue = { apiKey = it }, onVisibility = { apiKeyVisible = !apiKeyVisible },
+                                onSave = { keyStore.apiKey = apiKey },
+                                onRemove = { apiKey = ""; keyStore.apiKey = "" },
+                            )
                         }
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Stored securely in Android Keystore. Never leaves your device except to call the model.",
+                        "Stored securely in Android Keystore. Never leaves your device except to call the model. Provider changes apply from your next message.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     Spacer(Modifier.height(8.dp))
+                    ModelDropdown(
+                        "Reasoning effort", reasoningEffort ?: "medium",
+                        listOf("low" to "Fastest", "medium" to "Balanced (default)", "high" to "Deepest — more tokens"),
+                    ) { providerStore.reasoningEffort = it; reasoningEffort = it }
+
+                    // Image attachments (iOS #31): gates the attach button in the coach chat.
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Image attachments")
+                            Text("Attach photos to coach messages", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = imageInput, onCheckedChange = { imageInput = it; providerStore.imageInputEnabled = it })
+                    }
+
                     HorizontalDivider()
 
                     // Tool toggles

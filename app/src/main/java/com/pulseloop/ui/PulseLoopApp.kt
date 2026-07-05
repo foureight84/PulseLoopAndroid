@@ -50,26 +50,35 @@ fun PulseLoopApp() {
         val gpsRecorder = remember { GpsRouteRecorder(context) }
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
         val persistence = remember { EventPersistenceSubscriber(db) }
-        val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
+        val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
+        val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────
+        // The client is resolved per turn through CoachClientResolver (OpenAI /
+        // Gemini / OpenRouter per the provider settings), so key/model/provider
+        // changes take effect on the next turn without rebuilding the orchestrator.
         val coachOrchestrator = remember {
-            val apiKey = apiKeyStore.apiKey
+            val resolution = com.pulseloop.coach.config.CoachClientResolver.resolve(providerStore, apiKeyStore)
             val flags = CoachFeatureFlags(
-                coachEnabled = apiKeyStore.coachEnabled && apiKey.isNotEmpty(),
+                coachEnabled = apiKeyStore.coachEnabled && resolution.key != null,
                 webSearchEnabled = apiKeyStore.webSearchEnabled,
                 writeToolsEnabled = false,  // safe default
                 liveMeasurementsEnabled = true,
-                model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
+                model = com.pulseloop.coach.config.CoachClientResolver.activeModel(
+                    providerStore.snapshot(), apiKeyStore.model,
+                ),
+                settings = CoachSettings(reasoningEffort = providerStore.reasoningEffort ?: "medium"),
             )
-            val client = OpenAIResponsesClient(apiKey)
             val registry = ToolRegistry(flags)
             val toolContext = ToolExecutionContext(
                 db = db,
                 flags = flags,
                 coordinator = coordinator,
             )
-            CoachOrchestrator(client, registry, flags, toolContext)
+            CoachOrchestrator(
+                com.pulseloop.coach.config.CoachClientResolver.clientFactory(providerStore, apiKeyStore),
+                registry, flags, toolContext,
+            )
         }
 
         // ── ViewModels ───────────────────────────────────────────────────
@@ -77,7 +86,11 @@ fun PulseLoopApp() {
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
         val sleepVM = remember { SleepViewModel(db) }
         val activityVM = remember { ActivityViewModel(db) }
-        val coachVM = remember { CoachViewModel(db, coachOrchestrator) }
+        val coachVM = remember {
+            CoachViewModel(db, coachOrchestrator, attachmentPayloads = { refs ->
+                com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
+            })
+        }
 
         // ── Start services (one-shot on composition) ─────────────────────
         LaunchedEffect(Unit) {

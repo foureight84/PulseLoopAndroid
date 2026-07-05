@@ -317,6 +317,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
 class CoachViewModel(
     private val db: PulseLoopDatabase,
     private val orchestrator: com.pulseloop.coach.orchestration.CoachOrchestrator,
+    /** Resolves staged attachment refs to wire payloads (injected so the VM stays context-free). */
+    private val attachmentPayloads: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> List<com.pulseloop.coach.attachments.CoachImagePayload> = { emptyList() },
 ) : ViewModel() {
     data class CoachState(
         val messages: List<ChatMessage> = emptyList(),
@@ -324,7 +326,12 @@ class CoachViewModel(
         val error: String? = null,
     )
 
-    data class ChatMessage(val role: String, val text: String)
+    data class ChatMessage(
+        val role: String,
+        val text: String,
+        /** Image attachments on a user turn (iOS #31); thumbnails render from the stored files. */
+        val attachments: List<com.pulseloop.coach.attachments.CoachAttachmentRef> = emptyList(),
+    )
 
     private val _state = MutableStateFlow(CoachState(
         messages = listOf(ChatMessage("assistant",
@@ -332,18 +339,31 @@ class CoachViewModel(
     ))
     val state: StateFlow<CoachState> = _state.asStateFlow()
 
-    fun sendMessage(userText: String) {
+    fun sendMessage(
+        userText: String,
+        attachments: List<com.pulseloop.coach.attachments.CoachAttachmentRef> = emptyList(),
+    ) {
         _state.update { it.copy(
-            messages = it.messages + ChatMessage("user", userText),
+            messages = it.messages + ChatMessage("user", userText, attachments),
             isThinking = true, error = null,
         ) }
         viewModelScope.launch {
             try {
                 val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db)
-                val priorMessages = _state.value.messages.dropLast(1).map {
-                    com.pulseloop.coach.orchestration.CoachOrchestrator.PriorMessage(it.role, it.text)
+                val prior = _state.value.messages.dropLast(1)
+                // Replay images only on the most recent prior user turn that has attachments,
+                // keeping context coherent without ballooning payloads with old base64.
+                val lastAttached = prior.indexOfLast { it.role == "user" && it.attachments.isNotEmpty() }
+                val priorMessages = prior.mapIndexed { i, m ->
+                    com.pulseloop.coach.orchestration.CoachOrchestrator.PriorMessage(
+                        m.role, m.text,
+                        images = if (i == lastAttached) attachmentPayloads(m.attachments) else emptyList(),
+                    )
                 }
-                val result = orchestrator.runTurn(userText, packet, priorMessages)
+                val result = orchestrator.runTurn(
+                    userText, packet, priorMessages,
+                    userImages = attachmentPayloads(attachments),
+                )
                 _state.update { it.copy(
                     messages = it.messages + ChatMessage("assistant", result.assistant.plainText),
                     isThinking = false,

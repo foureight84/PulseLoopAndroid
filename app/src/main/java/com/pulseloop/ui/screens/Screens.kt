@@ -2,6 +2,8 @@ package com.pulseloop.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -946,7 +948,27 @@ fun CoachScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Spacer(Modifier.height(4.dp))
-                            Text(msg.text, style = MaterialTheme.typography.bodyMedium)
+                            // Attached-image thumbnails (iOS #31); files are ≤1024px JPEGs.
+                            if (msg.attachments.isNotEmpty()) {
+                                val ctx = androidx.compose.ui.platform.LocalContext.current
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    msg.attachments.forEach { ref ->
+                                        val bmp = remember(ref.file) {
+                                            com.pulseloop.coach.attachments.CoachAttachmentStore.loadBitmap(ctx, ref)
+                                        }
+                                        bmp?.let {
+                                            androidx.compose.foundation.Image(
+                                                bitmap = it.asImageBitmap(),
+                                                contentDescription = "Attached photo",
+                                                modifier = Modifier.size(96.dp).clip(MaterialTheme.shapes.small),
+                                                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (msg.text.isNotBlank()) Text(msg.text, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -976,34 +998,90 @@ fun CoachScreen(
         }
 
         // Input
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val imageInputEnabled = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(ctx).imageInputEnabled }
+        // Staged (not yet sent) attachments — persisted to the store on pick, sent with the
+        // next message. Image-only sends are allowed (iOS #31).
+        var staged by remember { mutableStateOf(listOf<com.pulseloop.coach.attachments.CoachAttachmentRef>()) }
+        val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+        ) { uri ->
+            uri?.let { picked ->
+                com.pulseloop.coach.attachments.CoachAttachmentStore.save(ctx, picked)?.let { staged = staged + it }
+            }
+        }
         Surface(
             tonalElevation = 2.dp,
             shadowElevation = 2.dp,
         ) {
-            Row(
-                Modifier.fillMaxWidth().padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Ask your coach…") },
-                    singleLine = false,
-                    maxLines = 3,
-                    enabled = !state.isThinking,
-                )
-                IconButton(
-                    onClick = {
-                        if (inputText.isNotBlank() && viewModel != null) {
-                            viewModel.sendMessage(inputText.trim())
-                            inputText = ""
+            Column {
+                if (staged.isNotEmpty()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        staged.forEach { ref ->
+                            Box {
+                                val bmp = remember(ref.file) {
+                                    com.pulseloop.coach.attachments.CoachAttachmentStore.loadBitmap(ctx, ref)
+                                }
+                                bmp?.let {
+                                    androidx.compose.foundation.Image(
+                                        bitmap = it.asImageBitmap(),
+                                        contentDescription = "Staged photo",
+                                        modifier = Modifier.size(56.dp).clip(MaterialTheme.shapes.small),
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        com.pulseloop.coach.attachments.CoachAttachmentStore.delete(ctx, ref)
+                                        staged = staged - ref
+                                    },
+                                    modifier = Modifier.size(20.dp).align(Alignment.TopEnd),
+                                ) { Icon(Icons.Filled.Close, "Remove photo", Modifier.size(14.dp)) }
+                            }
                         }
-                    },
-                    enabled = inputText.isNotBlank() && !state.isThinking,
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(Icons.Filled.Send, "Send")
+                    if (imageInputEnabled) {
+                        IconButton(
+                            onClick = {
+                                pickImage.launch(
+                                    androidx.activity.result.PickVisualMediaRequest(
+                                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                                    )
+                                )
+                            },
+                            enabled = !state.isThinking,
+                        ) { Icon(Icons.Filled.Image, "Attach photo") }
+                    }
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Ask your coach…") },
+                        singleLine = false,
+                        maxLines = 3,
+                        enabled = !state.isThinking,
+                    )
+                    IconButton(
+                        onClick = {
+                            if ((inputText.isNotBlank() || staged.isNotEmpty()) && viewModel != null) {
+                                viewModel.sendMessage(inputText.trim(), staged)
+                                inputText = ""
+                                staged = emptyList()
+                            }
+                        },
+                        enabled = (inputText.isNotBlank() || staged.isNotEmpty()) && !state.isThinking,
+                    ) {
+                        Icon(Icons.Filled.Send, "Send")
+                    }
                 }
             }
         }
