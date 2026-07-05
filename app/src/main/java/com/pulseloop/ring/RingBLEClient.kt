@@ -101,24 +101,34 @@ class RingBLEClient(private val context: Context) {
     // Issuing a read / characteristic-write / descriptor-write while another is still
     // in flight makes the new call return false and be silently dropped — the classic
     // cause of a ring that connects and discovers services but never finishes enabling
-    // notifications, so it hangs forever on "Connecting…". (Seen on the Colmi R10, which
-    // — unlike the R02 — exposes a 0x180A DIS service, so a firmware read was issued and
-    // blocked the CCCD descriptor write that gates the CONNECTED transition.)
+    // notifications, so it hangs forever on "Connecting…". (Colmi rings — R02 and R10
+    // alike — expose the 0x180A DIS service, so a firmware read used to be issued ahead
+    // of the CCCD descriptor write that gates the CONNECTED transition and silently
+    // dropped it.)
     //
     // Every GATT operation is funnelled through this single FIFO queue so they run
     // strictly one-at-a-time, each retired by its matching callback (onCharacteristicWrite
     // / onCharacteristicRead / onDescriptorWrite → completeOp) which pumps the next one.
+    //
+    // The queue is touched from two threads — the Bluetooth binder thread (GATT callbacks)
+    // and the client's Main-dispatcher coroutines (keepalive, timeouts, sync-engine sends) —
+    // so every access to [opQueue]/[inFlightOp] is guarded by [opLock]. Without the lock,
+    // both threads can observe "nothing in flight" and issue two concurrent GATT ops, the
+    // second of which the stack silently rejects.
 
-    private sealed interface GattOp {
+    private sealed class GattOp {
+        /** Issue attempts so far; a stack-rejected op is retried before being dropped. */
+        var attempts = 0
+
         /** A command/keepalive payload for the write (or command) channel. */
-        class CommandWrite(val data: ByteArray, val useCommandChannel: Boolean) : GattOp
-        class Read(val characteristic: BluetoothGattCharacteristic) : GattOp
-        class DescriptorWrite(val descriptor: BluetoothGattDescriptor, val value: ByteArray) : GattOp
+        class CommandWrite(val data: ByteArray, val useCommandChannel: Boolean) : GattOp()
+        class Read(val characteristic: BluetoothGattCharacteristic) : GattOp()
+        class DescriptorWrite(val descriptor: BluetoothGattDescriptor, val value: ByteArray) : GattOp()
     }
 
+    private val opLock = Any()
     private val opQueue = ArrayDeque<GattOp>()
-    private var opInFlight = false
-    private var opSeq = 0
+    private var inFlightOp: GattOp? = null
 
     // MARK: Connection state
 
@@ -339,7 +349,7 @@ class RingBLEClient(private val context: Context) {
         }
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
-        opInFlight = false; opQueue.clear()
+        resetOpQueue()
         prefs.edit().remove(LAST_PERIPHERAL_KEY).remove(LAST_DEVICE_TYPE_KEY).apply()
         updateState { copy(connectionState = RingConnectionState.IDLE, activeDeviceType = null, activeCapabilities = emptySet()) }
     }
@@ -376,7 +386,7 @@ class RingBLEClient(private val context: Context) {
         }
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
-        opInFlight = false; opQueue.clear()
+        resetOpQueue()
         val coordinator = coordinators.firstOrNull { it.deviceType == deviceType } ?: JringCoordinator
         installDriver(coordinator)
         connectingStartedAt = System.currentTimeMillis()
@@ -433,70 +443,114 @@ class RingBLEClient(private val context: Context) {
     }
 
     private fun enqueueOp(op: GattOp) {
-        opQueue.addLast(op)
+        synchronized(opLock) { opQueue.addLast(op) }
         pumpOps()
     }
 
-    /** Retire the in-flight op (from a GATT callback or the timeout) and pump the next. */
-    private fun completeOp() {
-        opInFlight = false
+    /**
+     * Retire the in-flight op and pump the next. [matches] guards against a stale or
+     * foreign callback (e.g. an ACK arriving after the op already timed out and the next
+     * op was issued) retiring the WRONG op: only complete when the callback corresponds
+     * to what is actually in flight.
+     */
+    private fun completeOp(matches: (GattOp) -> Boolean = { true }) {
+        synchronized(opLock) {
+            val current = inFlightOp ?: return
+            if (!matches(current)) return
+            inFlightOp = null
+        }
         pumpOps()
+    }
+
+    /** Drop everything queued or in flight (connection reset / teardown). Any pending
+     *  op timeout self-invalidates because its captured op is no longer [inFlightOp]. */
+    private fun resetOpQueue() {
+        synchronized(opLock) {
+            inFlightOp = null
+            opQueue.clear()
+        }
     }
 
     private fun pumpOps() {
-        val gatt = bluetoothGatt ?: return
-        if (opInFlight || opQueue.isEmpty()) return
-
-        val op = opQueue.first()
-        val issued: Boolean = when (op) {
-            is GattOp.CommandWrite -> {
-                val wChar = writeChar
-                if (wChar == null) {
+        while (true) {
+            val gatt = bluetoothGatt ?: return
+            val op: GattOp
+            synchronized(opLock) {
+                if (inFlightOp != null || opQueue.isEmpty()) return
+                if (opQueue.first() is GattOp.CommandWrite && writeChar == null) {
                     // Write channel not bound yet (services not discovered) — leave the op
-                    // queued; onServicesDiscovered will pump again once chars are wired up.
+                    // queued; the enqueues in onServicesDiscovered pump again once bound.
                     return
                 }
-                opQueue.removeFirst()
-                val target = if (op.useCommandChannel) commandChar ?: wChar else wChar
-                target.value = op.data
-                PulseEventBus.publishBlocking(
-                    PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
-                        RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
-                )
-                gatt.writeCharacteristic(target)
+                op = opQueue.removeFirst()
+                inFlightOp = op
             }
-            is GattOp.Read -> {
-                opQueue.removeFirst()
-                gatt.readCharacteristic(op.characteristic)
+
+            val issued: Boolean = when (op) {
+                is GattOp.CommandWrite -> {
+                    val wChar = writeChar
+                    if (wChar == null) {
+                        false
+                    } else {
+                        val target = if (op.useCommandChannel) commandChar ?: wChar else wChar
+                        target.value = op.data
+                        PulseEventBus.publishBlocking(
+                            PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
+                                RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
+                        )
+                        gatt.writeCharacteristic(target)
+                    }
+                }
+                is GattOp.Read -> gatt.readCharacteristic(op.characteristic)
+                is GattOp.DescriptorWrite -> {
+                    op.descriptor.value = op.value
+                    gatt.writeDescriptor(op.descriptor)
+                }
             }
-            is GattOp.DescriptorWrite -> {
-                opQueue.removeFirst()
-                op.descriptor.value = op.value
-                gatt.writeDescriptor(op.descriptor)
+
+            if (issued) {
+                // Guard against a missing completion callback. If the ACK never comes,
+                // inFlightOp would stay set forever and the entire queue (history queries,
+                // keepalive, notification setup, …) would deadlock — exactly the "one
+                // command then silence" failure. Time the op out and unblock the queue.
+                scope.launch {
+                    delay(OP_TIMEOUT_MS)
+                    if (inFlightOp === op) {
+                        Log.w("RingBLEClient", "GATT op ACK timed out — unblocking queue")
+                        completeOp { it === op }  // never retire a successor issued meanwhile
+                    }
+                }
+                return
             }
+
+            // The stack rejected the op at issue time (transient busy state, or a
+            // characteristic that went away). Retry a couple of times after a short
+            // pause before giving up — dropping outright could lose a CCCD write that
+            // gates CONNECTED, or a queued factory-reset/unbind command.
+            synchronized(opLock) { if (inFlightOp === op) inFlightOp = null }
+            if (op.attempts < MAX_OP_ATTEMPTS - 1) {
+                op.attempts++
+                synchronized(opLock) { opQueue.addFirst(op) }
+                Log.w("RingBLEClient", "GATT op rejected at issue — retrying: ${op::class.simpleName}")
+                scope.launch {
+                    delay(OP_RETRY_DELAY_MS)
+                    pumpOps()
+                }
+                return
+            }
+            Log.w("RingBLEClient", "GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${op::class.simpleName}")
+            // Loop on to the next queued op.
         }
+    }
 
-        if (!issued) {
-            // The stack rejected the op at issue time (characteristic not readable/writable,
-            // or a transient busy state). Don't strand the queue — log and move to the next.
-            Log.w("RingBLEClient", "GATT op rejected at issue: ${op::class.simpleName}")
-            pumpOps()
-            return
-        }
-
-        opInFlight = true
-
-        // Guard against a missing completion callback. If the ACK never comes, opInFlight
-        // would stay true forever and the entire queue (history queries, keepalive,
-        // notification setup, …) would deadlock — exactly the "one command then silence"
-        // failure. Time the op out and unblock the queue.
-        val seq = ++opSeq
-        scope.launch {
-            delay(OP_TIMEOUT_MS)
-            if (opInFlight && seq == opSeq) {
-                Log.w("RingBLEClient", "GATT op ACK timed out — unblocking queue")
-                completeOp()
-            }
+    /**
+     * Wait (bounded) for every queued GATT op to be issued and acknowledged. Used before
+     * destructive teardowns so an enqueued command (e.g. factory reset, unbind) isn't
+     * still sitting in the queue when it gets cleared.
+     */
+    suspend fun awaitOpsFlushed(timeoutMs: Long = OPS_FLUSH_TIMEOUT_MS) {
+        withTimeoutOrNull(timeoutMs) {
+            while (synchronized(opLock) { inFlightOp != null || opQueue.isNotEmpty() }) delay(50)
         }
     }
 
@@ -673,8 +727,12 @@ class RingBLEClient(private val context: Context) {
         override fun onCharacteristicRead(
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
         ) {
+            if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT read completed — link is alive
-            completeOp()  // retire the in-flight op regardless of payload, before any early return
+            // Retire the in-flight op regardless of payload, before any early return —
+            // but only if it IS the read this callback answers (a stale post-timeout ACK
+            // must not retire the op that was issued after it).
+            completeOp { it is GattOp.Read && it.characteristic === characteristic }
             if (status != BluetoothGatt.GATT_SUCCESS) return
             if (characteristic.uuid.toString() == activeDriver?.batteryCharUUID) {
                 val value = characteristic.value
@@ -697,8 +755,9 @@ class RingBLEClient(private val context: Context) {
         override fun onCharacteristicWrite(
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
         ) {
+            if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
-            completeOp()
+            completeOp { it is GattOp.CommandWrite }
         }
 
         override fun onCharacteristicChanged(
@@ -755,8 +814,10 @@ class RingBLEClient(private val context: Context) {
         override fun onDescriptorWrite(
             gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
         ) {
+            if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // descriptor ACK — link is alive
-            completeOp()  // retire the in-flight op before any early return, so the queue drains
+            // Retire the in-flight op before any early return, so the queue drains.
+            completeOp { it is GattOp.DescriptorWrite && it.descriptor === descriptor }
 
             // Notification enabled — fire onConnected once at least one notify is live
             val driver = activeDriver ?: return
@@ -801,7 +862,7 @@ class RingBLEClient(private val context: Context) {
             try { gatt.close() } catch (_: Exception) {}
             return
         }
-        opInFlight = false; opQueue.clear()
+        resetOpQueue()
         stopKeepalive()
 
         PulseEventBus.publishBlocking(
@@ -831,8 +892,14 @@ class RingBLEClient(private val context: Context) {
         /** A CONNECTING attempt that hasn't completed in this long is retried from scratch. */
         private const val CONNECT_TIMEOUT_MS = 30_000L
         /** Max wait for any GATT op's completion callback before unblocking the queue
-         *  (prevents a stuck opInFlight stranding every subsequent operation). */
+         *  (prevents a stuck in-flight op stranding every subsequent operation). */
         private const val OP_TIMEOUT_MS = 4_000L
+        /** Total issue attempts for an op the stack rejects before it is dropped. */
+        private const val MAX_OP_ATTEMPTS = 3
+        /** Pause before re-issuing a stack-rejected op (lets a transient busy state clear). */
+        private const val OP_RETRY_DELAY_MS = 150L
+        /** Default bound for [awaitOpsFlushed]. */
+        private const val OPS_FLUSH_TIMEOUT_MS = 10_000L
         /** Max wait for the ring's UNBOND_ACK after a forget before forcing teardown. */
         private const val UNBIND_ACK_TIMEOUT_MS = 1_500L
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")

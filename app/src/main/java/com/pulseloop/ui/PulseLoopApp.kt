@@ -156,7 +156,10 @@ fun PulseLoopApp() {
         // ── Self-update: release-only, throttled to once/day. Surfaces a dialog when a
         // newer GitHub release is published; Settings also has a manual "Check for updates".
         var pendingUpdate by remember { mutableStateOf<com.pulseloop.update.UpdateInfo?>(null) }
-        LaunchedEffect(Unit) { pendingUpdate = com.pulseloop.update.UpdateChecker.check(context) }
+        LaunchedEffect(Unit) {
+            pendingUpdate = (com.pulseloop.update.UpdateChecker.check(context)
+                as? com.pulseloop.update.UpdateCheckResult.UpdateAvailable)?.info
+        }
 
         Scaffold(
             bottomBar = {

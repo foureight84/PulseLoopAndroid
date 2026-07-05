@@ -50,9 +50,9 @@ object ColmiCommandID {
     // From the colmi_r02_client RealTimeReading enum.
     const val RT_HEART_RATE: UByte = 0x01u
     const val RT_SPO2: UByte = 0x03u
-    // Real-time actions (0x69/0x6A payload byte 1).
+    // Real-time start action (0x69 payload byte 1). Stopping does NOT use an action byte
+    // on 0x69 — it must be the separate CMD_STOP_REAL_TIME (0x6A) frame.
     const val RT_ACTION_START: UByte = 0x01u
-    const val RT_ACTION_STOP: UByte = 0x02u
 
     // 0x73 notification subtypes
     const val NOTIF_NEW_HR: UByte = 0x01u

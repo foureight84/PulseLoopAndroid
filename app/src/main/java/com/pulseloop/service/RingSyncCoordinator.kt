@@ -61,22 +61,30 @@ class RingSyncCoordinator(
     var workoutHRActive = false
         private set
     private var hrNoReadingReported = false
+    private var spo2NoReadingReported = false
     private var measurementReceivedReading = false
 
     val connectionState: RingConnectionState get() = client.state.value.connectionState
     val isConnected: Boolean get() = connectionState == RingConnectionState.CONNECTED
 
-    private val hrMeasureSeconds = 30L
-    private val hrSettleSeconds = 4
-    private val spo2MeasureSeconds = 40L
+    private val hrMeasureSeconds = HR_MEASURE_SECONDS.toLong()
+    private val hrSettleSeconds = HR_SETTLE_SECONDS
+    private val spo2MeasureSeconds = SPO2_MEASURE_SECONDS.toLong()
     private val combinedMeasureSeconds = COMBINED_MEASURE_SECONDS.toLong()
 
     companion object {
         /** Duration of a combined spot measurement (0x23→0x24); also drives the UI countdown. */
         const val COMBINED_MEASURE_SECONDS = 45
+        /** Window for the live-HR leg of a spot measurement. */
+        const val HR_MEASURE_SECONDS = 30
+        /** Extra settle time after the first HR reading, letting the value converge. */
+        const val HR_SETTLE_SECONDS = 4
+        /** Window for the live-SpO₂ leg of a spot measurement. */
+        const val SPO2_MEASURE_SECONDS = 40
         /** Upper-bound for a sequential HR+SpO₂ spot measurement; drives the UI countdown.
-         *  Each leg returns early once it gets a reading, so it usually finishes well sooner. */
-        const val SPOT_MEASURE_SECONDS = 75
+         *  Derived from the legs so the countdown can't desync when one is tuned. Each leg
+         *  returns early once it gets a reading, so it usually finishes well sooner. */
+        const val SPOT_MEASURE_SECONDS = HR_MEASURE_SECONDS + HR_SETTLE_SECONDS + SPO2_MEASURE_SECONDS + 1
         /** Max time to wait for the pre-factory-reset history sync before resetting anyway. */
         const val SYNC_BEFORE_RESET_TIMEOUT_MS = 30_000L
     }
@@ -194,15 +202,16 @@ class RingSyncCoordinator(
         engine?.findDevice()
     }
 
-    /** Send ring-side unpair commands (power-off, factory reset if supported),
-     *  then disconnect and forget. */
     /**
      * Non-destructive: unbind + disconnect + drop the ring from the app. The ring keeps all
      * of its on-device data, stays powered on, and can be re-paired immediately. Does NOT
      * power off or factory-reset — that would wipe a Colmi ring's unsynced history and leave
      * it dark until charged. For a true wipe use [factoryResetRing].
+     *
+     * [onCleared] runs on the coordinator's own long-lived scope, so callers can do their
+     * cleanup (e.g. clearing the device row) without tying it to a screen's lifecycle.
      */
-    fun forgetRing(onCleared: () -> Unit) {
+    fun forgetRing(onCleared: suspend () -> Unit) {
         // client.forget() already sends the protocol unbind, waits for the ack, removes any
         // OS bond, and clears the stored peripheral. That is the whole forget.
         scope.launch {
@@ -216,9 +225,10 @@ class RingSyncCoordinator(
      * Destructive: wipe the ring's on-device storage. Because a Colmi ring buffers days of
      * unsynced history, we sync the latest data into the app FIRST, then send the factory
      * reset, then forget. Gate this on the ring's FACTORY_RESET capability at the call site.
-     * [onProgress] receives a short status for the UI; [onCleared] fires when fully done.
+     * [onProgress] receives a short status for the UI; [onCleared] fires when fully done and
+     * runs on the coordinator's own long-lived scope (see [forgetRing]).
      */
-    fun factoryResetRing(onProgress: (String) -> Unit = {}, onCleared: () -> Unit) {
+    fun factoryResetRing(onProgress: (String) -> Unit = {}, onCleared: suspend () -> Unit) {
         scope.launch {
             if (isConnected) {
                 onProgress("Syncing latest data…")
@@ -231,7 +241,10 @@ class RingSyncCoordinator(
                 kotlinx.coroutines.delay(800)  // let the final history writes flush
                 onProgress("Resetting ring…")
                 engine?.factoryReset()
-                kotlinx.coroutines.delay(600)  // let the reset command reach the ring
+                // The reset frame is only ENQUEUED on the GATT op queue; wait until it has
+                // actually been written and acked before forget() tears the queue down —
+                // otherwise a slow queue silently swallows the wipe the user confirmed.
+                client.awaitOpsFlushed()
             }
             client.forget()
             stop()
@@ -301,10 +314,13 @@ class RingSyncCoordinator(
         if (!isConnected) { spo2State = MeasureState.FAILED; return null }
         spo2State = MeasureState.MEASURING
         latestSpO2Value = null
+        spo2NoReadingReported = false
         engine?.startSpO2()
         var result: Int? = null
         try {
-            result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { false })
+            // Abort early when the ring reports the run ended with an error (finger off,
+            // ring not worn) instead of idling out the full window.
+            result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { spo2NoReadingReported })
         } finally {
             engine?.stopSpO2()   // stop the sensor even on cancellation (see measureHR)
             spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
@@ -360,6 +376,11 @@ class RingSyncCoordinator(
             }
             is PulseEvent.Spo2Result -> {
                 latestSpO2Value = event.value
+            }
+            is PulseEvent.Spo2Complete -> {
+                if (spo2State == MeasureState.MEASURING && latestSpO2Value == null) {
+                    spo2NoReadingReported = true
+                }
             }
             is PulseEvent.DeviceStateChanged -> {
                 when (event.state) {

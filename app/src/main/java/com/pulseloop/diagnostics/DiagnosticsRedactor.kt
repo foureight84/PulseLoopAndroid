@@ -21,7 +21,6 @@ object DiagnosticsRedactor {
     )
 
     private val MAC = Regex("\\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\\b")
-    private val RING_SERIAL_SUFFIX = Regex("_[0-9A-Fa-f]{3,}$")
 
     /**
      * For a health-measurement frame, keep the opcode byte and mask the rest (the values live
@@ -36,6 +35,7 @@ object DiagnosticsRedactor {
     /** Mask BLE MAC addresses anywhere in free text (logcat, log messages, metadata). */
     fun scrubText(text: String): String = MAC.replace(text, "··:··:··:··:··:··")
 
-    /** Strip the ring's serial suffix, keeping the model (e.g. "COLMI R10_1203" → "COLMI R10"). */
-    fun maskRingName(name: String): String = RING_SERIAL_SUFFIX.replace(name, "")
+    /** Strip the ring's serial suffix, keeping the model (e.g. "COLMI R10_1203" → "COLMI R10").
+     *  Delegates to the one shared suffix rule so the UI label and the privacy scrub can't drift. */
+    fun maskRingName(name: String): String = com.pulseloop.ring.ringNameWithoutSerial(name)
 }

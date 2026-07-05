@@ -11,13 +11,14 @@ import android.os.Process
 object LogcatCapture {
     fun ownProcessLog(maxLines: Int = 2000): String = try {
         val pid = Process.myPid()
-        val proc = ProcessBuilder("logcat", "-d", "-v", "time", "--pid=$pid")
+        // -t caps the dump to the newest N lines inside logd itself, so a long session's
+        // multi-MB buffer never has to be read into memory just to be trimmed here.
+        val proc = ProcessBuilder("logcat", "-d", "-v", "time", "-t", maxLines.toString(), "--pid=$pid")
             .redirectErrorStream(true)
             .start()
         val text = proc.inputStream.bufferedReader().use { it.readText() }
         proc.waitFor()
-        val lines = text.lines()
-        if (lines.size > maxLines) lines.takeLast(maxLines).joinToString("\n") else text
+        text
     } catch (e: Exception) {
         "logcat capture failed: ${e.message}"
     }

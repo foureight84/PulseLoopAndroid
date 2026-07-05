@@ -26,6 +26,8 @@ sealed class PulseEvent {
     data class HeartRateSample(val bpm: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class HeartRateComplete(val timestamp: java.time.Instant) : PulseEvent()
     data class Spo2Result(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /** The ring ended a live-SpO₂ run (error or natural finish) — no more results coming. */
+    data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()
     data class HistoryMeasurement(val kind: MeasurementKind, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class StressSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()

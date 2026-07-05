@@ -41,6 +41,18 @@ data class UpdateInfo(
 )
 
 /**
+ * Outcome of an update check. Failures are distinct from "no update" so the UI never
+ * tells an offline or rate-limited user they're on the latest version.
+ */
+sealed class UpdateCheckResult {
+    data class UpdateAvailable(val info: UpdateInfo) : UpdateCheckResult()
+    data object UpToDate : UpdateCheckResult()
+    /** Unsupported build (debug / non-release id), or inside the auto-check throttle window. */
+    data object Skipped : UpdateCheckResult()
+    data class Failed(val reason: String) : UpdateCheckResult()
+}
+
+/**
  * Polls the GitHub "latest release" endpoint and compares it to the installed build.
  *
  * Versioning contract: releases are tagged `v{versionName}+{versionCode}` (e.g. `v1.0.0+5`).
@@ -56,6 +68,7 @@ object UpdateChecker {
 
     private const val PREFS = "self_update"
     private const val KEY_ETAG = "etag"
+    private const val KEY_CACHED_RELEASE = "cachedReleaseJson"
     private const val KEY_LAST_CHECK = "lastCheckAt"
     private const val AUTO_CHECK_INTERVAL_MS = 24 * 3600_000L
 
@@ -66,61 +79,82 @@ object UpdateChecker {
     fun versionNameFromTag(tag: String): String = tag.removePrefix("v").substringBefore('+')
 
     /**
-     * Returns an [UpdateInfo] if a newer release exists, else null. [force] bypasses the
+     * Checks the GitHub latest release against the installed build. [force] bypasses the
      * once-a-day throttle and the ETag cache (used by the Settings "Check for updates" button).
+     *
+     * A 304 Not Modified still re-evaluates the release cached alongside the ETag — the
+     * throttle is the only thing that limits how often the result surfaces. Otherwise a
+     * pending update the user dismissed once would never be offered again while that
+     * release's ETag stays current.
      */
-    suspend fun check(context: Context, force: Boolean = false): UpdateInfo? = withContext(Dispatchers.IO) {
-        if (!isSupported()) return@withContext null
+    suspend fun check(context: Context, force: Boolean = false): UpdateCheckResult = withContext(Dispatchers.IO) {
+        if (!isSupported()) return@withContext UpdateCheckResult.Skipped
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (!force) {
             val last = prefs.getLong(KEY_LAST_CHECK, 0L)
-            if (System.currentTimeMillis() - last < AUTO_CHECK_INTERVAL_MS) return@withContext null
+            if (System.currentTimeMillis() - last < AUTO_CHECK_INTERVAL_MS) return@withContext UpdateCheckResult.Skipped
         }
+        // Only send If-None-Match when a cached release body exists to evaluate on 304.
+        val cached = prefs.getString(KEY_CACHED_RELEASE, null)
+        val etag = if (!force && cached != null) prefs.getString(KEY_ETAG, null) else null
 
         val request = Request.Builder()
             .url("https://api.github.com/repos/${BuildConfig.GITHUB_REPO}/releases/latest")
             .header("Accept", "application/vnd.github+json")
-            .apply { if (!force) prefs.getString(KEY_ETAG, null)?.let { header("If-None-Match", it) } }
+            .apply { etag?.let { header("If-None-Match", it) } }
             .build()
 
         val response = try {
             client.newCall(request).execute()
         } catch (_: Exception) {
-            return@withContext null
+            return@withContext UpdateCheckResult.Failed("network error")
         }
 
         response.use { resp ->
-            prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
-            if (resp.code == 304) return@withContext null          // Not Modified (ETag)
-            if (!resp.isSuccessful) return@withContext null
-            resp.header("ETag")?.let { prefs.edit().putString(KEY_ETAG, it).apply() }
-
-            val bodyText = resp.body?.string() ?: return@withContext null
-            val release = try {
-                json.decodeFromString(GithubRelease.serializer(), bodyText)
-            } catch (_: Exception) {
-                return@withContext null
+            val edit = prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis())
+            val bodyText = when {
+                resp.code == 304 -> cached          // Not Modified — re-evaluate the cached release
+                resp.isSuccessful -> resp.body?.string()?.also {
+                    edit.putString(KEY_ETAG, resp.header("ETag")).putString(KEY_CACHED_RELEASE, it)
+                }
+                else -> {
+                    edit.apply()
+                    return@withContext UpdateCheckResult.Failed("GitHub returned ${resp.code}")
+                }
             }
-            if (release.draft || release.prerelease) return@withContext null
-
-            val remoteCode = versionCodeFromTag(release.tagName) ?: return@withContext null
-            if (remoteCode <= BuildConfig.VERSION_CODE) return@withContext null
-
-            val apks = release.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
-            val apk = apks.firstOrNull { it.name.contains("universal", ignoreCase = true) }
-                ?: apks.firstOrNull { a -> Build.SUPPORTED_ABIS.any { a.name.contains(it, ignoreCase = true) } }
-                ?: apks.firstOrNull()
-                ?: return@withContext null
-
-            UpdateInfo(
-                versionName = versionNameFromTag(release.tagName),
-                versionCode = remoteCode,
-                changelog = release.body?.takeIf { it.isNotBlank() } ?: (release.name ?: "A new version is available."),
-                apkUrl = apk.browserDownloadUrl,
-                apkSize = apk.size,
-                htmlUrl = release.htmlUrl ?: "",
-            )
+            edit.apply()
+            if (bodyText == null) return@withContext UpdateCheckResult.Failed("empty response")
+            evaluate(bodyText)
         }
+    }
+
+    /** Compare a releases-API response body against the installed build. */
+    private fun evaluate(bodyText: String): UpdateCheckResult {
+        val release = try {
+            json.decodeFromString(GithubRelease.serializer(), bodyText)
+        } catch (_: Exception) {
+            return UpdateCheckResult.Failed("unexpected response from GitHub")
+        }
+        if (release.draft || release.prerelease) return UpdateCheckResult.UpToDate
+
+        val remoteCode = versionCodeFromTag(release.tagName)
+            ?: return UpdateCheckResult.UpToDate    // tag not in the v<name>+<code> scheme
+        if (remoteCode <= BuildConfig.VERSION_CODE) return UpdateCheckResult.UpToDate
+
+        val apks = release.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+        val apk = apks.firstOrNull { it.name.contains("universal", ignoreCase = true) }
+            ?: apks.firstOrNull { a -> Build.SUPPORTED_ABIS.any { a.name.contains(it, ignoreCase = true) } }
+            ?: apks.firstOrNull()
+            ?: return UpdateCheckResult.Failed("release has no APK asset")
+
+        return UpdateCheckResult.UpdateAvailable(UpdateInfo(
+            versionName = versionNameFromTag(release.tagName),
+            versionCode = remoteCode,
+            changelog = release.body?.takeIf { it.isNotBlank() } ?: (release.name ?: "A new version is available."),
+            apkUrl = apk.browserDownloadUrl,
+            apkSize = apk.size,
+            htmlUrl = release.htmlUrl ?: "",
+        ))
     }
 
     /** Download the APK to cacheDir/updates, reporting progress in 0f..1f. Returns the file or null. */

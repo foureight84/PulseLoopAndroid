@@ -37,7 +37,14 @@ class EventPersistenceSubscriber(
     private suspend fun persistUnsafe(event: PulseEvent) {
         when (event) {
             is PulseEvent.DeviceStateChanged -> {
-                val device = db.deviceDao().current() ?: DeviceEntity()
+                // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
+                // device row, the ring's own teardown still emits a late DISCONNECTED — only
+                // a connection-establishing event may create a fresh row.
+                val existing = db.deviceDao().current()
+                if (existing == null &&
+                    event.state != RingConnectionState.CONNECTED &&
+                    event.state != RingConnectionState.CONNECTING) return
+                val device = existing ?: DeviceEntity()
                 val state = when (event.state) {
                     RingConnectionState.CONNECTED -> {
                         db.measurementDao().clearDemo()
@@ -140,6 +147,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.SyncProgress -> {} // UI feedback, no persistence needed
             is PulseEvent.HeartRateComplete -> {}
+            is PulseEvent.Spo2Complete -> {}
             is PulseEvent.RawPacket -> {
                 db.rawPacketDao().insert(RawPacketEntity(
                     directionRaw = event.direction.name,

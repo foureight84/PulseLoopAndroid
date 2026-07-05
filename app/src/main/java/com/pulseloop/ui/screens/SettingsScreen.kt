@@ -637,12 +637,12 @@ fun SettingsScreen(
                                 RingSyncWorker.cancel(context)
                                 // Send ring-side unbind, then disconnect & clear DB
                                 if (coordinator != null && isConnected) {
+                                    // Runs on the coordinator's long-lived scope, so the row is
+                                    // cleared even if the user leaves this screen meanwhile.
+                                    // Clearing it emits null through currentFlow(), which
+                                    // updates the UI reactively.
                                     coordinator.forgetRing {
-                                        scope.launch {
-                                            // Clearing the row emits null through currentFlow(),
-                                            // which updates the UI reactively.
-                                            db.deviceDao().clear()
-                                        }
+                                        db.deviceDao().clear()
                                     }
                                 } else {
                                     bleClient?.forget()
@@ -699,13 +699,14 @@ fun SettingsScreen(
                                 resetting = true
                                 resetStatus = "Syncing latest data…"
                                 RingSyncWorker.cancel(context)
+                                // onCleared runs on the coordinator's long-lived scope: the reset
+                                // takes up to ~30s, and the device row must be cleared even if the
+                                // user navigates away (which cancels this screen's own scope).
                                 coordinator?.factoryResetRing(
                                     onProgress = { resetStatus = it },
                                 ) {
-                                    scope.launch {
-                                        db.deviceDao().clear()
-                                        resetting = false
-                                    }
+                                    db.deviceDao().clear()
+                                    resetting = false
                                 }
                             }) { Text("Reset ring", color = MaterialTheme.colorScheme.error) }
                         },

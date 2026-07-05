@@ -106,9 +106,13 @@ fun CheckForUpdatesButton(modifier: Modifier = Modifier) {
                 checking = true
                 status = null
                 scope.launch {
-                    val result = UpdateChecker.check(context, force = true)
+                    when (val result = UpdateChecker.check(context, force = true)) {
+                        is UpdateCheckResult.UpdateAvailable -> update = result.info
+                        is UpdateCheckResult.Failed ->
+                            status = "Couldn't check for updates (${result.reason}). Please try again."
+                        else -> status = "You're on the latest version (${BuildConfig.VERSION_NAME})."
+                    }
                     checking = false
-                    if (result != null) update = result else status = "You're on the latest version (${BuildConfig.VERSION_NAME})."
                 }
             },
             modifier = Modifier.fillMaxWidth(),

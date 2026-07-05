@@ -5,6 +5,8 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.FileProvider
 import com.pulseloop.data.PulseLoopDatabase
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import java.io.File
 import java.time.Instant
@@ -24,7 +26,12 @@ object DiagnosticsExporter {
      * are kept (see [DiagnosticsRedactor]). Pass false only to capture full unmasked BLE frames
      * for deep protocol debugging.
      */
-    suspend fun exportJSON(context: Context, db: PulseLoopDatabase, mask: Boolean = true, maxLogs: Int = 500): String {
+    suspend fun exportJSON(
+        context: Context, db: PulseLoopDatabase, mask: Boolean = true, maxLogs: Int = 500,
+    ): String = withContext(Dispatchers.IO) {
+        // Everything below is blocking work (logcat exec, crash-file reads, JSON encode of
+        // hundreds of entries) — keep it off the caller's thread, which is Main when the
+        // Debug screen's Export button triggers this.
         val device = db.deviceDao().current()
         val logs = db.wearableLogDao().recent(maxLogs)
         val root = buildJsonObject {
@@ -99,16 +106,18 @@ object DiagnosticsExporter {
             val logcat = LogcatCapture.ownProcessLog()
             put("logcat", if (mask) DiagnosticsRedactor.scrubText(logcat) else logcat)
         }
-        return json.encodeToString(JsonObject.serializer(), root)
+        json.encodeToString(JsonObject.serializer(), root)
     }
 
     suspend fun exportFile(context: Context, db: PulseLoopDatabase, mask: Boolean = true): File {
         val report = exportJSON(context, db, mask)
-        val stamp = Instant.now().toString().replace(":", "-")
-        val suffix = if (mask) "" else "-full"
-        val file = File(context.cacheDir, "pulseloop-diagnostics-$stamp$suffix.json")
-        file.writeText(report)
-        return file
+        return withContext(Dispatchers.IO) {
+            val stamp = Instant.now().toString().replace(":", "-")
+            val suffix = if (mask) "" else "-full"
+            val file = File(context.cacheDir, "pulseloop-diagnostics-$stamp$suffix.json")
+            file.writeText(report)
+            file
+        }
     }
 
     suspend fun shareIntent(context: Context, db: PulseLoopDatabase, mask: Boolean = true): Intent {

@@ -31,7 +31,10 @@ object ColmiDecoder {
                 val errorCode = v[2].toInt()
                 val value = v[3].toInt()
                 if (readingType == ColmiCommandID.RT_SPO2) {
-                    if (errorCode != 0 || value !in 70..100) return emptyList()  // warm-up / noise
+                    // error!=0 ends the run — surface it so a spot measurement fails fast
+                    // instead of idling out its full window (mirrors the HR path below).
+                    if (errorCode != 0) return listOf(RingDecodedEvent.Spo2Complete(_timestamp = now))
+                    if (value !in 70..100) return emptyList()  // warm-up / noise
                     return listOf(RingDecodedEvent.Spo2Result(value = value, _timestamp = now))
                 }
                 // Default: heart rate (reading_type == RT_HEART_RATE, or legacy 2-byte request).
