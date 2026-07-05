@@ -152,21 +152,36 @@ class EventPersistenceSubscriber(
                 // froze the UI). Accumulate deltas instead: a drop means reset,
                 // and the new value is fresh steps on top of what we stored.
                 val effDay = com.pulseloop.util.TimeUtil.startOfDayLocal(effectiveTs)
-                val last = lastCumulative
-                lastCumulative = CumulativeSnapshot(effDay, event.steps, event.calories, event.distanceMeters)
-                if (last == null || last.day != effDay) {
-                    // First packet since app start / new day: baseline only. The
-                    // absolute is still offered through maxOf so a fresh install
-                    // or same-counter restart doesn't lose the day's total.
+                val hw = lastCumulative
+                if (hw == null || hw.day != effDay) {
+                    // First packet since app start / new day: baseline via maxOf.
+                    lastCumulative = CumulativeSnapshot(effDay, event.steps, event.calories, event.distanceMeters)
+                    resetCandidateSince = 0L
                     upsertActivityDaily(effectiveTs, event.steps, event.calories, event.distanceMeters)
-                } else {
-                    val dSteps = if (event.steps >= last.steps) event.steps - last.steps else event.steps
-                    val dCal = if (event.calories >= last.calories) event.calories - last.calories else event.calories
-                    val dDist = if (event.distanceMeters >= last.distanceM) event.distanceMeters - last.distanceM else event.distanceMeters
-                    if (dSteps > 0 || dCal > 0 || dDist > 0) {
-                        addToActivityDaily(effectiveTs, dSteps, dCal, dDist)
+                } else if (event.steps >= hw.steps) {
+                    // Rising counter: add the delta above the high-water mark.
+                    // A half-rebooted ring BOUNCES between its old and new counter;
+                    // per-packet deltas against the last value re-added the lower
+                    // counter on every bounce (observed as a multi-day-sized total).
+                    // Deltas are therefore taken only against the day's high water.
+                    val dSteps = event.steps - hw.steps
+                    val dCal = (event.calories - hw.calories).coerceAtLeast(0.0)
+                    val dDist = (event.distanceMeters - hw.distanceM).coerceAtLeast(0.0)
+                    lastCumulative = CumulativeSnapshot(effDay, event.steps, event.calories, event.distanceMeters)
+                    resetCandidateSince = 0L
+                    if (dSteps > 0 || dCal > 0 || dDist > 0) addToActivityDaily(effectiveTs, dSteps, dCal, dDist)
+                } else if (event.steps < hw.steps * 6 / 10) {
+                    // Deep drop: genuine counter reset only if it PERSISTS — accept
+                    // after 30s of sustained low readings, re-baseline without adding
+                    // (the pre-reset total is already stored). Bounces re-arm rising.
+                    val now = System.currentTimeMillis()
+                    if (resetCandidateSince == 0L) resetCandidateSince = now
+                    else if (now - resetCandidateSince > RESET_CONFIRM_MS) {
+                        lastCumulative = CumulativeSnapshot(effDay, event.steps, event.calories, event.distanceMeters)
+                        resetCandidateSince = 0L
                     }
                 }
+                // Shallow drops (jitter between the two counters): ignore entirely.
             }
             is PulseEvent.ActivityBucket -> {
                 // 0x10 history buckets are per-minute DELTAS, not cumulative totals.
@@ -217,9 +232,10 @@ class EventPersistenceSubscriber(
     private data class BucketSums(var steps: Int = 0, var distanceM: Double = 0.0, var activeMin: Int = 0)
     private val bucketDaySums = mutableMapOf<Long, BucketSums>()
 
-    /** Last cumulative 0x03 snapshot, for delta accumulation across ring resets. */
+    /** High-water 0x03 snapshot for the day, for delta accumulation across ring resets. */
     private data class CumulativeSnapshot(val day: Long, val steps: Int, val calories: Double, val distanceM: Double)
     private var lastCumulative: CumulativeSnapshot? = null
+    private var resetCandidateSince = 0L
 
     /** Additive merge for cumulative-counter deltas (vs the maxOf estimator merge). */
     private suspend fun addToActivityDaily(ts: Long, dSteps: Int, dCal: Double, dDist: Double) {
@@ -268,6 +284,8 @@ class EventPersistenceSubscriber(
         private const val MIDNIGHT_GRACE_MS = 2 * 3_600_000L
         /** Steps in a 1-min bucket that qualify the minute as "active". */
         private const val ACTIVE_MINUTE_STEPS = 60
+        /** A cumulative-counter drop must persist this long to count as a reset. */
+        private const val RESET_CONFIRM_MS = 30_000L
     }
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>) {
