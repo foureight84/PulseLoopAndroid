@@ -145,7 +145,28 @@ class EventPersistenceSubscriber(
                     yesterday != null && event.steps > 200 &&
                     event.steps >= yesterday.steps * 9 / 10
                 val effectiveTs = if (stillYesterdays) today - 1 else ts
-                upsertActivityDaily(effectiveTs, event.steps, event.calories, event.distanceMeters)
+
+                // The counter is cumulative but NOT trustworthy as an absolute:
+                // the ring can reboot mid-day and restart it from zero (observed
+                // 2026-07-04: ring dropped from 6345 to 4490 and the maxOf merge
+                // froze the UI). Accumulate deltas instead: a drop means reset,
+                // and the new value is fresh steps on top of what we stored.
+                val effDay = com.pulseloop.util.TimeUtil.startOfDayLocal(effectiveTs)
+                val last = lastCumulative
+                lastCumulative = CumulativeSnapshot(effDay, event.steps, event.calories, event.distanceMeters)
+                if (last == null || last.day != effDay) {
+                    // First packet since app start / new day: baseline only. The
+                    // absolute is still offered through maxOf so a fresh install
+                    // or same-counter restart doesn't lose the day's total.
+                    upsertActivityDaily(effectiveTs, event.steps, event.calories, event.distanceMeters)
+                } else {
+                    val dSteps = if (event.steps >= last.steps) event.steps - last.steps else event.steps
+                    val dCal = if (event.calories >= last.calories) event.calories - last.calories else event.calories
+                    val dDist = if (event.distanceMeters >= last.distanceM) event.distanceMeters - last.distanceM else event.distanceMeters
+                    if (dSteps > 0 || dCal > 0 || dDist > 0) {
+                        addToActivityDaily(effectiveTs, dSteps, dCal, dDist)
+                    }
+                }
             }
             is PulseEvent.ActivityBucket -> {
                 // 0x10 history buckets are per-minute DELTAS, not cumulative totals.
@@ -195,6 +216,29 @@ class EventPersistenceSubscriber(
     /** Running per-day sums for 0x10 history buckets within one sync pass. */
     private data class BucketSums(var steps: Int = 0, var distanceM: Double = 0.0, var activeMin: Int = 0)
     private val bucketDaySums = mutableMapOf<Long, BucketSums>()
+
+    /** Last cumulative 0x03 snapshot, for delta accumulation across ring resets. */
+    private data class CumulativeSnapshot(val day: Long, val steps: Int, val calories: Double, val distanceM: Double)
+    private var lastCumulative: CumulativeSnapshot? = null
+
+    /** Additive merge for cumulative-counter deltas (vs the maxOf estimator merge). */
+    private suspend fun addToActivityDaily(ts: Long, dSteps: Int, dCal: Double, dDist: Double) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        val existing = db.activityDailyDao().byDay(dayStart)
+        if (existing != null) {
+            db.activityDailyDao().upsert(existing.copy(
+                steps = existing.steps + dSteps,
+                calories = existing.calories + dCal,
+                distanceMeters = existing.distanceMeters + dDist,
+                updatedAt = System.currentTimeMillis(),
+            ))
+        } else {
+            db.activityDailyDao().upsert(ActivityDailyEntity(
+                date = dayStart, steps = dSteps, calories = dCal,
+                distanceMeters = dDist, source = "ring",
+            ))
+        }
+    }
 
     private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double, activeMinutes: Int = -1) {
         // Key the daily row by local midnight so it matches the Today dashboard and
