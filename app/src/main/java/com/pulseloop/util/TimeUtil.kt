@@ -21,4 +21,26 @@ object TimeUtil {
     /** Local midnight for the current day, as epoch millis. */
     fun startOfTodayLocal(zone: ZoneId = ZoneId.systemDefault()): Long =
         startOfDayLocal(System.currentTimeMillis(), zone)
+
+    /**
+     * Hour-of-day boundary between "belongs to last night" and "belongs to the coming night."
+     * Sleep starting at or after this hour rolls onto the *next* morning's waking day; anything
+     * earlier (including small-hours and daytime naps) stays on the current day.
+     * Mirrors `Calendar.sleepEveningBoundaryHour` in the iOS reference (PulseServices.swift).
+     */
+    const val SLEEP_EVENING_BOUNDARY_HOUR = 19  // 7 PM
+
+    /**
+     * The waking-morning day key (local midnight, epoch millis) for a sleep session starting at
+     * [ts]. Sleep that begins at or after 7 PM belongs to the *next* day's waking morning (you
+     * fall asleep tonight, wake tomorrow), so a night that crosses midnight groups onto the single
+     * morning it ends on. Sleep before 7 PM — early-morning hours or a daytime nap — stays on the
+     * current day / last night's session. Mirrors `Calendar.wakingDay(forSleepStart:)` on iOS.
+     */
+    fun wakingDayLocal(ts: Long, zone: ZoneId = ZoneId.systemDefault()): Long {
+        val zdt = Instant.ofEpochMilli(ts).atZone(zone)
+        val base = zdt.truncatedTo(ChronoUnit.DAYS)
+        val day = if (zdt.hour >= SLEEP_EVENING_BOUNDARY_HOUR) base.plusDays(1) else base
+        return day.toInstant().toEpochMilli()
+    }
 }

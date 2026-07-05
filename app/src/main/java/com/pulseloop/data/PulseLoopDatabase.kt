@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.pulseloop.data.dao.*
 import com.pulseloop.data.entity.*
 
@@ -16,6 +18,7 @@ import com.pulseloop.data.entity.*
         DeviceEntity::class,
         MeasurementEntity::class,
         ActivityDailyEntity::class,
+        ActivityBucketEntity::class,
         ActivitySessionEntity::class,
         ActivityGpsPointEntity::class,
         ActivityEventEntity::class,
@@ -34,13 +37,14 @@ import com.pulseloop.data.entity.*
         CoachSummaryEntity::class,
         WearableLogEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun measurementDao(): MeasurementDao
     abstract fun activityDailyDao(): ActivityDailyDao
+    abstract fun activityBucketDao(): ActivityBucketDao
     abstract fun activitySessionDao(): ActivitySessionDao
     abstract fun activityGpsPointDao(): ActivityGpsPointDao
     abstract fun sleepSessionDao(): SleepSessionDao
@@ -58,6 +62,26 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     companion object {
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
 
+        /** v2 → v3: adds the activity_buckets table (idempotent re-sync of activity history). */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `activity_buckets` (
+                        `startEpoch` INTEGER NOT NULL,
+                        `date` INTEGER NOT NULL,
+                        `steps` INTEGER NOT NULL,
+                        `distanceMeters` REAL NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`startEpoch`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_activity_buckets_date` ON `activity_buckets` (`date`)")
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -65,6 +89,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
+                    .addMigrations(MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

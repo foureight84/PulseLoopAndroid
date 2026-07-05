@@ -140,7 +140,11 @@ class EventPersistenceSubscriber(
                 upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
             }
             is PulseEvent.ActivityBucket -> {
-                upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, 0.0, event.distanceMeters)
+                // Per-slice ring history: upserted by timestamp + the day total recomputed as the
+                // sum of distinct buckets, so re-syncs are idempotent (no drift). Routing these
+                // through upsertActivityDaily's max() ratchet collapsed a history day's total to
+                // its single largest bucket. Calories omitted (unverified ring field).
+                applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)
@@ -195,11 +199,45 @@ class EventPersistenceSubscriber(
         }
     }
 
+    /**
+     * Persist one intraday activity bucket from ring history (a Colmi `0x43` sample) and recompute
+     * its day's total. The bucket is **upserted by its start time**, so re-syncing the same bucket
+     * *replaces* it (never accumulates), and the day's `activity_daily` row is recomputed as the
+     * **sum of distinct buckets** for that day. Mirrors `ActivityService.applyActivityBucket` on
+     * iOS (the GadgetBridge model). Calories intentionally untouched (unverified ring field).
+     */
+    private suspend fun applyActivityBucket(ts: Long, steps: Int, distanceM: Double) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        db.activityBucketDao().upsert(ActivityBucketEntity(
+            startEpoch = ts,
+            date = dayStart,
+            steps = steps,
+            distanceMeters = distanceM,
+        ))
+
+        val buckets = db.activityBucketDao().byDay(dayStart)
+        val totalSteps = buckets.sumOf { it.steps }
+        val totalDistance = buckets.sumOf { it.distanceMeters }
+
+        val existing = db.activityDailyDao().byDay(dayStart)
+        db.activityDailyDao().upsert(
+            (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
+                steps = totalSteps,
+                distanceMeters = totalDistance,
+                source = "ring_history",
+                syncedAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>) {
         if (stages.isEmpty()) return
-        // Local-day key so a night is attributed to the correct local date (and stitches
-        // with same-night packets) rather than flipping at UTC midnight.
-        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
+        // a night that starts before midnight lands under the morning of waking instead of being
+        // split into two sessions at midnight. Matches the iOS reference
+        // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
+        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
         val sessionId = "sleep-$dayStart"
 
         // The ring streams a night as many 15-minute 0x11 packets that must be STITCHED,

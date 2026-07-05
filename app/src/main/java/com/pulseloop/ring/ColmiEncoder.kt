@@ -48,6 +48,23 @@ object ColmiEncoder {
     fun writePref(command: UByte, enabled: Boolean): ByteArray =
         byteArrayOf(command.toByte(), ColmiCommandID.PREF_WRITE.toByte(), if (enabled) 0x01 else 0x00)
 
+    /**
+     * Enable/disable all-day **heart-rate** monitoring. Auto-HR (`0x16`) has a different shape from
+     * the other prefs (per GadgetBridge `onSetHeartRateMeasurementInterval`): the on/off flag is
+     * `0x01`(on)/`0x02`(off) — *not* `0x01`/`0x00` — and it carries the sampling interval in minutes.
+     * The interval is rounded to a 5-minute multiple, 5…60. Without this the ring records no
+     * background HR, so the HR-history sync (`0x15`) comes back empty.
+     */
+    fun autoHeartRate(enabled: Boolean, intervalMinutes: Int = 5): ByteArray {
+        val interval = ((intervalMinutes / 5) * 5).coerceIn(5, 60)
+        return byteArrayOf(
+            ColmiCommandID.AUTO_HR_PREF.toByte(),
+            ColmiCommandID.PREF_WRITE.toByte(),
+            if (enabled) 0x01 else 0x02,
+            interval.toByte(),
+        )
+    }
+
     fun readTempPref(): ByteArray = byteArrayOf(
         ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_READ.toByte()
     )

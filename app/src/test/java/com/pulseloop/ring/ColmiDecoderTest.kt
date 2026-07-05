@@ -310,6 +310,29 @@ class ColmiDecoderTest {
         assertEquals(0x27.toByte(), cmd[2]) // (10000 >> 8) & 0xff
     }
 
+    // Auto-HR (0x16) has a different shape from the other prefs: on/off is 0x01/0x02
+    // (not 0x01/0x00) and carries the sampling interval in minutes. Parity with
+    // ColmiDecoderTests.swift (PR #17).
+    @Test
+    fun `auto heart rate enable carries 0x01 flag and interval`() {
+        val cmd = ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 5)
+        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x01, 0x05), cmd)
+    }
+
+    @Test
+    fun `auto heart rate disable uses 0x02 flag`() {
+        val cmd = ColmiEncoder.autoHeartRate(enabled = false, intervalMinutes = 5)
+        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x02, 0x05), cmd)
+    }
+
+    @Test
+    fun `auto heart rate interval rounds to 5-minute multiples within 5-60`() {
+        assertEquals(5.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 7)[3])
+        assertEquals(60.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 90)[3])
+        assertEquals(5.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 0)[3])
+        assertEquals(30.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 33)[3])
+    }
+
     // MARK: Helpers
 
     private fun hexToBytes(hex: String): ByteArray =

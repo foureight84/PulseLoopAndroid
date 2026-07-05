@@ -76,6 +76,27 @@ data class ActivityDailyEntity(
 )
 
 /**
+ * Ported from [ActivityBucketSample] in PulseModels.swift.
+ * One intraday activity bucket from a ring's history sync (a Colmi `0x43` sample).
+ * Keyed by `startEpoch` (the bucket's start time, epoch millis) so re-syncing the same bucket
+ * **replaces** it rather than accumulating — the daily total is then the sum of distinct buckets.
+ * This is the GadgetBridge model and the fix for daily totals drifting across repeated syncs.
+ */
+@Entity(
+    tableName = "activity_buckets",
+    indices = [Index("date")],
+)
+data class ActivityBucketEntity(
+    /** Bucket start time in epoch millis — the primary key, so the same bucket upserts. */
+    @PrimaryKey val startEpoch: Long,
+    val date: Long,                 // epoch millis, local start of day, for per-day queries
+    val steps: Int = 0,
+    val distanceMeters: Double = 0.0,
+    val source: String = "ring_history",
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
  * Ported from [ActivitySession] in PulseModels.swift.
  * A workout recording session.
  */

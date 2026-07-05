@@ -59,6 +59,10 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_HRV_PREF))
         writer?.enqueue(encoder.readTempPref())
         writer?.enqueue(encoder.readGoals())
+        // Enable all-day measurement so the ring actually accumulates data the history sync can
+        // return (without these, the metric history comes back empty).
+        // Heart rate uses a dedicated 0x16 command (different shape from the other prefs).
+        writer?.enqueue(encoder.autoHeartRate(enabled = true, intervalMinutes = 5))
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_SPO2_PREF, enabled = true))
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_STRESS_PREF, enabled = true))
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = true))
