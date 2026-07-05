@@ -11,6 +11,8 @@ import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepInsights
 import com.pulseloop.service.SleepScore
 import com.pulseloop.service.SleepScoreResult
+import com.pulseloop.service.UserPhysiologyProfile
+import com.pulseloop.service.VitalSample
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
@@ -51,6 +53,12 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         val sleepMinutes: Int? = null,
         val sleepScore: Int? = null,
         val lastUpdated: Long = 0L,
+        // Daily activity-ring goals. Steps come from the stored [UserGoalEntity]; distance and
+        // calories default to the iOS UserGoal values (8 km / 500 kcal) until the Android goal
+        // entity grows those fields.
+        val stepGoal: Int = 10000,
+        val distanceGoalMeters: Double = 8000.0,
+        val caloriesGoal: Int = 500,
     )
 
     private val _state = MutableStateFlow(TodayState())
@@ -66,6 +74,13 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
                     activeMinutes = activity?.activeMinutes,
                 ) }
             }
+        }
+        viewModelScope.launch {
+            try {
+                db.userGoalDao().get()?.let { goal ->
+                    _state.update { it.copy(stepGoal = goal.steps) }
+                }
+            } catch (_: Exception) {}
         }
         viewModelScope.launch {
             db.deviceDao().currentFlow().collect { device ->
@@ -224,6 +239,25 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val bpSysSamples: List<Double> = emptyList(),
         val bpDiaSamples: List<Double> = emptyList(),
         val glucoseSamples: List<Double> = emptyList(),
+        // Timestamped copies of the sample lists above, for VitalsCardFactory (trend/staleness
+        // math needs real timestamps). Same rows, same order, same offsets applied.
+        val hrSeries: List<VitalSample> = emptyList(),
+        val spo2Series: List<VitalSample> = emptyList(),
+        val hrvSeries: List<VitalSample> = emptyList(),
+        val stressSeries: List<VitalSample> = emptyList(),
+        val fatigueSeries: List<VitalSample> = emptyList(),
+        val tempSeries: List<VitalSample> = emptyList(),
+        val bpSysSeries: List<VitalSample> = emptyList(),
+        val bpDiaSeries: List<VitalSample> = emptyList(),
+        val glucoseSeries: List<VitalSample> = emptyList(),
+        /** 24h max HR, for the HR card's "Peak" subtitle. */
+        val peakHr: Double? = null,
+        /** Physiology inputs (age/sex) from the stored user profile — shifts reference ranges. */
+        val profile: UserPhysiologyProfile = UserPhysiologyProfile.UNKNOWN,
+        /** A cuff reference (BP adjust offsets) has been entered in Settings. */
+        val hasBPReference: Boolean = false,
+        /** A glucose reference/offset has been entered in Settings. */
+        val isGlucoseCalibrated: Boolean = false,
         val supportsHrv: Boolean = false,
         val supportsStress: Boolean = false,
         val supportsFatigue: Boolean = false,
@@ -275,6 +309,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val bpDia = if (caps.contains(WearableCapability.BLOOD_PRESSURE)) db.measurementDao().range(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name, twentyFourHoursAgo, now) else emptyList()
         val glucoseOffset = apiKeyStore?.glucoseOffsetMgdl ?: 0.0
         val gluc = if (caps.contains(WearableCapability.BLOOD_SUGAR)) db.measurementDao().range(MeasurementKind.BLOOD_SUGAR.name, twentyFourHoursAgo, now) else emptyList()
+        val userProfile = db.userProfileDao().get()
 
         _state.value = VitalsState(
             hrSamples = hr.map { it.value },
@@ -299,6 +334,20 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             bpSysSamples = bpSys.map { it.value },
             bpDiaSamples = bpDia.map { it.value },
             glucoseSamples = gluc.map { it.value + glucoseOffset },
+            hrSeries = hr.map { VitalSample(it.timestamp, it.value) },
+            spo2Series = spo2.map { VitalSample(it.timestamp, it.value) },
+            hrvSeries = hrv.map { VitalSample(it.timestamp, it.value) },
+            stressSeries = stress.map { VitalSample(it.timestamp, it.value) },
+            fatigueSeries = fatigue.map { VitalSample(it.timestamp, it.value) },
+            tempSeries = temp.map { VitalSample(it.timestamp, it.value) },
+            bpSysSeries = bpSys.map { VitalSample(it.timestamp, it.value) },
+            bpDiaSeries = bpDia.map { VitalSample(it.timestamp, it.value) },
+            glucoseSeries = gluc.map { VitalSample(it.timestamp, it.value + glucoseOffset) },
+            peakHr = hr.maxOfOrNull { it.value },
+            profile = UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex),
+            // "Reference entered" ⇔ a non-zero calibration offset in Settings (0 = not set).
+            hasBPReference = (apiKeyStore?.bpAdjustSystolic ?: 0) != 0 || (apiKeyStore?.bpAdjustDiastolic ?: 0) != 0,
+            isGlucoseCalibrated = glucoseOffset != 0.0 || (apiKeyStore?.glucoseRefMgdl ?: 0.0) != 0.0,
             supportsHrv = caps.contains(WearableCapability.HRV),
             supportsStress = caps.contains(WearableCapability.STRESS),
             supportsFatigue = caps.contains(WearableCapability.FATIGUE),

@@ -25,11 +25,14 @@ import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.navigation.NavController
 import com.pulseloop.service.HeartRateZones
+import com.pulseloop.service.MetricKind
 import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepFormat
 import com.pulseloop.service.SleepInsights
 import com.pulseloop.service.SleepScore
 import com.pulseloop.service.SleepScoreResult
+import com.pulseloop.ui.components.ActivityRing
+import com.pulseloop.ui.components.ActivityRings
 import com.pulseloop.ui.components.LegendDot
 import com.pulseloop.ui.components.MetricThresholdTable
 import com.pulseloop.ui.components.MetricThresholds
@@ -38,6 +41,8 @@ import com.pulseloop.ui.components.SimpleDualLineChart
 import com.pulseloop.ui.components.SimpleLineChart
 import com.pulseloop.ui.components.ThresholdBar
 import com.pulseloop.ui.components.TrendChart
+import com.pulseloop.ui.components.VitalCard
+import com.pulseloop.ui.components.ZonePalette
 import com.pulseloop.ui.components.bpZone
 import com.pulseloop.ui.viewmodels.*
 import com.pulseloop.ring.MeasurementKind
@@ -137,6 +142,39 @@ fun TodayScreen(
                 }
             }
             Spacer(Modifier.height(8.dp))
+        }
+
+        // Activity rings — steps / distance / calories vs daily goals, mirroring iOS
+        // ActivityTileView (TodayTiles.swift): concentric loop on the left, ring-colored
+        // labels + values on the right. Additive — the summary tiles below stay.
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    ActivityRings(
+                        rings = listOf(
+                            ActivityRing(state.steps?.toDouble(), state.stepGoal.toDouble(), ZonePalette.ZoneMint),
+                            ActivityRing(state.distanceMeters, state.distanceGoalMeters, ZonePalette.ZoneBlue),
+                            ActivityRing(state.calories, state.caloriesGoal.toDouble(), ZonePalette.ZoneOrange),
+                        ),
+                        size = 96.dp,
+                        strokeWidth = 9.dp,
+                        ringSpacing = 4.dp,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ActivityRingStat("Steps", formatNumber(state.steps), ZonePalette.ZoneMint)
+                        ActivityRingStat(
+                            UnitConverter.distanceUnit(units),
+                            state.distanceMeters?.let { "%.1f".format(UnitConverter.distance(it, units)) } ?: "--",
+                            ZonePalette.ZoneBlue,
+                        )
+                        ActivityRingStat("Cal", state.calories?.let { formatNumber(it.toInt()) } ?: "--", ZonePalette.ZoneOrange)
+                    }
+                }
+            }
         }
 
         item {
@@ -276,6 +314,20 @@ fun TodayScreen(
     }
 }
 
+/** One labeled value beside the Today activity rings — label tinted in its ring color. */
+@Composable
+private fun ActivityRingStat(label: String, value: String, color: Color) {
+    Column {
+        Text(
+            label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = color,
+        )
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+    }
+}
+
 /**
  * Vitals dashboard — ported from VitalsView.swift.
  * Shows historical trends: HR, SpO2, HRV, stress, temperature with real data from Room.
@@ -300,6 +352,30 @@ fun VitalsScreen(
         com.pulseloop.service.RingSyncCoordinator.COMBINED_MEASURE_SECONDS
     else
         com.pulseloop.service.RingSyncCoordinator.SPOT_MEASURE_SECONDS
+    // Card chrome state (value / status / trend / footer) is factory-built once per state
+    // emission, off the composition path — the cards below run no threshold math.
+    val vitalsUnits = ApiKeyStore(LocalContext.current).resolvedUnitSystem
+    val cards = remember(state, vitalsUnits) {
+        val inputs = VitalsCardFactory.Inputs(
+            hr = state.hrSeries,
+            spo2 = state.spo2Series,
+            hrv = state.hrvSeries,
+            stress = state.stressSeries,
+            fatigue = state.fatigueSeries,
+            temperature = state.tempSeries,
+            systolic = state.bpSysSeries,
+            diastolic = state.bpDiaSeries,
+            glucose = state.glucoseSeries,
+            latestHr = state.latestHr?.toDouble(),
+            latestSpo2 = state.latestSpo2?.toDouble(),
+            restingHr = state.restingHr,
+            peakHr = state.peakHr,
+            unitSystem = vitalsUnits,
+            hasBPReference = state.hasBPReference,
+            isGlucoseCalibrated = state.isGlucoseCalibrated,
+        )
+        MetricKind.entries.associateWith { metric -> VitalsCardFactory.card(metric, inputs, state.profile) }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -362,65 +438,34 @@ fun VitalsScreen(
 
         // Heart Rate
         item {
-            Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/hr") }) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Heart Rate", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    if (state.hrSamples.isNotEmpty()) {
-                        val avg = state.hrSamples.average().toInt()
-                        val min = state.hrSamples.min().toInt()
-                        val max = state.hrSamples.max().toInt()
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(state.latestHr?.toString() ?: "--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                            Text(" bpm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                        }
-                        val restingText = state.restingHr?.let { " · Resting: %.0f".format(it) } ?: ""
-                        Text("Range: $min – $max · Avg: $avg$restingText bpm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        MetricThresholdTable.forKind(MeasurementKind.HEART_RATE)?.let { th ->
-                            Spacer(Modifier.height(8.dp))
-                            ThresholdBar(value = state.latestHr?.toDouble(), thresholds = th)
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        SimpleLineChart(points = state.hrSamples, color = androidx.compose.ui.graphics.Color(0xFFE53935), thresholds = MetricThresholdTable.forKind(MeasurementKind.HEART_RATE))
-                    } else {
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text("--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(" bpm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                        }
-                        Text("No HR samples yet — sync your ring to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            VitalCard(
+                state = cards.getValue(MetricKind.HEART_RATE),
+                onTap = { navController?.navigate("vitals/hr") },
+            ) {
+                if (state.hrSamples.isNotEmpty()) {
+                    MetricThresholdTable.forKind(MeasurementKind.HEART_RATE)?.let { th ->
+                        ThresholdBar(value = state.latestHr?.toDouble(), thresholds = th)
                     }
+                    SimpleLineChart(points = state.hrSamples, color = ZonePalette.accent(MetricKind.HEART_RATE), thresholds = MetricThresholdTable.forKind(MeasurementKind.HEART_RATE))
+                } else {
+                    Text("No HR samples yet — sync your ring to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
 
         // SpO2
         item {
-            Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/spo2") }) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Blood Oxygen", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    if (state.spo2Samples.isNotEmpty()) {
-                        val avg = state.spo2Samples.average().toInt()
-                        val min = state.spo2Samples.min().toInt()
-                        val max = state.spo2Samples.max().toInt()
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(state.latestSpo2?.toString() ?: "--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                            Text(" %", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                        }
-                        Text("Range: $min – $max% · Avg: $avg%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        MetricThresholdTable.forKind(MeasurementKind.SPO2)?.let { th ->
-                            Spacer(Modifier.height(8.dp))
-                            ThresholdBar(value = state.latestSpo2?.toDouble(), thresholds = th)
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        SimpleLineChart(points = state.spo2Samples, color = androidx.compose.ui.graphics.Color(0xFF1E88E5), thresholds = MetricThresholdTable.forKind(MeasurementKind.SPO2))
-                    } else {
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text("--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(" %", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                        }
-                        Text("No SpO₂ samples yet — take a reading to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            VitalCard(
+                state = cards.getValue(MetricKind.SPO2),
+                onTap = { navController?.navigate("vitals/spo2") },
+            ) {
+                if (state.spo2Samples.isNotEmpty()) {
+                    MetricThresholdTable.forKind(MeasurementKind.SPO2)?.let { th ->
+                        ThresholdBar(value = state.latestSpo2?.toDouble(), thresholds = th)
                     }
+                    SimpleLineChart(points = state.spo2Samples, color = ZonePalette.accent(MetricKind.SPO2), thresholds = MetricThresholdTable.forKind(MeasurementKind.SPO2))
+                } else {
+                    Text("No SpO₂ samples yet — take a reading to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -428,36 +473,20 @@ fun VitalsScreen(
         // Stress (capability-gated)
         if (state.supportsStress) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/stress") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Stress", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val latest = state.latestStress?.toInt() ?: 0
-                        // The ring's valid stress range starts at 10 (official bands: 10-20 excellent …),
-                        // so treat anything below that as no reading rather than a misleading "Excellent".
-                        if (state.stressSamples.isNotEmpty() && latest >= 10) {
-                            // Bands match the official app's "Mental stress" interpretation
-                            // (<20 excellent, <40 good, <60 normal, <80 poor, else very poor).
-                            val label = when {
-                                latest < 20 -> "Excellent"
-                                latest < 40 -> "Good"
-                                latest < 60 -> "Normal"
-                                latest < 80 -> "Poor"
-                                else -> "Very Poor"
-                            }
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(label, style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text("  $latest / 100", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            MetricThresholdTable.forKind(MeasurementKind.STRESS)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = state.latestStress, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.stressSamples, color = androidx.compose.ui.graphics.Color(0xFF8E24AA), thresholds = MetricThresholdTable.forKind(MeasurementKind.STRESS))
-                        } else {
-                            Text("No stress data yet — take a measurement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // The ring's valid stress range starts at 10 (official bands: 10-20 excellent …),
+                // so treat anything below that as no reading rather than a misleading "Excellent".
+                val latest = state.latestStress?.toInt() ?: 0
+                VitalCard(
+                    state = cards.getValue(MetricKind.STRESS),
+                    onTap = { navController?.navigate("vitals/stress") },
+                ) {
+                    if (state.stressSamples.isNotEmpty() && latest >= 10) {
+                        MetricThresholdTable.forKind(MeasurementKind.STRESS)?.let { th ->
+                            ThresholdBar(value = state.latestStress, thresholds = th)
                         }
+                        SimpleLineChart(points = state.stressSamples, color = ZonePalette.accent(MetricKind.STRESS), thresholds = MetricThresholdTable.forKind(MeasurementKind.STRESS))
+                    } else {
+                        Text("No stress data yet — take a measurement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -466,36 +495,20 @@ fun VitalsScreen(
         // Fatigue (capability-gated) — TYPE_FATIGUE (byte[5]) from the combined measurement
         if (state.supportsFatigue) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/fatigue") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Fatigue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val latest = state.latestFatigue?.toInt() ?: 0
-                        // The ring's valid fatigue range starts at 10 (official bands: 10-20 excellent …),
-                        // so treat anything below that as no reading rather than a misleading "Excellent".
-                        if (state.fatigueSamples.isNotEmpty() && latest >= 10) {
-                            // Bands match the official app's "Body fatigue index" interpretation
-                            // (<20 excellent, <45 good, <60 normal, <80 poor, else very poor).
-                            val label = when {
-                                latest < 20 -> "Excellent"
-                                latest < 45 -> "Good"
-                                latest < 60 -> "Normal"
-                                latest < 80 -> "Poor"
-                                else -> "Very Poor"
-                            }
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(label, style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text("  $latest / 100", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            MetricThresholdTable.forKind(MeasurementKind.FATIGUE)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = state.latestFatigue, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.fatigueSamples, color = androidx.compose.ui.graphics.Color(0xFFFB8C00), thresholds = MetricThresholdTable.forKind(MeasurementKind.FATIGUE))
-                        } else {
-                            Text("No fatigue data yet — take a measurement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // The ring's valid fatigue range starts at 10 (official bands: 10-20 excellent …),
+                // so treat anything below that as no reading rather than a misleading "Excellent".
+                val latest = state.latestFatigue?.toInt() ?: 0
+                VitalCard(
+                    state = cards.getValue(MetricKind.FATIGUE),
+                    onTap = { navController?.navigate("vitals/fatigue") },
+                ) {
+                    if (state.fatigueSamples.isNotEmpty() && latest >= 10) {
+                        MetricThresholdTable.forKind(MeasurementKind.FATIGUE)?.let { th ->
+                            ThresholdBar(value = state.latestFatigue, thresholds = th)
                         }
+                        SimpleLineChart(points = state.fatigueSamples, color = ZonePalette.accent(MetricKind.FATIGUE), thresholds = MetricThresholdTable.forKind(MeasurementKind.FATIGUE))
+                    } else {
+                        Text("No fatigue data yet — take a measurement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -504,29 +517,17 @@ fun VitalsScreen(
         // HRV (capability-gated)
         if (state.supportsHrv) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/hrv") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("HRV", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val hrvVal = state.latestHrv
-                        if (hrvVal != null && state.hrvSamples.isNotEmpty()) {
-                            val hrvAvg = state.hrvSamples.average().toInt()
-                            val hrvMin = state.hrvSamples.min().toInt()
-                            val hrvMax = state.hrvSamples.max().toInt()
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(String.format("%.0f", hrvVal), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            Text("Range: $hrvMin – $hrvMax · Avg: $hrvAvg ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            MetricThresholdTable.forKind(MeasurementKind.HRV)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = state.latestHrv, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.hrvSamples, color = androidx.compose.ui.graphics.Color(0xFF43A047), thresholds = MetricThresholdTable.forKind(MeasurementKind.HRV))
-                        } else {
-                            Text("No HRV data yet — HRV builds up over a few hours of wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                VitalCard(
+                    state = cards.getValue(MetricKind.HRV),
+                    onTap = { navController?.navigate("vitals/hrv") },
+                ) {
+                    if (state.latestHrv != null && state.hrvSamples.isNotEmpty()) {
+                        MetricThresholdTable.forKind(MeasurementKind.HRV)?.let { th ->
+                            ThresholdBar(value = state.latestHrv, thresholds = th)
                         }
+                        SimpleLineChart(points = state.hrvSamples, color = ZonePalette.accent(MetricKind.HRV), thresholds = MetricThresholdTable.forKind(MeasurementKind.HRV))
+                    } else {
+                        Text("No HRV data yet — HRV builds up over a few hours of wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -535,39 +536,19 @@ fun VitalsScreen(
         // Temperature (capability-gated)
         if (state.supportsTemp) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/temp") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Skin Temperature", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val tempVal = state.latestTemp
-                        if (tempVal != null && state.tempSamples.isNotEmpty()) {
-                            val units = com.pulseloop.settings.ApiKeyStore(LocalContext.current).resolvedUnitSystem
-                            val displayTemp = com.pulseloop.settings.UnitConverter.temperature(tempVal, units)
-                            val displayUnit = com.pulseloop.settings.UnitConverter.temperatureUnit(units)
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(String.format("%.1f", displayTemp), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" $displayUnit", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            val tempAvg = state.tempSamples.average()
-                            val tempMin = state.tempSamples.min()
-                            val tempMax = state.tempSamples.max()
-                            Text(
-                                String.format("Range: %.1f – %.1f · Avg: %.1f $displayUnit",
-                                    UnitConverter.temperature(tempMin, units),
-                                    UnitConverter.temperature(tempMax, units),
-                                    UnitConverter.temperature(tempAvg, units)),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            MetricThresholdTable.forKind(MeasurementKind.TEMPERATURE)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = tempVal, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.tempSamples, color = androidx.compose.ui.graphics.Color(0xFFFF7043))
-                        } else {
-                            Text("No temperature data yet — temperature trends appear after overnight wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                VitalCard(
+                    state = cards.getValue(MetricKind.TEMPERATURE),
+                    onTap = { navController?.navigate("vitals/temp") },
+                ) {
+                    val tempVal = state.latestTemp
+                    if (tempVal != null && state.tempSamples.isNotEmpty()) {
+                        // ThresholdBar stays in canonical °C — the threshold table's bounds are °C.
+                        MetricThresholdTable.forKind(MeasurementKind.TEMPERATURE)?.let { th ->
+                            ThresholdBar(value = tempVal, thresholds = th)
                         }
+                        SimpleLineChart(points = state.tempSamples, color = ZonePalette.accent(MetricKind.TEMPERATURE))
+                    } else {
+                        Text("No temperature data yet — temperature trends appear after overnight wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -576,55 +557,38 @@ fun VitalsScreen(
         // Blood Pressure (capability-gated)
         if (state.supportsBP) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/bp") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Blood Pressure", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val bpSysColor = androidx.compose.ui.graphics.Color(0xFF5E35B1)
-                        val bpDiaColor = androidx.compose.ui.graphics.Color(0xFFB39DDB)
-                        if (state.bpSystolic != null || state.bpDiastolic != null) {
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text("${state.bpSystolic ?: "--"} / ${state.bpDiastolic ?: "--"}", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" mmHg", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            if (state.bpSysSamples.isNotEmpty()) {
-                                val sysMin = state.bpSysSamples.min().toInt()
-                                val sysMax = state.bpSysSamples.max().toInt()
-                                val sysAvg = state.bpSysSamples.average().toInt()
-                                val diaAvg = state.bpDiaSamples.average().takeIf { state.bpDiaSamples.isNotEmpty() }?.toInt()
-                                Text(
-                                    "Sys $sysMin – $sysMax · Avg $sysAvg${diaAvg?.let { "/$it" } ?: ""} mmHg",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                // BP threshold bar: position at systolic, zone from worse of sys/dia
-                                MetricThresholdTable.forKind(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC)?.let { th ->
-                                    Spacer(Modifier.height(8.dp))
-                                    ThresholdBar(
-                                        value = state.bpSystolic?.toDouble(),
-                                        thresholds = th,
-                                        overrideZone = bpZone(state.bpSystolic?.toDouble(), state.bpDiastolic?.toDouble()),
-                                    )
-                                }
-                                Spacer(Modifier.height(12.dp))
-                                SimpleDualLineChart(
-                                    seriesA = state.bpSysSamples,
-                                    seriesB = state.bpDiaSamples,
-                                    colorA = bpSysColor,
-                                    colorB = bpDiaColor,
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    LegendDot("Systolic", bpSysColor)
-                                    LegendDot("Diastolic", bpDiaColor)
-                                }
-                            }
-                        } else {
-                            Text("No blood pressure data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val bpSysColor = ZonePalette.accent(MetricKind.BLOOD_PRESSURE)
+                val bpDiaColor = ZonePalette.ZoneBlue
+                VitalCard(
+                    state = cards.getValue(MetricKind.BLOOD_PRESSURE),
+                    onTap = { navController?.navigate("vitals/bp") },
+                ) {
+                    if (state.bpSystolic != null || state.bpDiastolic != null) {
+                        // BP threshold bar: position at systolic, zone from worse of sys/dia
+                        MetricThresholdTable.forKind(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC)?.let { th ->
+                            ThresholdBar(
+                                value = state.bpSystolic?.toDouble(),
+                                thresholds = th,
+                                overrideZone = bpZone(state.bpSystolic?.toDouble(), state.bpDiastolic?.toDouble()),
+                            )
                         }
-                        if (measuring) {
-                            Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 4.dp))
+                        if (state.bpSysSamples.isNotEmpty()) {
+                            SimpleDualLineChart(
+                                seriesA = state.bpSysSamples,
+                                seriesB = state.bpDiaSamples,
+                                colorA = bpSysColor,
+                                colorB = bpDiaColor,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                LegendDot("Systolic", bpSysColor)
+                                LegendDot("Diastolic", bpDiaColor)
+                            }
                         }
+                    } else {
+                        Text("No blood pressure data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (measuring) {
+                        Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
@@ -633,37 +597,22 @@ fun VitalsScreen(
         // Blood Sugar (capability-gated)
         if (state.supportsGlucose) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/glucose") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Blood Sugar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        if (state.bloodSugar != null) {
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(String.format("%.1f", state.bloodSugar), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" mg/dL", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+                VitalCard(
+                    state = cards.getValue(MetricKind.GLUCOSE),
+                    onTap = { navController?.navigate("vitals/glucose") },
+                ) {
+                    if (state.bloodSugar != null) {
+                        if (state.glucoseSamples.isNotEmpty()) {
+                            MetricThresholdTable.forKind(MeasurementKind.BLOOD_SUGAR)?.let { th ->
+                                ThresholdBar(value = state.bloodSugar, thresholds = th)
                             }
-                            if (state.glucoseSamples.isNotEmpty()) {
-                                val gMin = state.glucoseSamples.min()
-                                val gMax = state.glucoseSamples.max()
-                                val gAvg = state.glucoseSamples.average()
-                                Text(
-                                    String.format("Range: %.1f – %.1f · Avg %.1f mg/dL", gMin, gMax, gAvg),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                MetricThresholdTable.forKind(MeasurementKind.BLOOD_SUGAR)?.let { th ->
-                                    Spacer(Modifier.height(8.dp))
-                                    ThresholdBar(value = state.bloodSugar, thresholds = th)
-                                }
-                                Spacer(Modifier.height(12.dp))
-                                SimpleLineChart(points = state.glucoseSamples, color = androidx.compose.ui.graphics.Color(0xFF00897B), thresholds = MetricThresholdTable.forKind(MeasurementKind.BLOOD_SUGAR))
-                            }
-                        } else {
-                            Text("No blood sugar data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            SimpleLineChart(points = state.glucoseSamples, color = ZonePalette.accent(MetricKind.GLUCOSE), thresholds = MetricThresholdTable.forKind(MeasurementKind.BLOOD_SUGAR))
                         }
-                        if (measuring) {
-                            Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 4.dp))
-                        }
+                    } else {
+                        Text("No blood sugar data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (measuring) {
+                        Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
