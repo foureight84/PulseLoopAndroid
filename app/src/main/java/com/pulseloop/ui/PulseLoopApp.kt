@@ -67,6 +67,10 @@ fun PulseLoopApp() {
                     writeToolsEnabled = false,  // safe default
                     liveMeasurementsEnabled = true,
                     model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
+                    // Local models think 60s+ per round; the default 15-round tool
+                    // budget makes a turn take 10+ minutes. Bound it hard.
+                    maxRounds = if (isLocal) 3 else 15,
+                    maxToolCalls = if (isLocal) 4 else 12,
                 )
                 val client = OpenAIResponsesClient(apiKey, endpoint = apiKeyStore.apiEndpoint)
                 val registry = ToolRegistry(flags)

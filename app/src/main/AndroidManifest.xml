@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Network: AI coach (OpenAI or LAN llama server). Never declared in the
+         original port — every coach request since day one died with socket
+         EPERM under four layers of silent fallbacks. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Phase 2: BLE permissions -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
 

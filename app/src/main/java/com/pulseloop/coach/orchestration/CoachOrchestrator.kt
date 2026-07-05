@@ -45,8 +45,11 @@ class CoachOrchestrator(
     ): TurnResult {
         if (!flags.coachEnabled) return TurnResult(CoachFallbacks.scripted(packet))
         return try {
-            runOpenAI(userText, packet, recentMessages)
+            val r = runOpenAI(userText, packet, recentMessages)
+            android.util.Log.i("CoachOrchestrator", "turn ok: type=${r.assistant.responseType} len=${r.assistant.summary.length} tools=${r.trace.size}")
+            r
         } catch (e: Exception) {
+            android.util.Log.e("CoachOrchestrator", "turn failed", e)
             TurnResult(CoachFallbacks.fallback())
         }
     }
@@ -68,7 +71,10 @@ class CoachOrchestrator(
         }
         input.add(message("user", userText))
 
-        var response = send(input, toolSpecs, textFormat, null)
+        // Stateless rounds: llama.cpp's Responses API rejects previous_response_id,
+        // so every round resends the full transcript (valid on OpenAI too).
+        val convo = input.toMutableList()
+        var response = send(convo, toolSpecs, textFormat, null)
         val trace = mutableListOf<CoachToolCallTrace>()
         var toolCalls = 0
         var rounds = 0
@@ -80,6 +86,13 @@ class CoachOrchestrator(
 
             val outputs = mutableListOf<JsonObject>()
             for (fc in functionCalls) {
+                // Echo the model's call into the transcript so the next round has it.
+                outputs.add(JsonObject(mapOf(
+                    "type" to JsonPrimitive("function_call"),
+                    "call_id" to JsonPrimitive(fc.callId),
+                    "name" to JsonPrimitive(fc.name),
+                    "arguments" to JsonPrimitive(fc.arguments),
+                )))
                 if (toolCalls >= flags.maxToolCalls) {
                     outputs.add(functionCallOutput(fc.callId, """{"error":"tool-call budget exceeded"}"""))
                     continue
@@ -104,19 +117,37 @@ class CoachOrchestrator(
             }
 
             rounds++
-            response = send(outputs, toolSpecs, textFormat, response.id)
+            convo.addAll(outputs)
+            response = send(convo, toolSpecs, textFormat, null)
         }
 
-        val assistant = parseFinal(response)
+        val assistant = parseFinal(response, convo)
         TurnResult(assistant = assistant, trace = trace)
     }
 
-    private suspend fun parseFinal(response: com.pulseloop.coach.openai.OpenAIResponse): CoachResponse {
+    private suspend fun parseFinal(
+        response: com.pulseloop.coach.openai.OpenAIResponse,
+        convo: MutableList<JsonObject>,
+    ): CoachResponse {
         var current = response
         var attempts = 1
         while (true) {
+            android.util.Log.i("CoachOrchestrator", "final raw: ${current.outputText.take(500).replace('\n', ' ')}")
             val parsed = CoachResponseParser.parse(current.outputText)
-            if (parsed != null) return parsed
+            // Schema-valid but empty happens when a repair round launders a good
+            // prose answer into a hollow JSON shell — treat it as a failure.
+            if (parsed != null && parsed.summary.isNotBlank()) return parsed
+            // A substantive prose answer beats a repair round: local models often
+            // answer perfectly in natural language on the first try. Ship it.
+            val plain = CoachResponseParser.stripThinking(current.outputText)
+            if (plain.length > 80 && !plain.trimStart().startsWith("{")) {
+                return CoachResponse(
+                    responseType = CoachResponseType.INSIGHT,
+                    title = "Coach",
+                    summary = plain.take(2000),
+                    confidence = CoachConfidence.MEDIUM,
+                )
+            }
             attempts++
             if (attempts > maxFinalAttempts) {
                 // Graceful degradation: if the model answered in prose instead of
@@ -133,8 +164,9 @@ class CoachOrchestrator(
                 }
                 return CoachFallbacks.parseError()
             }
-            val repair = message("user", "Your previous output did not match the required coach_response JSON schema. Return only valid JSON for that schema now.")
-            current = send(listOf(repair), emptyList(), coachResponseTextFormat, current.id)
+            convo.add(message("assistant", current.outputText.take(4000)))
+            convo.add(message("user", "Your previous output did not match the required coach_response JSON schema. Return only valid JSON for that schema now."))
+            current = send(convo, emptyList(), coachResponseTextFormat, null)
         }
     }
 
@@ -154,10 +186,23 @@ class CoachOrchestrator(
         return client.send(bodyBytes)
     }
 
-    private fun message(role: String, content: String) = JsonObject(mapOf(
-        "role" to JsonPrimitive(role),
-        "content" to JsonPrimitive(content),
-    ))
+    private fun message(role: String, content: String) =
+        if (role == "assistant")
+            // Assistant history items need the explicit typed shape — llama.cpp's
+            // Responses parser 400s on {role:"assistant", content:"…"} shorthand
+            // ("Cannot determine type of 'item'"), and OpenAI accepts this form too.
+            JsonObject(mapOf(
+                "type" to JsonPrimitive("message"),
+                "role" to JsonPrimitive("assistant"),
+                "content" to JsonArray(listOf(JsonObject(mapOf(
+                    "type" to JsonPrimitive("output_text"),
+                    "text" to JsonPrimitive(content),
+                )))),
+            ))
+        else JsonObject(mapOf(
+            "role" to JsonPrimitive(role),
+            "content" to JsonPrimitive(content),
+        ))
 
     private fun functionCallOutput(callId: String, output: String) = JsonObject(mapOf(
         "type" to JsonPrimitive("function_call_output"),

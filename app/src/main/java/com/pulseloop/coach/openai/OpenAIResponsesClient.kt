@@ -16,7 +16,7 @@ class OpenAIResponsesClient(
 
     private val client = okhttp3.OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)  // local 35B models think in minutes
         .build()
 
     suspend fun send(requestBody: ByteArray): OpenAIResponse {
