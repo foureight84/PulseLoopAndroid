@@ -51,7 +51,10 @@ fun PulseLoopApp() {
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
         val persistence = remember { EventPersistenceSubscriber(db) }
         val derivedMetrics = remember { com.pulseloop.service.DerivedMetricsEngine(db, coordinator) }
-        val sleepStream = remember { SleepStreamController(coordinator, liveWorkout, context) }
+        val sleepStream = remember {
+            SleepStreamController(coordinator, liveWorkout, context,
+                onNightEnded = { start, end -> derivedMetrics.runApneaScreen(start, end) })
+        }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────

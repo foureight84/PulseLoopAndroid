@@ -197,13 +197,22 @@ class DerivedMetricsEngine(
      * in case more of last night's data lands late.
      */
     private suspend fun runApneaScreenOncePerDay(dayStart: Long, now: Long) {
-        val dateKey = java.time.Instant.ofEpochMilli(dayStart)
+        runApneaScreen(dayStart, dayStart + 11 * 3_600_000L)  // fixed-window fallback
+    }
+
+    /**
+     * Analyze an explicit window and write the screening memory. Called by the
+     * morning timer (fixed window) AND — the primary path — by SleepStreamController
+     * on unplug, with the exact plug-in→wake span it just streamed. The per-date
+     * memory key makes both idempotent; the unplug call, arriving first with the
+     * denser and better-bounded data, wins.
+     */
+    suspend fun runApneaScreen(windowStart: Long, windowEnd: Long) {
+        val dateKey = java.time.Instant.ofEpochMilli(windowStart)
             .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
         val memoryKey = "sleep_apnea_screen_$dateKey"
         if (db.coachMemoryDao().byKey(memoryKey) != null) return
 
-        val windowStart = dayStart                    // 00:00 today (1am sleep start)
-        val windowEnd = dayStart + 11 * 3_600_000L    // 11:00 today
         val spo2 = db.measurementDao().range(MeasurementKind.SPO2.name, windowStart, windowEnd)
             .map { it.timestamp to it.value.toInt() }
         val hr = db.measurementDao().range(MeasurementKind.HEART_RATE.name, windowStart, windowEnd)

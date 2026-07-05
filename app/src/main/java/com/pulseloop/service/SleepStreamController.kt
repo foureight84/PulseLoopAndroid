@@ -30,6 +30,9 @@ class SleepStreamController(
     private val coordinator: RingSyncCoordinator,
     private val liveWorkout: LiveWorkoutManager,
     private val context: Context,
+    /** Invoked with (plugInMs, wakeMs) when a streamed night ends on unplug —
+     *  the primary trigger for the overnight screening, over the exact span slept. */
+    private val onNightEnded: (suspend (Long, Long) -> Unit)? = null,
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var job: Job? = null
@@ -37,6 +40,7 @@ class SleepStreamController(
     /** True only when THIS controller opened the stream — never stop one we don't own. */
     private var streaming = false
     private var ticksSinceSpO2 = 0
+    private var streamStartedAt = 0L
 
     fun start() {
         job?.cancel()
@@ -74,9 +78,20 @@ class SleepStreamController(
             coordinator.startWorkoutHeartRate()
             streaming = true
             ticksSinceSpO2 = 0
+            streamStartedAt = System.currentTimeMillis()
         } else if (!gatesPass && streaming) {
             coordinator.stopWorkoutHeartRate()
             streaming = false
+            // Night ended. If it ended because the phone was UNPLUGGED (not because
+            // the clock left the window or the ring dropped), that's the wake signal —
+            // screen the span we just streamed, right now.
+            val start = streamStartedAt
+            if (!isCharging() && start > 0 && System.currentTimeMillis() - start > 30 * 60_000L) {
+                scope.launch {
+                    try { onNightEnded?.invoke(start, System.currentTimeMillis()) }
+                    catch (e: Exception) { android.util.Log.e("SleepStream", "night-end screen failed", e) }
+                }
+            }
         }
 
         if (streaming) {
