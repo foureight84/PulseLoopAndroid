@@ -86,20 +86,21 @@ class DerivedMetricsEngine(
             ))
         }
 
-        // ── Night SpO2: the protocol has no automatic SpO2 schedule (0x19 is
-        // HR-only), so trigger a spot reading each tick during sleep hours
-        // while connected — ~14 readings/night for the overnight picture. ──
+        // ── Night SpO2 now lives in SleepStreamController, at a denser ~3-min
+        // cadence while it holds the overnight HR stream open (charging + in
+        // night window), instead of this engine's 30-min tick — avoids double
+        // measurement and gives the apnea screen below a richer series. ──
         val hour = java.time.LocalTime.now().hour
-        if (hour in 0..6 && coordinator?.isConnected == true) {
-            try { coordinator.measureSpO2() } catch (e: Exception) {
-                android.util.Log.w("DerivedMetrics", "night SpO2 failed", e)
-            }
-        }
         // ── Morning jobs: derived sleep, then fatigue (needs the sleep row) ──
         if (hour in 5..15) {
             val lastNightDay = com.pulseloop.util.TimeUtil.startOfTodayLocal()
             deriveSleepIfMissing(lastNightDay)
             deriveFatigueOncePerDay(lastNightDay, now)
+        }
+        // ── Screening-only apnea/ODI check: narrower morning window since it
+        // wants a completed night (22:00 prev → 10:00 today) already in Room. ──
+        if (hour in 7..11) {
+            runApneaScreenOncePerDay(com.pulseloop.util.TimeUtil.startOfTodayLocal(), now)
         }
     }
 
@@ -185,6 +186,40 @@ class DerivedMetricsEngine(
                 blockStart = i; blockStage = stg
             }
         }
+    }
+
+    /**
+     * Screening-only ODI/CVHR check over last night's window (22:00 prev day → 10:00
+     * today). Guarded so it runs at most once per calendar day: the coach-memory row
+     * it writes is itself the guard, keyed by date — but since a row is only written
+     * when [ApneaScreenResult.dataQuality] isn't "insufficient", an insufficient night
+     * (nothing meaningful to say yet) is retried on every tick through the 7-11 window
+     * in case more of last night's data lands late.
+     */
+    private suspend fun runApneaScreenOncePerDay(dayStart: Long, now: Long) {
+        val dateKey = java.time.Instant.ofEpochMilli(dayStart)
+            .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+        val memoryKey = "sleep_apnea_screen_$dateKey"
+        if (db.coachMemoryDao().byKey(memoryKey) != null) return
+
+        val windowStart = dayStart - 2 * 3_600_000L   // 22:00 the previous day
+        val windowEnd = dayStart + 10 * 3_600_000L    // 10:00 today
+        val spo2 = db.measurementDao().range(MeasurementKind.SPO2.name, windowStart, windowEnd)
+            .map { it.timestamp to it.value.toInt() }
+        val hr = db.measurementDao().range(MeasurementKind.HEART_RATE.name, windowStart, windowEnd)
+            .map { it.timestamp to it.value.toInt() }
+        val result = buildApneaScreenResult(spo2, hr, windowStart, windowEnd)
+        if (result.dataQuality == "insufficient") return
+
+        db.coachMemoryDao().upsert(com.pulseloop.data.entity.CoachMemoryEntity(
+            key = memoryKey,
+            value = "Overnight screening for $dateKey: ODI ${"%.1f".format(result.odi)} events/hr " +
+                "(${result.desaturations3pct} desaturations >=3%, ${result.desaturations4pct} >=4%), " +
+                "${result.hrSpikesCoincident} coincident with an HR spike, data quality ${result.dataQuality}. " +
+                "Screening estimate only, not a medical assessment.",
+            memoryType = "note",
+            importance = 3,
+        ))
     }
 
     private suspend fun deriveFatigueOncePerDay(dayStart: Long, now: Long) {

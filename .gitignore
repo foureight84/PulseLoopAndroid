@@ -9,3 +9,6 @@ build/
 app/.DS_Store
 gradle/.DS_Store
 .DS_Store
+
+# Local project docs (not for upstream)
+/pulseloop-docs/

@@ -140,6 +140,7 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.ActivityUpdate -> {
+                learnRatio(event.steps, event.calories, event.distanceMeters)
                 val ts = event.timestamp.toEpochMilli()
                 val today = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
                 // The ring's cumulative 0x03 counter resets at the RING's midnight,
@@ -249,45 +250,48 @@ class EventPersistenceSubscriber(
     private var lastCumulative: CumulativeSnapshot? = null
     private var resetCandidateSince = 0L
 
-    /** Additive merge for cumulative-counter deltas (vs the maxOf estimator merge). */
-    private suspend fun addToActivityDaily(ts: Long, dSteps: Int, dCal: Double, dDist: Double) {
-        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
-        val existing = db.activityDailyDao().byDay(dayStart)
-        if (existing != null) {
-            db.activityDailyDao().upsert(existing.copy(
-                steps = existing.steps + dSteps,
-                calories = existing.calories + dCal,
-                distanceMeters = existing.distanceMeters + dDist,
-                updatedAt = System.currentTimeMillis(),
-            ))
-        } else {
-            db.activityDailyDao().upsert(ActivityDailyEntity(
-                date = dayStart, steps = dSteps, calories = dCal,
-                distanceMeters = dDist, source = "ring",
-            ))
+    // Steps are the single source of truth for a day; calories and distance are
+    // DERIVED from steps via the ring's own ratio (updated live from 0x03). This
+    // is why the three can no longer desync — a reset that zeroes steps zeroes all
+    // three by construction, which the old independent maxOf/add paths couldn't
+    // guarantee (observed 2026-07-05: 50 steps but stale 688 kcal / 5358 m).
+    private var calPerStep = 0.0611     // seed from clean data; overwritten by ring
+    private var metersPerStep = 0.875
+    private fun learnRatio(steps: Int, cal: Double, distM: Double) {
+        if (steps > 500) {
+            if (cal > 0) calPerStep = cal / steps
+            if (distM > 0) metersPerStep = distM / steps
         }
     }
 
-    private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double, activeMinutes: Int = -1) {
-        // Key the daily row by local midnight so it matches the Today dashboard and
-        // MetricsService/notifications, which all read per-day rows by local-day boundary.
+    /** Additive step merge; cal/dist derived from the resulting step total. */
+    private suspend fun addToActivityDaily(ts: Long, dSteps: Int, dCal: Double, dDist: Double) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         val existing = db.activityDailyDao().byDay(dayStart)
-        if (existing != null) {
-            db.activityDailyDao().upsert(existing.copy(
-                steps = maxOf(existing.steps, steps),
-                calories = maxOf(existing.calories, calories),
-                distanceMeters = maxOf(existing.distanceMeters, distanceM),
-                activeMinutes = if (activeMinutes >= 0) maxOf(existing.activeMinutes, activeMinutes) else existing.activeMinutes,
+        val steps = (existing?.steps ?: 0) + dSteps
+        writeDaily(dayStart, steps, existing)
+    }
+
+    private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double, activeMinutes: Int = -1) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        val existing = db.activityDailyDao().byDay(dayStart)
+        val finalSteps = maxOf(existing?.steps ?: 0, steps)
+        writeDaily(dayStart, finalSteps, existing, activeMinutes)
+    }
+
+    /** Single writer: cal/dist always = steps × ring ratio, so they stay coherent. */
+    private suspend fun writeDaily(dayStart: Long, steps: Int, existing: ActivityDailyEntity?, activeMinutes: Int = -1) {
+        val active = if (activeMinutes >= 0) maxOf(existing?.activeMinutes ?: 0, activeMinutes)
+                     else existing?.activeMinutes ?: 0
+        db.activityDailyDao().upsert(
+            (existing ?: ActivityDailyEntity(date = dayStart, source = "ring")).copy(
+                steps = steps,
+                calories = steps * calPerStep,
+                distanceMeters = steps * metersPerStep,
+                activeMinutes = active,
                 updatedAt = System.currentTimeMillis(),
-            ))
-        } else {
-            db.activityDailyDao().upsert(ActivityDailyEntity(
-                date = dayStart, steps = steps, calories = calories,
-                distanceMeters = distanceM, source = "ring",
-                activeMinutes = maxOf(activeMinutes, 0),
-            ))
-        }
+            )
+        )
     }
 
     companion object {

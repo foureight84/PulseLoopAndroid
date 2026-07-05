@@ -730,6 +730,25 @@ fun SleepScreen(
     val totalMin = lastNight?.totalMinutes?.let { it % 60 }
     val timeStr = if (totalHr != null) "${totalHr}h ${totalMin}m" else "--"
 
+    // ── Overnight signal check: cheap, on-screen recompute of the screening-only
+    // ODI/CVHR analysis over last night's window, independent of whether the
+    // DerivedMetricsEngine's once-a-morning coach-memory job has run yet. ──
+    val apneaScreenContext = LocalContext.current
+    var apneaResult by remember { mutableStateOf<com.pulseloop.service.ApneaScreenResult?>(null) }
+    LaunchedEffect(Unit) {
+        val db = com.pulseloop.data.PulseLoopDatabase.getInstance(apneaScreenContext)
+        val dayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+        val windowStart = dayStart - 2 * 3_600_000L   // 22:00 yesterday
+        val windowEnd = dayStart + 10 * 3_600_000L    // 10:00 today
+        val spo2 = db.measurementDao().range(MeasurementKind.SPO2.name, windowStart, windowEnd)
+            .map { it.timestamp to it.value.toInt() }
+        val hr = db.measurementDao().range(MeasurementKind.HEART_RATE.name, windowStart, windowEnd)
+            .map { it.timestamp to it.value.toInt() }
+        if (spo2.isNotEmpty()) {
+            apneaResult = com.pulseloop.service.buildApneaScreenResult(spo2, hr, windowStart, windowEnd)
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -762,6 +781,16 @@ fun SleepScreen(
                         )
                     } else {
                         Text("No sleep data yet", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (state.lastNightBlocks.isNotEmpty()) {
+                        Spacer(Modifier.height(14.dp))
+                        com.pulseloop.ui.components.SleepHypnogram(state.lastNightBlocks)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Stages estimated from overnight heart rate — no motion or EEG, so REM isn't shown.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -805,6 +834,58 @@ fun SleepScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // ── Overnight signal check (screening-only ODI/CVHR) ─────────
+        apneaResult?.let { r ->
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Overnight signal check", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(6.dp))
+                        val zoneColor = if (r.odi > 15.0) com.pulseloop.ui.theme.MetricColors.ZoneConcern
+                            else com.pulseloop.ui.theme.MetricColors.ZoneNormal
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "%.1f".format(r.odi),
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = zoneColor,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "ODI (events/hr) — ${com.pulseloop.ui.theme.MetricColors.labelFor(zoneColor)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "${r.desaturations3pct} desaturations ≥3%, ${r.desaturations4pct} ≥4%, " +
+                                "${r.hrSpikesCoincident} coincident with an HR spike",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (r.dataQuality != "good") {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "Readings were sparse last night. A charging phone and a ring worn " +
+                                    "through the 11pm-7am window gives a denser, more reliable reading.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Screening estimate from consumer sensors, not a medical assessment. " +
+                                "Discuss persistent patterns with a clinician.",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

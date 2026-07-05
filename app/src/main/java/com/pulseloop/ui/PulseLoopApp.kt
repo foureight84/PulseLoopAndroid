@@ -51,6 +51,7 @@ fun PulseLoopApp() {
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
         val persistence = remember { EventPersistenceSubscriber(db) }
         val derivedMetrics = remember { com.pulseloop.service.DerivedMetricsEngine(db, coordinator) }
+        val sleepStream = remember { SleepStreamController(coordinator, liveWorkout, context) }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────
@@ -119,6 +120,11 @@ fun PulseLoopApp() {
 
             // App-side HRV/stress/sleep/fatigue estimates (sourceRaw="derived").
             derivedMetrics.start()
+
+            // Overnight sleep-streaming mode: holds the ring's 1Hz HR stream open
+            // while charging + in the night window, feeding denser overnight HR/SpO2
+            // for the derived sleep estimate and the apnea screen above.
+            sleepStream.start()
 
             // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
             // process restart — the live GATT is gone, so the views would otherwise show a
