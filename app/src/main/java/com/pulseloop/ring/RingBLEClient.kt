@@ -66,6 +66,12 @@ class RingBLEClient(private val context: Context) {
     val syncEngine: RingSyncEngine? get() = activeSyncEngine
     private var keepaliveJob: Job? = null
 
+    // Official-app-style reconnect throttling (BleBaseControl: maxReconnect + count%3
+    // strategy alternation). Reset on success, user action, or app foreground.
+    private var reconnectAttempts = 0
+    private var reconnectScanPending = false
+    private var sightlessScans = 0
+
     // MARK: Bluetooth infrastructure
 
     private val bluetoothManager: BluetoothManager =
@@ -199,20 +205,54 @@ class RingBLEClient(private val context: Context) {
         }
         val matchedType = _state.value.discovered.firstOrNull { it.id == id }?.deviceType
         connectingName = _state.value.discovered.firstOrNull { it.id == id }?.name ?: target.name
+        resetReconnectBackoff()
         beginConnect(target, matchedType)
     }
 
+    /**
+     * Reconnect to the stored ring, alternating strategies like the official QRing app
+     * (BleBaseControl: `count % 3` picks direct-connect vs scan-then-connect): a direct
+     * connect is fastest right after a drop, but parks uselessly against a ring that
+     * isn't advertising — a scan first proves reachability. Attempts are capped
+     * (official: maxReconnect = 10); the cap resets on user action or app foreground.
+     */
     fun connectLastKnown() {
         if (!bluetoothAdapter.isEnabled) return
         val lastId = lastKnownIdentifier ?: return
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
+        // A still-pending reconnect scan means the last attempt never sighted the ring.
+        if (reconnectScanPending) {
+            reconnectScanPending = false
+            scanner?.stopScan(scanCallback)
+            sightlessScans++
+            if (sightlessScans >= SIGHTLESS_SCANS_FOR_HINT) {
+                // The classic wedge: the ring still thinks it's connected (stale ACL in
+                // the phone's stack) so it never advertises. Only the user can fix that.
+                updateState { copy(lastError =
+                    "Ring not found in scans. It may be held by a stale Bluetooth connection — try toggling Bluetooth off and on.") }
+            }
+        }
+        reconnectAttempts++
         val device = try {
             bluetoothAdapter.getRemoteDevice(lastId)
         } catch (_: Exception) { null }
-        if (device != null) {
+        if (device == null) {
+            startScanning()
+            return
+        }
+        if (reconnectAttempts % 3 == 1) {
             beginConnect(device, lastKnownDeviceType)
         } else {
+            reconnectScanPending = true
             startScanning()
         }
+    }
+
+    /** Clear the reconnect throttling — called on user action and app foreground. */
+    private fun resetReconnectBackoff() {
+        reconnectAttempts = 0
+        sightlessScans = 0
+        reconnectScanPending = false
     }
 
     /**
@@ -224,6 +264,9 @@ class RingBLEClient(private val context: Context) {
     fun reconnectIfNeeded() {
         if (!bluetoothAdapter.isEnabled || !hasPermissions()) return
         val lastId = lastKnownIdentifier ?: return
+        // Fresh user attention = fresh retry budget (the cap exists to stop unattended
+        // background churn, not to block a user actively waiting on the connection).
+        resetReconnectBackoff()
         when (_state.value.connectionState) {
             RingConnectionState.CONNECTING, RingConnectionState.SCANNING -> return
             RingConnectionState.CONNECTED -> {
@@ -263,10 +306,28 @@ class RingBLEClient(private val context: Context) {
         if (lastKnownIdentifier == null) return
         when (_state.value.connectionState) {
             RingConnectionState.CONNECTED -> {
-                val idleFor = System.currentTimeMillis() - lastActivityAt
-                if (lastActivityAt > 0 && idleFor > LINK_STALE_MS) {
-                    Log.w("RingBLEClient", "Link stale (${idleFor}ms, no GATT activity) — forcing reconnect")
-                    forceReconnect()
+                if (activeCoordinator?.deviceType == RingDeviceType.JRING) {
+                    // Jring: the 15s keepalive guarantees regular GATT activity, so a
+                    // silent link is provably dead.
+                    val idleFor = System.currentTimeMillis() - lastActivityAt
+                    if (lastActivityAt > 0 && idleFor > LINK_STALE_MS) {
+                        Log.w("RingBLEClient", "Link stale (${idleFor}ms, no GATT activity) — forcing reconnect")
+                        forceReconnect()
+                    }
+                } else {
+                    // Colmi: no keepalive traffic (matching the official app), so idle
+                    // silence is normal. Probe the OS's own GATT profile state instead —
+                    // it knows when the ACL is gone even if our callback never fired.
+                    val dev = lastKnownIdentifier?.let {
+                        try { bluetoothAdapter.getRemoteDevice(it) } catch (_: Exception) { null }
+                    }
+                    val live = dev != null &&
+                        bluetoothManager.getConnectionState(dev, BluetoothProfile.GATT) ==
+                            BluetoothProfile.STATE_CONNECTED
+                    if (!live) {
+                        Log.w("RingBLEClient", "OS reports GATT not connected — forcing reconnect")
+                        forceReconnect()
+                    }
                 }
             }
             RingConnectionState.DISCONNECTED,
@@ -281,7 +342,12 @@ class RingBLEClient(private val context: Context) {
                     forceReconnect()
                 }
             }
-            else -> {}  // SCANNING — let the scan proceed
+            else -> {
+                // SCANNING: a pairing scan proceeds untouched, but a reconnect scan that
+                // ran a full watchdog interval without sighting the ring moves on to the
+                // next attempt (connectLastKnown counts the miss and alternates strategy).
+                if (reconnectScanPending) connectLastKnown()
+            }
         }
     }
 
@@ -292,18 +358,36 @@ class RingBLEClient(private val context: Context) {
     }
 
     /**
-     * Graceful disconnect initiated by the user (e.g., navigating away).
-     * Does NOT clear bond or GATT cache — keeps pairing intact for silent reconnect.
-     * With autoConnect=true, Android will automatically reconnect when the ring
-     * comes back in range.
+     * Graceful disconnect (user navigating away or app backgrounding without the
+     * background-sync service). Releases the GATT client fully — QRing-style
+     * disconnect → 500 ms → refresh → close — so the Android stack drops the ACL and
+     * the ring goes back to advertising. A half-open GATT here is what wedged rings
+     * into "connected-but-invisible" (won't appear in scans until Bluetooth is
+     * toggled). Keeps the stored identity so [connectLastKnown] can reconnect later.
      */
     fun disconnect() {
         stopKeepalive()
         scanner?.stopScan(scanCallback)
-        bluetoothGatt?.disconnect()
-        // Do NOT close the GATT or clear bond — let autoConnect handle reconnection.
-        // The official app only closes GATT/clears bond on explicit "Forget Ring".
+        val gatt = bluetoothGatt
+        bluetoothGatt = null
+        writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
+        resetOpQueue()
+        if (gatt != null) {
+            try { gatt.disconnect() } catch (_: Exception) {}
+            // The official QRing app waits ~500 ms between disconnect() and close() so
+            // the stack finishes the LL teardown before the client handle disappears.
+            scope.launch {
+                delay(GATT_CLOSE_DELAY_MS)
+                closeGattQuietly(gatt)
+            }
+        }
         updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
+    }
+
+    /** Cache-refresh + close, swallowing the reflection/stack exceptions. */
+    private fun closeGattQuietly(gatt: BluetoothGatt) {
+        try { gatt::class.java.getMethod("refresh").invoke(gatt) } catch (_: Exception) {}
+        try { gatt.close() } catch (_: Exception) {}
     }
 
     /**
@@ -382,7 +466,7 @@ class RingBLEClient(private val context: Context) {
         // force-close-and-reopen recovery path.
         bluetoothGatt?.let { old ->
             try { old.disconnect() } catch (_: Exception) {}
-            try { old.close() } catch (_: Exception) {}
+            closeGattQuietly(old)  // refresh + close, official-app teardown discipline
         }
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
@@ -398,27 +482,35 @@ class RingBLEClient(private val context: Context) {
         )
 
         bluetoothGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            // autoConnect=true matches the official app — connects silently
-            // in the background without showing the Bluetooth status bar icon
-            target.connectGatt(context, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            // autoConnect=false matches the official QRing app (BleBaseControl:
+            // connectGatt(ctx, false, cb, TRANSPORT_LE)) — attempts complete or fail
+            // fast with a status code, and reconnection is owned by the watchdog's
+            // alternating direct/scan strategy instead of a parked pending connect
+            // that never resolves against a non-advertising ring.
+            target.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } else {
             @Suppress("DEPRECATION")
-            target.connectGatt(context, true, gattCallback)
+            target.connectGatt(context, false, gattCallback)
         }
     }
 
     /**
      * Send a keepalive ping every 15s to prevent the ring's ~20s idle timeout.
-     * Uses 0x3A (CMD_KEEPALIVE_PING) — the official SDK's lightweight ping/pong
-     * command. The ring responds with 0x3A which also triggers setAppId().
+     * **Jring (56ff) only.** 0x3A is that SDK's lightweight ping/pong command; on the
+     * Colmi/QRing protocol the same opcode is CMD_DEVICE_SUGAR_LIPIDS — not a ping —
+     * and the official QRing app sends no keepalive at all (verified in the decompiled
+     * sources: no periodic send anywhere in its BLE layer). Pinging a Colmi ring both
+     * speaks the wrong command and holds the link open 24/7, which keeps the ring from
+     * advertising and drains its battery.
      */
     private fun startKeepalive() {
         keepaliveJob?.cancel()
+        if (activeCoordinator?.deviceType != RingDeviceType.JRING) return
         keepaliveJob = scope.launch {
             while (isActive) {
                 delay(15_000)
                 val cmd = ByteArray(20)
-                cmd[0] = 0x3A.toByte()  // CMD_KEEPALIVE_PING
+                cmd[0] = 0x3A.toByte()  // CMD_KEEPALIVE_PING (Jring)
                 enqueueWrite(cmd)
             }
         }
@@ -581,6 +673,16 @@ class RingBLEClient(private val context: Context) {
             val matchedType = matchDeviceType(name, scanRecord)
             discoveredPeripherals[device.address] = device
 
+            // Reconnect scan: the known ring is advertising again — grab it now.
+            if (reconnectScanPending && device.address == lastKnownIdentifier) {
+                reconnectScanPending = false
+                sightlessScans = 0
+                scanner?.stopScan(this)
+                connectingName = name
+                beginConnect(device, matchedType ?: lastKnownDeviceType)
+                return
+            }
+
             val ring = DiscoveredRing(
                 id = device.address,
                 name = name,
@@ -619,7 +721,8 @@ class RingBLEClient(private val context: Context) {
                         //       what lights up the phone's status-bar Bluetooth icon, and
                         //   (b) previously ran here racing requestMtu()/discoverServices(),
                         //       a known Android instability that caused the frequent disconnects.
-                        // The link is kept alive by autoConnect=true + the 0x3A keepalive.
+                        // Jring links are kept alive by the 0x3A keepalive; Colmi links idle
+                        // (official behavior) and the watchdog reconnects when they drop.
                         // Request a high-priority connection interval, matching the official app
                         // (BluetoothLeService.requestConnectionPriority(1) on connect).
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
@@ -649,8 +752,12 @@ class RingBLEClient(private val context: Context) {
                     val db = com.pulseloop.data.PulseLoopDatabase.getInstance(context.applicationContext)
                     val device = db.deviceDao().current()
                     if (device != null) {
+                        // Replace (never append) the diagnostic suffix: appending once per
+                        // discovery grew the row by one "|services:…" per reconnect — a
+                        // user export showed ~98 of them.
                         db.deviceDao().upsert(device.copy(
-                            capabilitiesRaw = device.capabilitiesRaw + "|services:" + serviceUuids.joinToString(","),
+                            capabilitiesRaw = device.capabilitiesRaw.substringBefore("|services:") +
+                                "|services:" + serviceUuids.joinToString(","),
                             updatedAt = System.currentTimeMillis()
                         ))
                     }
@@ -827,7 +934,8 @@ class RingBLEClient(private val context: Context) {
 
             updateState { copy(connectionState = RingConnectionState.CONNECTED) }
             lastActivityAt = System.currentTimeMillis()  // fresh link — start the staleness clock
-            startKeepalive()  // ping ring every 15s to prevent idle disconnect
+            resetReconnectBackoff()
+            startKeepalive()  // Jring only — Colmi links idle without pings (official behavior)
             val device = gatt.device
             prefs.edit()
                 .putString(LAST_PERIPHERAL_KEY, device.address)
@@ -859,26 +967,41 @@ class RingBLEClient(private val context: Context) {
         // (we close the old handle in beginConnect). Acting on them would clobber the
         // CONNECTING state of the fresh attempt with a spurious DISCONNECTED.
         if (bluetoothGatt != null && gatt !== bluetoothGatt) {
-            try { gatt.close() } catch (_: Exception) {}
+            closeGattQuietly(gatt)
             return
         }
         resetOpQueue()
         stopKeepalive()
 
+        // Release the dead client immediately (the link is already down, so no
+        // disconnect/delay needed): refresh the GATT cache and close, matching the
+        // official QRing app's teardown. Holding the old handle for autoConnect is
+        // what left zombie clients in the stack — the watchdog now owns reconnection
+        // and always starts from a fresh connectGatt.
+        bluetoothGatt = null
+        writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
+        closeGattQuietly(gatt)
+
         PulseEventBus.publishBlocking(
             PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
         )
 
-        // autoConnect=true will automatically reconnect when the ring comes back.
-        // Do NOT close the GATT — that would permanently kill the auto-reconnect.
-        // The official app keeps the GATT alive on passive disconnect.
         updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
     }
 
     fun destroy() {
         watchdogJob?.cancel()
+        stopKeepalive()
+        scanner?.stopScan(scanCallback)
+        // The scope is about to die, so the graceful delayed close in disconnect()
+        // would never run — tear the GATT down synchronously instead.
+        bluetoothGatt?.let { gatt ->
+            try { gatt.disconnect() } catch (_: Exception) {}
+            closeGattQuietly(gatt)
+        }
+        bluetoothGatt = null
         scope.cancel()
-        disconnect()
+        updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
     }
 
     companion object {
@@ -891,6 +1014,14 @@ class RingBLEClient(private val context: Context) {
         private const val LINK_STALE_MS = 50_000L
         /** A CONNECTING attempt that hasn't completed in this long is retried from scratch. */
         private const val CONNECT_TIMEOUT_MS = 30_000L
+        /** Unattended reconnect attempts before giving up until user action / app foreground
+         *  (official QRing app: maxReconnect = 10). */
+        private const val MAX_RECONNECT_ATTEMPTS = 10
+        /** Reconnect scans that sight nothing before we suggest a Bluetooth toggle. */
+        private const val SIGHTLESS_SCANS_FOR_HINT = 2
+        /** Pause between gatt.disconnect() and close(), matching the official app's
+         *  teardown so the stack finishes the LL disconnect before the handle vanishes. */
+        private const val GATT_CLOSE_DELAY_MS = 500L
         /** Max wait for any GATT op's completion callback before unblocking the queue
          *  (prevents a stuck in-flight op stranding every subsequent operation). */
         private const val OP_TIMEOUT_MS = 4_000L
