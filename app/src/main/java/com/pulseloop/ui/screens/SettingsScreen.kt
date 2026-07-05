@@ -64,7 +64,7 @@ fun SettingsScreen(
         }
     }
 
-    val models = listOf("gpt-5.4", "gpt-4o", "gpt-4o-mini", "o4-mini")
+    val models = listOf("local", "gpt-5.4", "gpt-4o", "gpt-4o-mini", "o4-mini")
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -132,8 +132,17 @@ fun SettingsScreen(
                         DropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
                             models.forEach { model ->
                                 DropdownMenuItem(
-                                    text = { Text(model) },
-                                    onClick = { selectedModel = model; keyStore.model = model; modelExpanded = false },
+                                    text = { Text(if (model == "local") "local (LAN server)" else model) },
+                                    onClick = {
+                                        selectedModel = model; keyStore.model = model; modelExpanded = false
+                                        // "local" one-tap setup: point at the LAN llama server
+                                        // unless a custom endpoint is already saved. No API key
+                                        // needed — the coach gate exempts local mode.
+                                        if (model == "local" && keyStore.apiEndpoint == ApiKeyStore.DEFAULT_ENDPOINT) {
+                                            keyStore.apiEndpoint = "http://192.168.1.95:8080/v1/responses"
+                                            apiEndpoint = keyStore.apiEndpoint
+                                        }
+                                    },
                                 )
                             }
                         }
@@ -186,7 +195,7 @@ fun SettingsScreen(
                         value = apiEndpoint,
                         onValueChange = { apiEndpoint = it },
                         label = { Text("API endpoint (blank = OpenAI)") },
-                        placeholder = { Text("http://192.168.1.20:8090/v1/responses") },
+                        placeholder = { Text("e.g. http://192.168.1.95:8080/v1/responses") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),

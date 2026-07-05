@@ -54,23 +54,29 @@ fun PulseLoopApp() {
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────
-        val coachOrchestrator = remember {
-            val apiKey = apiKeyStore.apiKey
-            val flags = CoachFeatureFlags(
-                coachEnabled = apiKeyStore.coachEnabled && apiKey.isNotEmpty(),
-                webSearchEnabled = apiKeyStore.webSearchEnabled,
-                writeToolsEnabled = false,  // safe default
-                liveMeasurementsEnabled = true,
-                model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
-            )
-            val client = OpenAIResponsesClient(apiKey, endpoint = apiKeyStore.apiEndpoint)
-            val registry = ToolRegistry(flags)
-            val toolContext = ToolExecutionContext(
-                db = db,
-                flags = flags,
-                coordinator = coordinator,
-            )
-            CoachOrchestrator(client, registry, flags, toolContext)
+        // Built FRESH per turn (not remembered): key/endpoint/model changes in
+        // Settings take effect on the next message instead of the next launch.
+        // A "local" model needs no API key — the LAN llama server ignores auth.
+        val buildOrchestrator: () -> CoachOrchestrator = remember {
+            {
+                val apiKey = apiKeyStore.apiKey
+                val isLocal = apiKeyStore.model == "local"
+                val flags = CoachFeatureFlags(
+                    coachEnabled = apiKeyStore.coachEnabled && (apiKey.isNotEmpty() || isLocal),
+                    webSearchEnabled = apiKeyStore.webSearchEnabled && !isLocal,
+                    writeToolsEnabled = false,  // safe default
+                    liveMeasurementsEnabled = true,
+                    model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
+                )
+                val client = OpenAIResponsesClient(apiKey, endpoint = apiKeyStore.apiEndpoint)
+                val registry = ToolRegistry(flags)
+                val toolContext = ToolExecutionContext(
+                    db = db,
+                    flags = flags,
+                    coordinator = coordinator,
+                )
+                CoachOrchestrator(client, registry, flags, toolContext)
+            }
         }
 
         // ── ViewModels ───────────────────────────────────────────────────
@@ -78,7 +84,7 @@ fun PulseLoopApp() {
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
         val sleepVM = remember { SleepViewModel(db) }
         val activityVM = remember { ActivityViewModel(db) }
-        val coachVM = remember { CoachViewModel(db, coachOrchestrator) }
+        val coachVM = remember { CoachViewModel(db, buildOrchestrator) }
 
         // ── Start services (one-shot on composition) ─────────────────────
         LaunchedEffect(Unit) {

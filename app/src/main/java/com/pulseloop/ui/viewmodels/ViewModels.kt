@@ -326,7 +326,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
  */
 class CoachViewModel(
     private val db: PulseLoopDatabase,
-    private val orchestrator: com.pulseloop.coach.orchestration.CoachOrchestrator,
+    /** Provider, not instance: settings (key/endpoint/model) are re-read per turn. */
+    private val orchestratorProvider: () -> com.pulseloop.coach.orchestration.CoachOrchestrator,
 ) : ViewModel() {
     data class CoachState(
         val messages: List<ChatMessage> = emptyList(),
@@ -353,7 +354,7 @@ class CoachViewModel(
                 val priorMessages = _state.value.messages.dropLast(1).map {
                     com.pulseloop.coach.orchestration.CoachOrchestrator.PriorMessage(it.role, it.text)
                 }
-                val result = orchestrator.runTurn(userText, packet, priorMessages)
+                val result = orchestratorProvider().runTurn(userText, packet, priorMessages)
                 _state.update { it.copy(
                     messages = it.messages + ChatMessage("assistant", result.assistant.plainText),
                     isThinking = false,
