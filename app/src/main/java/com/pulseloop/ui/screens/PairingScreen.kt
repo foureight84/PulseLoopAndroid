@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pulseloop.ring.RingBLEClient
+import com.pulseloop.ring.ringModelLabel
 import kotlinx.coroutines.flow.collectLatest
 
 /**
@@ -165,7 +166,7 @@ fun PairingScreen(
                                     Text("${ring.rssi} dBm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     ring.deviceType?.let {
                                         Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.small) {
-                                            Text(it.displayName, Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                                            Text(ringModelLabel(ring.name, it), Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
                                         }
                                     }
                                 }

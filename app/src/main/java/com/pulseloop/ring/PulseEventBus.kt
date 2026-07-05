@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.asSharedFlow
  * Typed events published on the bus for subscribers to consume.
  */
 sealed class PulseEvent {
-    data class DeviceStateChanged(val state: RingConnectionState, val address: String?, val firmware: String? = null) : PulseEvent()
+    data class DeviceStateChanged(val state: RingConnectionState, val address: String?, val firmware: String? = null, val name: String? = null) : PulseEvent()
     data class DeviceIdentified(val deviceType: RingDeviceType, val capabilities: Set<WearableCapability>) : PulseEvent()
     data class BatteryLevel(val percent: Int) : PulseEvent()
     data class RawPacket(val direction: PacketDirection, val data: ByteArray, val decoded: RingDecodedEvent) : PulseEvent() {
@@ -26,6 +26,8 @@ sealed class PulseEvent {
     data class HeartRateSample(val bpm: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class HeartRateComplete(val timestamp: java.time.Instant) : PulseEvent()
     data class Spo2Result(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /** The ring ended a live-SpO₂ run (error or natural finish) — no more results coming. */
+    data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()
     data class HistoryMeasurement(val kind: MeasurementKind, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class StressSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()

@@ -80,7 +80,10 @@ object RingEventBridge {
         is RingDecodedEvent.FirmwareVersion ->
             listOf(PulseEvent.FirmwareVersion(decoded.version))
 
-        is RingDecodedEvent.Spo2Progress, is RingDecodedEvent.Spo2Complete ->
+        is RingDecodedEvent.Spo2Complete ->
+            listOf(PulseEvent.Spo2Complete(decoded._timestamp))
+
+        is RingDecodedEvent.Spo2Progress ->
             emptyList() // Phase 1 does not fan these out
 
         is RingDecodedEvent.BindNotify ->

@@ -37,7 +37,14 @@ class EventPersistenceSubscriber(
     private suspend fun persistUnsafe(event: PulseEvent) {
         when (event) {
             is PulseEvent.DeviceStateChanged -> {
-                val device = db.deviceDao().current() ?: DeviceEntity()
+                // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
+                // device row, the ring's own teardown still emits a late DISCONNECTED — only
+                // a connection-establishing event may create a fresh row.
+                val existing = db.deviceDao().current()
+                if (existing == null &&
+                    event.state != RingConnectionState.CONNECTED &&
+                    event.state != RingConnectionState.CONNECTING) return
+                val device = existing ?: DeviceEntity()
                 val state = when (event.state) {
                     RingConnectionState.CONNECTED -> {
                         db.measurementDao().clearDemo()
@@ -54,6 +61,11 @@ class EventPersistenceSubscriber(
                 }
                 db.deviceDao().upsert(device.copy(
                     stateRaw = state,
+                    // Capture the connected ring's advertised name so the UI reflects the actual
+                    // device instead of the DeviceEntity default. Falls back to the existing name
+                    // for events that don't carry one (e.g. disconnect).
+                    name = event.name?.takeIf { it.isNotBlank() } ?: device.name,
+                    advertisedName = event.name?.takeIf { it.isNotBlank() } ?: device.advertisedName,
                     bleAddressHint = event.address ?: device.bleAddressHint,
                     // 0x0C device-info already gives the complete "<CID><DID>V<version>" string.
                     firmwareVersion = event.firmware ?: device.firmwareVersion,
@@ -135,6 +147,7 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.SyncProgress -> {} // UI feedback, no persistence needed
             is PulseEvent.HeartRateComplete -> {}
+            is PulseEvent.Spo2Complete -> {}
             is PulseEvent.RawPacket -> {
                 db.rawPacketDao().insert(RawPacketEntity(
                     directionRaw = event.direction.name,
@@ -163,10 +176,15 @@ class EventPersistenceSubscriber(
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         val existing = db.activityDailyDao().byDay(dayStart)
         if (existing != null) {
+            // Normally keep the running daily max (steps only climb through the day). But if the
+            // stored total is implausibly high — e.g. a value locked in by the old little-endian
+            // live-activity decode before this fix — overwrite it so the day self-heals instead
+            // of staying stuck at a garbage number until midnight.
+            val stale = existing.steps > 200_000
             db.activityDailyDao().upsert(existing.copy(
-                steps = maxOf(existing.steps, steps),
-                calories = maxOf(existing.calories, calories),
-                distanceMeters = maxOf(existing.distanceMeters, distanceM),
+                steps = if (stale) steps else maxOf(existing.steps, steps),
+                calories = if (stale) calories else maxOf(existing.calories, calories),
+                distanceMeters = if (stale) distanceM else maxOf(existing.distanceMeters, distanceM),
                 updatedAt = System.currentTimeMillis(),
             ))
         } else {

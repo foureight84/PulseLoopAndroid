@@ -25,11 +25,22 @@ object ColmiDecoder {
         return when (v[0]) {
             ColmiCommandID.BATTERY -> listOf(RingDecodedEvent.Battery(percent = v[1].toInt()))
             ColmiCommandID.MANUAL_HEART_RATE -> {
+                // Real-time stream: [0x69, reading_type, error, value, …].
+                // reading_type selects the metric (HR=1, SpO2=3); error!=0 ends the run.
+                val readingType = v[1]
                 val errorCode = v[2].toInt()
-                val bpm = v[3].toInt()
+                val value = v[3].toInt()
+                if (readingType == ColmiCommandID.RT_SPO2) {
+                    // error!=0 ends the run — surface it so a spot measurement fails fast
+                    // instead of idling out its full window (mirrors the HR path below).
+                    if (errorCode != 0) return listOf(RingDecodedEvent.Spo2Complete(_timestamp = now))
+                    if (value !in 70..100) return emptyList()  // warm-up / noise
+                    return listOf(RingDecodedEvent.Spo2Result(value = value, _timestamp = now))
+                }
+                // Default: heart rate (reading_type == RT_HEART_RATE, or legacy 2-byte request).
                 if (errorCode != 0) return listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
-                if (bpm !in 30..220) return emptyList()  // warm-up (bpm 0) or noise
-                listOf(RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
+                if (value !in 30..220) return emptyList()  // warm-up (bpm 0) or noise
+                listOf(RingDecodedEvent.HeartRateSample(bpm = value, _timestamp = now))
             }
             ColmiCommandID.REALTIME_HEART_RATE -> {
                 val bpm = v[1].toInt()
@@ -72,10 +83,16 @@ object ColmiDecoder {
     private fun decodeNotification(v: List<UByte>, now: Instant): List<RingDecodedEvent> = when (v[1]) {
         ColmiCommandID.NOTIF_BATTERY -> listOf(RingDecodedEvent.Battery(percent = v[2].toInt()))
         ColmiCommandID.NOTIF_LIVE_ACTIVITY -> {
-            val steps = ColmiBytes.u24(v[2], v[3], v[4])
-            val calories = ColmiBytes.u24(v[5], v[6], v[7]).toInt() / 10
-            val distance = ColmiBytes.u24(v[8], v[9], v[10]).toInt()
-            listOf(RingDecodedEvent.ActivityUpdate(
+            // Live activity (0x73 0x12) packs steps / calories / distance as BIG-endian u24
+            // (verified against on-ring frames). Reading them little-endian inflated steps to
+            // millions and, via the daily max-merge, locked in a garbage Today total.
+            val steps = ColmiBytes.u24be(v[2], v[3], v[4])
+            val calories = ColmiBytes.u24be(v[5], v[6], v[7]) / 1000   // field is in calories → kcal
+            val distance = ColmiBytes.u24be(v[8], v[9], v[10])          // meters
+            // Plausibility guard: drop any frame with an impossible step count so a single
+            // bad packet can never poison the day's total again.
+            if (steps !in 0..200_000) listOf(RingDecodedEvent.CommandAck(commandId = v[0]))
+            else listOf(RingDecodedEvent.ActivityUpdate(
                 _timestamp = now, steps = steps, distanceMeters = distance, calories = calories
             ))
         }

@@ -81,7 +81,9 @@ fun PulseLoopApp() {
 
         // ── Start services (one-shot on composition) ─────────────────────
         LaunchedEffect(Unit) {
-            // Wire onConnected → run startup sequence
+            // Wire onConnected → run the startup/history sync only (matches iOS). Connecting
+            // does NOT force a measurement; the ring's own periodic monitoring is pulled in via
+            // history, and on-demand readings come from the Vitals "Measure" button.
             bleClient.onConnected = { coordinator.runStartupSequence() }
 
             // Wire firmware read → persist to DB
@@ -154,6 +156,14 @@ fun PulseLoopApp() {
             Tab("activity", "Activity", Icons.Filled.DirectionsRun, Icons.Outlined.DirectionsRun),
             Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
+
+        // ── Self-update: release-only, throttled to once/day. Surfaces a dialog when a
+        // newer GitHub release is published; Settings also has a manual "Check for updates".
+        var pendingUpdate by remember { mutableStateOf<com.pulseloop.update.UpdateInfo?>(null) }
+        LaunchedEffect(Unit) {
+            pendingUpdate = (com.pulseloop.update.UpdateChecker.check(context)
+                as? com.pulseloop.update.UpdateCheckResult.UpdateAvailable)?.info
+        }
 
         val isLandscape =
             LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -269,6 +279,10 @@ fun PulseLoopApp() {
                     )
                 }
             }
+        }
+
+        pendingUpdate?.let { info ->
+            com.pulseloop.update.UpdateDialog(info) { pendingUpdate = null }
         }
     }
 }
