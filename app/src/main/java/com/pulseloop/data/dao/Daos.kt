@@ -110,6 +110,21 @@ interface ActivityBucketDao {
 }
 
 @Dao
+interface DeviceMeasurementConfigDao {
+    @Query("SELECT * FROM device_measurement_configs WHERE deviceId = :deviceId LIMIT 1")
+    suspend fun byDevice(deviceId: String): DeviceMeasurementConfigEntity?
+
+    @Query("SELECT * FROM device_measurement_configs WHERE deviceId = :deviceId LIMIT 1")
+    fun byDeviceFlow(deviceId: String): Flow<DeviceMeasurementConfigEntity?>
+
+    @Upsert
+    suspend fun upsert(config: DeviceMeasurementConfigEntity)
+
+    @Query("DELETE FROM device_measurement_configs")
+    suspend fun clear()
+}
+
+@Dao
 interface ActivitySessionDao {
     @Query("SELECT * FROM activity_sessions WHERE statusRaw = 'recording' OR statusRaw = 'paused' LIMIT 1")
     suspend fun active(): ActivitySessionEntity?

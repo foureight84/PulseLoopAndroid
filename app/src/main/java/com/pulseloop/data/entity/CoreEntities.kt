@@ -97,6 +97,25 @@ data class ActivityBucketEntity(
 )
 
 /**
+ * Ported from [DeviceMeasurementConfig] in PulseModels.swift (iOS PR #19).
+ * Per-device background-measurement preferences pushed to the ring on save and on connect:
+ * all-day HR sampling interval plus per-vital enable toggles.
+ */
+@Entity(tableName = "device_measurement_configs")
+data class DeviceMeasurementConfigEntity(
+    /** The DeviceEntity id this config belongs to. */
+    @PrimaryKey val deviceId: String,
+    /** All-day HR sampling interval, minutes. 5-minute steps, 5..60. */
+    val hrIntervalMinutes: Int = 5,
+    val hrEnabled: Boolean = true,
+    val spo2Enabled: Boolean = true,
+    val stressEnabled: Boolean = true,
+    val hrvEnabled: Boolean = true,
+    val temperatureEnabled: Boolean = true,
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
  * Ported from [ActivitySession] in PulseModels.swift.
  * A workout recording session.
  */

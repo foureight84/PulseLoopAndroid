@@ -69,6 +69,8 @@ data class CoachMessageEntity(
     val body: String,
     val cardsJSON: String? = null,
     val pendingActionJSON: String? = null,
+    /** JSON array of CoachAttachmentRef (image attachments), null when none. Mirrors iOS CoachMessage.attachmentsJSON. */
+    val attachmentsJson: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 

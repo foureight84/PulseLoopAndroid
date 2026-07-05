@@ -31,7 +31,12 @@ enum class WearableCapability(val key: String) {
     REALTIME_STEPS("realtimeSteps"),
     FIND_DEVICE("findDevice"),
     POWER_OFF("powerOff"),
-    FACTORY_RESET("factoryReset");
+    FACTORY_RESET("factoryReset"),
+
+    // Configurable all-day measurement: the device exposes a settable HR sampling interval and
+    // per-vital monitoring toggles (Colmi `0x16` + prefs). The generic jring has no such control,
+    // so it never declares this and the Measurement settings section stays hidden for it.
+    MEASUREMENT_INTERVAL("measurementInterval");
 
     companion object {
         fun fromCsv(csv: String): Set<WearableCapability> =

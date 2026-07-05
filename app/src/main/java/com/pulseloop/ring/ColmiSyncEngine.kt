@@ -20,6 +20,15 @@ class ColmiSyncEngine(
     private val encoder = ColmiEncoder
     private val zone = ZoneId.systemDefault()
 
+    /** User-chosen all-day measurement config, applied in the connect handshake and updatable
+     *  live. Defaults to the previous hard-coded behaviour (all vitals on, HR every 5 min)
+     *  until the coordinator pushes the persisted config. */
+    private var measurementSettings = MeasurementSettings.ALL_ON_DEFAULT
+
+    /** The user's profile for the ring's user-preferences command. `null` ⇒ send the encoder's
+     *  neutral defaults (matches prior behaviour) until the coordinator pushes real values. */
+    private var userProfile: UserProfileValues? = null
+
     // History state machine
     private enum class Stage { IDLE, ACTIVITY, HEART_RATE, STRESS, SPO2, SLEEP, HRV, BP, TEMPERATURE, BLOOD_SUGAR, DONE }
 
@@ -51,7 +60,7 @@ class ColmiSyncEngine(
     override fun runStartup() {
         writer?.enqueue(encoder.phoneName())
         writer?.enqueue(encoder.setDateTime())
-        writer?.enqueue(encoder.userPreferences())
+        writer?.enqueue(userPreferencesCommand())
         writer?.enqueue(encoder.battery())
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_HR_PREF))
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_STRESS_PREF))
@@ -60,13 +69,51 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.readTempPref())
         writer?.enqueue(encoder.readGoals())
         // Enable all-day measurement so the ring actually accumulates data the history sync can
-        // return (without these, the metric history comes back empty).
-        // Heart rate uses a dedicated 0x16 command (different shape from the other prefs).
-        writer?.enqueue(encoder.autoHeartRate(enabled = true, intervalMinutes = 5))
-        writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_SPO2_PREF, enabled = true))
-        writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_STRESS_PREF, enabled = true))
-        writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = true))
+        // return (without these, the metric history comes back empty). The exact interval/toggles
+        // come from the user's persisted config (defaulting to all-on / 5-min HR until the
+        // coordinator pushes it via setMeasurementSettings before runStartup).
+        enqueueMeasurementCommands(measurementSettings)
         startHistorySync()
+    }
+
+    // MARK: Measurement settings + user profile (iOS #19)
+
+    override fun setMeasurementSettings(settings: MeasurementSettings) {
+        measurementSettings = settings
+    }
+
+    override fun applyMeasurementSettings(settings: MeasurementSettings) {
+        measurementSettings = settings
+        enqueueMeasurementCommands(settings)
+    }
+
+    override fun setUserProfile(profile: UserProfileValues) {
+        userProfile = profile
+    }
+
+    override fun applyUserProfile(profile: UserProfileValues) {
+        userProfile = profile
+        writer?.enqueue(userPreferencesCommand())
+    }
+
+    /** Translate the device-agnostic settings into Colmi pref commands. HR uses the dedicated
+     *  `0x16` command (interval + on/off in one); SpO2/stress/HRV/temp are simple on/off prefs. */
+    private fun enqueueMeasurementCommands(s: MeasurementSettings) {
+        writer?.enqueue(encoder.autoHeartRate(enabled = s.hrEnabled, intervalMinutes = s.hrIntervalMinutes))
+        writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_SPO2_PREF, enabled = s.spo2Enabled))
+        writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_STRESS_PREF, enabled = s.stressEnabled))
+        writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = s.hrvEnabled))
+        writer?.enqueue(encoder.writeTempPref(enabled = s.temperatureEnabled))
+    }
+
+    /** Build the user-preferences command from the stored profile, falling back to the encoder's
+     *  neutral defaults when no profile has been pushed yet. */
+    private fun userPreferencesCommand(): ByteArray {
+        val p = userProfile ?: return encoder.userPreferences()
+        return encoder.userPreferences(
+            metric = p.metric, gender = p.gender, age = p.age,
+            heightCm = p.heightCm, weightKg = p.weightKg,
+        )
     }
 
     private fun startHistorySync() {

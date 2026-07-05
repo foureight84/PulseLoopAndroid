@@ -19,6 +19,7 @@ import com.pulseloop.data.entity.*
         MeasurementEntity::class,
         ActivityDailyEntity::class,
         ActivityBucketEntity::class,
+        DeviceMeasurementConfigEntity::class,
         ActivitySessionEntity::class,
         ActivityGpsPointEntity::class,
         ActivityEventEntity::class,
@@ -37,7 +38,7 @@ import com.pulseloop.data.entity.*
         CoachSummaryEntity::class,
         WearableLogEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -45,6 +46,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun measurementDao(): MeasurementDao
     abstract fun activityDailyDao(): ActivityDailyDao
     abstract fun activityBucketDao(): ActivityBucketDao
+    abstract fun deviceMeasurementConfigDao(): DeviceMeasurementConfigDao
     abstract fun activitySessionDao(): ActivitySessionDao
     abstract fun activityGpsPointDao(): ActivityGpsPointDao
     abstract fun sleepSessionDao(): SleepSessionDao
@@ -82,6 +84,28 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v3 → v4: per-device measurement config (iOS #19) + coach message attachments (iOS #31). */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `device_measurement_configs` (
+                        `deviceId` TEXT NOT NULL,
+                        `hrIntervalMinutes` INTEGER NOT NULL,
+                        `hrEnabled` INTEGER NOT NULL,
+                        `spo2Enabled` INTEGER NOT NULL,
+                        `stressEnabled` INTEGER NOT NULL,
+                        `hrvEnabled` INTEGER NOT NULL,
+                        `temperatureEnabled` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`deviceId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `attachmentsJson` TEXT")
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -89,7 +113,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

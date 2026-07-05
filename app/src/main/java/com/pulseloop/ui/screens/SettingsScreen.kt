@@ -584,6 +584,104 @@ fun SettingsScreen(
             }
         }
 
+        // Measurement section — ported from MeasurementSettingsView.swift (iOS #19).
+        // Per-device all-day measurement config: HR sampling interval + per-vital toggles,
+        // persisted in Room and pushed to the ring on Save (or on the next connect handshake).
+        // Only rings that declare MEASUREMENT_INTERVAL (Colmi) show this; jring has no such control.
+        run {
+            val device = db.deviceDao().currentFlow().collectAsState(initial = null).value
+            if (device?.capabilities?.contains(com.pulseloop.ring.WearableCapability.MEASUREMENT_INTERVAL) != true) return@run
+
+            var cfgHrEnabled by remember { mutableStateOf(true) }
+            var cfgHrInterval by remember { mutableStateOf(5) }
+            var cfgSpo2 by remember { mutableStateOf(true) }
+            var cfgStress by remember { mutableStateOf(true) }
+            var cfgHrv by remember { mutableStateOf(true) }
+            var cfgTemp by remember { mutableStateOf(true) }
+            var cfgLoaded by remember { mutableStateOf(false) }
+            var cfgSavedMsg by remember { mutableStateOf<String?>(null) }
+
+            LaunchedEffect(device.id) {
+                db.deviceMeasurementConfigDao().byDevice(device.id)?.let { c ->
+                    cfgHrEnabled = c.hrEnabled; cfgHrInterval = c.hrIntervalMinutes
+                    cfgSpo2 = c.spo2Enabled; cfgStress = c.stressEnabled
+                    cfgHrv = c.hrvEnabled; cfgTemp = c.temperatureEnabled
+                }
+                cfgLoaded = true
+            }
+
+            @Composable
+            fun VitalToggle(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(label)
+                    Switch(enabled = cfgLoaded, checked = checked, onCheckedChange = { onChange(it); cfgSavedMsg = null })
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Measurement", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "How often the ring measures in the background. Shorter heart-rate intervals give finer history at the cost of battery.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    VitalToggle("All-day heart rate", cfgHrEnabled) { cfgHrEnabled = it }
+                    if (cfgHrEnabled) {
+                        Text(
+                            "Every $cfgHrInterval min",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Slider(
+                            enabled = cfgLoaded,
+                            value = cfgHrInterval.toFloat(),
+                            onValueChange = { cfgHrInterval = ((it / 5).toInt() * 5).coerceIn(5, 60); cfgSavedMsg = null },
+                            valueRange = 5f..60f,
+                            steps = 10,  // 5-minute stops: 5, 10, …, 60
+                        )
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    VitalToggle("Blood oxygen (SpO₂)", cfgSpo2) { cfgSpo2 = it }
+                    VitalToggle("Stress", cfgStress) { cfgStress = it }
+                    VitalToggle("HRV", cfgHrv) { cfgHrv = it }
+                    VitalToggle("Temperature", cfgTemp) { cfgTemp = it }
+
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        enabled = cfgLoaded,
+                        onClick = {
+                            scope.launch {
+                                db.deviceMeasurementConfigDao().upsert(
+                                    com.pulseloop.data.entity.DeviceMeasurementConfigEntity(
+                                        deviceId = device.id,
+                                        hrIntervalMinutes = cfgHrInterval,
+                                        hrEnabled = cfgHrEnabled,
+                                        spo2Enabled = cfgSpo2,
+                                        stressEnabled = cfgStress,
+                                        hrvEnabled = cfgHrv,
+                                        temperatureEnabled = cfgTemp,
+                                        updatedAt = System.currentTimeMillis(),
+                                    )
+                                )
+                                coordinator?.applyMeasurementSettings()
+                                cfgSavedMsg = if (coordinator?.isConnected == true)
+                                    "Saved & sent to ring ✓" else "Saved — will sync on next connect"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Save measurement settings") }
+                    cfgSavedMsg?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+
         // Ring — connection management & unpair
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {

@@ -69,6 +69,16 @@ object ColmiEncoder {
         ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_READ.toByte()
     )
 
+    /**
+     * Enable/disable all-day temperature monitoring. Mirrors [readTempPref]'s extra `0x03`
+     * framing byte before the write flag. Verified against hardware (`3a 03 02 01` was acked
+     * by a Colmi ring).
+     */
+    fun writeTempPref(enabled: Boolean): ByteArray = byteArrayOf(
+        ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_WRITE.toByte(),
+        if (enabled) 0x01 else 0x00,
+    )
+
     fun readGoals(): ByteArray = byteArrayOf(ColmiCommandID.GOALS.toByte(), ColmiCommandID.PREF_READ.toByte())
 
     fun manualHeartRate(enable: Boolean = true): ByteArray = if (enable) {
@@ -213,6 +223,7 @@ object ColmiCoordinator : WearableCoordinator {
         WearableCapability.REALTIME_HEART_RATE,
         WearableCapability.REALTIME_STEPS,
         WearableCapability.FIND_DEVICE, WearableCapability.POWER_OFF, WearableCapability.FACTORY_RESET,
+        WearableCapability.MEASUREMENT_INTERVAL,  // 0x16 interval + per-vital prefs (iOS #19)
         // NOTE: Colmi rings do NOT support blood pressure or blood sugar.
         // See docs/ring-hardware-reference.md §3.
     )

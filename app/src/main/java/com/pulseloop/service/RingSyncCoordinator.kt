@@ -114,16 +114,68 @@ class RingSyncCoordinator(
         // the ring re-emits CONNECTED on every 0x0C status packet, which would otherwise
         // keep resetting the bar to 0%.
         beginSyncProgress()
-        // Claim the ring for this app FIRST (0x48). The ring binds to the connecting app's
-        // id and otherwise can stay mute after another app (e.g. the official one) claimed it.
-        apiKeyStore?.ringAppId?.let { engine?.setAppId(it) }
-        engine?.runStartup()
-        // Push the user's profile so the ring's blood-sugar (profile-derived) and
-        // calorie algorithms run on real inputs. BP is a direct sensor reading and
-        // does not depend on user info. Matches the official app, which calls
-        // setUserInfo on every connect anyway.
-        pushUserSettingsFromStore()
-        lastSyncAt = System.currentTimeMillis()
+        scope.launch {
+            // Push the persisted measurement config + profile into the engine BEFORE
+            // runStartup so the connect handshake reflects them (the engine emits the
+            // commands itself, so we don't double-send here). iOS #19 parity.
+            engine?.setMeasurementSettings(loadMeasurementSettings())
+            loadUserProfileValues()?.let { engine?.setUserProfile(it) }
+            // Claim the ring for this app FIRST (0x48). The ring binds to the connecting app's
+            // id and otherwise can stay mute after another app (e.g. the official one) claimed it.
+            apiKeyStore?.ringAppId?.let { engine?.setAppId(it) }
+            engine?.runStartup()
+            // Push the user's profile so the ring's blood-sugar (profile-derived) and
+            // calorie algorithms run on real inputs. BP is a direct sensor reading and
+            // does not depend on user info. Matches the official app, which calls
+            // setUserInfo on every connect anyway.
+            pushUserSettingsFromStore()
+            lastSyncAt = System.currentTimeMillis()
+        }
+    }
+
+    /** The persisted per-device measurement config, or the all-on default when none saved. */
+    private suspend fun loadMeasurementSettings(): MeasurementSettings {
+        val device = try { db.deviceDao().current() } catch (_: Exception) { null }
+            ?: return MeasurementSettings.ALL_ON_DEFAULT
+        val config = try { db.deviceMeasurementConfigDao().byDevice(device.id) } catch (_: Exception) { null }
+            ?: return MeasurementSettings.ALL_ON_DEFAULT
+        return MeasurementSettings(
+            hrEnabled = config.hrEnabled,
+            hrIntervalMinutes = config.hrIntervalMinutes,
+            spo2Enabled = config.spo2Enabled,
+            stressEnabled = config.stressEnabled,
+            hrvEnabled = config.hrvEnabled,
+            temperatureEnabled = config.temperatureEnabled,
+        )
+    }
+
+    private suspend fun loadUserProfileValues(): UserProfileValues? {
+        val profile = try { db.userProfileDao().get() } catch (_: Exception) { null } ?: return null
+        return UserProfileValues.from(
+            metric = apiKeyStore?.resolvedUnitSystem != com.pulseloop.settings.UnitSystem.IMPERIAL,
+            sex = profile.sex, age = profile.age,
+            heightCm = profile.heightCm, weightKg = profile.weightKg,
+        )
+    }
+
+    /**
+     * Live "Save" from the Measurement settings section: persist nothing here (the view owns
+     * the Room write), just push the latest config to the connected ring so it takes effect
+     * immediately. No-op when disconnected — applied on the next connect handshake instead.
+     */
+    fun applyMeasurementSettings() {
+        if (!isConnected) return
+        scope.launch {
+            engine?.applyMeasurementSettings(loadMeasurementSettings())
+        }
+    }
+
+    /** Live push of the profile-backed user-preferences command (Colmi 0x02-equivalent). */
+    fun applyUserProfileToRing() {
+        if (!isConnected) return
+        scope.launch {
+            loadUserProfileValues()?.let { engine?.applyUserProfile(it) }
+        }
     }
 
     /** Read the stored profile + BP calibration and push them to the ring. */
