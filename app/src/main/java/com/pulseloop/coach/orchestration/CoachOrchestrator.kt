@@ -5,6 +5,8 @@ import com.pulseloop.coach.context.CoachPromptBuilder
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.openai.FunctionCallOutput
 import com.pulseloop.coach.schema.CoachResponse
+import com.pulseloop.coach.schema.CoachResponseType
+import com.pulseloop.coach.schema.CoachConfidence
 import com.pulseloop.coach.tools.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -116,7 +118,21 @@ class CoachOrchestrator(
             val parsed = CoachResponseParser.parse(current.outputText)
             if (parsed != null) return parsed
             attempts++
-            if (attempts > maxFinalAttempts) return CoachFallbacks.parseError()
+            if (attempts > maxFinalAttempts) {
+                // Graceful degradation: if the model answered in prose instead of
+                // schema JSON (typical for local models), show the prose — a real
+                // answer beats the canned apology every time.
+                val plain = CoachResponseParser.stripThinking(current.outputText)
+                if (plain.isNotBlank() && !plain.startsWith("{")) {
+                    return CoachResponse(
+                        responseType = CoachResponseType.INSIGHT,
+                        title = "Coach",
+                        summary = plain.take(2000),
+                        confidence = CoachConfidence.MEDIUM,
+                    )
+                }
+                return CoachFallbacks.parseError()
+            }
             val repair = message("user", "Your previous output did not match the required coach_response JSON schema. Return only valid JSON for that schema now.")
             current = send(listOf(repair), emptyList(), coachResponseTextFormat, current.id)
         }
@@ -240,8 +256,15 @@ object CoachResponseSchema {
  */
 object CoachResponseParser {
     private val json = Json { ignoreUnknownKeys = true }
+    /** Local reasoning models (Qwen3 etc.) prepend <think>…</think> blocks that
+     *  contain prose (and often braces) — strip them before any JSON hunting. */
+    fun stripThinking(text: String): String =
+        text.replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("^[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")  // unclosed prefix
+            .trim()
+
     fun parse(text: String): CoachResponse? {
-        val trimmed = text.trim()
+        val trimmed = stripThinking(text)
         // Try direct parse; if fails, try extracting JSON from markdown/code fences
         return try {
             json.decodeFromString<CoachResponse>(trimmed)
