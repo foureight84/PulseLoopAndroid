@@ -20,13 +20,13 @@ class OpenAIResponsesClient(
         .build()
 
     suspend fun send(requestBody: ByteArray): OpenAIResponse {
-        if (apiKey.isBlank()) throw ResponsesError.MissingAPIKey
-
-        val request = okhttp3.Request.Builder()
+        // No key is legal for local/LAN servers (llama.cpp ignores auth);
+        // only attach the header when a key exists.
+        val builder = okhttp3.Request.Builder()
             .url(endpoint)
             .post(okhttp3.RequestBody.create(jsonMediaType, requestBody))
-            .header("Authorization", "Bearer $apiKey")
-            .build()
+        if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
+        val request = builder.build()
 
         val response = try {
             client.newCall(request).execute()
@@ -79,10 +79,44 @@ data class OpenAIResponse(
         get() = output.filterIsInstance<WebSearchCall>().map { it.id }
 
     companion object {
+        /**
+         * Manual JSON walk keyed on each output item's "type". The old
+         * decodeFromString<OpenAIResponse>() could never work at runtime:
+         * ResponseOutputItem is an unregistered interface, so kotlinx threw a
+         * SerializationException on every response — the coach has been
+         * falling back to scripted answers on ALL backends because of it.
+         * Unknown item types (e.g. Qwen's "reasoning") are skipped.
+         */
         fun parse(json: String): OpenAIResponse {
             return try {
-                kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-                    .decodeFromString<OpenAIResponse>(json)
+                val root = kotlinx.serialization.json.Json.parseToJsonElement(json).jsonObject
+                val id = root["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                val items = mutableListOf<ResponseOutputItem>()
+                for (el in root["output"]?.jsonArray ?: JsonArray(emptyList())) {
+                    val obj = el.jsonObject
+                    when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+                        "message" -> items.add(MessageOutput(
+                            role = obj["role"]?.jsonPrimitive?.contentOrNull ?: "assistant",
+                            content = (obj["content"]?.jsonArray ?: JsonArray(emptyList())).mapNotNull { c ->
+                                val co = c.jsonObject
+                                if (co["type"]?.jsonPrimitive?.contentOrNull == "output_text")
+                                    TextContent(co["text"]?.jsonPrimitive?.contentOrNull ?: "")
+                                else null
+                            },
+                        ))
+                        "function_call" -> items.add(FunctionCallOutput(
+                            id = obj["id"]?.jsonPrimitive?.contentOrNull ?: "",
+                            callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: "",
+                            name = obj["name"]?.jsonPrimitive?.contentOrNull ?: "",
+                            arguments = obj["arguments"]?.jsonPrimitive?.contentOrNull ?: "",
+                            status = obj["status"]?.jsonPrimitive?.contentOrNull ?: "",
+                        ))
+                        "web_search_call" -> items.add(WebSearchCall(
+                            id = obj["id"]?.jsonPrimitive?.contentOrNull ?: ""))
+                        else -> {}  // reasoning blocks, future types: skip
+                    }
+                }
+                OpenAIResponse(id = id, output = items)
             } catch (e: Exception) {
                 throw ResponsesError.Decoding(e.message ?: "unknown")
             }
