@@ -27,7 +27,10 @@ import kotlin.math.sqrt
  * All rows are written with sourceRaw = SOURCE_DERIVED so they are
  * distinguishable from ring-reported values in the DB and diagnostics.
  */
-class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
+class DerivedMetricsEngine(
+    private val db: PulseLoopDatabase,
+    private val coordinator: RingSyncCoordinator? = null,
+) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
@@ -83,8 +86,16 @@ class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
             ))
         }
 
-        // ── Morning jobs: derived sleep, then fatigue (needs the sleep row) ──
+        // ── Night SpO2: the protocol has no automatic SpO2 schedule (0x19 is
+        // HR-only), so trigger a spot reading each tick during sleep hours
+        // while connected — ~14 readings/night for the overnight picture. ──
         val hour = java.time.LocalTime.now().hour
+        if (hour in 0..6 && coordinator?.isConnected == true) {
+            try { coordinator.measureSpO2() } catch (e: Exception) {
+                android.util.Log.w("DerivedMetrics", "night SpO2 failed", e)
+            }
+        }
+        // ── Morning jobs: derived sleep, then fatigue (needs the sleep row) ──
         if (hour in 5..15) {
             val lastNightDay = com.pulseloop.util.TimeUtil.startOfTodayLocal()
             deriveSleepIfMissing(lastNightDay)

@@ -50,7 +50,7 @@ fun PulseLoopApp() {
         val gpsRecorder = remember { GpsRouteRecorder(context) }
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
         val persistence = remember { EventPersistenceSubscriber(db) }
-        val derivedMetrics = remember { com.pulseloop.service.DerivedMetricsEngine(db) }
+        val derivedMetrics = remember { com.pulseloop.service.DerivedMetricsEngine(db, coordinator) }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────

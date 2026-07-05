@@ -90,7 +90,7 @@ class JringSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // sent after a manual HR measurement ended — a ring that never got one
         // does no periodic night sampling, and without night samples the
         // firmware has nothing to stage sleep from.
-        writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 30))
+        writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 5))
     }
 
     override fun handle(event: RingDecodedEvent) {
@@ -111,7 +111,7 @@ class JringSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     override fun stopHeartRate() {
         writer?.enqueue(encoder.makeHeartRateStopCommand())
-        writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 30))
+        writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 5))
     }
 
     /** Spot HR using live HR streaming (0x14), same as workout HR. */
