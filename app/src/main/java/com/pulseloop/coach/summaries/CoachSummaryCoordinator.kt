@@ -16,8 +16,11 @@ import kotlinx.coroutines.*
 class CoachSummaryCoordinator(
     private val db: PulseLoopDatabase,
     private val apiKeyStore: ApiKeyStore,
+    /** Optional multi-provider settings, threaded through to the service so
+     *  summaries follow the selected coach provider. */
+    providerSettings: com.pulseloop.coach.config.CoachProviderSettingsStore? = null,
 ) {
-    private val service = CoachSummaryService(db, apiKeyStore)
+    private val service = CoachSummaryService(db, apiKeyStore, providerSettings)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var streamJob: Job? = null
     private var debounceJob: Job? = null

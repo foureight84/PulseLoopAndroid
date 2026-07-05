@@ -1,5 +1,7 @@
 package com.pulseloop.coach.summaries
 
+import com.pulseloop.coach.config.CoachClientResolver
+import com.pulseloop.coach.config.CoachProviderSettingsStore
 import com.pulseloop.coach.tools.CoachFeatureFlags
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.CoachSummaryEntity
@@ -18,6 +20,10 @@ import kotlinx.serialization.json.Json
 class CoachSummaryService(
     private val db: PulseLoopDatabase,
     private val apiKeyStore: ApiKeyStore,
+    /** Multi-provider settings; when present, summaries run through
+     *  `CoachClientResolver` (Gemini/OpenRouter follow the provider picker).
+     *  null keeps the legacy OpenAI-only behavior. */
+    private val providerSettings: CoachProviderSettingsStore? = null,
 ) {
     /** Minimum gap between Today / aggregate-sleep regenerations. */
     private val minIntervalMs = 2 * 3600_000L // 2 hours
@@ -60,14 +66,20 @@ class CoachSummaryService(
         built: CoachSummaryContextBuilder.Built,
         existing: CoachSummaryEntity?,
     ) {
-        val apiKey = apiKeyStore.apiKey
+        // Resolve the active provider (key readiness + client + model). Without a
+        // provider-settings store this falls back to the legacy OpenAI-only path.
+        val resolution = providerSettings?.let { CoachClientResolver.resolve(it, apiKeyStore) }
+        val apiKey = if (resolution != null) resolution.key ?: "" else apiKeyStore.apiKey
+        val model = providerSettings
+            ?.let { CoachClientResolver.activeModel(it.snapshot(), apiKeyStore.model) }
+            ?: apiKeyStore.model.ifEmpty { "gpt-5.4" }
         val flags = CoachFeatureFlags(
             coachEnabled = apiKeyStore.coachEnabled && apiKey.isNotEmpty(),
             webSearchEnabled = apiKeyStore.webSearchEnabled,
-            model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
+            model = model,
         )
         val content = CoachSummaryGenerator.generate(
-            kind, built.contextJson, built.fallback, flags, apiKey,
+            kind, built.contextJson, built.fallback, flags, apiKey, resolution?.client,
         )
         val now = System.currentTimeMillis()
         if (existing != null) {

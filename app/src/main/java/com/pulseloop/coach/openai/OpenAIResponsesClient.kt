@@ -1,8 +1,20 @@
 package com.pulseloop.coach.openai
 
+import com.pulseloop.coach.attachments.CoachImagePayload
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import okhttp3.MediaType.Companion.toMediaType
+
+/**
+ * Ported from the [ResponsesClient] protocol in ResponsesTypes.swift.
+ * The provider-neutral coach model client: takes an OpenAI Responses-API JSON
+ * request body and returns the parsed response. `OpenAIResponsesClient` speaks
+ * the API natively; `GeminiClient` / `OpenRouterClient` adapt it to their
+ * providers so no other component needs to know which provider is active.
+ */
+interface ResponsesClient {
+    suspend fun send(requestBody: ByteArray): OpenAIResponse
+}
 
 /**
  * Ported from [OpenAIResponsesClient] in OpenAIResponsesClient.swift.
@@ -11,7 +23,7 @@ import okhttp3.MediaType.Companion.toMediaType
 class OpenAIResponsesClient(
     private val apiKey: String,
     private val endpoint: String = "https://api.openai.com/v1/responses",
-) {
+) : ResponsesClient {
     private val jsonMediaType = "application/json".toMediaType()
 
     private val client = okhttp3.OkHttpClient.Builder()
@@ -19,7 +31,7 @@ class OpenAIResponsesClient(
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    suspend fun send(requestBody: ByteArray): OpenAIResponse {
+    override suspend fun send(requestBody: ByteArray): OpenAIResponse {
         if (apiKey.isBlank()) throw ResponsesError.MissingAPIKey
 
         val request = okhttp3.Request.Builder()
@@ -46,14 +58,59 @@ class OpenAIResponsesClient(
 
 /**
  * Ported from [ResponsesError] in ResponsesErrors.swift.
+ * Provider-agnostic: thrown by every [ResponsesClient] (OpenAI, Gemini,
+ * OpenRouter). The case payloads are exposed as properties so
+ * `CoachTurnError` can map them to a displayable code + reason.
  */
 sealed class ResponsesError(message: String) : Exception(message) {
-    data object MissingAPIKey : ResponsesError("No OpenAI API key configured.")
-    class Transport(cause: Throwable) : ResponsesError("Network error: ${cause.message}")
-    class Http(status: Int, body: String) :
-        ResponsesError("OpenAI returned HTTP $status: ${body.take(200)}")
-    class Decoding(msg: String) : ResponsesError("Could not parse OpenAI response: $msg")
-    data object EmptyOutput : ResponsesError("OpenAI returned no output.")
+    data object MissingAPIKey : ResponsesError("No API key configured for the selected provider.")
+    class Transport(val underlying: Throwable) :
+        ResponsesError("Network error: ${underlying.message}")
+    class Http(val status: Int, val body: String) :
+        ResponsesError("The provider returned HTTP $status: ${body.take(200)}")
+    class Decoding(val msg: String) : ResponsesError("Could not parse the model response: $msg")
+    data object EmptyOutput : ResponsesError("The model returned no output.")
+}
+
+/**
+ * Ported from [OpenAIRequestBuilder] in ResponsesTypes.swift (message subset).
+ * Builds Responses-API input items. The text path keeps `content` a plain
+ * string so the adapter clients' string branches are untouched; images are
+ * purely additive — only when `images` is non-empty does `content` become the
+ * Responses-API content-part array (`input_text` + `input_image`).
+ */
+object OpenAIRequestBuilder {
+    fun message(
+        role: String,
+        content: String,
+        images: List<CoachImagePayload> = emptyList(),
+    ): JsonObject {
+        if (images.isEmpty()) return JsonObject(mapOf(
+            "role" to JsonPrimitive(role),
+            "content" to JsonPrimitive(content),
+        ))
+        val parts = mutableListOf<JsonObject>(JsonObject(mapOf(
+            "type" to JsonPrimitive("input_text"),
+            "text" to JsonPrimitive(content),
+        )))
+        for (img in images) {
+            parts.add(JsonObject(mapOf(
+                "type" to JsonPrimitive("input_image"),
+                "image_url" to JsonPrimitive(img.dataURL),
+            )))
+        }
+        return JsonObject(mapOf(
+            "role" to JsonPrimitive(role),
+            "content" to JsonArray(parts),
+        ))
+    }
+
+    /** A function-call result item to feed back into the next turn. */
+    fun functionCallOutput(callId: String, output: String): JsonObject = JsonObject(mapOf(
+        "type" to JsonPrimitive("function_call_output"),
+        "call_id" to JsonPrimitive(callId),
+        "output" to JsonPrimitive(output),
+    ))
 }
 
 /**
