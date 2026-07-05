@@ -85,7 +85,7 @@ class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
 
         // ── Morning jobs: derived sleep, then fatigue (needs the sleep row) ──
         val hour = java.time.LocalTime.now().hour
-        if (hour in 5..13) {
+        if (hour in 5..15) {
             val lastNightDay = com.pulseloop.util.TimeUtil.startOfTodayLocal()
             deriveSleepIfMissing(lastNightDay)
             deriveFatigueOncePerDay(lastNightDay, now)
@@ -107,10 +107,15 @@ class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
             dayStart - 14 * 3_600_000L, dayStart - 4 * 3_600_000L,
         ).map { it.value }.medianOrNull() ?: return
 
-        // 10-min buckets: asleep = median comfortably below daytime baseline.
+        // 10-min buckets. Thresholds self-anchor to the night's own low HR:
+        // a daytime-median anchor alone proved unstable (a workout day inflated
+        // it and scored 11h "asleep"). Asleep = below BOTH the daytime-derived
+        // ceiling and nightLow*1.12; deep = within 5% of the night's floor.
         val buckets = hr.groupBy { (it.timestamp - windowStart) / BUCKET_MS }
             .mapValues { (_, rows) -> rows.map { it.value }.medianOrNull() }
-        val asleep = { i: Long -> (buckets[i] ?: Double.MAX_VALUE) <= daytime * SLEEP_HR_FACTOR }
+        val nightLow = buckets.values.filterNotNull().percentileOrNull(0.05) ?: return
+        val asleepThresh = minOf(daytime * SLEEP_HR_FACTOR, nightLow * 1.12)
+        val asleep = { i: Long -> (buckets[i] ?: Double.MAX_VALUE) <= asleepThresh }
 
         // Longest run, tolerating up to 2 consecutive non-sleep buckets (brief wakes).
         var bestStart = -1L; var bestLen = 0L
@@ -151,7 +156,7 @@ class DerivedMetricsEngine(private val db: PulseLoopDatabase) {
         var blockStart = bestStart; var blockStage: String? = null
         fun stageOf(i: Long): String {
             val v = buckets[i] ?: return "LIGHT"
-            return if (v <= daytime * 0.82) "DEEP" else "LIGHT"
+            return if (v <= nightLow * 1.05) "DEEP" else "LIGHT"
         }
         for (i in bestStart..(bestStart + bestLen)) {
             val stg = if (i < bestStart + bestLen) stageOf(i) else null
