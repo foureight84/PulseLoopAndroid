@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -40,13 +42,23 @@ android {
 
     signingConfigs {
         create("release") {
-            // Keystore + passwords are overridable from the environment so CI can supply a
-            // decoded keystore + secrets without committing them. Local builds fall back to
-            // the checked-out keystore and the existing literals.
-            storeFile = file(System.getenv("RELEASE_STORE_FILE") ?: "pulseloop-release.keystore")
-            storePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: "pulseloop"
-            keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: "pulseloop"
-            keyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: "pulseloop"
+            // Signing credentials come from the environment (CI supplies the decoded
+            // keystore + repo secrets) or from the untracked local.properties (local
+            // release builds) — NEVER from committed literals: with self-update shipped,
+            // this key is the app's whole trust chain. A release build without
+            // credentials fails at :app:packageRelease with a keystore password error.
+            val localProps = Properties().apply {
+                val f = rootProject.file("local.properties")
+                if (f.exists()) f.inputStream().use { load(it) }
+            }
+            fun credential(env: String, property: String): String? =
+                System.getenv(env)?.takeIf { it.isNotEmpty() } ?: localProps.getProperty(property)
+
+            storeFile = file(credential("RELEASE_STORE_FILE", "releaseStoreFile") ?: "pulseloop-release.keystore")
+            storePassword = credential("RELEASE_STORE_PASSWORD", "releaseStorePassword")
+            // The alias is the key's name, not a secret.
+            keyAlias = credential("RELEASE_KEY_ALIAS", "releaseKeyAlias") ?: "pulseloop"
+            keyPassword = credential("RELEASE_KEY_PASSWORD", "releaseKeyPassword")
         }
     }
 
