@@ -53,6 +53,9 @@ class RingSyncCoordinator(
     /** Latest live HR bpm, mirrored for UI without a query. */
     var latestHRValue: Int? = null
         private set
+    /** When the last live HR sample arrived — lets the workout detect a stalled stream. */
+    var latestHRAt: Long = 0L
+        private set
     /** Latest live SpO2 %, mirrored for UI without a query. */
     var latestSpO2Value: Int? = null
         private set
@@ -295,6 +298,7 @@ class RingSyncCoordinator(
         when (event) {
             is PulseEvent.HeartRateSample -> {
                 latestHRValue = event.bpm
+                latestHRAt = System.currentTimeMillis()
                 if (hrState == MeasureState.MEASURING) measurementReceivedReading = true
             }
             is PulseEvent.HeartRateComplete -> {

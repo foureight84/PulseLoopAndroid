@@ -17,17 +17,14 @@ class WorkoutSensorPollingService(
     private var sessionId: String? = null
     private var pollingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var nextHRPoll = 0L
     private var nextSpO2Poll = 0L
     private var isPolling = false
 
-    private val hrIntervalMs = 60_000L
-    private val spo2IntervalMs = 300_000L
+    private val spo2IntervalMs = 180_000L
     private val disconnectedRetryMs = 10_000L
 
     fun start(sessionId: String) {
         this.sessionId = sessionId
-        nextHRPoll = System.currentTimeMillis()
         nextSpO2Poll = System.currentTimeMillis()
         launchLoop()
     }
@@ -42,10 +39,11 @@ class WorkoutSensorPollingService(
             while (isActive) {
                 val now = System.currentTimeMillis()
 
-                if (!isPolling && now >= nextHRPoll) {
-                    val didRead = poll("hr") { coordinator.measureHR() }
-                    nextHRPoll = System.currentTimeMillis() + if (didRead) hrIntervalMs else disconnectedRetryMs
-                }
+                // NO spot-HR polling during a workout: HR comes from the continuous
+                // 0x14 stream, and measureHR()'s teardown sends stop-heart-rate,
+                // which was killing that stream every poll cycle — the "workout HR
+                // frozen" symptom. The stream's liveness is watched by
+                // LiveWorkoutManager, which re-kicks it if samples stop.
 
                 if (!isPolling && now >= nextSpO2Poll) {
                     val didRead = poll("spo2") { coordinator.measureSpO2() }

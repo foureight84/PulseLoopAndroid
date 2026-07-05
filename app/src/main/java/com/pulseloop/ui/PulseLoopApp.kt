@@ -277,6 +277,8 @@ fun PulseLoopApp() {
                         heartRate = workoutState.latestHeartRate,
                         spO2 = workoutState.latestSpO2,
                         calories = workoutState.calories,
+                        workoutSteps = workoutState.workoutSteps,
+                        hrvMs = workoutState.hrvMs,
                         isPaused = workoutState.isPaused,
                         hrZone = workoutState.hrZone,
                         onPause = {

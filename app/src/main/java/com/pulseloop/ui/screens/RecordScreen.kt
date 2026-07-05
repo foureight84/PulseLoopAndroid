@@ -27,6 +27,8 @@ fun RecordScreen(
     heartRate: Int? = null,
     spO2: Int? = null,
     calories: Double = 0.0,
+    workoutSteps: Int = 0,
+    hrvMs: Double? = null,
     isPaused: Boolean = false,
     hrZone: HeartRateZones.Zone = HeartRateZones.Zone.REST,
     onPause: () -> Unit = {},
@@ -75,6 +77,8 @@ fun RecordScreen(
             item { StatTile("Pace", pace) }
             item { StatTile("SpO₂", spO2?.let { "$it%" } ?: "--") }
             item { StatTile("Calories", if (calories >= 1) "%.0f kcal".format(calories) else "--") }
+            item { StatTile("Steps", if (workoutSteps > 0) "%,d".format(workoutSteps) else "--") }
+            item { StatTile("HRV est.", hrvMs?.let { "%.0f ms".format(it) } ?: "--") }
         }
 
         Spacer(Modifier.weight(1f))

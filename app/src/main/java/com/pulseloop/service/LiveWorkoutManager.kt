@@ -28,6 +28,8 @@ class LiveWorkoutManager(
         val latestSpO2: Int? = null,
         val hrZone: HeartRateZones.Zone = HeartRateZones.Zone.REST,
         val calories: Double = 0.0,
+        val workoutSteps: Int = 0,
+        val hrvMs: Double? = null,
     )
 
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(WorkoutState())
@@ -83,6 +85,7 @@ class LiveWorkoutManager(
 
         kcalAccum = 0.0
         activeType = type
+        hrBuffer.clear(); liveHrv = null; workoutSteps = 0
         loadProfile()
         coordinator.startWorkoutHeartRate()
         if (useGps) gps.start(session.id, type)
@@ -185,7 +188,13 @@ class LiveWorkoutManager(
 
     private fun startTick(session: ActivitySessionEntity) {
         tickJob?.cancel()
+        // Steps baseline: workout steps = today's total minus what it was at start.
+        scope.launch {
+            val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+            stepsBaseline = db.activityDailyDao().byDay(today)?.steps ?: 0
+        }
         tickJob = scope.launch {
+            var lastHrKick = 0L
             while (isActive) {
                 val now = System.currentTimeMillis()
                 val elapsed = ((now - session.startedAt) / 1000).toInt()
@@ -194,12 +203,34 @@ class LiveWorkoutManager(
                 val zone = hr?.let { HeartRateZones.zoneFor(it) } ?: HeartRateZones.Zone.REST
                 hr?.let { kcalAccum += kcalPerMinute(it) / 60.0 }  // 1s tick
 
+                // Live HRV proxy over the last ~5 min of stream samples.
+                hr?.let { hrBuffer.add(it); if (hrBuffer.size > 300) hrBuffer.removeAt(0) }
+                if (elapsed % 30 == 0) liveHrv = sdnnProxy(hrBuffer.toList())
+
+                // Stream watchdog: the ring stops streaming when a start command is
+                // lost (unACK'd write) or after its own hiccups. No sample for 20s
+                // while connected → re-send the start command, at most every 20s.
+                if (coordinator.isConnected &&
+                    now - coordinator.latestHRAt > 20_000 && now - lastHrKick > 20_000) {
+                    lastHrKick = now
+                    coordinator.startWorkoutHeartRate()
+                }
+
+                // Workout steps from today's row (cheap read, every 5s).
+                if (elapsed % 5 == 0) {
+                    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+                    val steps = db.activityDailyDao().byDay(today)?.steps ?: 0
+                    workoutSteps = (steps - stepsBaseline).coerceAtLeast(0)
+                }
+
                 _state.value = _state.value.copy(
                     elapsedSeconds = elapsed,
                     distanceMeters = distance,
                     latestHeartRate = hr,
                     hrZone = zone,
                     calories = kcalAccum,
+                    workoutSteps = workoutSteps,
+                    hrvMs = liveHrv,
                 )
 
                 if (elapsed % 5 == 0) refreshNotification()
@@ -207,6 +238,11 @@ class LiveWorkoutManager(
             }
         }
     }
+
+    private var stepsBaseline = 0
+    private var workoutSteps = 0
+    private var liveHrv: Double? = null
+    private val hrBuffer = mutableListOf<Int>()
 
     // MARK: - Notification
 
