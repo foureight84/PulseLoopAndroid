@@ -94,8 +94,11 @@ class SleepStreamController(
     }
 
     private fun inNightWindow(): Boolean {
+        // 01:00–11:00. The user plugs in when heading to sleep (~1am) and unplugs
+        // on waking, so the charging state is the real start/stop trigger; this
+        // window only prevents daytime-charging from streaming.
         val hour = java.time.LocalTime.now().hour
-        return hour >= 23 || hour <= 7
+        return hour in 1..10
     }
 
     /** Sticky-intent read of ACTION_BATTERY_CHANGED — registering with a null receiver

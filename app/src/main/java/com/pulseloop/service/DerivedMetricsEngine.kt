@@ -99,7 +99,7 @@ class DerivedMetricsEngine(
         }
         // ── Screening-only apnea/ODI check: narrower morning window since it
         // wants a completed night (22:00 prev → 10:00 today) already in Room. ──
-        if (hour in 7..11) {
+        if (hour in 10..14) {
             runApneaScreenOncePerDay(com.pulseloop.util.TimeUtil.startOfTodayLocal(), now)
         }
     }
@@ -202,8 +202,8 @@ class DerivedMetricsEngine(
         val memoryKey = "sleep_apnea_screen_$dateKey"
         if (db.coachMemoryDao().byKey(memoryKey) != null) return
 
-        val windowStart = dayStart - 2 * 3_600_000L   // 22:00 the previous day
-        val windowEnd = dayStart + 10 * 3_600_000L    // 10:00 today
+        val windowStart = dayStart                    // 00:00 today (1am sleep start)
+        val windowEnd = dayStart + 11 * 3_600_000L    // 11:00 today
         val spo2 = db.measurementDao().range(MeasurementKind.SPO2.name, windowStart, windowEnd)
             .map { it.timestamp to it.value.toInt() }
         val hr = db.measurementDao().range(MeasurementKind.HEART_RATE.name, windowStart, windowEnd)
