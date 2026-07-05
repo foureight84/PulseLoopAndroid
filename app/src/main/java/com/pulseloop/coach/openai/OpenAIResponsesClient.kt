@@ -31,7 +31,19 @@ class OpenAIResponsesClient(
         val response = try {
             client.newCall(request).execute()
         } catch (e: Exception) {
-            throw ResponsesError.Transport(e)
+            // ponytail: LAN endpoints fall back to the adb-reverse USB tunnel
+            // (127.0.0.1:<port>) when the desktop firewall drops inbound Wi-Fi
+            // TCP. Remove once the LAN path is confirmed open.
+            val lan = Regex("^http://192\\.168\\.[0-9.]+:(\\d+)(/.*)$").find(endpoint)
+            if (lan != null) {
+                val fallback = "http://127.0.0.1:${lan.groupValues[1]}${lan.groupValues[2]}"
+                try {
+                    val req2 = builder.url(fallback).build()
+                    client.newCall(req2).execute()
+                } catch (e2: Exception) {
+                    throw ResponsesError.Transport(e)
+                }
+            } else throw ResponsesError.Transport(e)
         }
 
         if (!response.isSuccessful) {
