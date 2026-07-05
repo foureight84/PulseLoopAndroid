@@ -377,10 +377,13 @@ class VitalDetailViewModel(
 
     data class DetailState(
         val period: Period = Period.DAY,
-        val anchor: Long = TimeUtil.startOfTodayLocal(),
+        // For DAY the anchor is the *end* of a rolling 24-hour window (defaults to now);
+        // for WEEK/MONTH it is the start of the period.
+        val anchor: Long = System.currentTimeMillis(),
         val points: List<Double> = emptyList(),
         val secondary: List<Double> = emptyList(),
         val labels: List<String> = emptyList(),
+        val timestamps: List<Long> = emptyList(),
         val latest: Double? = null,
         val min: Double? = null,
         val avg: Double? = null,
@@ -415,7 +418,7 @@ class VitalDetailViewModel(
 
     fun setPeriod(p: Period) {
         val anchor = when (p) {
-            Period.DAY   -> TimeUtil.startOfTodayLocal()
+            Period.DAY   -> System.currentTimeMillis()   // rolling last 24h, ending now
             Period.WEEK  -> TimeUtil.startOfDayLocal(System.currentTimeMillis())
             Period.MONTH -> TimeUtil.startOfDayLocal(System.currentTimeMillis())
         }
@@ -447,10 +450,9 @@ class VitalDetailViewModel(
                 i.plusMonths(1).toInstant().toEpochMilli()
             }
         }
-        // Disallow going past today
         val todayStart = TimeUtil.startOfTodayLocal()
         val maxAnchor = when (st.period) {
-            Period.DAY -> todayStart
+            Period.DAY -> System.currentTimeMillis()  // rolling: end can reach now
             Period.WEEK -> todayStart
             Period.MONTH -> {
                 val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
@@ -462,12 +464,13 @@ class VitalDetailViewModel(
         viewModelScope.launch { refresh() }
     }
 
-    /** Whether forward navigation is allowed (disabled at present period). */
+    /** Whether forward navigation is allowed (disabled at the present/latest window). */
     fun canGoForward(): Boolean {
         val st = _state.value
         val todayStart = TimeUtil.startOfTodayLocal()
         return when (st.period) {
-            Period.DAY   -> st.anchor < todayStart
+            // Enabled only if a full 24h step still fits before now (i.e. we're paged back).
+            Period.DAY   -> st.anchor + 86_400_000L <= System.currentTimeMillis()
             Period.WEEK  -> st.anchor < todayStart
             Period.MONTH -> {
                 val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
@@ -478,12 +481,18 @@ class VitalDetailViewModel(
 
     private suspend fun refresh() {
         val st = _state.value
-        val anchor = st.anchor
         val period = st.period
-        val tzOffsetMs = ZoneId.systemDefault().rules.getOffset(Instant.now()).totalSeconds * 1000L
+        val now = System.currentTimeMillis()
+        // DAY is a rolling 24h window ending at the anchor; when we're at the latest
+        // (can't page further forward) keep the end pinned to "now" so it truly rolls.
+        val anchor = if (period == Period.DAY && st.anchor + 86_400_000L > now) now else st.anchor
 
+        val windowStart = when (period) {
+            Period.DAY   -> anchor - 86_400_000L   // rolling last 24h
+            else         -> anchor                 // WEEK/MONTH: anchor = window start
+        }
         val windowEnd = when (period) {
-            Period.DAY   -> anchor + 86_400_000L
+            Period.DAY   -> anchor
             Period.WEEK  -> anchor + 7 * 86_400_000L
             Period.MONTH -> {
                 val i = Instant.ofEpochMilli(anchor).atZone(ZoneId.systemDefault())
@@ -491,12 +500,13 @@ class VitalDetailViewModel(
             }
         }
 
-        // Previous window for trend
-        val prevAnchor = when (period) {
-            Period.DAY   -> anchor - 86_400_000L
-            Period.WEEK  -> anchor - 7 * 86_400_000L
+        // Previous equal-length window, immediately before this one, for the trend read.
+        val prevEnd = windowStart
+        val prevStart = when (period) {
+            Period.DAY   -> windowStart - 86_400_000L
+            Period.WEEK  -> windowStart - 7 * 86_400_000L
             Period.MONTH -> {
-                val i = Instant.ofEpochMilli(anchor).atZone(ZoneId.systemDefault())
+                val i = Instant.ofEpochMilli(windowStart).atZone(ZoneId.systemDefault())
                 i.minusMonths(1).toInstant().toEpochMilli()
             }
         }
@@ -504,34 +514,27 @@ class VitalDetailViewModel(
         val dao = db.measurementDao()
 
         if (metric == "bp") {
-            val sysBuckets = if (period == Period.DAY)
-                dao.hourlyAggregates(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name, anchor, windowEnd)
-            else
-                dao.dailyAggregates(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name, anchor, windowEnd, tzOffsetMs)
-            val diaBuckets = if (period == Period.DAY)
-                dao.hourlyAggregates(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name, anchor, windowEnd)
-            else
-                dao.dailyAggregates(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name, anchor, windowEnd, tzOffsetMs)
+            // Every reading, at its real timestamp — no averaging.
+            val sysSamples = dao.range(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name, windowStart, windowEnd)
+            val diaSamples = dao.range(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name, windowStart, windowEnd)
 
-            val points = sysBuckets.map { it.avgValue }
-            val secondary = diaBuckets.map { it.avgValue }
+            val points = sysSamples.map { it.value }
+            val secondary = diaSamples.map { it.value }
+            val times = sysSamples.map { it.timestamp }
             val allValues = points + secondary
-            val labels = buildLabels(sysBuckets.map { it.bucket }, period)
+            val labels = buildLabels(times, period)
 
-            // Trend from previous window
-            val prevSys = if (period == Period.DAY)
-                dao.hourlyAggregates(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name, prevAnchor, anchor)
-            else
-                dao.dailyAggregates(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name, prevAnchor, anchor, tzOffsetMs)
-            val prevAvg = if (prevSys.isNotEmpty()) prevSys.map { it.avgValue }.average() else null
+            val prevSys = dao.range(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name, prevStart, prevEnd)
+            val prevAvg = if (prevSys.isNotEmpty()) prevSys.map { it.value }.average() else null
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val trend = computeTrend(thisAvg, prevAvg, if (allValues.isNotEmpty()) allValues.max() - allValues.min() else 1.0)
 
             val latestSys = dao.latest(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name)
-            val latestDia = dao.latest(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name)
 
             _state.update { it.copy(
+                anchor = anchor,
                 points = points, secondary = secondary, labels = labels,
+                timestamps = times,
                 latest = latestSys,
                 min = allValues.minOrNull(), avg = thisAvg, max = allValues.maxOrNull(),
                 trend = trend, loading = false,
@@ -539,55 +542,37 @@ class VitalDetailViewModel(
         } else {
             val kind = primaryKind ?: return
             val kindName = kind.name
-            val buckets = if (period == Period.DAY)
-                dao.hourlyAggregates(kindName, anchor, windowEnd)
-            else
-                dao.dailyAggregates(kindName, anchor, windowEnd, tzOffsetMs)
-
-            val rawPoints = buckets.map { it.avgValue }
             val glucoseOffset = apiKeyStore?.glucoseOffsetMgdl ?: 0.0
 
-            val points = when (kind) {
-                MeasurementKind.BLOOD_SUGAR -> rawPoints.map { it + glucoseOffset }
-                MeasurementKind.TEMPERATURE -> rawPoints.map { UnitConverter.temperature(it, unitSystem) }
-                else -> rawPoints
+            fun convert(v: Double): Double = when (kind) {
+                MeasurementKind.BLOOD_SUGAR -> v + glucoseOffset
+                MeasurementKind.TEMPERATURE -> UnitConverter.temperature(v, unitSystem)
+                else -> v
             }
 
-            val labels = buildLabels(buckets.map { it.bucket }, period)
+            // Every reading, at its real timestamp — no averaging.
+            val samples = dao.range(kindName, windowStart, windowEnd)
+            val times = samples.map { it.timestamp }
+            val points = samples.map { convert(it.value) }
+            val labels = buildLabels(times, period)
 
-            // Trend from previous window
-            val prevBuckets = if (period == Period.DAY)
-                dao.hourlyAggregates(kindName, prevAnchor, anchor)
-            else
-                dao.dailyAggregates(kindName, prevAnchor, anchor, tzOffsetMs)
-            val prevAvg = if (prevBuckets.isNotEmpty()) {
-                val raw = prevBuckets.map { it.avgValue }.average()
-                when (kind) {
-                    MeasurementKind.BLOOD_SUGAR -> raw + glucoseOffset
-                    MeasurementKind.TEMPERATURE -> UnitConverter.temperature(raw, unitSystem)
-                    else -> raw
-                }
-            } else null
+            val prevSamples = dao.range(kindName, prevStart, prevEnd)
+            val prevAvg = if (prevSamples.isNotEmpty()) convert(prevSamples.map { it.value }.average()) else null
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val range = if (points.isNotEmpty()) points.max() - points.min() else 1.0
             val trend = computeTrend(thisAvg, prevAvg, range)
 
-            val rawLatest = dao.latest(kindName)
-            val latest = when (kind) {
-                MeasurementKind.BLOOD_SUGAR -> rawLatest?.plus(glucoseOffset)
-                MeasurementKind.TEMPERATURE -> rawLatest?.let { UnitConverter.temperature(it, unitSystem) }
-                else -> rawLatest
-            }
+            val latest = dao.latest(kindName)?.let(::convert)
 
-            // Resting HR from the window's raw samples (not the hourly/daily averages,
-            // which would wash out the low at-rest readings).
-            val resting = if (kind == MeasurementKind.HEART_RATE) {
-                val raw = dao.range(kindName, anchor, windowEnd).map { it.value }
-                HeartRateZones.restingHeartRate(raw)
-            } else null
+            // Resting HR from the window's raw samples (low-percentile estimate).
+            val resting = if (kind == MeasurementKind.HEART_RATE)
+                HeartRateZones.restingHeartRate(samples.map { it.value })
+            else null
 
             _state.update { it.copy(
+                anchor = anchor,
                 points = points, secondary = emptyList(), labels = labels,
+                timestamps = times,
                 latest = latest,
                 min = points.minOrNull(), avg = thisAvg, max = points.maxOrNull(),
                 resting = resting,
@@ -600,23 +585,14 @@ class VitalDetailViewModel(
         if (buckets.isEmpty()) return emptyList()
         val zone = ZoneId.systemDefault()
         return when (period) {
-            Period.DAY -> {
-                // Show hours: 00, 06, 12, 18, 23
-                buckets.map { bucket ->
-                    val hour = Instant.ofEpochMilli(bucket).atZone(zone).hour
-                    "%02d".format(hour)
-                }
+            Period.DAY -> buckets.map { bucket ->
+                "%02d".format(Instant.ofEpochMilli(bucket).atZone(zone).hour)
             }
-            Period.WEEK -> {
-                buckets.map { bucket ->
-                    val day = Instant.ofEpochMilli(bucket).atZone(zone).dayOfWeek
-                    day.name.take(3)
-                }
+            Period.WEEK -> buckets.map { bucket ->
+                Instant.ofEpochMilli(bucket).atZone(zone).dayOfWeek.name.take(3)
             }
-            Period.MONTH -> {
-                buckets.map { bucket ->
-                    Instant.ofEpochMilli(bucket).atZone(zone).dayOfMonth.toString()
-                }
+            Period.MONTH -> buckets.map { bucket ->
+                Instant.ofEpochMilli(bucket).atZone(zone).dayOfMonth.toString()
             }
         }
     }

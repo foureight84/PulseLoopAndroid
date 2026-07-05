@@ -1,13 +1,17 @@
 package com.pulseloop.ui
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -161,32 +165,63 @@ fun PulseLoopApp() {
                 as? com.pulseloop.update.UpdateCheckResult.UpdateAvailable)?.info
         }
 
+        val isLandscape =
+            LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
         Scaffold(
             bottomBar = {
-                NavigationBar {
-                    val navBackStackEntry by navController.currentBackStackEntryAsState()
-                    val currentDestination = navBackStackEntry?.destination
-                    tabs.forEach { tab ->
-                        val selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true
-                        NavigationBarItem(
-                            icon = {
-                                Icon(
-                                    if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                    contentDescription = tab.label,
-                                )
-                            },
-                            label = { Text(tab.label) },
-                            selected = selected,
-                            onClick = {
-                                if (selected) return@NavigationBarItem
-                                // Pop everything above the start destination but keep it.
-                                // launchSingleTop jumps back to the existing tab instance.
-                                navController.navigate(tab.route) {
-                                    popUpTo(navController.graph.startDestinationId)
-                                    launchSingleTop = true
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentDestination = navBackStackEntry?.destination
+                fun isSelected(tab: Tab) =
+                    currentDestination?.hierarchy?.any { it.route == tab.route } == true
+                val onTab: (Tab) -> Unit = { tab ->
+                    // Pop everything above the start destination but keep it;
+                    // launchSingleTop jumps back to the existing tab instance.
+                    if (!isSelected(tab)) navController.navigate(tab.route) {
+                        popUpTo(navController.graph.startDestinationId)
+                        launchSingleTop = true
+                    }
+                }
+                if (isLandscape) {
+                    // Landscape: a compact icon-only bar at ~half the standard height,
+                    // so the short viewport keeps more room for content.
+                    Surface(color = NavigationBarDefaults.containerColor) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .windowInsetsPadding(NavigationBarDefaults.windowInsets)
+                                .height(48.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            tabs.forEach { tab ->
+                                val selected = isSelected(tab)
+                                IconButton(onClick = { onTab(tab) }) {
+                                    Icon(
+                                        if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                        contentDescription = tab.label,
+                                        tint = if (selected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
-                            },
-                        )
+                            }
+                        }
+                    }
+                } else {
+                    NavigationBar {
+                        tabs.forEach { tab ->
+                            val selected = isSelected(tab)
+                            NavigationBarItem(
+                                icon = {
+                                    Icon(
+                                        if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                        contentDescription = tab.label,
+                                    )
+                                },
+                                label = { Text(tab.label) },
+                                selected = selected,
+                                onClick = { onTab(tab) },
+                            )
+                        }
                     }
                 }
             },
