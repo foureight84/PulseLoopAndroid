@@ -93,18 +93,34 @@ class ColmiDecoderTest {
 
     @Test
     fun `live activity notification`() {
-        // steps=500 (0xF4 0x01 0x00), cal=1234 (0xD2 0x04 0x00), dist=300 (0x2C 0x01 0x00)
+        // Fields are BIG-endian u24 (verified against on-ring frames; the iOS decoder still
+        // reads little-endian): steps=500 (0x00 0x01 0xF4), calories raw=123000 → 123 kcal
+        // (0x01 0xE0 0x78), distance=300 m (0x00 0x01 0x2C).
         val frame = ColmiPacket.frame(byteArrayOf(
             0x73, 0x12,
-            0xF4.toByte(), 0x01, 0x00,
-            0xD2.toByte(), 0x04, 0x00,
-            0x2C.toByte(), 0x01, 0x00,
+            0x00, 0x01, 0xF4.toByte(),
+            0x01, 0xE0.toByte(), 0x78,
+            0x00, 0x01, 0x2C,
         ))
         val events = ColmiDecoder.decodeNormal(frame)
         val activity = events.first() as RingDecodedEvent.ActivityUpdate
         assertEquals(500, activity.steps)
         assertEquals(300, activity.distanceMeters)
         assertEquals(123, activity.calories)
+    }
+
+    @Test
+    fun `live activity with implausible step count decodes as ack`() {
+        // A little-endian (or corrupt) frame inflates steps past the plausibility guard;
+        // the decoder must not let one bad packet poison the day's total.
+        val frame = ColmiPacket.frame(byteArrayOf(
+            0x73, 0x12,
+            0xF4.toByte(), 0x01, 0x00,   // BE read = 15,991,040 steps
+            0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00,
+        ))
+        val events = ColmiDecoder.decodeNormal(frame)
+        assertTrue(events.first() is RingDecodedEvent.CommandAck)
     }
 
     // MARK: Big-data
@@ -121,8 +137,8 @@ class ColmiDecoderTest {
     @Test
     fun `temperature big data`() {
         var payload = byteArrayOf(0x00, 0x1E.toByte())
-        payload += byteArrayOf(150.toByte()) // t00 = 150 → 35.0°C
-        payload += ByteArray(46) // pad
+        payload += byteArrayOf(150.toByte(), 0) // hour 0: t00 = 150 → 35.0°C, t30 empty
+        payload += ByteArray(46) // pad to a full 24h of pairs so length ≥ 50
         val frame = bigData(ColmiCommandID.BIG_DATA_TEMPERATURE, payload)
         val events = ColmiDecoder.decodeBigData(frame, zone = zone)
         val temps = events.filterIsInstance<RingDecodedEvent.TemperatureSample>()

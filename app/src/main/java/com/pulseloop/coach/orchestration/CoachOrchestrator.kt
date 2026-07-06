@@ -328,16 +328,22 @@ object CoachResponseSchema {
  */
 object CoachResponseParser {
     private val json = Json { ignoreUnknownKeys = true }
+    private val requiredKeys = listOf("response_type", "title", "summary", "confidence")
+
     fun parse(text: String): CoachResponse? {
         val trimmed = text.trim()
         // Try direct parse; if fails, try extracting JSON from markdown/code fences
-        return try {
-            json.decodeFromString<CoachResponse>(trimmed)
-        } catch (_: Exception) {
-            val extracted = extractJson(trimmed) ?: return null
-            try { json.decodeFromString<CoachResponse>(extracted) } catch (_: Exception) { null }
-        }
+        return decode(trimmed) ?: extractJson(trimmed)?.let { decode(it) }
     }
+
+    private fun decode(text: String): CoachResponse? = try {
+        val obj = json.parseToJsonElement(text) as? JsonObject
+        // Every field has a default, so decoding alone accepts any object; enforce the
+        // schema's required keys here so a bad reply reaches the repair loop instead of
+        // rendering as an empty response.
+        if (obj == null || !requiredKeys.all { it in obj }) null
+        else json.decodeFromJsonElement<CoachResponse>(obj)
+    } catch (_: Exception) { null }
 
     private fun extractJson(text: String): String? {
         // Try code-fenced JSON
