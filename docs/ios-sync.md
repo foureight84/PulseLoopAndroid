@@ -37,7 +37,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 |---|--------|--------|-------|---------|--------|----------------|
 | ☑ | [#17](https://github.com/foureight84/PulseLoop/pull/17) `26a6075` | 06-24 | Colmi HR enable + activity sample idempotency | **PORT** | M | `1a4f007` |
 | ☑ | [#15](https://github.com/foureight84/PulseLoop/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
-| ☑ | [#11](https://github.com/foureight84/PulseLoop/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | (uncommitted, 2026-07-06) |
+| ☑ | [#11](https://github.com/foureight84/PulseLoop/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | `4aad39a` |
 | ☐ | [#43](https://github.com/foureight84/PulseLoop/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
 | ☐ | [#41](https://github.com/foureight84/PulseLoop/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | |
 | ☑ | [#35](https://github.com/foureight84/PulseLoop/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
@@ -46,7 +46,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#22](https://github.com/foureight84/PulseLoop/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | `049058d`+`4d81a07` |
 | ☑ | [#31](https://github.com/foureight84/PulseLoop/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
 | ☐ | [#24](https://github.com/foureight84/PulseLoop/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
-| ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | (uncommitted, 2026-07-06) |
+| ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | `4aad39a` |
 
 ### 2026-07-06 design-parity sweep (screen audit → port)
 
