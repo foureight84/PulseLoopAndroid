@@ -138,11 +138,21 @@ fun PairingScreen(
         onDispose { bleClient.stopScanning() }
     }
 
+    // Keep the scan card on-screen. Embedded in the onboarding wizard, the step
+    // header pushes the ScanningCard below the fold of this scrollable column —
+    // the scan then LOOKS empty while the discovered-ring rows sit unreachable
+    // off-screen. Scroll to the bottom when a scan starts and again whenever a
+    // new ring is sighted so the tappable rows are always visible.
+    val contentScroll = rememberScrollState()
+    LaunchedEffect(isLooking, matchingRings.size) {
+        if (isLooking && !connected) contentScroll.animateScrollTo(contentScroll.maxValue)
+    }
+
     Column(Modifier.fillMaxSize().background(PulseColors.background)) {
         Column(
             Modifier
                 .weight(1f)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(contentScroll)
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
