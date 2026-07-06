@@ -132,6 +132,11 @@ dependencies {
     // Phase 5: Coach — OkHttp for OpenAI API
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // Frosted-glass top/bottom bars (iOS .ultraThinMaterial parity): real backdrop blur
+    // via RenderEffect on Android 12+, translucent scrim fallback on older devices.
+    implementation("dev.chrisbanes.haze:haze:1.6.10")
+    implementation("dev.chrisbanes.haze:haze-materials:1.6.10")
+
     // Phase 6: Location for GPS route recording
     implementation("com.google.android.gms:play-services-location:21.3.0")
 

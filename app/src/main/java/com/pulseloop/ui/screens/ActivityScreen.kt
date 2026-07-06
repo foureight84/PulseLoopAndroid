@@ -53,6 +53,9 @@ fun ActivityScreen(
     navController: androidx.navigation.NavController? = null,
     viewModel: ActivityViewModel? = null,
     liveWorkout: com.pulseloop.service.LiveWorkoutManager? = null,
+    // Heights of the glass top/bottom bars this screen scrolls under (0 when standalone).
+    topBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
+    bottomBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
     val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(ActivityViewModel.ActivityState()) })
     val context = LocalContext.current
@@ -75,7 +78,10 @@ fun ActivityScreen(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp, end = 16.dp,
+            top = 16.dp + topBarPadding, bottom = 16.dp + bottomBarPadding,
+        ),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item { DailyActivitySummaryCard(state, units) }

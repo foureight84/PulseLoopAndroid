@@ -147,6 +147,9 @@ fun SettingsScreen(
                         navigate("debug")
                     })
                 }
+                add(SettingsRowItem(Icons.Filled.Shield, PulseColors.success, "Privacy & Data") {
+                    navigate("settings/privacy")
+                })
                 add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, "About PulseLoop") {
                     navigate("settings/about")
                 })

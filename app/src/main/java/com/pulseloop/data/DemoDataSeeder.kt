@@ -114,6 +114,23 @@ object DemoDataSeeder {
     }
 
     /**
+     * Removes what [seed] wrote while leaving real ring data untouched: demo-tagged
+     * measurement/activity rows and the demo device row. Sleep sessions share their IDs
+     * with ring data (keyed by waking day), so they're cleared wholesale — the ring
+     * rebuilds them on the next connect (EventPersistenceSubscriber's CONNECT path),
+     * and without a ring they were all demo anyway.
+     */
+    suspend fun clear(db: PulseLoopDatabase) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            db.measurementDao().clearDemo()
+            db.activityDailyDao().clearDemo()
+            db.deviceDao().deleteById(DEMO_DEVICE_ID)
+            db.sleepStageBlockDao().clear()
+            db.sleepSessionDao().clear()
+        }
+    }
+
+    /**
      * Every vital's measurement history, byte-for-byte the iOS `seedVitals` formulas. Each series
      * deliberately walks its threshold zones — including over-threshold extremes — so the
      * zone-colored charts show their full color range. HR/SpO₂ get a dense last-24h pass

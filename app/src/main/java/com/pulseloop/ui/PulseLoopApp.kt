@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -33,11 +34,17 @@ import com.pulseloop.ui.components.AppHeader
 import com.pulseloop.ui.screens.*
 import com.pulseloop.ui.theme.PulseLoopTheme
 import com.pulseloop.ui.viewmodels.*
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
+import dev.chrisbanes.haze.materials.HazeMaterials
+import dev.chrisbanes.haze.rememberHazeState
 
 /**
  * Root composable — ported from PulseLoopApp.swift + RootViews.swift.
  * Wires BLE, persistence, coach, and all ViewModels at app startup.
  */
+@OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
 fun PulseLoopApp() {
     PulseLoopTheme {
@@ -211,6 +218,15 @@ fun PulseLoopApp() {
         val isLandscape =
             LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
         val tabRoutes = remember(tabs) { tabs.map { it.route }.toSet() }
+
+        // iOS-style frosted tab bar (.ultraThinMaterial parity): the scrollable tabs
+        // render UNDER the bar (hazeSource on the NavHost) and the bar blurs whatever
+        // is behind it. Real RenderEffect blur on Android 12+, scrim fallback below.
+        val hazeState = rememberHazeState()
+        val glassStyle = HazeMaterials.ultraThin(
+            containerColor = com.pulseloop.ui.theme.PulseColors.background,
+        )
+
         Scaffold(
             containerColor = com.pulseloop.ui.theme.PulseColors.background,
             topBar = {
@@ -219,7 +235,18 @@ fun PulseLoopApp() {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val onTabRoute = navBackStackEntry?.destination?.route in tabRoutes
                 if (onTabRoute && !isLandscape) {
-                    Column(Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
+                    Column(
+                        Modifier
+                            // iOS-style scroll-under: blur strongest at the status bar,
+                            // fading to transparent at the header's bottom edge.
+                            .hazeEffect(state = hazeState, style = glassStyle) {
+                                progressive = dev.chrisbanes.haze.HazeProgressive.verticalGradient(
+                                    startIntensity = 1f,
+                                    endIntensity = 0f,
+                                )
+                            }
+                            .windowInsetsPadding(WindowInsets.statusBars),
+                    ) {
                         val ble by bleClient.state.collectAsState()
                         val storedDevice by db.deviceDao().currentFlow()
                             .collectAsState(initial = null)
@@ -266,7 +293,10 @@ fun PulseLoopApp() {
                 } else if (isLandscape) {
                     // Landscape: a compact icon-only bar at ~half the standard height,
                     // so the short viewport keeps more room for content.
-                    Surface(color = NavigationBarDefaults.containerColor) {
+                    Surface(
+                        color = Color.Transparent,
+                        modifier = Modifier.hazeEffect(state = hazeState, style = glassStyle),
+                    ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -291,7 +321,10 @@ fun PulseLoopApp() {
                 } else {
                     Column {
                         HorizontalDivider(thickness = 1.dp, color = com.pulseloop.ui.theme.PulseColors.borderSubtle)
-                        NavigationBar(containerColor = com.pulseloop.ui.theme.PulseColors.background) {
+                        NavigationBar(
+                            containerColor = Color.Transparent,
+                            modifier = Modifier.hazeEffect(state = hazeState, style = glassStyle),
+                        ) {
                             tabs.forEach { tab ->
                                 val selected = isSelected(tab)
                                 NavigationBarItem(
@@ -318,23 +351,34 @@ fun PulseLoopApp() {
                 }
             },
         ) { padding ->
+            // The four scrollable tabs draw UNDER the glass top/bottom bars (they get the
+            // bar heights as extra content padding instead); every other route keeps the
+            // bars as an opaque floor/ceiling via this per-route padding wrapper.
+            val topPad = padding.calculateTopPadding()
+            val barPad = padding.calculateBottomPadding()
+            fun androidx.navigation.NavGraphBuilder.paddedComposable(
+                route: String,
+                content: @Composable (androidx.navigation.NavBackStackEntry) -> Unit,
+            ) = composable(route) { entry ->
+                Box(Modifier.fillMaxSize().padding(padding)) { content(entry) }
+            }
             NavHost(
                 navController = navController,
                 startDestination = "today",
-                modifier = Modifier.padding(padding),
+                modifier = Modifier.hazeSource(hazeState),
             ) {
-                composable("today") { TodayScreen(navController, todayVM, coordinator, vitalsVM, sleepVM) }
-                composable("vitals") { VitalsScreen(navController = navController, viewModel = vitalsVM, coordinator = coordinator) }
-                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM) }
-                composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM, liveWorkout = liveWorkout) }
-                composable("activity_detail/{id}") { backStackEntry ->
-                    val id = backStackEntry.arguments?.getString("id") ?: return@composable
+                composable("today") { TodayScreen(navController, todayVM, coordinator, vitalsVM, sleepVM, topBarPadding = topPad, bottomBarPadding = barPad) }
+                composable("vitals") { VitalsScreen(navController = navController, viewModel = vitalsVM, coordinator = coordinator, topBarPadding = topPad, bottomBarPadding = barPad) }
+                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM, topBarPadding = topPad, bottomBarPadding = barPad) }
+                composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM, liveWorkout = liveWorkout, topBarPadding = topPad, bottomBarPadding = barPad) }
+                paddedComposable("activity_detail/{id}") { backStackEntry ->
+                    val id = backStackEntry.arguments?.getString("id") ?: return@paddedComposable
                     WorkoutSummaryScreen(sessionId = id, onBack = { navController.popBackStack() })
                 }
-                composable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
-                composable("settings") { SettingsScreen(navController, bleClient, coordinator) }
+                paddedComposable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
+                paddedComposable("settings") { SettingsScreen(navController, bleClient, coordinator) }
                 // Settings detail screens (iOS #49): each hub row pushes one of these.
-                composable("settings/wearable") {
+                paddedComposable("settings/wearable") {
                     WearableSettingsScreen(
                         bleClient = bleClient,
                         coordinator = coordinator,
@@ -342,33 +386,36 @@ fun PulseLoopApp() {
                         onBack = { navController.popBackStack() },
                     )
                 }
-                composable("settings/measurement") {
+                paddedComposable("settings/measurement") {
                     MeasurementSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }
-                composable("settings/coach") {
+                paddedComposable("settings/coach") {
                     CoachSettingsScreen(onBack = { navController.popBackStack() })
                 }
-                composable("settings/checkins") {
+                paddedComposable("settings/checkins") {
                     CheckInsSettingsScreen(onBack = { navController.popBackStack() })
                 }
-                composable("settings/profile") {
+                paddedComposable("settings/profile") {
                     ProfileSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }
-                composable("settings/calibration") {
+                paddedComposable("settings/calibration") {
                     CalibrationSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }
-                composable("settings/goals") {
+                paddedComposable("settings/goals") {
                     GoalsSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }
-                composable("settings/about") {
+                paddedComposable("settings/privacy") {
+                    PrivacyDataSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/about") {
                     AboutSettingsScreen(
                         onOpenDebug = { navController.navigate("debug") },
                         onBack = { navController.popBackStack() },
                     )
                 }
-                composable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
-                composable("vitals/{metric}") { backStackEntry ->
-                    val metric = backStackEntry.arguments?.getString("metric") ?: return@composable
+                paddedComposable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
+                paddedComposable("vitals/{metric}") { backStackEntry ->
+                    val metric = backStackEntry.arguments?.getString("metric") ?: return@paddedComposable
                     VitalDetailScreen(
                         metric = metric,
                         onBack = { navController.popBackStack() },
@@ -376,7 +423,7 @@ fun PulseLoopApp() {
                         apiKeyStore = apiKeyStore,
                     )
                 }
-                composable("onboarding") {
+                paddedComposable("onboarding") {
                     // The flow contains its own pairing step (iOS #48), so completion goes
                     // straight to the main app instead of the standalone pairing route.
                     OnboardingScreen(
@@ -391,7 +438,7 @@ fun PulseLoopApp() {
                         },
                     )
                 }
-                composable("record") {
+                paddedComposable("record") {
                     val workoutState = liveWorkout.state.collectAsState().value
                     RecordScreen(
                         activityName = workoutState.activeSession?.type ?: "Workout",
@@ -418,7 +465,7 @@ fun PulseLoopApp() {
                         },
                     )
                 }
-                composable("pairing") {
+                paddedComposable("pairing") {
                     PairingScreen(
                         bleClient = bleClient,
                         onConnected = { navController.popBackStack() },

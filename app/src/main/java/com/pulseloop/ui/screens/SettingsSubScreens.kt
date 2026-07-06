@@ -1227,13 +1227,147 @@ fun WearableSettingsScreen(
     }
 }
 
+// MARK: - Privacy & Data
+
+/**
+ * Privacy & Data detail screen (iOS PrivacyDataView): demo-data controls (reseed + clear,
+ * moved here from About) and the diagnostics export with its anonymization opt-out.
+ * The mask toggle deliberately defaults ON for every visit and is never persisted off —
+ * an unmasked export (full BLE frames, health values) is a one-shot, explicit choice.
+ */
+@Composable
+fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showSeedDialog by remember { mutableStateOf(false) }
+    var showClearDialog by remember { mutableStateOf(false) }
+
+    SettingsSubScreen(title = "Privacy & Data", onBack = onBack) {
+        // Demo data — Android-only (iOS seeds via the Simulator's SeedData).
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Demo Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Explore the app without a ring. Seeds activity, HR, SpO2, sleep, and a coach conversation.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { showSeedDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Reseed Demo Data")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { showClearDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Clear Demo Data", color = PulseColors.danger)
+                }
+            }
+        }
+
+        // Diagnostics export — same exporter the Developer screen uses, surfaced here so
+        // sharing an anonymized log for a bug report doesn't require the 7-tap unlock.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                var maskSensitive by remember { mutableStateOf(true) }
+                Text("Diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Export app, device, and wearable logs as JSON for bug reports.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Anonymize export", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (maskSensitive)
+                                "Removes health values, ring serial & MAC addresses. Keeps models, opcodes & errors."
+                            else
+                                "OFF — includes full unmasked BLE frames and health values (for protocol debugging only).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (maskSensitive) MaterialTheme.colorScheme.onSurfaceVariant
+                                    else MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Switch(checked = maskSensitive, onCheckedChange = { maskSensitive = it })
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val db = PulseLoopDatabase.getInstance(context)
+                            try {
+                                val intent = com.pulseloop.diagnostics.DiagnosticsExporter
+                                    .shareIntent(context, db, mask = maskSensitive)
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.Share, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (maskSensitive) "Export Diagnostics" else "Export Full (Unmasked)")
+                }
+            }
+        }
+    }
+
+    if (showSeedDialog) {
+        AlertDialog(
+            onDismissRequest = { showSeedDialog = false },
+            title = { Text("Reseed Demo Data?") },
+            text = { Text("This will replace all existing demo data. Your synced ring data will not be affected.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSeedDialog = false
+                    scope.launch {
+                        DemoDataSeeder.seed(PulseLoopDatabase.getInstance(context))
+                        // Freshly seeded demo data should show up on the widgets too.
+                        com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
+                    }
+                }) { Text("Reseed") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSeedDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDialog = false },
+            title = { Text("Clear Demo Data?") },
+            text = {
+                Text(
+                    "Removes all demo measurements, activity, and the demo device. Sleep history " +
+                    "is also cleared — a paired ring rebuilds it on the next connect. Synced ring " +
+                    "measurements and activity are not affected.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearDialog = false
+                    scope.launch {
+                        DemoDataSeeder.clear(PulseLoopDatabase.getInstance(context))
+                        com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
+                    }
+                }) { Text("Clear", color = PulseColors.danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
 // MARK: - About
 
 /**
  * About detail screen (iOS AboutSettingsView): version (7 quick taps unlock Developer options,
  * with escalating haptics + progress ring), app description, update checker, source link,
- * license, and the Demo Data reseed card (kept here so it stays reachable without the
- * developer unlock).
+ * and license. Demo data + diagnostics moved to the Privacy & Data screen (iOS hub parity).
  */
 @Composable
 fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
@@ -1247,7 +1381,6 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
     var developerUnlocked by remember { mutableStateOf(keyStore.developerUnlocked) }
     var toast by remember { mutableStateOf<String?>(null) }
     var toastToken by remember { mutableIntStateOf(0) }
-    var showSeedDialog by remember { mutableStateOf(false) }
 
     // 0…1 progress toward unlock, used to build an accent tint/border as taps accumulate.
     val tapProgress = if (developerUnlocked) 0f
@@ -1388,48 +1521,6 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
             }
         }
 
-        // Demo data — Android-only; kept on About so it stays reachable without the
-        // developer unlock (iOS has no demo-data seeder).
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Demo Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Explore the app without a ring. Seeds 7 days of activity, HR, SpO2, sleep, and a coach conversation.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = { showSeedDialog = true },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Reseed Demo Data")
-                }
-            }
-        }
-    }
-
-    // Seed confirmation dialog
-    if (showSeedDialog) {
-        AlertDialog(
-            onDismissRequest = { showSeedDialog = false },
-            title = { Text("Reseed Demo Data?") },
-            text = { Text("This will replace all existing demo data. Your synced ring data will not be affected.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showSeedDialog = false
-                    scope.launch {
-                        DemoDataSeeder.seed(PulseLoopDatabase.getInstance(context))
-                        // Freshly seeded demo data should show up on the widgets too.
-                        com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
-                    }
-                }) { Text("Reseed") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSeedDialog = false }) { Text("Cancel") }
-            },
-        )
     }
 }
 

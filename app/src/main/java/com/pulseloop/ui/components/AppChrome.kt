@@ -44,22 +44,23 @@ fun AppHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(PulseColors.background)
-            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 10.dp),
+            // No opaque background: the caller layers this header on the glass
+            // top bar (hazeEffect in PulseLoopApp), which supplies the material.
+            .padding(start = 20.dp, end = 8.dp, top = 2.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(1.dp), modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 "PULSELOOP",
-                fontSize = 12.sp,
+                fontSize = 10.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 1.2.sp,
                 color = PulseColors.textMuted,
             )
             Text(
                 greetingForHour(),
-                fontSize = 20.sp,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = PulseColors.textPrimary,
                 maxLines = 1,

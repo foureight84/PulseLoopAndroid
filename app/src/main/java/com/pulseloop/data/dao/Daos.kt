@@ -25,6 +25,10 @@ interface DeviceDao {
 
     @Query("DELETE FROM devices")
     suspend fun clear()
+
+    /** Targeted removal (e.g. the demo device) without touching a paired ring's row. */
+    @Query("DELETE FROM devices WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -190,6 +194,9 @@ interface SleepStageBlockDao {
 
     @Query("DELETE FROM sleep_stage_blocks WHERE sessionId = :sessionId")
     suspend fun deleteBySession(sessionId: String)
+
+    @Query("DELETE FROM sleep_stage_blocks")
+    suspend fun clear()
 }
 
 @Dao
