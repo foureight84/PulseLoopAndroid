@@ -48,8 +48,32 @@ class DerivedMetricsEngine(
 
     fun destroy() { scope.cancel() }
 
+    /** Delete isolated implausible HR spikes (off-wrist artifacts). A sample is a
+     *  spike if it's >=140 bpm while BOTH temporal neighbours (within 3 min) are
+     *  <100 — genuine exertion holds elevated HR across consecutive samples, so
+     *  only lone spikes match. Conservative: leaves any spike with a hot neighbour. */
+    private suspend fun scrubHrArtifacts(from: Long, to: Long) {
+        val rows = db.measurementDao().range(MeasurementKind.HEART_RATE.name, from, to)
+        for (i in 1 until rows.size - 1) {
+            val v = rows[i].value
+            if (v < 140) continue
+            val prev = rows[i - 1]; val next = rows[i + 1]
+            val near = { r: MeasurementEntity -> kotlin.math.abs(r.timestamp - rows[i].timestamp) <= 3 * 60_000L }
+            if (near(prev) && near(next) && prev.value < 100 && next.value < 100) {
+                db.measurementDao().deleteAt(MeasurementKind.HEART_RATE.name, rows[i].timestamp)
+            }
+        }
+    }
+
     private suspend fun tick() {
         val now = System.currentTimeMillis()
+
+        // ── Off-wrist artifact scrub: the ring computes garbage PPG when it loses
+        // skin contact (shower, re-seating, hand motion), logging isolated HR
+        // spikes into the 150-200 range flanked by resting values. A real HR can't
+        // jump 55→183→55 in two minutes; these are non-physiological and both alarm
+        // the user and inflate the HRV SD. Delete lone spikes before computing HRV. ──
+        scrubHrArtifacts(now - 24 * 3_600_000L, now)
 
         // ── HRV proxy + stress, at most one row per tick interval ──
         val recentHrv = db.measurementDao()

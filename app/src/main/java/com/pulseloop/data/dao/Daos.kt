@@ -47,6 +47,9 @@ interface MeasurementDao {
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
 
+    @Query("DELETE FROM measurements WHERE kindRaw = :kind AND timestamp = :ts")
+    suspend fun deleteAt(kind: String, ts: Long)
+
     @Query("DELETE FROM measurements")
     suspend fun clear()
 
