@@ -43,4 +43,15 @@ object TimeUtil {
         val day = if (zdt.hour >= SLEEP_EVENING_BOUNDARY_HOUR) base.plusDays(1) else base
         return day.toInstant().toEpochMilli()
     }
+
+    /**
+     * The night to show on "today" views (Today sleep tile, Sleep day view, widgets): before
+     * 4 AM local it is still *last* night (mirrors PulseServices' day-reference rule). Shared by
+     * SleepViewModel and the widget snapshot publisher so both read the same session.
+     */
+    fun referenceNightLocal(nowMs: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): Long {
+        val hour = Instant.ofEpochMilli(nowMs).atZone(zone).hour
+        val startOfToday = startOfDayLocal(nowMs, zone)
+        return if (hour < 4) startOfToday - 86_400_000L else startOfToday
+    }
 }

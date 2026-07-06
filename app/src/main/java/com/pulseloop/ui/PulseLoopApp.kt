@@ -50,7 +50,13 @@ fun PulseLoopApp() {
         val coordinator = remember { RingSyncCoordinator(bleClient, db, apiKeyStore) }
         val gpsRecorder = remember { GpsRouteRecorder(context) }
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
-        val persistence = remember { EventPersistenceSubscriber(db) }
+        val persistence = remember {
+            // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
+            // mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
+            EventPersistenceSubscriber(db) {
+                com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
+            }
+        }
         val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
 

@@ -648,6 +648,8 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
                 onDraftChange = { updated ->
                     if (updated.units != draft.units) {
                         keyStore.unitSystem = updated.units.name
+                        // Widgets show unit-converted distance/temperature — refresh them.
+                        com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                     }
                     profileDraft = updated
                     savedMsg = null
@@ -658,6 +660,7 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
                 TextButton(onClick = {
                     keyStore.unitSystem = null
                     profileDraft = draft.copy(units = keyStore.resolvedUnitSystem)
+                    com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                 }) {
                     Text("Reset units to auto-detect", style = MaterialTheme.typography.labelSmall)
                 }
@@ -673,6 +676,8 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
                         // Keep pushing the stored BP calibration alongside the profile (the
                         // calibration values themselves are edited on the Calibration screen).
                         coordinator?.applyUserSettings(entity, keyStore.bpAdjustSystolic, keyStore.bpAdjustDiastolic)
+                        // Profile (age/sex) shifts widget reference zones — republish.
+                        com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                         savedMsg = if (coordinator?.isConnected == true)
                             "Saved & sent to ring ✓" else "Saved — will sync on next connect"
                     }
@@ -870,6 +875,8 @@ fun GoalsSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit) {
                             ),
                         )
                         coordinator?.setGoal(draft.steps.toInt())
+                        // Ring goals drive the widget's activity rings — republish.
+                        com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                         goalSavedMsg = if (coordinator?.isConnected == true)
                             "Saved & sent to ring ✓" else "Saved"
                     }
@@ -1414,6 +1421,8 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
                     showSeedDialog = false
                     scope.launch {
                         DemoDataSeeder.seed(PulseLoopDatabase.getInstance(context))
+                        // Freshly seeded demo data should show up on the widgets too.
+                        com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                     }
                 }) { Text("Reseed") }
             },

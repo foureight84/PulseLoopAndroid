@@ -11,6 +11,12 @@ import kotlinx.coroutines.*
  */
 class EventPersistenceSubscriber(
     private val db: PulseLoopDatabase,
+    /**
+     * Fired after a data-bearing event lands in Room (measurements, activity, sleep) — the
+     * Android analog of iOS `PulseDataChange`. The widget snapshot publisher hooks this
+     * (debounced) so home-screen widgets refresh after every ring-sync batch.
+     */
+    private val onDataPersisted: (() -> Unit)? = null,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
@@ -27,11 +33,26 @@ class EventPersistenceSubscriber(
     private suspend fun persist(event: PulseEvent) {
         try {
             persistUnsafe(event)
+            if (isDataEvent(event)) onDataPersisted?.invoke()
         } catch (e: Exception) {
             // Swallow individual persistence failures so one bad event
             // (malformed ring packet, DB constraint, etc.) never crashes the app.
             android.util.Log.e("EventPersistence", "Failed to persist event", e)
         }
+    }
+
+    /** Events that change what the Today tiles (and therefore the widgets) show. */
+    private fun isDataEvent(event: PulseEvent): Boolean = when (event) {
+        is PulseEvent.HeartRateSample,
+        is PulseEvent.Spo2Result,
+        is PulseEvent.HistoryMeasurement,
+        is PulseEvent.StressSample,
+        is PulseEvent.HrvSample,
+        is PulseEvent.TemperatureSample,
+        is PulseEvent.ActivityUpdate,
+        is PulseEvent.ActivityBucket,
+        is PulseEvent.SleepTimeline -> true
+        else -> false
     }
 
     private suspend fun persistUnsafe(event: PulseEvent) {

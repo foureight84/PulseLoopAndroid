@@ -289,12 +289,9 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         }
     }
 
-    /** The night to show on the Day view: before 4 AM local, still last night (PulseServices). */
-    private fun dayReferenceNight(): Long {
-        val cal = java.util.Calendar.getInstance()
-        val startOfToday = TimeUtil.startOfTodayLocal()
-        return if (cal.get(java.util.Calendar.HOUR_OF_DAY) < 4) startOfToday - 86_400_000L else startOfToday
-    }
+    /** The night to show on the Day view: before 4 AM local, still last night (PulseServices).
+     *  Shared with the widget snapshot publisher via [TimeUtil.referenceNightLocal]. */
+    private fun dayReferenceNight(): Long = TimeUtil.referenceNightLocal()
 }
 
 /**
@@ -448,6 +445,18 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
     }
 
     private suspend fun refresh(db: PulseLoopDatabase) {
+        _state.value = buildState(db, apiKeyStore)
+    }
+
+    companion object {
+
+    /**
+     * The full Vitals-state assembly, extracted so it is shared verbatim between the screen's
+     * polling refresh and the home-screen-widget publisher
+     * ([com.pulseloop.widgets.WidgetSnapshotPublisher]) — a widget tile is built from exactly the
+     * same series fetches, offsets, and capability gating as its Vitals/Today card.
+     */
+    suspend fun buildState(db: PulseLoopDatabase, apiKeyStore: ApiKeyStore? = null): VitalsState {
         val now = System.currentTimeMillis()
         val twentyFourHoursAgo = now - 24 * 3600_000L
         val device = db.deviceDao().current()
@@ -480,7 +489,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val gluc = if (caps.contains(WearableCapability.BLOOD_SUGAR)) series(MeasurementKind.BLOOD_SUGAR) else emptyList()
         val userProfile = db.userProfileDao().get()
 
-        _state.value = VitalsState(
+        return VitalsState(
             hrSamples = hr.map { it.value },
             spo2Samples = spo2.map { it.value },
             hrvSamples = hrv.map { it.value },
@@ -530,7 +539,34 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             supportsManualSpo2 = caps.contains(WearableCapability.MANUAL_SPO2),
         )
     }
+
+    }
 }
+
+/**
+ * The one [VitalsCardFactory.Inputs] construction from a [VitalsViewModel.VitalsState], shared by
+ * the Today grid, the Vitals screen, and the widget snapshot publisher so all three feed the
+ * factory identically (iOS TodayStore parity).
+ */
+fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFactory.Inputs =
+    VitalsCardFactory.Inputs(
+        hr = hrSeries,
+        spo2 = spo2Series,
+        hrv = hrvSeries,
+        stress = stressSeries,
+        fatigue = fatigueSeries,
+        temperature = tempSeries,
+        systolic = bpSysSeries,
+        diastolic = bpDiaSeries,
+        glucose = glucoseSeries,
+        latestHr = latestHr?.toDouble(),
+        latestSpo2 = latestSpo2?.toDouble(),
+        restingHr = restingHr,
+        peakHr = peakHr,
+        unitSystem = units,
+        hasBPReference = hasBPReference,
+        isGlucoseCalibrated = isGlucoseCalibrated,
+    )
 
 /**
  * CoachViewModel — wires the coach orchestrator to the UI.

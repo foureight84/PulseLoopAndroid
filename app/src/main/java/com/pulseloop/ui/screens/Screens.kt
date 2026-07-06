@@ -87,24 +87,7 @@ fun VitalsScreen(
     // emission, off the composition path — the cards below run no threshold math.
     val vitalsUnits = ApiKeyStore(LocalContext.current).resolvedUnitSystem
     val cards = remember(state, vitalsUnits) {
-        val inputs = VitalsCardFactory.Inputs(
-            hr = state.hrSeries,
-            spo2 = state.spo2Series,
-            hrv = state.hrvSeries,
-            stress = state.stressSeries,
-            fatigue = state.fatigueSeries,
-            temperature = state.tempSeries,
-            systolic = state.bpSysSeries,
-            diastolic = state.bpDiaSeries,
-            glucose = state.glucoseSeries,
-            latestHr = state.latestHr?.toDouble(),
-            latestSpo2 = state.latestSpo2?.toDouble(),
-            restingHr = state.restingHr,
-            peakHr = state.peakHr,
-            unitSystem = vitalsUnits,
-            hasBPReference = state.hasBPReference,
-            isGlucoseCalibrated = state.isGlucoseCalibrated,
-        )
+        val inputs = state.toCardInputs(vitalsUnits)
         MetricKind.entries.associateWith { metric -> VitalsCardFactory.card(metric, inputs, state.profile) }
     }
     LazyColumn(

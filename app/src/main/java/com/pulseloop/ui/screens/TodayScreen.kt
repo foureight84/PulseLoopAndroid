@@ -26,6 +26,7 @@ import com.pulseloop.ui.viewmodels.VitalCardState
 import com.pulseloop.ui.viewmodels.VitalsCardFactory
 import com.pulseloop.ui.viewmodels.VitalsViewModel
 import com.pulseloop.ui.viewmodels.SleepViewModel
+import com.pulseloop.ui.viewmodels.toCardInputs
 import kotlinx.coroutines.launch
 
 /**
@@ -61,18 +62,10 @@ fun TodayScreen(
         },
     )
 
-    // Same factory the Vitals screen uses (iOS TodayStore reuses VitalsCardFactory).
+    // Same factory the Vitals screen and the widget publisher use (iOS TodayStore reuses
+    // VitalsCardFactory) — one shared Inputs construction via toCardInputs.
     val cards = remember(vitals, units) {
-        val inputs = VitalsCardFactory.Inputs(
-            hr = vitals.hrSeries, spo2 = vitals.spo2Series, hrv = vitals.hrvSeries,
-            stress = vitals.stressSeries, fatigue = vitals.fatigueSeries,
-            temperature = vitals.tempSeries, systolic = vitals.bpSysSeries,
-            diastolic = vitals.bpDiaSeries, glucose = vitals.glucoseSeries,
-            latestHr = vitals.latestHr?.toDouble(), latestSpo2 = vitals.latestSpo2?.toDouble(),
-            restingHr = vitals.restingHr, peakHr = vitals.peakHr,
-            unitSystem = units,
-            hasBPReference = vitals.hasBPReference, isGlucoseCalibrated = vitals.isGlucoseCalibrated,
-        )
+        val inputs = vitals.toCardInputs(units)
         MetricKind.entries.associateWith { VitalsCardFactory.card(it, inputs, vitals.profile) }
     }
     val hero = remember(state, sleep) { deriveHero(state, sleep) }
@@ -157,16 +150,7 @@ private fun ActivityTileFor(
 @Composable
 private fun SleepTileFor(sleep: SleepViewModel.SleepState, modifier: Modifier, onTap: () -> Unit) {
     val session = sleep.lastNight
-    val segments = remember(sleep) {
-        val byStage = sleep.lastNightBlocks.groupBy { it.stageRaw }
-            .mapValues { (_, blocks) -> blocks.sumOf { it.durationMinutes }.toDouble() }
-        listOf(
-            SleepStageSegment(byStage["DEEP"] ?: 0.0, PulseColors.stageDeep, "DEEP"),
-            SleepStageSegment(byStage["LIGHT"] ?: 0.0, PulseColors.stageLight, "LIGHT"),
-            SleepStageSegment(byStage["REM"] ?: 0.0, PulseColors.stageRem, "REM"),
-            SleepStageSegment(byStage["AWAKE"] ?: 0.0, PulseColors.stageAwake, "AWK"),
-        ).filter { it.minutes > 0 }
-    }
+    val segments = remember(sleep) { buildSleepStageSegments(sleep.lastNightBlocks) }
     SleepTile(
         durationText = session?.let { "${it.totalMinutes / 60}h ${it.totalMinutes % 60}m" },
         segments = segments,

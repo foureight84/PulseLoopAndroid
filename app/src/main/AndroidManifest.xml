@@ -60,5 +60,49 @@
             android:name=".service.WorkoutForegroundService"
             android:foregroundServiceType="health"
             android:exported="false" />
+
+        <!-- Home-screen widgets (iOS #44): three Glance app widgets + the shared configure
+             activity for the two configurable ones. -->
+        <receiver
+            android:name=".widgets.PulseActivityWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_activity_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_activity_info" />
+        </receiver>
+        <receiver
+            android:name=".widgets.PulseMetricWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_metric_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_metric_info" />
+        </receiver>
+        <receiver
+            android:name=".widgets.PulseDualMetricWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_dual_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_dual_info" />
+        </receiver>
+        <activity
+            android:name=".widgets.WidgetConfigActivity"
+            android:exported="true"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

@@ -139,6 +139,24 @@ fun ActivityTile(
 data class SleepStageSegment(val minutes: Double, val color: Color, val label: String)
 
 /**
+ * The one place stage blocks turn into the tile's proportional bar segments (order, colors,
+ * labels). Shared by the Today sleep tile and the widget snapshot publisher so the widget's
+ * stage bar is identical to the in-app one.
+ */
+fun buildSleepStageSegments(
+    blocks: List<com.pulseloop.data.entity.SleepStageBlockEntity>,
+): List<SleepStageSegment> {
+    val byStage = blocks.groupBy { it.stageRaw }
+        .mapValues { (_, stageBlocks) -> stageBlocks.sumOf { it.durationMinutes }.toDouble() }
+    return listOf(
+        SleepStageSegment(byStage["DEEP"] ?: 0.0, PulseColors.stageDeep, "DEEP"),
+        SleepStageSegment(byStage["LIGHT"] ?: 0.0, PulseColors.stageLight, "LIGHT"),
+        SleepStageSegment(byStage["REM"] ?: 0.0, PulseColors.stageRem, "REM"),
+        SleepStageSegment(byStage["AWAKE"] ?: 0.0, PulseColors.stageAwake, "AWK"),
+    ).filter { it.minutes > 0 }
+}
+
+/**
  * A single stacked bar of proportional deep/light/REM/awake segments (SleepStageBar.swift).
  * Labels are drawn under segments that are wide enough to carry them.
  */
