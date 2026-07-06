@@ -30,6 +30,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -197,12 +198,11 @@ fun ProfileEditor(
             onSave = { onDraftChange(draft.settingHeight(it)) },
             onDismiss = { activePicker = null },
         )
-        ProfilePickerKind.WEIGHT -> NumberPickerSheet(
+        ProfilePickerKind.WEIGHT -> DecimalValueSheet(
             title = "Weight",
-            values = if (draft.units == UnitSystem.METRIC) (35..250).toList() else (77..551).toList(),
             initialValue = draft.weightDisplayValue,
-            fallback = if (draft.units == UnitSystem.METRIC) 70 else 154,
-            label = { "$it ${if (draft.units == UnitSystem.METRIC) "kg" else "lb"}" },
+            unit = if (draft.units == UnitSystem.METRIC) "kg" else "lb",
+            validRange = if (draft.units == UnitSystem.METRIC) 35.0..250.0 else 77.0..551.0,
             onSave = { onDraftChange(draft.settingWeight(it)) },
             onDismiss = { activePicker = null },
         )
@@ -219,7 +219,7 @@ private fun heightLabel(draft: ProfileDraft): String? {
 
 private fun weightLabel(draft: ProfileDraft): String? {
     val value = draft.weightDisplayValue ?: return null
-    return "$value ${if (draft.units == UnitSystem.METRIC) "kg" else "lb"}"
+    return "${LocalizedDecimalInput.format(value)} ${if (draft.units == UnitSystem.METRIC) "kg" else "lb"}"
 }
 
 @Composable
@@ -374,6 +374,129 @@ private fun NumberPickerSheet(
             }
         }
     }
+}
+
+/**
+ * Bottom-sheet decimal text input with Clear + Done (iOS `DecimalValueSheet`, iOS #49).
+ * Accepts both a comma and a period as the decimal separator via [LocalizedDecimalInput];
+ * Done is disabled until the parsed value is inside [validRange].
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DecimalValueSheet(
+    title: String,
+    initialValue: Double?,
+    unit: String,
+    validRange: ClosedFloatingPointRange<Double>,
+    onSave: (Double?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var text by remember { mutableStateOf(initialValue?.let { LocalizedDecimalInput.format(it) } ?: "") }
+    val parsedValue = LocalizedDecimalInput.parse(text)?.takeIf { it in validRange }
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = PulseColors.secondaryBackground,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = {
+                    onSave(null)
+                    onDismiss()
+                }) { Text("Clear", color = PulseColors.textSecondary) }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    title,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PulseColors.textPrimary,
+                )
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    enabled = parsedValue != null,
+                    onClick = {
+                        onSave(parsedValue)
+                        onDismiss()
+                    },
+                ) {
+                    Text(
+                        "Done",
+                        color = if (parsedValue != null) PulseColors.accent else PulseColors.textMuted,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Enter your weight in $unit",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = PulseColors.textPrimary,
+                )
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(PulseColors.card)
+                        .border(1.dp, PulseColors.borderSubtle, RoundedCornerShape(14.dp))
+                        .padding(14.dp),
+                ) {
+                    if (text.isEmpty()) {
+                        Text(
+                            LocalizedDecimalInput.format(70.5),
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = PulseColors.textMuted,
+                        )
+                    }
+                    BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = PulseColors.textPrimary,
+                        ),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                        ),
+                        cursorBrush = SolidColor(PulseColors.accent),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester),
+                    )
+                }
+
+                Text(
+                    "You can use either a comma or a period as the decimal separator.",
+                    fontSize = 12.sp,
+                    color = PulseColors.textMuted,
+                )
+
+                if (text.isNotEmpty() && parsedValue == null) {
+                    Text(
+                        "Enter a weight between ${validRange.start.toInt()} and ${validRange.endInclusive.toInt()} $unit.",
+                        fontSize = 12.sp,
+                        color = PulseColors.danger,
+                    )
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
 }
 
 // MARK: - GoalEditor

@@ -156,8 +156,10 @@ fun PairingScreen(
                 BluetoothOffCard()
             } else if (connected) {
                 ConnectedCard(
-                    model = selectedModel,
-                    deviceName = state.activeDeviceType?.displayName ?: selectedModel.displayName,
+                    model = WearableModel.model(state.activeWearableModelID) ?: selectedModel,
+                    deviceName = WearableModel.model(state.activeWearableModelID)?.displayName
+                        ?: state.activeDeviceType?.displayName
+                        ?: selectedModel.displayName,
                     checkmarkFired = didFireConnected,
                     onContinue = onSkip,
                 )
@@ -175,7 +177,7 @@ fun PairingScreen(
                         state = state,
                         selectedModel = selectedModel,
                         matchingRings = matchingRings,
-                        onSelectRing = { bleClient.connectTo(it) },
+                        onSelectRing = { bleClient.connectTo(it, selectedModelID = selectedModel.id) },
                         onStop = {
                             isLooking = false
                             bleClient.stopScanning()
@@ -467,8 +469,10 @@ private fun DiscoveredRingRow(ring: RingBLEClient.DiscoveredRing, onClick: () ->
                     color = PulseColors.textPrimary,
                 )
                 ring.deviceType?.let { type ->
+                    // Exact model when the advertised name identifies one, else the family (iOS #49).
                     Text(
-                        ringModelLabel(ring.name, type),
+                        WearableModel.model(ring.wearableModelID)?.displayName
+                            ?: ringModelLabel(ring.name, type),
                         fontSize = 11.sp,
                         color = PulseColors.accent,
                     )

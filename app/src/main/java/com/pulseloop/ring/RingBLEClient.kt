@@ -46,6 +46,8 @@ class RingBLEClient(private val context: Context) {
         val isBluetoothReady: Boolean = false,
         val lastError: String? = null,
         val activeDeviceType: RingDeviceType? = null,
+        /** Exact catalog model of the active connection (iOS #49), resolved at connect time. */
+        val activeWearableModelID: String? = null,
         val activeCapabilities: Set<WearableCapability> = emptySet(),
         val firmwareVersion: String? = null,
     )
@@ -56,6 +58,8 @@ class RingBLEClient(private val context: Context) {
         val rssi: Int,
         val isLikelyRing: Boolean,
         val deviceType: RingDeviceType?,
+        /** Exact catalog model inferred from the Bluetooth local name, when recognizable. */
+        val wearableModelID: String? = null,
     )
 
     private val _state = MutableStateFlow(BLEState())
@@ -96,6 +100,8 @@ class RingBLEClient(private val context: Context) {
     private var activeCoordinator: WearableCoordinator? = null
     private var activeDriver: WearableDriver? = null
     private var activeSyncEngine: RingSyncEngine? = null
+    // Advertised name of the connection being established, for exact-model resolution + events.
+    private var activeAdvertisedName: String? = null
 
     // Set while a "Forget" is waiting for the ring's UNBOND_ACK (0x4B) before teardown.
     private var forgetPending = false
@@ -200,17 +206,23 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
-    fun connectTo(id: String) {
+    fun connectTo(id: String, selectedModelID: String? = null) {
         val target = discoveredPeripherals[id] ?: run {
             try { bluetoothAdapter.getRemoteDevice(id) } catch (_: Exception) { null }
         } ?: run {
             updateState { copy(lastError = "Ring no longer available; scan again.") }
             return
         }
-        val matchedType = _state.value.discovered.firstOrNull { it.id == id }?.deviceType
-        connectingName = _state.value.discovered.firstOrNull { it.id == id }?.name ?: target.name
+        val discoveredRing = _state.value.discovered.firstOrNull { it.id == id }
+        connectingName = discoveredRing?.name ?: target.name
         resetReconnectBackoff()
-        beginConnect(target, matchedType)
+        // Discovery's name-derived model wins over the carousel choice (iOS connect(to:selectedModelID:)).
+        beginConnect(
+            target,
+            discoveredRing?.deviceType,
+            selectedModelID = discoveredRing?.wearableModelID ?: selectedModelID,
+            advertisedName = discoveredRing?.name ?: target.name,
+        )
     }
 
     /**
@@ -245,7 +257,12 @@ class RingBLEClient(private val context: Context) {
             return
         }
         if (reconnectAttempts % 3 == 1) {
-            beginConnect(device, lastKnownDeviceType)
+            beginConnect(
+                device,
+                lastKnownDeviceType,
+                selectedModelID = lastKnownWearableModelID,
+                advertisedName = try { device.name } catch (_: Exception) { null },
+            )
         } else {
             startScanning()
             // Set AFTER startScanning (which clears it to protect pairing scans).
@@ -404,7 +421,11 @@ class RingBLEClient(private val context: Context) {
     fun forget() {
         // Clear the known-ring id up front so the watchdog/auto-reconnect can't grab
         // the ring back during or after the unbind window.
-        prefs.edit().remove(LAST_PERIPHERAL_KEY).remove(LAST_DEVICE_TYPE_KEY).apply()
+        prefs.edit()
+            .remove(LAST_PERIPHERAL_KEY)
+            .remove(LAST_DEVICE_TYPE_KEY)
+            .remove(LAST_WEARABLE_MODEL_KEY)
+            .apply()
 
         val gatt = bluetoothGatt
         if (gatt != null && writeChar != null &&
@@ -439,8 +460,21 @@ class RingBLEClient(private val context: Context) {
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         resetOpQueue()
-        prefs.edit().remove(LAST_PERIPHERAL_KEY).remove(LAST_DEVICE_TYPE_KEY).apply()
-        updateState { copy(connectionState = RingConnectionState.IDLE, activeDeviceType = null, activeCapabilities = emptySet()) }
+        prefs.edit()
+            .remove(LAST_PERIPHERAL_KEY)
+            .remove(LAST_DEVICE_TYPE_KEY)
+            .remove(LAST_WEARABLE_MODEL_KEY)
+            .apply()
+        activeAdvertisedName = null
+        updateState {
+            copy(
+                connectionState = RingConnectionState.IDLE,
+                activeDeviceType = null,
+                activeWearableModelID = null,
+                activeCapabilities = emptySet(),
+            )
+        }
+        PulseEventBus.publishBlocking(PulseEvent.DeviceForgotten)
     }
 
     fun enqueueWrite(data: ByteArray) {
@@ -468,10 +502,17 @@ class RingBLEClient(private val context: Context) {
         get() = prefs.getString(LAST_DEVICE_TYPE_KEY, null)?.let { type ->
             try { RingDeviceType.valueOf(type) } catch (_: Exception) { null }
         }
+    private val lastKnownWearableModelID: String?
+        get() = prefs.getString(LAST_WEARABLE_MODEL_KEY, null)
 
     // MARK: Internal
 
-    private fun beginConnect(target: BluetoothDevice, deviceType: RingDeviceType?) {
+    private fun beginConnect(
+        target: BluetoothDevice,
+        deviceType: RingDeviceType?,
+        selectedModelID: String? = null,
+        advertisedName: String? = null,
+    ) {
         scanner?.stopScan(scanCallback)
         // Close any stale GATT from a previous (now-dead) connection before opening a new
         // one. Reconnect attempts after an idle drop would otherwise leak GATT clients and
@@ -485,7 +526,16 @@ class RingBLEClient(private val context: Context) {
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         resetOpQueue()
         val coordinator = coordinators.firstOrNull { it.deviceType == deviceType } ?: JringCoordinator
+        // Resolve the exact catalog model for this connection: Bluetooth identity wins over the
+        // user's carousel selection; family mismatches are rejected (iOS #49 beginConnect).
+        activeAdvertisedName = advertisedName
+        val resolvedModelID = com.pulseloop.wearables.WearableModel.resolve(
+            advertisedName = advertisedName,
+            selectedModelID = selectedModelID,
+            family = coordinator.deviceType,
+        )?.id
         installDriver(coordinator)
+        updateState { copy(activeWearableModelID = resolvedModelID) }
         connectingStartedAt = System.currentTimeMillis()
         updateState { copy(connectionState = RingConnectionState.CONNECTING) }
         // Mirror the attempt to the persisted state so the Today/Settings views show
@@ -684,6 +734,7 @@ class RingBLEClient(private val context: Context) {
             if (name.isEmpty()) return
 
             val matchedType = matchDeviceType(name, scanRecord)
+            val matchedModel = com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)
             discoveredPeripherals[device.address] = device
 
             // Reconnect scan: the known ring is advertising again — grab it now.
@@ -692,7 +743,12 @@ class RingBLEClient(private val context: Context) {
                 sightlessScans = 0
                 scanner?.stopScan(this)
                 connectingName = name
-                beginConnect(device, matchedType ?: lastKnownDeviceType)
+                beginConnect(
+                    device,
+                    matchedType ?: lastKnownDeviceType,
+                    selectedModelID = lastKnownWearableModelID,
+                    advertisedName = name,
+                )
                 return
             }
 
@@ -702,6 +758,8 @@ class RingBLEClient(private val context: Context) {
                 rssi = result.rssi,
                 isLikelyRing = matchedType != null,
                 deviceType = matchedType,
+                // Only trust the name-derived model when it agrees with the matched family.
+                wearableModelID = matchedModel?.id?.takeIf { matchedModel.family == matchedType },
             )
 
             updateState {
@@ -950,10 +1008,13 @@ class RingBLEClient(private val context: Context) {
             resetReconnectBackoff()
             startKeepalive()  // Jring only — Colmi links idle without pings (official behavior)
             val device = gatt.device
-            prefs.edit()
+            val modelID = _state.value.activeWearableModelID
+            val editor = prefs.edit()
                 .putString(LAST_PERIPHERAL_KEY, device.address)
                 .putString(LAST_DEVICE_TYPE_KEY, activeCoordinator?.deviceType?.name)
-                .apply()
+            if (modelID != null) editor.putString(LAST_WEARABLE_MODEL_KEY, modelID)
+            else editor.remove(LAST_WEARABLE_MODEL_KEY)
+            editor.apply()
 
             PulseEventBus.publishBlocking(
                 PulseEvent.DeviceStateChanged(
@@ -962,7 +1023,12 @@ class RingBLEClient(private val context: Context) {
             )
             activeCoordinator?.let { coord ->
                 PulseEventBus.publishBlocking(
-                    PulseEvent.DeviceIdentified(coord.deviceType, coord.capabilities)
+                    PulseEvent.DeviceIdentified(
+                        deviceType = coord.deviceType,
+                        wearableModelID = modelID,
+                        advertisedName = activeAdvertisedName ?: connectingName,
+                        capabilities = coord.capabilities,
+                    )
                 )
             }
             readBattery()
@@ -1026,6 +1092,7 @@ class RingBLEClient(private val context: Context) {
     companion object {
         private const val LAST_PERIPHERAL_KEY = "ring.lastPeripheralIdentifier"
         private const val LAST_DEVICE_TYPE_KEY = "ring.lastDeviceType"
+        private const val LAST_WEARABLE_MODEL_KEY = "ring.lastWearableModel"
         /** How often the liveness watchdog runs. */
         private const val WATCHDOG_INTERVAL_MS = 15_000L
         /** No GATT activity for this long while CONNECTED ⇒ zombie link ⇒ reconnect.

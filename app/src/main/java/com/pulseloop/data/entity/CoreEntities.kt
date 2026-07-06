@@ -20,6 +20,8 @@ data class DeviceEntity(
     val batteryPercent: Int? = null,
     val stateRaw: String = RingConnectionState.IDLE.name,
     val deviceTypeRaw: String = RingDeviceType.JRING.name,
+    /** Exact catalog model (e.g. `colmi-r10`), separate from the protocol/driver family (iOS #49). */
+    val wearableModelID: String? = null,
     val capabilitiesRaw: String = "",   // CSV of WearableCapability names
     val lastConnectedAt: Long? = null,
     val lastDisconnectedAt: Long? = null,

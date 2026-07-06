@@ -14,6 +14,34 @@ import kotlin.math.roundToLong
  * Pure logic — no Compose — so it is unit-testable without Robolectric.
  */
 
+/**
+ * Ported from `LocalizedDecimalInput` (OnboardingSupport.swift, iOS #49).
+ * Parses decimal-keyboard input without assuming one separator: European users commonly enter
+ * `72,5` while other regions enter `72.5`, and Android keyboards follow the device locale.
+ */
+object LocalizedDecimalInput {
+    fun parse(text: String, locale: Locale = Locale.getDefault()): Double? {
+        var normalized = text.filterNot { it.isWhitespace() }
+
+        val separator = java.text.DecimalFormatSymbols.getInstance(locale).decimalSeparator
+        if (separator != '.') {
+            normalized = normalized.replace(separator.toString(), ".")
+        }
+        normalized = normalized.replace(",", ".")
+
+        if (normalized.isEmpty() || normalized.count { it == '.' } > 1) return null
+        return normalized.toDoubleOrNull()
+    }
+
+    fun format(value: Double, locale: Locale = Locale.getDefault()): String {
+        val formatter = java.text.NumberFormat.getNumberInstance(locale)
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 2
+        formatter.isGroupingUsed = false
+        return formatter.format(value)
+    }
+}
+
 /** One step of the 5-step onboarding flow. Raw values match iOS for parity. */
 enum class OnboardingStep(val rawValue: String) {
     WELCOME("welcome"),
@@ -79,10 +107,10 @@ data class ProfileDraft(
             if (units == UnitSystem.METRIC) it.roundToInt() else (it / CM_PER_INCH).roundToInt()
         }
 
-    /** Weight in the display unit (kg or lb), rounded like iOS `weightDisplayValue`. */
-    val weightDisplayValue: Int?
+    /** Weight in the display unit (kg or lb) — decimal like iOS `weightDisplayValue` (iOS #49). */
+    val weightDisplayValue: Double?
         get() = weightKg?.let {
-            if (units == UnitSystem.METRIC) it.roundToInt() else (it * LB_PER_KG).roundToInt()
+            if (units == UnitSystem.METRIC) it else it * LB_PER_KG
         }
 
     fun settingHeight(displayValue: Int?): ProfileDraft = copy(
@@ -91,9 +119,9 @@ data class ProfileDraft(
         },
     )
 
-    fun settingWeight(displayValue: Int?): ProfileDraft = copy(
+    fun settingWeight(displayValue: Double?): ProfileDraft = copy(
         weightKg = displayValue?.let {
-            if (units == UnitSystem.METRIC) it.toDouble() else it / LB_PER_KG
+            if (units == UnitSystem.METRIC) it else it / LB_PER_KG
         },
     )
 

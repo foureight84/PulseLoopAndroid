@@ -53,5 +53,7 @@ enum class WearableCapability(val key: String) {
  */
 enum class RingDeviceType(val displayName: String) {
     JRING("SMART_RING"),
-    COLMI_R02("Colmi R02");
+    // One protocol family covering the whole Colmi/Yawell line — the exact model comes from
+    // WearableModel (iOS #49), so the family label stays honest about the ambiguity.
+    COLMI_R02("Colmi / Yawell ring");
 }

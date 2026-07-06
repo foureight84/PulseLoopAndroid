@@ -40,10 +40,17 @@ class DiagnosticsSubscriber(
             }
             is PulseEvent.DeviceIdentified -> {
                 activeDeviceType = event.deviceType
+                // Prefer the exact catalog model over the family label (iOS #49).
+                val displayName = com.pulseloop.wearables.WearableModel.model(event.wearableModelID)?.displayName
+                    ?: event.deviceType.displayName
                 log(WearableLogCategory.CONNECTION, WearableLogLevel.INFO,
-                    "Identified ${event.deviceType.displayName}",
+                    "Identified $displayName",
                     mapOf("capabilities" to event.capabilities.joinToString(",") { it.key }),
                 )
+            }
+            is PulseEvent.DeviceForgotten -> {
+                log(WearableLogCategory.CONNECTION, WearableLogLevel.INFO, "Forgot wearable")
+                activeDeviceType = null
             }
             is PulseEvent.BatteryLevel -> {
                 log(WearableLogCategory.BATTERY, WearableLogLevel.INFO, "Battery ${event.percent}%")

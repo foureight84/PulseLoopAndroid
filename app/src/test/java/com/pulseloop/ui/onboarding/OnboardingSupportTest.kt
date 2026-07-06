@@ -115,9 +115,9 @@ class OnboardingSupportTest {
 
     @Test
     fun `imperial weight round-trips - 165 lb is about 74_84 kg`() {
-        var draft = ProfileDraft(units = UnitSystem.IMPERIAL).settingWeight(165)
+        var draft = ProfileDraft(units = UnitSystem.IMPERIAL).settingWeight(165.0)
         assertEquals(74.8427, draft.weightKg!!, 0.001)
-        assertEquals(165, draft.weightDisplayValue)
+        assertEquals(165.0, draft.weightDisplayValue!!, 0.001)
 
         draft = draft.settingWeight(null)
         assertNull(draft.weightKg)
@@ -128,11 +128,42 @@ class OnboardingSupportTest {
     fun `metric height and weight pass through unconverted`() {
         val draft = ProfileDraft(units = UnitSystem.METRIC)
             .settingHeight(178)
-            .settingWeight(75)
+            .settingWeight(75.0)
         assertEquals(178.0, draft.heightCm!!, 0.0001)
         assertEquals(75.0, draft.weightKg!!, 0.0001)
         assertEquals(178, draft.heightDisplayValue)
-        assertEquals(75, draft.weightDisplayValue)
+        assertEquals(75.0, draft.weightDisplayValue!!, 0.0001)
+    }
+
+    // ── LocalizedDecimalInput (iOS #49) ─────────────────────────────────
+
+    @Test
+    fun `weight input accepts comma and period decimal separators`() {
+        val european = Locale.GERMANY   // de_DE
+        val us = Locale.US              // en_US
+
+        assertEquals(72.5, LocalizedDecimalInput.parse("72,5", european)!!, 0.0001)
+        assertEquals(72.5, LocalizedDecimalInput.parse("72.5", european)!!, 0.0001)
+        assertEquals(72.5, LocalizedDecimalInput.parse("72,5", us)!!, 0.0001)
+        assertEquals(72.5, LocalizedDecimalInput.parse("72.5", us)!!, 0.0001)
+    }
+
+    @Test
+    fun `decimal input rejects empty and multi-separator strings`() {
+        assertNull(LocalizedDecimalInput.parse("", Locale.US))
+        assertNull(LocalizedDecimalInput.parse("7.2.5", Locale.US))
+        assertNull(LocalizedDecimalInput.parse("7,2.5", Locale.US))
+        assertNull(LocalizedDecimalInput.parse("abc", Locale.US))
+    }
+
+    @Test
+    fun `decimal weight round-trips through profile draft`() {
+        var draft = ProfileDraft.from(locale = Locale.GERMANY)
+        draft = draft.copy(units = UnitSystem.METRIC)
+        draft = draft.settingWeight(LocalizedDecimalInput.parse("72,5", Locale.GERMANY))
+
+        assertEquals(72.5, draft.weightKg!!, 0.001)
+        assertEquals(72.5, draft.weightDisplayValue!!, 0.001)
     }
 
     // ── GoalDraft ───────────────────────────────────────────────────────

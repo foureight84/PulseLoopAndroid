@@ -21,6 +21,10 @@ fun ringNameWithoutSerial(name: String): String = RING_SERIAL_SUFFIX.replace(nam
  */
 fun ringModelLabel(name: String?, deviceType: RingDeviceType?): String {
     val type = deviceType ?: return name?.takeIf { it.isNotBlank() } ?: "Ring"
+    // Exact catalog model first (iOS #49): correct branding for e.g. "R11_BEEF" → "Yawell R11".
+    com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)
+        ?.takeIf { it.family == type }
+        ?.let { return it.displayName }
     if (type != RingDeviceType.COLMI_R02) return type.displayName
     val token = ringNameWithoutSerial((name ?: "").trim())
         .removePrefix("COLMI ").removePrefix("Colmi ")

@@ -77,9 +77,22 @@ class EventPersistenceSubscriber(
                 val device = db.deviceDao().current() ?: DeviceEntity()
                 db.deviceDao().upsert(device.copy(
                     deviceTypeRaw = event.deviceType.name,
+                    wearableModelID = event.wearableModelID,
+                    advertisedName = event.advertisedName ?: device.advertisedName,
                     capabilitiesRaw = event.capabilities.toCsv(),
                     updatedAt = System.currentTimeMillis(),
                 ))
+            }
+            is PulseEvent.DeviceForgotten -> {
+                // Mirror iOS: forgetting clears the stored model identity (the row itself is
+                // cleared by the Forget flow; this covers a row that survives, e.g. offline forget).
+                db.deviceDao().current()?.let { device ->
+                    db.deviceDao().upsert(device.copy(
+                        wearableModelID = null,
+                        advertisedName = null,
+                        updatedAt = System.currentTimeMillis(),
+                    ))
+                }
             }
             is PulseEvent.BatteryLevel -> {
                 val device = db.deviceDao().current() ?: DeviceEntity()

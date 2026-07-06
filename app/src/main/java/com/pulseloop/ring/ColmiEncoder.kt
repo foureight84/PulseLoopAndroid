@@ -200,16 +200,12 @@ object ColmiEncoder {
 object ColmiCoordinator : WearableCoordinator {
     override val deviceType = RingDeviceType.COLMI_R02
 
-    private val namePatterns = listOf(
-        Regex("^R02_.*"), Regex("^R03_.*"), Regex("^R06_.*"),
-        Regex("^COLMI R07_.*"), Regex("^R09_.*"), Regex("^COLMI R10_.*"),
-        Regex("^COLMI R12_.*"), Regex("^R05_[0-9A-F]{4}$"),
-        Regex("^R10_[0-9A-F]{4}$"), Regex("^R11C?_[0-9A-F]{4}$"),
-        Regex("^H59_.*"),
-    )
-
     override fun matches(name: String?, advertisement: AdvertisementInfo): Boolean {
-        if (name != null && namePatterns.any { it.matches(name) }) return true
+        // The whole Colmi/Yawell ring family advertises under many names but shares one protocol;
+        // the per-model catalog owns the name patterns (iOS #49 ColmiCoordinator.matches).
+        if (com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)?.family == RingDeviceType.COLMI_R02) {
+            return true
+        }
         return advertisement.serviceUUIDs.contains(ColmiUUIDs.SERVICE_V1) ||
             advertisement.serviceUUIDs.contains(ColmiUUIDs.SERVICE_V2)
     }

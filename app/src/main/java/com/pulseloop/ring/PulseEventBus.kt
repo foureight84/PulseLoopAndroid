@@ -10,7 +10,16 @@ import kotlinx.coroutines.flow.asSharedFlow
  */
 sealed class PulseEvent {
     data class DeviceStateChanged(val state: RingConnectionState, val address: String?, val firmware: String? = null, val name: String? = null) : PulseEvent()
-    data class DeviceIdentified(val deviceType: RingDeviceType, val capabilities: Set<WearableCapability>) : PulseEvent()
+    /** Emitted on connect once the active wearable's type + capabilities are known (iOS #49 adds
+     *  the exact catalog model + advertised name so persistence can stamp them on the device). */
+    data class DeviceIdentified(
+        val deviceType: RingDeviceType,
+        val wearableModelID: String? = null,
+        val advertisedName: String? = null,
+        val capabilities: Set<WearableCapability> = emptySet(),
+    ) : PulseEvent()
+    /** Emitted when the user forgets the ring, so persistence clears the stored model identity. */
+    data object DeviceForgotten : PulseEvent()
     data class BatteryLevel(val percent: Int) : PulseEvent()
     data class RawPacket(val direction: PacketDirection, val data: ByteArray, val decoded: RingDecodedEvent) : PulseEvent() {
         override fun equals(other: Any?): Boolean {

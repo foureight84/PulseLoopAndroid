@@ -322,6 +322,39 @@ fun PulseLoopApp() {
                 }
                 composable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
                 composable("settings") { SettingsScreen(navController, bleClient, coordinator) }
+                // Settings detail screens (iOS #49): each hub row pushes one of these.
+                composable("settings/wearable") {
+                    WearableSettingsScreen(
+                        bleClient = bleClient,
+                        coordinator = coordinator,
+                        onAddRing = { navController.navigate("pairing") },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable("settings/measurement") {
+                    MeasurementSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                composable("settings/coach") {
+                    CoachSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                composable("settings/checkins") {
+                    CheckInsSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                composable("settings/profile") {
+                    ProfileSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                composable("settings/calibration") {
+                    CalibrationSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                composable("settings/goals") {
+                    GoalsSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                composable("settings/about") {
+                    AboutSettingsScreen(
+                        onOpenDebug = { navController.navigate("debug") },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
                 composable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
                 composable("vitals/{metric}") { backStackEntry ->
                     val metric = backStackEntry.arguments?.getString("metric") ?: return@composable

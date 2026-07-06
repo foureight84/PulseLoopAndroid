@@ -269,6 +269,7 @@ private fun labelFor(event: PulseEvent): String = when (event) {
     is PulseEvent.TemperatureSample -> "Temp"
     is PulseEvent.DeviceStateChanged -> "BLE State"
     is PulseEvent.DeviceIdentified -> "Device ID"
+    is PulseEvent.DeviceForgotten -> "Forgot"
     is PulseEvent.SyncProgress -> "Sync"
     is PulseEvent.FirmwareVersion -> "FW Ver"
     is PulseEvent.RawPacket -> "Raw Pkt"
@@ -287,7 +288,9 @@ private fun detailFor(event: PulseEvent): String = when (event) {
     is PulseEvent.HrvSample -> "${event.value} ms"
     is PulseEvent.TemperatureSample -> "${"%.1f".format(event.celsius)}°C"
     is PulseEvent.DeviceStateChanged -> event.state.name
-    is PulseEvent.DeviceIdentified -> event.deviceType.displayName
+    is PulseEvent.DeviceIdentified ->
+        com.pulseloop.wearables.WearableModel.model(event.wearableModelID)?.displayName
+            ?: event.deviceType.displayName
     is PulseEvent.SyncProgress -> event.stage
     is PulseEvent.FirmwareVersion -> "V${event.version ?: 0}"
     is PulseEvent.RawPacket -> hexDump(event.data) + " ${event.direction.name}"
