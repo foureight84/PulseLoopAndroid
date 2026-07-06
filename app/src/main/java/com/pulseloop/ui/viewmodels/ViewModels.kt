@@ -58,9 +58,9 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         val lastUpdated: Long = 0L,
         // Daily activity-ring goals, read reactively from the stored [UserGoalEntity]
         // (distance/calorie columns added with iOS #48; defaults match iOS UserGoal).
-        val stepGoal: Int = 10000,
-        val distanceGoalMeters: Double = 8000.0,
-        val caloriesGoal: Int = 500,
+        val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
+        val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
+        val caloriesGoal: Int = UserGoalEntity.DEFAULT_CALORIES,
         /** Last 7 days of step totals (oldest→newest) for the hero delta (iOS trends.steps7d). */
         val steps7d: List<Int> = emptyList(),
         /** Latest "today" coach summary card, when the coach has generated one. */
@@ -303,10 +303,10 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         /** All finished sessions, newest first (drives Today + the history sheet). */
         val finishedWorkouts: List<ActivitySessionEntity> = emptyList(),
         val today: ActivityDailyEntity? = null,
-        val stepGoal: Int = 10000,
+        val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
         val activeMinutesGoal: Int = 45,
-        val distanceGoalMeters: Double = 8000.0,
-        val caloriesGoal: Int = 500,
+        val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
+        val caloriesGoal: Int = UserGoalEntity.DEFAULT_CALORIES,
         val sleepMinutesGoal: Int = 480,
         val workoutsPerWeekGoal: Int = 4,
     )

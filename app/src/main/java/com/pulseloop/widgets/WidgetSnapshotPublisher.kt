@@ -11,6 +11,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.entity.UserGoalEntity
 import com.pulseloop.service.MetricKind
 import com.pulseloop.service.SleepScore
 import com.pulseloop.service.VitalsThresholdEngine
@@ -24,6 +25,7 @@ import com.pulseloop.ui.viewmodels.VitalCardState
 import com.pulseloop.ui.viewmodels.VitalsCardFactory
 import com.pulseloop.ui.viewmodels.VitalsViewModel
 import com.pulseloop.ui.viewmodels.toCardInputs
+import com.pulseloop.util.Formats
 import com.pulseloop.util.TimeUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +92,15 @@ object WidgetSnapshotPublisher {
      * overrides the update skip so the periodic worker can re-render staleness/rollover chrome.
      */
     suspend fun publishNow(context: Context, forceWidgetUpdate: Boolean = false) {
+        // Nothing on any home screen → nobody reads the snapshot; skip the full state
+        // rebuild (a Room query sweep + card factory + JSON encode) that would otherwise
+        // run on every foreground/background edge and sync burst. Same gate as
+        // [WidgetRefreshWorker]. Drop the content hash so the first publish after a
+        // widget is (re)placed writes and renders fresh instead of being skip-matched.
+        if (!hasAnyWidget(context)) {
+            lastContentHash = null
+            return
+        }
         publishMutex.withLock {
             try {
                 val db = PulseLoopDatabase.getInstance(context)
@@ -186,15 +197,15 @@ object WidgetSnapshotPublisher {
 
         return WidgetActivityPayload(
             steps = steps?.toDouble(),
-            stepsGoal = (goal?.steps ?: 10_000).toDouble(),
+            stepsGoal = (goal?.steps ?: UserGoalEntity.DEFAULT_STEPS).toDouble(),
             distanceDisplay = distanceDisplay,
-            distanceGoalDisplay = UnitConverter.distance(goal?.distanceMeters ?: 8_000.0, units),
+            distanceGoalDisplay = UnitConverter.distance(goal?.distanceMeters ?: UserGoalEntity.DEFAULT_DISTANCE_METERS, units),
             distanceUnitLabel = UnitConverter.distanceUnit(units).uppercase(),
             calories = calories,
-            caloriesGoal = (goal?.calories ?: 500).toDouble(),
-            stepsText = steps?.let { "%,d".format(it) },
-            distanceText = distanceDisplay?.let { "%.1f".format(it) },
-            caloriesText = calories?.let { "%,d".format(it.toInt()) },
+            caloriesGoal = (goal?.calories ?: UserGoalEntity.DEFAULT_CALORIES).toDouble(),
+            stepsText = steps?.let { Formats.count(it) },
+            distanceText = distanceDisplay?.let { Formats.distance(it) },
+            caloriesText = calories?.let { Formats.count(it.toInt()) },
         )
     }
 
@@ -207,7 +218,7 @@ object WidgetSnapshotPublisher {
         val blocks = try { db.sleepStageBlockDao().forSession(night.id) } catch (_: Exception) { emptyList() }
         val score = SleepScore.calculate(night, blocks).score
         return WidgetSleepPayload(
-            durationText = "${night.totalMinutes / 60}h ${night.totalMinutes % 60}m",
+            durationText = Formats.hoursMinutes(night.totalMinutes),
             score = score,
             segments = buildSleepStageSegments(blocks).map {
                 WidgetSleepPayload.Segment(it.minutes, colorToHex(it.color), it.label)

@@ -193,13 +193,23 @@ data class UserProfileEntity(
 @Entity(tableName = "user_goals")
 data class UserGoalEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
-    val steps: Int = 10000,
+    val steps: Int = DEFAULT_STEPS,
     /** Daily distance goal in meters (iOS UserGoal.distanceMeters, added in iOS #48). */
-    @ColumnInfo(defaultValue = "8000.0") val distanceMeters: Double = 8000.0,
+    @ColumnInfo(defaultValue = "8000.0") val distanceMeters: Double = DEFAULT_DISTANCE_METERS,
     /** Daily active-calorie goal in kcal (iOS UserGoal.calories, added in iOS #48). */
-    @ColumnInfo(defaultValue = "500") val calories: Int = 500,
+    @ColumnInfo(defaultValue = "500") val calories: Int = DEFAULT_CALORIES,
     val sleepMinutes: Int = 480,
     val activeMinutes: Int = 45,
     val workoutsPerWeek: Int = 4,
     val updatedAt: Long = System.currentTimeMillis(),
-)
+) {
+    companion object {
+        // Canonical no-goal-row fallbacks (match iOS UserGoal). Every surface that
+        // renders ring progress against a goal — Today tiles, Activity screen, the
+        // widget snapshot — must fall back through these, not a local literal, or the
+        // widget and the app disagree the day one copy changes.
+        const val DEFAULT_STEPS = 10_000
+        const val DEFAULT_DISTANCE_METERS = 8_000.0
+        const val DEFAULT_CALORIES = 500
+    }
+}

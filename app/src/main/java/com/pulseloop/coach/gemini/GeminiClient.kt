@@ -7,9 +7,10 @@ import com.pulseloop.coach.openai.OpenAIResponse
 import com.pulseloop.coach.openai.ResponseOutputItem
 import com.pulseloop.coach.openai.ResponsesClient
 import com.pulseloop.coach.openai.ResponsesError
+import com.pulseloop.coach.openai.ResponsesHttp
+import com.pulseloop.coach.openai.ResponsesToolSpecs
 import com.pulseloop.coach.openai.TextContent
 import kotlinx.serialization.json.*
-import okhttp3.MediaType.Companion.toMediaType
 import java.util.UUID
 
 /**
@@ -35,11 +36,6 @@ class GeminiClient(
     private var model = model
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val jsonMediaType = "application/json".toMediaType()
-    private val client = okhttp3.OkHttpClient.Builder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
 
     // Accumulated Gemini-format conversation contents.
     private var systemText = ""
@@ -70,20 +66,7 @@ class GeminiClient(
         val geminiBody = buildRequestBody(req)
         val bodyBytes = json.encodeToString(JsonObject.serializer(), geminiBody).toByteArray()
 
-        val request = okhttp3.Request.Builder()
-            .url("$baseURL/$model:generateContent?key=$apiKey")
-            .post(okhttp3.RequestBody.create(jsonMediaType, bodyBytes))
-            .header("Content-Type", "application/json")
-            .build()
-
-        val response = try {
-            client.newCall(request).execute()
-        } catch (e: Exception) {
-            throw ResponsesError.Transport(e)
-        }
-
-        val body = response.body?.string() ?: ""
-        if (!response.isSuccessful) throw ResponsesError.Http(response.code, body)
+        val body = ResponsesHttp.post("$baseURL/$model:generateContent?key=$apiKey", bodyBytes)
 
         val root = try {
             json.parseToJsonElement(body).jsonObject
@@ -253,19 +236,12 @@ class GeminiClient(
      *  it records that grounding is wanted (see `webSearchRequested`) so we can
      *  attach `google_search` on the tool-less final turn. */
     private fun convertTools(tools: List<JsonObject>): List<JsonObject> {
-        val decls = tools.mapNotNull { tool ->
-            val type = (tool["type"] as? JsonPrimitive)?.contentOrNull
-            if (type == "web_search" || type == "web_search_preview") {
-                webSearchRequested = true
-                return@mapNotNull null
-            }
-            if (type != "function") return@mapNotNull null
-            val name = (tool["name"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            val decl = mutableMapOf<String, JsonElement>("name" to JsonPrimitive(name))
-            (tool["description"] as? JsonPrimitive)?.contentOrNull?.let {
-                decl["description"] = JsonPrimitive(it)
-            }
-            (tool["parameters"] as? JsonObject)?.let { decl["parameters"] = cleanSchema(it) }
+        val parsed = ResponsesToolSpecs.parse(tools)
+        if (parsed.webSearchRequested) webSearchRequested = true
+        val decls = parsed.functions.map { fn ->
+            val decl = mutableMapOf<String, JsonElement>("name" to JsonPrimitive(fn.name))
+            fn.description?.let { decl["description"] = JsonPrimitive(it) }
+            fn.parameters?.let { decl["parameters"] = cleanSchema(it) }
             JsonObject(decl)
         }
         if (decls.isEmpty()) return emptyList()

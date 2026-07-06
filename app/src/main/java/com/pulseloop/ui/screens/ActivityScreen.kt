@@ -37,6 +37,7 @@ import com.pulseloop.ui.components.ActivityRings
 import com.pulseloop.service.SleepFormat
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.ActivityViewModel
+import com.pulseloop.util.Formats
 import kotlinx.coroutines.launch
 import java.util.Calendar
 
@@ -195,7 +196,7 @@ private fun weeklySteps(state: ActivityViewModel.ActivityState, todayIdx: Int): 
 private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, units: UnitSystem) {
     val shape = RoundedCornerShape(20.dp)
     val today = state.today
-    val distValue = today?.distanceMeters?.let { "%.1f".format(UnitConverter.distance(it, units)) }
+    val distValue = today?.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -208,10 +209,10 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row {
-                SummaryMetric("Steps", today?.steps?.let { "%,d".format(it) } ?: "—", null, PulseColors.steps, Modifier.weight(1f))
+                SummaryMetric("Steps", today?.steps?.let { Formats.count(it) } ?: "—", null, PulseColors.steps, Modifier.weight(1f))
                 SummaryMetric("Distance", distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
             }
-            SummaryMetric("Calories", today?.calories?.let { "%,d".format(it.toInt()) } ?: "—", if (today?.calories != null) "cal" else null, PulseColors.calories)
+            SummaryMetric("Calories", today?.calories?.let { Formats.count(it.toInt()) } ?: "—", if (today?.calories != null) "cal" else null, PulseColors.calories)
         }
         ActivityRings(
             rings = listOf(
@@ -304,10 +305,7 @@ fun ActivityWorkoutRow(session: ActivitySessionEntity, units: UnitSystem, onTap:
     }
 }
 
-private fun durationLabel(seconds: Int): String {
-    val m = seconds / 60
-    return if (m >= 60) "${m / 60}h ${m % 60}m" else "${m}m"
-}
+private fun durationLabel(seconds: Int): String = Formats.durationCompact(seconds / 60)
 
 // ─────────────────── Weekly goal widget ───────────────────
 
@@ -522,7 +520,7 @@ private fun GoalEditorDialog(
         title = { Text("Edit goals") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                GoalSlider("Steps", "%,d".format((steps / 500).toInt() * 500), steps, 2000f..20000f) { steps = it }
+                GoalSlider("Steps", Formats.count((steps / 500).toInt() * 500), steps, 2000f..20000f) { steps = it }
                 GoalSlider("Active minutes", "${active.toInt()} min", active, 10f..180f) { active = it }
                 GoalSlider("Sleep", "%.1f h".format((sleepH * 2).toInt() / 2f), sleepH, 5f..10f) { sleepH = it }
                 GoalSlider("Workouts / week", "${workouts.toInt()}", workouts, 1f..7f) { workouts = it }

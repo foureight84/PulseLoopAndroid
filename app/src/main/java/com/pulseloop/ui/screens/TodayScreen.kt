@@ -20,6 +20,7 @@ import com.pulseloop.service.VitalsThresholdEngine
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.ui.components.*
+import com.pulseloop.util.Formats
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.TodayViewModel
 import com.pulseloop.ui.viewmodels.VitalCardState
@@ -133,7 +134,7 @@ private fun ActivityTileFor(
     modifier: Modifier,
     onTap: () -> Unit,
 ) {
-    val distText = state.distanceMeters?.let { "%.1f".format(UnitConverter.distance(it, units)) }
+    val distText = state.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
     ActivityTile(
         rings = listOf(
             ActivityRing(state.steps?.toDouble(), state.stepGoal.toDouble(), PulseColors.steps),
@@ -141,9 +142,9 @@ private fun ActivityTileFor(
             ActivityRing(state.calories, state.caloriesGoal.toDouble(), PulseColors.calories),
         ),
         values = buildList {
-            state.steps?.let { add(ActivityTileValue("STEPS", "%,d".format(it), PulseColors.steps)) }
+            state.steps?.let { add(ActivityTileValue("STEPS", Formats.count(it), PulseColors.steps)) }
             distText?.let { add(ActivityTileValue(UnitConverter.distanceUnit(units), it, PulseColors.distance)) }
-            state.calories?.let { add(ActivityTileValue("CAL", "%,d".format(it.toInt()), PulseColors.calories)) }
+            state.calories?.let { add(ActivityTileValue("CAL", Formats.count(it.toInt()), PulseColors.calories)) }
         },
         modifier = modifier,
         onTap = onTap,
@@ -155,7 +156,7 @@ private fun SleepTileFor(sleep: SleepViewModel.SleepState, modifier: Modifier, o
     val session = sleep.lastNight
     val segments = remember(sleep) { buildSleepStageSegments(sleep.lastNightBlocks) }
     SleepTile(
-        durationText = session?.let { "${it.totalMinutes / 60}h ${it.totalMinutes % 60}m" },
+        durationText = session?.let { Formats.hoursMinutes(it.totalMinutes) },
         segments = segments,
         score = sleep.score?.score ?: session?.score,
         modifier = modifier,

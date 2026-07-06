@@ -7,10 +7,11 @@ import com.pulseloop.coach.openai.OpenAIResponse
 import com.pulseloop.coach.openai.ResponseOutputItem
 import com.pulseloop.coach.openai.ResponsesClient
 import com.pulseloop.coach.openai.ResponsesError
+import com.pulseloop.coach.openai.ResponsesHttp
+import com.pulseloop.coach.openai.ResponsesToolSpecs
 import com.pulseloop.coach.openai.TextContent
 import com.pulseloop.coach.orchestration.CoachResponseSchema
 import kotlinx.serialization.json.*
-import okhttp3.MediaType.Companion.toMediaType
 import java.util.UUID
 
 /**
@@ -39,11 +40,6 @@ class OpenRouterClient(
     private val endpoint: String = "https://openrouter.ai/api/v1/chat/completions",
 ) : ResponsesClient {
     private val json = Json { ignoreUnknownKeys = true }
-    private val jsonMediaType = "application/json".toMediaType()
-    private val client = okhttp3.OkHttpClient.Builder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
 
     // Accumulated Chat Completions messages for this turn.
     private var messages = mutableListOf<JsonObject>()
@@ -66,24 +62,12 @@ class OpenRouterClient(
         val body = buildRequestBody(req)
         val bodyBytes = json.encodeToString(JsonObject.serializer(), body).toByteArray()
 
-        val request = okhttp3.Request.Builder()
-            .url(endpoint)
-            .post(okhttp3.RequestBody.create(jsonMediaType, bodyBytes))
-            .header("Content-Type", "application/json")
-            .header("Authorization", "Bearer $apiKey")
+        val responseBody = ResponsesHttp.post(endpoint, bodyBytes, mapOf(
+            "Authorization" to "Bearer $apiKey",
             // Optional attribution headers OpenRouter uses for its app leaderboard.
-            .header("HTTP-Referer", "https://github.com/foureight84/PulseLoopAndroid")
-            .header("X-Title", "PulseLoop")
-            .build()
-
-        val response = try {
-            client.newCall(request).execute()
-        } catch (e: Exception) {
-            throw ResponsesError.Transport(e)
-        }
-
-        val responseBody = response.body?.string() ?: ""
-        if (!response.isSuccessful) throw ResponsesError.Http(response.code, responseBody)
+            "HTTP-Referer" to "https://github.com/foureight84/PulseLoopAndroid",
+            "X-Title" to "PulseLoop",
+        ))
 
         val root = try {
             json.parseToJsonElement(responseBody).jsonObject
@@ -216,28 +200,20 @@ class OpenRouterClient(
      *  equivalent, so it's dropped here and instead routed via OpenRouter's
      *  `:online` model suffix (see `onlineModelSlug`), which works across the
      *  whole catalog and needs no extra tool-loop round trip. */
-    private fun convertTools(tools: List<JsonObject>): List<JsonObject> =
-        tools.mapNotNull { tool ->
-            val type = (tool["type"] as? JsonPrimitive)?.contentOrNull
-            if (type == "web_search" || type == "web_search_preview") {
-                webSearchRequested = true
-                return@mapNotNull null
-            }
-            if (type != "function") return@mapNotNull null
-            val name = (tool["name"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            val fn = mutableMapOf<String, JsonElement>("name" to JsonPrimitive(name))
-            (tool["description"] as? JsonPrimitive)?.contentOrNull?.let {
-                fn["description"] = JsonPrimitive(it)
-            }
-            (tool["parameters"] as? JsonObject)?.let { fn["parameters"] = it }
-            (tool["strict"] as? JsonPrimitive)?.booleanOrNull?.let {
-                fn["strict"] = JsonPrimitive(it)
-            }
+    private fun convertTools(tools: List<JsonObject>): List<JsonObject> {
+        val parsed = ResponsesToolSpecs.parse(tools)
+        if (parsed.webSearchRequested) webSearchRequested = true
+        return parsed.functions.map { spec ->
+            val fn = mutableMapOf<String, JsonElement>("name" to JsonPrimitive(spec.name))
+            spec.description?.let { fn["description"] = JsonPrimitive(it) }
+            spec.parameters?.let { fn["parameters"] = it }
+            spec.strict?.let { fn["strict"] = JsonPrimitive(it) }
             JsonObject(mapOf(
                 "type" to JsonPrimitive("function"),
                 "function" to JsonObject(fn),
             ))
         }
+    }
 
     // ── Build request body ───────────────────────────────────────────────
 

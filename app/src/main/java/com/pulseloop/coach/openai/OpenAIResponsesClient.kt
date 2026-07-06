@@ -24,6 +24,21 @@ class OpenAIResponsesClient(
     private val apiKey: String,
     private val endpoint: String = "https://api.openai.com/v1/responses",
 ) : ResponsesClient {
+    override suspend fun send(requestBody: ByteArray): OpenAIResponse {
+        if (apiKey.isBlank()) throw ResponsesError.MissingAPIKey
+        val body = ResponsesHttp.post(endpoint, requestBody, mapOf("Authorization" to "Bearer $apiKey"))
+        if (body.isBlank()) throw ResponsesError.EmptyOutput
+        return OpenAIResponse.parse(body)
+    }
+}
+
+/**
+ * Shared OkHttp transport for every [ResponsesClient]. One process-wide client
+ * (30 s connect / 60 s read) instead of a fresh connection pool per agent turn,
+ * and one place for the [ResponsesError.Transport]/[ResponsesError.Http] mapping
+ * all three providers share.
+ */
+internal object ResponsesHttp {
     private val jsonMediaType = "application/json".toMediaType()
 
     private val client = okhttp3.OkHttpClient.Builder()
@@ -31,28 +46,68 @@ class OpenAIResponsesClient(
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    override suspend fun send(requestBody: ByteArray): OpenAIResponse {
-        if (apiKey.isBlank()) throw ResponsesError.MissingAPIKey
-
-        val request = okhttp3.Request.Builder()
-            .url(endpoint)
-            .post(okhttp3.RequestBody.create(jsonMediaType, requestBody))
-            .header("Authorization", "Bearer $apiKey")
-            .build()
+    /**
+     * POSTs a JSON [body] to [url] and returns the raw response body. Throws
+     * [ResponsesError.Transport] on network failure and [ResponsesError.Http]
+     * (with the error body) on a non-2xx status.
+     */
+    fun post(url: String, body: ByteArray, headers: Map<String, String> = emptyMap()): String {
+        val builder = okhttp3.Request.Builder()
+            .url(url)
+            .post(okhttp3.RequestBody.create(jsonMediaType, body))
+        for ((name, value) in headers) builder.header(name, value)
 
         val response = try {
-            client.newCall(request).execute()
+            client.newCall(builder.build()).execute()
         } catch (e: Exception) {
             throw ResponsesError.Transport(e)
         }
+        val text = response.body?.string() ?: ""
+        if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
+        return text
+    }
+}
 
-        if (!response.isSuccessful) {
-            val body = response.body?.string() ?: ""
-            throw ResponsesError.Http(response.code, body)
+/** One parsed Responses-API function tool spec, provider-neutral. */
+internal data class FunctionToolSpec(
+    val name: String,
+    val description: String?,
+    val parameters: JsonObject?,
+    val strict: Boolean?,
+)
+
+internal data class ParsedToolSpecs(
+    val functions: List<FunctionToolSpec>,
+    /** True when the OpenAI hosted `web_search` spec was present (it has no
+     *  function equivalent; each adapter routes it its own way). */
+    val webSearchRequested: Boolean,
+)
+
+/**
+ * Splits the app's flat Responses-API tool specs (`{type, name, description,
+ * parameters, strict}`) into function declarations plus the hosted web-search
+ * request. This interpretation must be identical across the Gemini and
+ * OpenRouter adapters — only the final provider shape may differ.
+ */
+internal object ResponsesToolSpecs {
+    fun parse(tools: List<JsonObject>): ParsedToolSpecs {
+        var webSearch = false
+        val functions = tools.mapNotNull { tool ->
+            val type = (tool["type"] as? JsonPrimitive)?.contentOrNull
+            if (type == "web_search" || type == "web_search_preview") {
+                webSearch = true
+                return@mapNotNull null
+            }
+            if (type != "function") return@mapNotNull null
+            val name = (tool["name"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            FunctionToolSpec(
+                name = name,
+                description = (tool["description"] as? JsonPrimitive)?.contentOrNull,
+                parameters = tool["parameters"] as? JsonObject,
+                strict = (tool["strict"] as? JsonPrimitive)?.booleanOrNull,
+            )
         }
-
-        val body = response.body?.string() ?: throw ResponsesError.EmptyOutput
-        return OpenAIResponse.parse(body)
+        return ParsedToolSpecs(functions, webSearch)
     }
 }
 
