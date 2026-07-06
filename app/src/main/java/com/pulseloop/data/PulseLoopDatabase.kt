@@ -129,7 +129,11 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     "pulseloop.db"
                 )
                     .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-                    .fallbackToDestructiveMigration()
+                    // Downgrades only (sideloading an older APK). A blanket destructive
+                    // fallback would silently wipe every measurement, sleep session, and
+                    // coach conversation on any future version bump that misses a
+                    // Migration — that must fail loudly in development instead.
+                    .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                     .also { INSTANCE = it }
             }

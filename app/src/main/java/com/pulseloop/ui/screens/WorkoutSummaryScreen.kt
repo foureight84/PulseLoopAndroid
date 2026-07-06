@@ -55,7 +55,9 @@ fun WorkoutSummaryScreen(
 ) {
     val context = LocalContext.current
     val db = remember { PulseLoopDatabase.getInstance(context) }
-    val units = ApiKeyStore(context).resolvedUnitSystem
+    // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — too
+    // expensive to repeat on every recomposition.
+    val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
     val scope = rememberCoroutineScope()
     var session by remember { mutableStateOf<ActivitySessionEntity?>(null) }
     var points by remember { mutableStateOf<List<ActivityGpsPointEntity>>(emptyList()) }

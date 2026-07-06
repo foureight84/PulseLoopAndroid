@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.coach.attachments.CoachAttachmentRef
+import kotlinx.coroutines.launch
 import com.pulseloop.coach.attachments.CoachAttachmentStore
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.CoachViewModel
@@ -268,8 +269,18 @@ private fun Composer(
     // Staged (not yet sent) attachments — persisted to the store on pick, sent with the
     // next message. Image-only sends are allowed (iOS #31).
     var staged by remember { mutableStateOf(listOf<CoachAttachmentRef>()) }
+    val scope = rememberCoroutineScope()
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        uri?.let { picked -> CoachAttachmentStore.save(ctx, picked)?.let { staged = staged + it } }
+        // Decode + JPEG re-encode + file write happen off the main thread — the
+        // ActivityResult callback arrives on it, and a large photo would freeze the frame.
+        uri?.let { picked ->
+            scope.launch {
+                val ref = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    CoachAttachmentStore.save(ctx, picked)
+                }
+                ref?.let { staged = staged + it }
+            }
+        }
     }
     val canSend = (inputText.isNotBlank() || staged.isNotEmpty()) && !isThinking
 

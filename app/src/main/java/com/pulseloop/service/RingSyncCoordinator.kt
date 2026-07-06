@@ -134,29 +134,11 @@ class RingSyncCoordinator(
     }
 
     /** The persisted per-device measurement config, or the all-on default when none saved. */
-    private suspend fun loadMeasurementSettings(): MeasurementSettings {
-        val device = try { db.deviceDao().current() } catch (_: Exception) { null }
-            ?: return MeasurementSettings.ALL_ON_DEFAULT
-        val config = try { db.deviceMeasurementConfigDao().byDevice(device.id) } catch (_: Exception) { null }
-            ?: return MeasurementSettings.ALL_ON_DEFAULT
-        return MeasurementSettings(
-            hrEnabled = config.hrEnabled,
-            hrIntervalMinutes = config.hrIntervalMinutes,
-            spo2Enabled = config.spo2Enabled,
-            stressEnabled = config.stressEnabled,
-            hrvEnabled = config.hrvEnabled,
-            temperatureEnabled = config.temperatureEnabled,
-        )
-    }
+    private suspend fun loadMeasurementSettings(): MeasurementSettings =
+        loadPersistedMeasurementSettings(db)
 
-    private suspend fun loadUserProfileValues(): UserProfileValues? {
-        val profile = try { db.userProfileDao().get() } catch (_: Exception) { null } ?: return null
-        return UserProfileValues.from(
-            metric = apiKeyStore?.resolvedUnitSystem != com.pulseloop.settings.UnitSystem.IMPERIAL,
-            sex = profile.sex, age = profile.age,
-            heightCm = profile.heightCm, weightKg = profile.weightKg,
-        )
-    }
+    private suspend fun loadUserProfileValues(): UserProfileValues? =
+        loadPersistedUserProfile(db, apiKeyStore)
 
     /**
      * Live "Save" from the Measurement settings section: persist nothing here (the view owns
@@ -502,4 +484,38 @@ class RingSyncCoordinator(
         syncResetJob?.cancel()
         _syncProgress.value = null
     }
+}
+
+/**
+ * The persisted per-device measurement config, or the all-on default when none saved.
+ * Shared by the foreground coordinator and the background [RingSyncWorker] so BOTH
+ * connect handshakes push the user's saved settings — a worker that skips this would
+ * silently revert the ring to all-on defaults every background sync.
+ */
+internal suspend fun loadPersistedMeasurementSettings(db: PulseLoopDatabase): MeasurementSettings {
+    val device = try { db.deviceDao().current() } catch (_: Exception) { null }
+        ?: return MeasurementSettings.ALL_ON_DEFAULT
+    val config = try { db.deviceMeasurementConfigDao().byDevice(device.id) } catch (_: Exception) { null }
+        ?: return MeasurementSettings.ALL_ON_DEFAULT
+    return MeasurementSettings(
+        hrEnabled = config.hrEnabled,
+        hrIntervalMinutes = config.hrIntervalMinutes,
+        spo2Enabled = config.spo2Enabled,
+        stressEnabled = config.stressEnabled,
+        hrvEnabled = config.hrvEnabled,
+        temperatureEnabled = config.temperatureEnabled,
+    )
+}
+
+/** The persisted user profile as ring-protocol values, or null when no profile saved. */
+internal suspend fun loadPersistedUserProfile(
+    db: PulseLoopDatabase,
+    apiKeyStore: ApiKeyStore?,
+): UserProfileValues? {
+    val profile = try { db.userProfileDao().get() } catch (_: Exception) { null } ?: return null
+    return UserProfileValues.from(
+        metric = apiKeyStore?.resolvedUnitSystem != com.pulseloop.settings.UnitSystem.IMPERIAL,
+        sex = profile.sex, age = profile.age,
+        heightCm = profile.heightCm, weightKg = profile.weightKg,
+    )
 }

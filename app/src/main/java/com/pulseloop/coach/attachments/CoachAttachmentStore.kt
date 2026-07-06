@@ -111,14 +111,31 @@ object CoachAttachmentStore {
         }
     }
 
-    /** Photo-picker convenience: decodes a content `Uri` and saves it. */
+    /** Photo-picker convenience: decodes a content `Uri` (subsampled near the target
+     *  size — a full-res 50 MP decode would allocate ~200 MB) and saves it. Does disk
+     *  I/O and decoding; call from a background dispatcher. */
     fun save(context: Context, uri: Uri): CoachAttachmentRef? {
         val bitmap = try {
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight) }
+            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
         } catch (_: Exception) {
             null
         } ?: return null
         return save(context, bitmap)
+    }
+
+    /** Largest power-of-two subsample that keeps the long edge at or above [MAX_DIMENSION],
+     *  so `downscaled()` still lands exactly on the target from a modest-size decode. */
+    private fun sampleSize(width: Int, height: Int): Int {
+        var sample = 1
+        var longEdge = maxOf(width, height)
+        while (longEdge / 2 >= MAX_DIMENSION) {
+            sample *= 2
+            longEdge /= 2
+        }
+        return sample
     }
 
     private fun downscaled(bitmap: Bitmap): Bitmap {

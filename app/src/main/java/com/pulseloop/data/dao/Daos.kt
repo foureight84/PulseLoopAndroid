@@ -96,16 +96,16 @@ interface ActivityDailyDao {
 
     @Query("DELETE FROM activity_daily WHERE source = 'demo'")
     suspend fun clearDemo()
-
-    /** One-time repair: drop past ring-written daily rows so they regenerate from buckets. */
-    @Query("DELETE FROM activity_daily WHERE date < :day AND source NOT IN ('demo', 'mock')")
-    suspend fun clearRingHistoryBefore(day: Long)
 }
 
 @Dao
 interface ActivityBucketDao {
     @Query("SELECT * FROM activity_buckets WHERE date = :day ORDER BY startEpoch ASC")
     suspend fun byDay(day: Long): List<ActivityBucketEntity>
+
+    /** Distinct past days that have synced buckets — the DataRepairs recompute scope. */
+    @Query("SELECT DISTINCT date FROM activity_buckets WHERE date < :day ORDER BY date ASC")
+    suspend fun daysBefore(day: Long): List<Long>
 
     @Upsert
     suspend fun upsert(bucket: ActivityBucketEntity)

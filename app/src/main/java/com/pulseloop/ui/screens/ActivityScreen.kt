@@ -54,7 +54,10 @@ fun ActivityScreen(
     liveWorkout: com.pulseloop.service.LiveWorkoutManager? = null,
 ) {
     val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(ActivityViewModel.ActivityState()) })
-    val units = ApiKeyStore(LocalContext.current).resolvedUnitSystem
+    val context = LocalContext.current
+    // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
+    // too expensive to repeat on every recomposition of this state-collecting screen.
+    val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
     val scope = rememberCoroutineScope()
     var pickerOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }

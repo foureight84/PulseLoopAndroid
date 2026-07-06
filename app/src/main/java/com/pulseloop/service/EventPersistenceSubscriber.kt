@@ -254,11 +254,19 @@ class EventPersistenceSubscriber(
         val totalDistance = buckets.sumOf { it.distanceMeters }
 
         val existing = db.activityDailyDao().byDay(dayStart)
+        // A past day's truth is the sum of its distinct buckets. For TODAY the live 0x0C
+        // cumulative total leads the bucket history (the in-progress slice isn't served yet,
+        // and the decoder collapses sub-hour slices), so ratchet against the existing row
+        // instead of overwriting — otherwise every reconnect visibly drops today's count
+        // until the next live update. Keep the stale-garbage escape from the live path.
+        val isToday = dayStart == com.pulseloop.util.TimeUtil.startOfTodayLocal()
+        val stale = existing != null && existing.steps > 200_000
+        val ratchet = isToday && existing != null && !stale
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
-                steps = totalSteps,
-                distanceMeters = totalDistance,
-                source = "ring_history",
+                steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
+                distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
+                source = if (ratchet) existing!!.source else "ring_history",
                 syncedAt = System.currentTimeMillis(),
                 updatedAt = System.currentTimeMillis(),
             )

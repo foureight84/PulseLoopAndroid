@@ -752,10 +752,16 @@ class VitalDetailViewModel(
     }
 
     fun setPeriod(p: Period) {
+        // refresh() treats the WEEK/MONTH anchor as the window START, so the anchor
+        // must be the start of the current period — the trailing 7 days for WEEK,
+        // the first of the month for MONTH. Anchoring at today would aim the window
+        // at the future and leave only today's samples in range.
+        val todayStart = TimeUtil.startOfDayLocal(System.currentTimeMillis())
         val anchor = when (p) {
             Period.DAY   -> System.currentTimeMillis()   // rolling last 24h, ending now
-            Period.WEEK  -> TimeUtil.startOfDayLocal(System.currentTimeMillis())
-            Period.MONTH -> TimeUtil.startOfDayLocal(System.currentTimeMillis())
+            Period.WEEK  -> todayStart - 6 * 86_400_000L
+            Period.MONTH -> Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
+                .withDayOfMonth(1).toInstant().toEpochMilli()
         }
         _state.update { it.copy(period = p, anchor = anchor) }
         viewModelScope.launch { refresh() }
@@ -788,7 +794,7 @@ class VitalDetailViewModel(
         val todayStart = TimeUtil.startOfTodayLocal()
         val maxAnchor = when (st.period) {
             Period.DAY -> System.currentTimeMillis()  // rolling: end can reach now
-            Period.WEEK -> todayStart
+            Period.WEEK -> todayStart - 6 * 86_400_000L  // latest window start (trailing 7 days)
             Period.MONTH -> {
                 val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
                 i.withDayOfMonth(1).toInstant().toEpochMilli()
@@ -806,7 +812,7 @@ class VitalDetailViewModel(
         return when (st.period) {
             // Enabled only if a full 24h step still fits before now (i.e. we're paged back).
             Period.DAY   -> st.anchor + 86_400_000L <= System.currentTimeMillis()
-            Period.WEEK  -> st.anchor < todayStart
+            Period.WEEK  -> st.anchor < todayStart - 6 * 86_400_000L
             Period.MONTH -> {
                 val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
                 st.anchor < i.withDayOfMonth(1).toInstant().toEpochMilli()

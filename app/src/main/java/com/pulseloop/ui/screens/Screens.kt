@@ -85,7 +85,10 @@ fun VitalsScreen(
         com.pulseloop.service.RingSyncCoordinator.SPOT_MEASURE_SECONDS
     // Card chrome state (value / status / trend / footer) is factory-built once per state
     // emission, off the composition path — the cards below run no threshold math.
-    val vitalsUnits = ApiKeyStore(LocalContext.current).resolvedUnitSystem
+    // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — too
+    // expensive to repeat on every recomposition of this state-collecting screen.
+    val vitalsScreenContext = LocalContext.current
+    val vitalsUnits = remember { ApiKeyStore(vitalsScreenContext) }.resolvedUnitSystem
     val cards = remember(state, vitalsUnits) {
         val inputs = state.toCardInputs(vitalsUnits)
         MetricKind.entries.associateWith { metric -> VitalsCardFactory.card(metric, inputs, state.profile) }

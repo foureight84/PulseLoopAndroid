@@ -49,7 +49,10 @@ fun TodayScreen(
     val sleep by (sleepViewModel?.state?.collectAsState() ?: remember { mutableStateOf(SleepViewModel.SleepState()) })
     val scope = rememberCoroutineScope()
     var isRefreshing by remember { mutableStateOf(false) }
-    val units = ApiKeyStore(LocalContext.current).resolvedUnitSystem
+    val context = LocalContext.current
+    // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
+    // too expensive to repeat on every recomposition of this state-collecting screen.
+    val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
     val pullRefreshState = rememberPullRefreshState(
         refreshing = isRefreshing,
         onRefresh = {

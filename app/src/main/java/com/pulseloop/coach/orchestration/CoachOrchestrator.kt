@@ -16,25 +16,21 @@ import kotlinx.serialization.json.*
  * Ported from [CoachOrchestrator] in CoachOrchestrator.swift.
  * The coach agent loop: context → model → tools → structured final.
  *
- * The client is taken as a FACTORY, not an instance: the Gemini/OpenRouter
- * adapters are stateful (they accumulate the conversation across `send` calls
- * within one agent turn), so every `runTurn` needs a fresh client. Wire it via
- * `CoachClientResolver.clientFactory(store, apiKeyStore)` so the active
- * provider is re-resolved per turn; the legacy single-client constructor keeps
- * old call sites compiling (fine for the stateless OpenAI client).
+ * The client AND the feature flags are taken as FACTORIES, not instances: the
+ * Gemini/OpenRouter adapters are stateful (they accumulate the conversation
+ * across `send` calls within one agent turn), so every `runTurn` needs a fresh
+ * client — and the flags (enabled gate, model slug, reasoning effort, tool
+ * toggles) must be re-read per turn so pasting an API key or switching
+ * provider/model in Settings takes effect on the next turn, not on process
+ * restart. Wire the client via `CoachClientResolver.clientFactory(store,
+ * apiKeyStore)`; the tool registry and execution context are rebuilt per turn
+ * from the same fresh flags.
  */
 class CoachOrchestrator(
     private val clientFactory: () -> ResponsesClient,
-    private val registry: ToolRegistry,
-    private val flags: CoachFeatureFlags,
-    private val toolContext: ToolExecutionContext,
+    private val flagsProvider: () -> CoachFeatureFlags,
+    private val toolContextFactory: (CoachFeatureFlags) -> ToolExecutionContext,
 ) {
-    constructor(
-        client: ResponsesClient,
-        registry: ToolRegistry,
-        flags: CoachFeatureFlags,
-        toolContext: ToolExecutionContext,
-    ) : this({ client }, registry, flags, toolContext)
 
     private val maxFinalAttempts = 3
     private val maxToolArgRetries = 2
@@ -80,15 +76,18 @@ class CoachOrchestrator(
         recentMessages: List<PriorMessage> = emptyList(),
         userImages: List<CoachImagePayload> = emptyList(),
     ): TurnResult {
+        // Fresh flags per turn — picks up key/provider/model changes without a rebuild.
+        val flags = flagsProvider()
         if (!flags.coachEnabled) return TurnResult(CoachFallbacks.scripted(packet))
         return try {
-            runOpenAI(userText, packet, recentMessages, userImages)
+            runOpenAI(flags, userText, packet, recentMessages, userImages)
         } catch (e: Exception) {
             TurnResult(CoachFallbacks.fallback(), error = CoachTurnError.from(e))
         }
     }
 
     private suspend fun runOpenAI(
+        flags: CoachFeatureFlags,
         userText: String,
         packet: CoachContextPacket,
         recentMessages: List<PriorMessage>,
@@ -97,6 +96,8 @@ class CoachOrchestrator(
         // Fresh client per turn — required for the stateful Gemini/OpenRouter
         // adapters, and it picks up settings changes without a rebuild.
         val client = clientFactory()
+        val registry = ToolRegistry(flags)
+        val toolContext = toolContextFactory(flags)
         val toolSpecs = registry.toolSpecs
         val textFormat = coachResponseTextFormat
 
@@ -114,7 +115,7 @@ class CoachOrchestrator(
         val userContent = if (userText.isEmpty() && userImages.isNotEmpty()) IMAGE_ONLY_PROMPT else userText
         input.add(OpenAIRequestBuilder.message("user", userContent, userImages))
 
-        var response = send(client, input, toolSpecs, textFormat, null)
+        var response = send(client, flags, input, toolSpecs, textFormat, null)
         val trace = mutableListOf<CoachToolCallTrace>()
         var toolCalls = 0
         var rounds = 0
@@ -150,11 +151,11 @@ class CoachOrchestrator(
             }
 
             rounds++
-            response = send(client, outputs, toolSpecs, textFormat, response.id)
+            response = send(client, flags, outputs, toolSpecs, textFormat, response.id)
         }
 
         try {
-            val assistant = parseFinal(client, response)
+            val assistant = parseFinal(client, flags, response)
             TurnResult(assistant = assistant, trace = trace, pendingActions = toolContext.pendingActions.toList())
         } catch (e: ParseExhausted) {
             // The model never produced valid coach_response JSON. Surface it as an
@@ -167,6 +168,7 @@ class CoachOrchestrator(
 
     private suspend fun parseFinal(
         client: ResponsesClient,
+        flags: CoachFeatureFlags,
         response: com.pulseloop.coach.openai.OpenAIResponse,
     ): CoachResponse {
         var current = response
@@ -182,12 +184,13 @@ class CoachOrchestrator(
                         if (snippet.isEmpty()) "" else " It replied: “$snippet…”")
             }
             val repair = OpenAIRequestBuilder.message("user", "Your previous output did not match the required coach_response JSON schema. Return only valid JSON for that schema now.")
-            current = send(client, listOf(repair), emptyList(), coachResponseTextFormat, current.id)
+            current = send(client, flags, listOf(repair), emptyList(), coachResponseTextFormat, current.id)
         }
     }
 
     private suspend fun send(
         client: ResponsesClient,
+        flags: CoachFeatureFlags,
         input: List<JsonObject>,
         tools: List<JsonObject>,
         textFormat: JsonObject,

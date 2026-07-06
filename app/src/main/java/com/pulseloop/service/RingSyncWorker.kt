@@ -64,6 +64,13 @@ class RingSyncWorker(
 
         val bleClient = RingBLEClient(applicationContext)
 
+        // Load the persisted measurement config + profile up front so the connect
+        // handshake pushes the user's saved settings — a fresh engine defaults to
+        // MeasurementSettings.ALL_ON_DEFAULT and a neutral profile, which would
+        // silently revert Settings > Measurement on the ring every background sync.
+        val measurementSettings = loadPersistedMeasurementSettings(db)
+        val profileValues = loadPersistedUserProfile(db, keyStore)
+
         return try {
             withTimeout(SYNC_TIMEOUT_SECONDS * 1000L) {
                 // Connect to last-known ring
@@ -74,6 +81,8 @@ class RingSyncWorker(
                     connected = true
                     // Run startup sync to pull activity, HR, sleep, etc.
                     val engine = bleClient.syncEngine
+                    engine?.setMeasurementSettings(measurementSettings)
+                    profileValues?.let { engine?.setUserProfile(it) }
                     engine?.runStartup()
                 }
 

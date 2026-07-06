@@ -61,30 +61,35 @@ fun PulseLoopApp() {
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────
-        // The client is resolved per turn through CoachClientResolver (OpenAI /
-        // Gemini / OpenRouter per the provider settings), so key/model/provider
-        // changes take effect on the next turn without rebuilding the orchestrator.
+        // Both the client AND the feature flags are resolved per turn through
+        // CoachClientResolver (OpenAI / Gemini / OpenRouter per the provider
+        // settings), so key/model/provider changes take effect on the next turn
+        // without rebuilding the orchestrator — a frozen flags snapshot would
+        // keep coachEnabled=false after a key is pasted, or send a stale model
+        // slug to a newly selected provider, until process restart.
         val coachOrchestrator = remember {
-            val resolution = com.pulseloop.coach.config.CoachClientResolver.resolve(providerStore, apiKeyStore)
-            val flags = CoachFeatureFlags(
-                coachEnabled = apiKeyStore.coachEnabled && resolution.key != null,
-                webSearchEnabled = apiKeyStore.webSearchEnabled,
-                writeToolsEnabled = false,  // safe default
-                liveMeasurementsEnabled = true,
-                model = com.pulseloop.coach.config.CoachClientResolver.activeModel(
-                    providerStore.snapshot(), apiKeyStore.model,
-                ),
-                settings = CoachSettings(reasoningEffort = providerStore.reasoningEffort ?: "medium"),
-            )
-            val registry = ToolRegistry(flags)
-            val toolContext = ToolExecutionContext(
-                db = db,
-                flags = flags,
-                coordinator = coordinator,
-            )
             CoachOrchestrator(
                 com.pulseloop.coach.config.CoachClientResolver.clientFactory(providerStore, apiKeyStore),
-                registry, flags, toolContext,
+                flagsProvider = {
+                    val resolution = com.pulseloop.coach.config.CoachClientResolver.resolve(providerStore, apiKeyStore)
+                    CoachFeatureFlags(
+                        coachEnabled = apiKeyStore.coachEnabled && resolution.key != null,
+                        webSearchEnabled = apiKeyStore.webSearchEnabled,
+                        writeToolsEnabled = false,  // safe default
+                        liveMeasurementsEnabled = true,
+                        model = com.pulseloop.coach.config.CoachClientResolver.activeModel(
+                            providerStore.snapshot(), apiKeyStore.model,
+                        ),
+                        settings = CoachSettings(reasoningEffort = providerStore.reasoningEffort ?: "medium"),
+                    )
+                },
+                toolContextFactory = { flags ->
+                    ToolExecutionContext(
+                        db = db,
+                        flags = flags,
+                        coordinator = coordinator,
+                    )
+                },
             )
         }
 

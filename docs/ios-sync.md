@@ -147,8 +147,11 @@ can't inflate step counts; includes a one-time migration deleting inflated rows.
 `EventPersistenceSubscriber` routed buckets through the live `max()` ratchet with no per-bucket
 storage — a *worse* variant: a history day's total collapsed to its single largest bucket.
 Ported in `1a4f007`: `autoHeartRate` enqueued at startup, `activity_buckets` table (Room v2→v3
-additive migration), sum-of-buckets recompute, and a one-time prefs-gated repair (`DataRepairs`)
-dropping past ring-written daily rows so they regenerate on the next sync.
+additive migration), sum-of-buckets recompute, and a one-time prefs-gated repair (`DataRepairs`).
+Post-review the repair was made non-destructive: it recomputes past days that have synced
+buckets instead of deleting all past ring rows (the ring only re-serves ~7 days, so a delete
+would permanently destroy older history; an undercounted total beats no total), and the bucket
+path now max()-ratchets TODAY's row so a history re-sync can't visibly drop the live count.
 
 **#15 — Sleep midnight splitting.**
 iOS keys sleep sessions to the *waking day* with a 7 PM boundary (start ≥ 19:00 → next
