@@ -47,9 +47,9 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#31](https://github.com/foureight84/PulseLoop/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
 | ☐ | [#24](https://github.com/foureight84/PulseLoop/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
 | ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | `4aad39a` |
-| ☐ | [#48](https://github.com/foureight84/PulseLoop/pull/48) `aff8574` | 07-05 | Pairing redesign: brand tabs, ring product images, onboarding flow, shared profile/goal editors | **PORT** | L | |
-| ☐ | [#49](https://github.com/foureight84/PulseLoop/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | |
-| ☐ | [#44](https://github.com/foureight84/PulseLoop/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | |
+| ☑ | [#48](https://github.com/foureight84/PulseLoop/pull/48) `aff8574` | 07-05 | Pairing redesign: brand tabs, ring product images, onboarding flow, shared profile/goal editors | **PORT** | L | `a38ddf5` |
+| ☑ | [#49](https://github.com/foureight84/PulseLoop/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | `de60096` |
+| ☑ | [#44](https://github.com/foureight84/PulseLoop/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | `c8efccd` |
 
 ### 2026-07-06 design-parity sweep (screen audit → port)
 
