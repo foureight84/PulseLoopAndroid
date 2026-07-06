@@ -59,6 +59,7 @@ class SleepStreamController(
         job = null
         if (streaming) {
             coordinator.stopWorkoutHeartRate()
+            SleepForegroundService.stop(context)
             streaming = false
         }
     }
@@ -75,12 +76,14 @@ class SleepStreamController(
         val gatesPass = inNightWindow() && coordinator.isConnected && isCharging()
 
         if (gatesPass && !streaming) {
+            SleepForegroundService.start(context)  // keep the process alive through Doze
             coordinator.startWorkoutHeartRate()
             streaming = true
             ticksSinceSpO2 = 0
             streamStartedAt = System.currentTimeMillis()
         } else if (!gatesPass && streaming) {
             coordinator.stopWorkoutHeartRate()
+            SleepForegroundService.stop(context)
             streaming = false
             // Night ended. If it ended because the phone was UNPLUGGED (not because
             // the clock left the window or the ring dropped), that's the wake signal —

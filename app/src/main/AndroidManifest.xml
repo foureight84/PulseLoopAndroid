@@ -68,5 +68,12 @@
             android:name=".service.WorkoutForegroundService"
             android:foregroundServiceType="connectedDevice"
             android:exported="false" />
+
+        <!-- Keeps the overnight 1 Hz stream alive through Doze. Same connectedDevice
+             type as the workout service (prerequisite BLUETOOTH_CONNECT). -->
+        <service
+            android:name=".service.SleepForegroundService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
     </application>
 </manifest>

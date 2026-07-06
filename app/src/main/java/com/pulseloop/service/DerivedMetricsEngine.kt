@@ -82,7 +82,12 @@ class DerivedMetricsEngine(
             val window = db.measurementDao()
                 .range(MeasurementKind.HEART_RATE.name, now - HRV_WINDOW_MS, now)
                 .map { it.value.toInt() }
-            sdnnProxy(window)?.let { sdnn ->
+            // Only write physiologically-plausible HRV. A window of near-constant
+            // (heavily-smoothed) HR yields SDNN≈0, and a single stray interval yields
+            // an absurd value — both are computation artifacts, not real HRV. Real
+            // sleeping SDNN sits ~20-200ms. (2026-07-06: overnight HRV was pocked with
+            // 0.0 and 10.5 dropouts from flat-HR windows.)
+            sdnnProxy(window)?.takeIf { it in 20.0..200.0 }?.let { sdnn ->
                 db.measurementDao().insert(MeasurementEntity(
                     kindRaw = MeasurementKind.HRV.name, value = sdnn, unit = "ms",
                     timestamp = now, sourceRaw = SOURCE_DERIVED,
