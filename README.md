@@ -4,7 +4,31 @@
 > The rings are not medical devices. This app does not replace professional
 > healthcare. Always consult your doctor for any medical concerns.
 
-Android port of [PulseLoop](https://github.com/foureight84/PulseLoop) — a smart ring companion app for the 56ff/Jring and Colmi/Yawell QRing platforms.
+<p align="center">
+  <a href="docs/images/thumbnail.png">
+    <img src="docs/images/thumbnail.png" alt="PulseLoop">
+  </a>
+</p>
+
+<!-- ===================== TOP CALLOUTS ===================== -->
+<p align="center">
+  <a href="https://saksham2001.github.io/PulseLoopiOS/"><b>📚 Documentation</b></a> ·
+  <a href="https://github.com/saksham2001/PulseLoopiOS/tree/main"><b>📱 Parent iOS project</b></a> ·
+  <a href="https://discord.gg/t9y85ebaKD"><b>💬 Join the Discord</b></a> ·
+  <a href="https://sakshambhutani.xyz/projects/20_project/"><b>📖 Read the writeup</b></a>
+</p>
+
+<!-- ===================== FEATURED / SHARED ON ===================== -->
+<p align="center"><i>Featured on communities:</i></p>
+<p align="center">
+  <a href="https://www.reddit.com/r/ReverseEngineering/comments/1u34idd/reverse_engineered_ble_protocol_of_a_7_generic/"><img src="https://img.shields.io/badge/Reddit-r%2FReverseEngineering-FF4500?logo=reddit&logoColor=white" alt="r/ReverseEngineering"></a>
+  <a href="https://www.reddit.com/r/hardwarehacking/comments/1u3wdeb/reverse_engineered_s_7_chinese_smart_ring_from/"><img src="https://img.shields.io/badge/Reddit-r%2Fhardwarehacking-FF4500?logo=reddit&logoColor=white" alt="r/hardwarehacking"></a>
+  <a href="https://www.reddit.com/r/selfhosted/comments/1u3wg8z/reverse_engineered_ble_protocol_of_a_7_generic/"><img src="https://img.shields.io/badge/Reddit-r%2Fselfhosted-FF4500?logo=reddit&logoColor=white" alt="r/selfhosted"></a>
+  <a href="https://www.reddit.com/r/degoogle/comments/1u43mxe/you_dont_need_fitbit_now_i_reverse_engineering_a/"><img src="https://img.shields.io/badge/Reddit-r%2Fdegoogle-FF4500?logo=reddit&logoColor=white" alt="r/degoogle"></a>
+  <a href="https://x.com/vu3dtu/status/2064797099385061792"><img src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" alt="X post"></a>
+</p>
+
+Android port of [PulseLoop](https://github.com/saksham2001/PulseLoopiOS/tree/main) — a smart ring companion app for the 56ff/Jring and Colmi/Yawell QRing platforms. Questions, ring compatibility reports, or debugging help — join us on [Discord](https://discord.gg/t9y85ebaKD).
 
 ## Pairing Your Ring
 
@@ -72,6 +96,38 @@ reading to apply a display offset. These are stored locally as calibration offse
 - Local-midnight-aligned day bucketing for consistent daily stats across timezones
 - Calibrated display pipeline: `bpAdjustSystolic`/`bpAdjustDiastolic` offsets applied in ViewModels, `glucoseOffsetMgdl` applied to blood sugar readings
 - Pull-to-refresh on Today dashboard triggers immediate ring sync
+
+---
+
+## Debug & Diagnostics
+
+PulseLoop Android ships a built-in diagnostics tool (an Android-only addition — iOS has a
+simpler debug view): **Settings → Debug**.
+
+The Debug screen shows a live view of what the app and ring are doing:
+
+- **Raw BLE packet trace** — every frame sent/received, with hex payload and the decoded packet kind
+- **Live event log** — the decoded event stream (measurements, sync stages, connection changes) as it flows through the app
+- **Database stats** — row counts per table, so you can see whether history sync is actually landing data
+
+### Exporting a diagnostics report
+
+The share button on the Debug screen produces a single JSON report you can attach to a
+[GitHub issue](https://github.com/foureight84/PulseLoopAndroid/issues) or share on
+[Discord](https://discord.gg/t9y85ebaKD) when reporting a bug. It contains:
+
+- App version/build info and phone model/OS version
+- Ring type, capabilities, firmware version, and last-sync time
+- The most recent wearable log entries and raw BLE packets
+- Recent crash stack traces (uncaught exceptions are persisted on-device by the built-in crash logger)
+- The app's own logcat, including in-process `BluetoothGatt` callbacks
+
+**Privacy redaction is ON by default** and resets to ON for every export — the report is
+privacy-safe unless you explicitly opt out for a single export. When redaction is on:
+health-measurement packet payloads are reduced to their opcode (connection/pairing control
+frames stay whole so protocol issues remain debuggable), the ring name is masked, and log/logcat
+text is scrubbed of identifiers. No health values, names, or addresses leave the report intact.
+Nothing is ever uploaded automatically — the export only goes where you share it.
 
 ---
 
