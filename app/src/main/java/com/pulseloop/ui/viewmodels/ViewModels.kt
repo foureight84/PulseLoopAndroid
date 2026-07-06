@@ -6,9 +6,11 @@ import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.Bucket
 import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
+import com.pulseloop.coach.summaries.CoachSummaryKind
 import com.pulseloop.service.HeartRateZones
 import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepInsights
+import com.pulseloop.service.SleepRangeKey
 import com.pulseloop.service.SleepScore
 import com.pulseloop.service.SleepScoreResult
 import com.pulseloop.service.UserPhysiologyProfile
@@ -18,6 +20,7 @@ import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.MetricThresholds
 import com.pulseloop.ui.components.MetricThresholdTable
+import com.pulseloop.ui.components.toColor
 import com.pulseloop.util.TimeUtil
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -59,6 +62,10 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         val stepGoal: Int = 10000,
         val distanceGoalMeters: Double = 8000.0,
         val caloriesGoal: Int = 500,
+        /** Last 7 days of step totals (oldest→newest) for the hero delta (iOS trends.steps7d). */
+        val steps7d: List<Int> = emptyList(),
+        /** Latest "today" coach summary card, when the coach has generated one. */
+        val coachSummary: CoachSummaryEntity? = null,
     )
 
     private val _state = MutableStateFlow(TodayState())
@@ -81,6 +88,18 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
                     _state.update { it.copy(stepGoal = goal.steps) }
                 }
             } catch (_: Exception) {}
+        }
+        // 7-day step series for the hero delta (oldest→newest; DAO returns newest-first).
+        viewModelScope.launch {
+            db.activityDailyDao().recentFlow(7).collect { days ->
+                _state.update { it.copy(steps7d = days.reversed().map { d -> d.steps }) }
+            }
+        }
+        // Today's coach summary card (kind="today", scopeKey=local date).
+        viewModelScope.launch {
+            db.coachSummaryDao()
+                .getFlow(com.pulseloop.coach.summaries.CoachSummaryKind.TODAY.rawValue, java.time.LocalDate.now().toString())
+                .collect { summary -> _state.update { it.copy(coachSummary = summary) } }
         }
         viewModelScope.launch {
             db.deviceDao().currentFlow().collect { device ->
@@ -150,40 +169,126 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
 }
 
 /**
- * SleepViewModel — reads Room data for the Sleep screen.
+ * SleepViewModel — reads Room data for the Sleep screen, ported from
+ * SleepService.sleepRange (PulseServices.swift) + SleepView.swift range handling.
+ * Day view anchors on the *reference night* (before 4 AM local = yesterday's night);
+ * Week/Month/Year anchor on the last recorded session so history still surfaces.
  */
-class SleepViewModel(db: PulseLoopDatabase) : ViewModel() {
+class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     data class SleepState(
+        val range: SleepRangeKey = SleepRangeKey.DAY,
+        // Day view (also feeds the Today sleep tile)
         val lastNight: SleepSessionEntity? = null,
         val lastNightBlocks: List<SleepStageBlockEntity> = emptyList(),
         val score: SleepScoreResult? = null,
         val coach: SleepCoach? = null,
         val recentSessions: List<SleepSessionEntity> = emptyList(),
+        // Aggregate view (week/month/year)
+        val rangeSessions: List<SleepSessionEntity> = emptyList(),
+        val expectedNights: Int = 7,
+        val avgMinutes: Int? = null,
+        val avgScore: Int? = null,
+        /** Average deep/light/awake minutes across the range's valid nights. */
+        val stageAvg: Triple<Int, Int, Int>? = null,
+        val bars: List<com.pulseloop.service.SleepBar> = emptyList(),
+        val aggregateCoach: SleepCoach? = null,
+        val goalMinutes: Int? = null,
+        // LLM summaries when present (fallback = the scripted coach above)
+        val daySummary: CoachSummaryEntity? = null,
+        val rangeSummary: CoachSummaryEntity? = null,
     )
 
     private val _state = MutableStateFlow(SleepState())
     val state: StateFlow<SleepState> = _state.asStateFlow()
 
+    fun setRange(range: SleepRangeKey) {
+        _state.update { it.copy(range = range) }
+        viewModelScope.launch { try { rebuild(range) } catch (_: Exception) {} }
+    }
+
     init {
+        // Any sleep-table change retriggers a rebuild of the selected range.
         viewModelScope.launch {
             db.sleepSessionDao().recentFlow(7).collect { sessions ->
-                val last = sessions.firstOrNull()
-                val blocks = if (last != null) db.sleepStageBlockDao().forSession(last.id) else emptyList()
-                val scoreResult = if (last != null) SleepScore.calculate(last, blocks) else null
-                val coachText = if (last != null && scoreResult != null) {
-                    SleepInsights.dayCoach(last, blocks, null)
-                } else if (last == null) {
-                    SleepInsights.dayNoDataCoach
-                } else null
-                _state.update { it.copy(
-                    lastNight = last,
-                    lastNightBlocks = blocks,
-                    score = scoreResult,
-                    coach = coachText,
-                    recentSessions = sessions,
-                ) }
+                _state.update { it.copy(recentSessions = sessions) }
+                try { rebuild(_state.value.range) } catch (_: Exception) {}
             }
         }
+    }
+
+    private suspend fun rebuild(range: SleepRangeKey) {
+        val blocksCache = HashMap<String, List<SleepStageBlockEntity>>()
+        suspend fun blocksFor(id: String): List<SleepStageBlockEntity> =
+            blocksCache.getOrPut(id) { db.sleepStageBlockDao().forSession(id) }
+        // aggregateCoach/averageScore take a synchronous lookup; pre-warm the cache first.
+        val goal = try { db.userGoalDao().get()?.sleepMinutes } catch (_: Exception) { null }
+
+        // ── Day view ──
+        val reference = dayReferenceNight()
+        val night = db.sleepSessionDao().byDay(reference)?.takeIf { it.totalMinutes > 0 }
+        val nightBlocks = night?.let { blocksFor(it.id) } ?: emptyList()
+        val scoreResult = night?.let { SleepScore.calculate(it, nightBlocks) }
+        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
+        val dayCoach = if (night != null) SleepInsights.dayCoach(night, nightBlocks, steps)
+            else SleepInsights.dayNoDataCoach
+
+        // ── Aggregate ──
+        val expected = when (range) {
+            SleepRangeKey.DAY -> 1
+            SleepRangeKey.WEEK -> 7
+            SleepRangeKey.MONTH -> 30
+            SleepRangeKey.YEAR -> 365
+        }
+        val anchor = if (range == SleepRangeKey.DAY) reference
+            else db.sleepSessionDao().recent(1).firstOrNull()?.let { TimeUtil.startOfDayLocal(it.date) }
+                ?: TimeUtil.startOfTodayLocal()
+        val start = anchor - (expected - 1) * 86_400_000L
+        val end = anchor + 86_400_000L - 1
+        val sessions = db.sleepSessionDao().inRange(start, end)
+        val valid = SleepInsights.validSessions(sessions)
+        valid.forEach { blocksFor(it.id) }  // warm cache for the sync lambdas below
+        val lookup: (String) -> List<SleepStageBlockEntity> = { blocksCache[it] ?: emptyList() }
+        val stageAvg = if (valid.isEmpty()) null else Triple(
+            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / valid.size,
+            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / valid.size,
+            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "AWAKE" }.sumOf { b -> b.durationMinutes } } / valid.size,
+        )
+        val bars = when (range) {
+            SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, sessions, lookup)
+            else -> SleepInsights.buildNightAxis(start, end, sessions, lookup, range)
+        }
+
+        // LLM summaries (kind sleep_day / sleep_range_*), newest wins.
+        val daySummary = try { db.coachSummaryDao().latest(CoachSummaryKind.SLEEP_DAY.rawValue) } catch (_: Exception) { null }
+        val rangeSummary = if (range == SleepRangeKey.DAY) null else try {
+            db.coachSummaryDao().latest(CoachSummaryKind.sleepRange(range).rawValue)
+        } catch (_: Exception) { null }
+
+        _state.update {
+            it.copy(
+                lastNight = night,
+                lastNightBlocks = nightBlocks,
+                score = scoreResult,
+                coach = dayCoach,
+                rangeSessions = sessions,
+                expectedNights = expected,
+                avgMinutes = SleepInsights.averageDuration(valid),
+                avgScore = SleepInsights.averageScore(valid, lookup),
+                stageAvg = stageAvg,
+                bars = bars,
+                aggregateCoach = SleepInsights.aggregateCoach(range, sessions, expected, goal, lookup),
+                goalMinutes = goal,
+                daySummary = daySummary,
+                rangeSummary = rangeSummary,
+            )
+        }
+    }
+
+    /** The night to show on the Day view: before 4 AM local, still last night (PulseServices). */
+    private fun dayReferenceNight(): Long {
+        val cal = java.util.Calendar.getInstance()
+        val startOfToday = TimeUtil.startOfTodayLocal()
+        return if (cal.get(java.util.Calendar.HOUR_OF_DAY) < 4) startOfToday - 86_400_000L else startOfToday
     }
 }
 
@@ -193,11 +298,21 @@ class SleepViewModel(db: PulseLoopDatabase) : ViewModel() {
 class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
     data class ActivityState(
         val recentDays: List<ActivityDailyEntity> = emptyList(),
-        val recentWorkouts: List<ActivitySessionEntity> = emptyList(),
+        /** All finished sessions, newest first (drives Today + the history sheet). */
+        val finishedWorkouts: List<ActivitySessionEntity> = emptyList(),
+        val today: ActivityDailyEntity? = null,
+        val stepGoal: Int = 10000,
+        val activeMinutesGoal: Int = 45,
+        val distanceGoalMeters: Double = 8000.0,
+        val caloriesGoal: Int = 500,
+        val sleepMinutesGoal: Int = 480,
+        val workoutsPerWeekGoal: Int = 4,
     )
 
     private val _state = MutableStateFlow(ActivityState())
     val state: StateFlow<ActivityState> = _state.asStateFlow()
+
+    private val db = db
 
     init {
         viewModelScope.launch {
@@ -206,10 +321,43 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
             }
         }
         viewModelScope.launch {
-            db.activitySessionDao().recentFlow(5).collect { sessions ->
-                _state.update { it.copy(recentWorkouts = sessions) }
+            db.activityDailyDao().byDayFlow(TimeUtil.startOfTodayLocal()).collect { day ->
+                _state.update { it.copy(today = day) }
             }
         }
+        viewModelScope.launch {
+            db.activitySessionDao().recentFlow(200).collect { sessions ->
+                _state.update { it.copy(finishedWorkouts = sessions.filter { s -> s.statusRaw == "finished" }) }
+            }
+        }
+        viewModelScope.launch { reloadGoals() }
+    }
+
+    suspend fun reloadGoals() {
+        try {
+            db.userGoalDao().get()?.let { goal ->
+                _state.update { it.copy(
+                    stepGoal = goal.steps,
+                    activeMinutesGoal = goal.activeMinutes,
+                    sleepMinutesGoal = goal.sleepMinutes,
+                    workoutsPerWeekGoal = goal.workoutsPerWeek,
+                ) }
+            }
+        } catch (_: Exception) {}
+    }
+
+    suspend fun saveGoals(steps: Int, activeMinutes: Int, sleepMinutes: Int, workoutsPerWeek: Int) {
+        val existing = try { db.userGoalDao().get() } catch (_: Exception) { null }
+        db.userGoalDao().upsert(
+            (existing ?: UserGoalEntity()).copy(
+                steps = steps,
+                activeMinutes = activeMinutes,
+                sleepMinutes = sleepMinutes,
+                workoutsPerWeek = workoutsPerWeek,
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
+        reloadGoals()
     }
 }
 
@@ -299,16 +447,25 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             com.pulseloop.ring.WearableCapability.BATTERY,
         )
 
-        val hr = db.measurementDao().range(MeasurementKind.HEART_RATE.name, twentyFourHoursAgo, now)
-        val spo2 = db.measurementDao().range(MeasurementKind.SPO2.name, twentyFourHoursAgo, now)
-        val hrv = if (caps.contains(WearableCapability.HRV)) db.measurementDao().range(MeasurementKind.HRV.name, twentyFourHoursAgo, now) else emptyList()
-        val stress = if (caps.contains(WearableCapability.STRESS)) db.measurementDao().range(MeasurementKind.STRESS.name, twentyFourHoursAgo, now) else emptyList()
-        val fatigue = if (caps.contains(WearableCapability.FATIGUE)) db.measurementDao().range(MeasurementKind.FATIGUE.name, twentyFourHoursAgo, now) else emptyList()
-        val temp = if (caps.contains(WearableCapability.TEMPERATURE)) db.measurementDao().range(MeasurementKind.TEMPERATURE.name, twentyFourHoursAgo, now) else emptyList()
-        val bpSys = if (caps.contains(WearableCapability.BLOOD_PRESSURE)) db.measurementDao().range(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name, twentyFourHoursAgo, now) else emptyList()
-        val bpDia = if (caps.contains(WearableCapability.BLOOD_PRESSURE)) db.measurementDao().range(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name, twentyFourHoursAgo, now) else emptyList()
+        // iOS `rangeSamples`: demo mode charts the FULL seeded history (per kind) instead of the
+        // 24h window — that's what makes sparse demo series (daily HRV/temp) render as the
+        // month-long scatter the Simulator shows. Real ring data keeps the 24h window.
+        suspend fun series(kind: MeasurementKind): List<com.pulseloop.data.entity.MeasurementEntity> =
+            if (db.measurementDao().hasDemo(kind.name))
+                db.measurementDao().range(kind.name, 0, Long.MAX_VALUE)
+            else
+                db.measurementDao().range(kind.name, twentyFourHoursAgo, now)
+
+        val hr = series(MeasurementKind.HEART_RATE)
+        val spo2 = series(MeasurementKind.SPO2)
+        val hrv = if (caps.contains(WearableCapability.HRV)) series(MeasurementKind.HRV) else emptyList()
+        val stress = if (caps.contains(WearableCapability.STRESS)) series(MeasurementKind.STRESS) else emptyList()
+        val fatigue = if (caps.contains(WearableCapability.FATIGUE)) series(MeasurementKind.FATIGUE) else emptyList()
+        val temp = if (caps.contains(WearableCapability.TEMPERATURE)) series(MeasurementKind.TEMPERATURE) else emptyList()
+        val bpSys = if (caps.contains(WearableCapability.BLOOD_PRESSURE)) series(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC) else emptyList()
+        val bpDia = if (caps.contains(WearableCapability.BLOOD_PRESSURE)) series(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC) else emptyList()
         val glucoseOffset = apiKeyStore?.glucoseOffsetMgdl ?: 0.0
-        val gluc = if (caps.contains(WearableCapability.BLOOD_SUGAR)) db.measurementDao().range(MeasurementKind.BLOOD_SUGAR.name, twentyFourHoursAgo, now) else emptyList()
+        val gluc = if (caps.contains(WearableCapability.BLOOD_SUGAR)) series(MeasurementKind.BLOOD_SUGAR) else emptyList()
         val userProfile = db.userProfileDao().get()
 
         _state.value = VitalsState(
@@ -325,11 +482,14 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             latestStress = stress.lastOrNull()?.value,
             latestFatigue = fatigue.lastOrNull()?.value,
             latestTemp = temp.lastOrNull()?.value,
-            bpSystolic = db.measurementDao().latest(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name)?.toInt()
+            // Latest = the series' last sample (iOS `inputs.systolic.last`) — demo seeds today's
+            // fixed-hour readings which a `timestamp <= now` probe would skip. Falls back to the
+            // repo's latest row when the window is empty.
+            bpSystolic = (bpSys.lastOrNull()?.value ?: db.measurementDao().latest(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name))?.toInt()
                 ?.plus(apiKeyStore?.bpAdjustSystolic ?: 0),
-            bpDiastolic = db.measurementDao().latest(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name)?.toInt()
+            bpDiastolic = (bpDia.lastOrNull()?.value ?: db.measurementDao().latest(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name))?.toInt()
                 ?.plus(apiKeyStore?.bpAdjustDiastolic ?: 0),
-            bloodSugar = db.measurementDao().latest(MeasurementKind.BLOOD_SUGAR.name)
+            bloodSugar = (gluc.lastOrNull()?.value ?: db.measurementDao().latest(MeasurementKind.BLOOD_SUGAR.name))
                 ?.plus(glucoseOffset),
             bpSysSamples = bpSys.map { it.value },
             bpDiaSamples = bpDia.map { it.value },
@@ -387,6 +547,14 @@ class CoachViewModel(
             "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
     ))
     val state: StateFlow<CoachState> = _state.asStateFlow()
+
+    /** Reset to a fresh thread (iOS CoachView "+" button). In-memory only, like the thread itself. */
+    fun newConversation() {
+        _state.value = CoachState(
+            messages = listOf(ChatMessage("assistant",
+                "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
+        )
+    }
 
     fun sendMessage(
         userText: String,
@@ -460,6 +628,8 @@ class VitalDetailViewModel(
         val resting: Double? = null,   // heart rate only
         val trend: Trend = Trend.FLAT,
         val thresholds: MetricThresholds? = null,
+        /** Profile-aware engine zones (unclamped bounds) for the iOS-style REFERENCE ZONES card. */
+        val engineZones: List<com.pulseloop.service.MetricZone> = emptyList(),
         val loading: Boolean = true,
         val isBP: Boolean = false,
     )
@@ -475,6 +645,18 @@ class VitalDetailViewModel(
 
     init {
         _state.update { it.copy(thresholds = MetricThresholdTable.forKey(metric), isBP = metric == "bp") }
+        // Swap in the same profile-aware engine zones the Vitals cards use, so the detail
+        // chart's line/band colors match the dashboard exactly. The static table stays as
+        // the fallback (and provides the display range the chart is drawn against).
+        viewModelScope.launch {
+            try {
+                val userProfile = db.userProfileDao().get()
+                val physiology = UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex)
+                engineThresholds(metric, physiology)?.let { engine ->
+                    _state.update { it.copy(thresholds = engine) }
+                }
+            } catch (_: Exception) {}
+        }
         viewModelScope.launch { refresh() }
         // Poll every 5s so live syncs appear
         viewModelScope.launch {
@@ -483,6 +665,42 @@ class VitalDetailViewModel(
                 try { refresh() } catch (_: Exception) {}
             }
         }
+    }
+
+    /**
+     * The Vitals-card zone model (VitalsThresholdEngine) converted into the [MetricThresholds]
+     * shape the interactive detail chart consumes — the PR #5 chart machinery is untouched;
+     * only the zone table it colors from changes. Open-ended engine bounds clamp to the static
+     * table's display range so the bar/domain stay finite.
+     */
+    private fun engineThresholds(metricKey: String, physiology: UserPhysiologyProfile): MetricThresholds? {
+        val kind = engineKind(metricKey) ?: return null
+        val base = MetricThresholdTable.forKey(metricKey) ?: return null
+        val zones = com.pulseloop.service.VitalsThresholdEngine.zones(kind, physiology)
+        if (zones.isEmpty()) return null
+        return base.copy(
+            zones = zones.map { z ->
+                com.pulseloop.ui.components.ThresholdZone(
+                    label = z.label,
+                    start = z.lower ?: base.displayMin,
+                    end = z.upper ?: base.displayMax,
+                    color = z.colorToken.toColor(),
+                )
+            },
+        )
+    }
+
+    /** The zone-engine metric for a detail-route key. */
+    private fun engineKind(metricKey: String): com.pulseloop.service.MetricKind? = when (metricKey) {
+        "hr" -> com.pulseloop.service.MetricKind.HEART_RATE
+        "spo2" -> com.pulseloop.service.MetricKind.SPO2
+        "stress" -> com.pulseloop.service.MetricKind.STRESS
+        "fatigue" -> com.pulseloop.service.MetricKind.FATIGUE
+        "hrv" -> com.pulseloop.service.MetricKind.HRV
+        "temp" -> com.pulseloop.service.MetricKind.TEMPERATURE
+        "bp" -> com.pulseloop.service.MetricKind.BLOOD_PRESSURE
+        "glucose" -> com.pulseloop.service.MetricKind.GLUCOSE
+        else -> null
     }
 
     fun setPeriod(p: Period) {
@@ -581,6 +799,12 @@ class VitalDetailViewModel(
         }
 
         val dao = db.measurementDao()
+        // Profile-aware zones for the REFERENCE ZONES card (iOS legend) — HRV gets its
+        // baseline-relative zones from the window's samples further below.
+        val physiology = try {
+            val userProfile = db.userProfileDao().get()
+            UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex)
+        } catch (_: Exception) { UserPhysiologyProfile.UNKNOWN }
 
         if (metric == "bp") {
             // Every reading, at its real timestamp — no averaging.
@@ -598,15 +822,18 @@ class VitalDetailViewModel(
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val trend = computeTrend(thisAvg, prevAvg, if (allValues.isNotEmpty()) allValues.max() - allValues.min() else 1.0)
 
-            val latestSys = dao.latest(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name)
-
             _state.update { it.copy(
                 anchor = anchor,
                 points = points, secondary = secondary, labels = labels,
                 timestamps = times,
-                latest = latestSys,
+                // iOS uses the window's last reading, not the global latest.
+                latest = points.lastOrNull(),
                 min = allValues.minOrNull(), avg = thisAvg, max = allValues.maxOrNull(),
-                trend = trend, loading = false,
+                trend = trend,
+                engineZones = com.pulseloop.service.VitalsThresholdEngine.zones(
+                    com.pulseloop.service.MetricKind.BLOOD_PRESSURE, physiology,
+                ),
+                loading = false,
             ) }
         } else {
             val kind = primaryKind ?: return
@@ -631,21 +858,31 @@ class VitalDetailViewModel(
             val range = if (points.isNotEmpty()) points.max() - points.min() else 1.0
             val trend = computeTrend(thisAvg, prevAvg, range)
 
-            val latest = dao.latest(kindName)?.let(::convert)
-
             // Resting HR from the window's raw samples (low-percentile estimate).
             val resting = if (kind == MeasurementKind.HEART_RATE)
                 HeartRateZones.restingHeartRate(samples.map { it.value })
             else null
 
+            // HRV zones are baseline-relative; the detail window (Week/Month) carries enough
+            // history to establish one (iOS `baselineForChart`).
+            val baseline = if (metric == "hrv")
+                com.pulseloop.service.BaselineStats.compute(samples.map { VitalSample(it.timestamp, it.value) })
+            else null
+            val engineZones = engineKind(metric)?.let { k ->
+                com.pulseloop.service.VitalsThresholdEngine.zones(k, physiology, baseline = baseline)
+            } ?: emptyList()
+
             _state.update { it.copy(
                 anchor = anchor,
                 points = points, secondary = emptyList(), labels = labels,
                 timestamps = times,
-                latest = latest,
+                // iOS uses the window's last reading, not the global latest.
+                latest = points.lastOrNull(),
                 min = points.minOrNull(), avg = thisAvg, max = points.maxOrNull(),
                 resting = resting,
-                trend = trend, loading = false,
+                trend = trend,
+                engineZones = engineZones,
+                loading = false,
             ) }
         }
     }

@@ -37,7 +37,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 |---|--------|--------|-------|---------|--------|----------------|
 | ☑ | [#17](https://github.com/foureight84/PulseLoop/pull/17) `26a6075` | 06-24 | Colmi HR enable + activity sample idempotency | **PORT** | M | `1a4f007` |
 | ☑ | [#15](https://github.com/foureight84/PulseLoop/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
-| ☐ | [#11](https://github.com/foureight84/PulseLoop/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | |
+| ☑ | [#11](https://github.com/foureight84/PulseLoop/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | (uncommitted, 2026-07-06) |
 | ☐ | [#43](https://github.com/foureight84/PulseLoop/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
 | ☐ | [#41](https://github.com/foureight84/PulseLoop/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | |
 | ☑ | [#35](https://github.com/foureight84/PulseLoop/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
@@ -46,6 +46,91 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#22](https://github.com/foureight84/PulseLoop/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | `049058d`+`4d81a07` |
 | ☑ | [#31](https://github.com/foureight84/PulseLoop/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
 | ☐ | [#24](https://github.com/foureight84/PulseLoop/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
+| ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | (uncommitted, 2026-07-06) |
+
+### 2026-07-06 design-parity sweep (screen audit → port)
+
+A full-screen audit against the iOS `screenshots/` folder found the Android tabs far behind the
+iOS #35-era design language. Ported from Swift source (not screenshots) in one sweep:
+
+- **Design system**: `PulseColors.kt` (full AppTheme.swift token set), neutral near-black
+  card/background palette in `Theme.kt` (was purple-washed), shared `AppHeader` (PULSELOOP
+  eyebrow + greeting + connection/battery status pill on every tab, RootViews.swift), tab order
+  Today/Vitals/**Activity/Sleep**/Coach with iOS icons (target, waveform), `CardEyebrow`.
+- **Today** (`TodayScreen.kt`, `TodayTiles.kt`): hero insight card, 2-col tile grid (activity
+  rings tile, sleep tile w/ stage bar + score, HR/SpO₂/HRV/temp zone-chart tiles, stress/
+  fatigue/glucose gauge tiles, dual BP gauge tile — all capability-gated, reusing
+  VitalsCardFactory like iOS TodayStore), coach message card. Old redundant stat tiles removed.
+- **Sleep** (`SleepScreen.kt`, SleepViewModel range rebuild): Day/Week/Month/Year selector,
+  LAST SLEEP hero (duration + big score + rating word), stage-architecture **hypnogram**
+  (lanes, glow segments, dashed transitions, time ticks), stage-duration cards, duration
+  histogram w/ goal line for aggregate ranges, coach card w/ chips. Day view anchors on the
+  4 AM reference night (PulseServices.swift). The old "Recent Nights" list is superseded by
+  the Week/Month views.
+- **Activity** (`ActivityScreen.kt`, `ActivityMeta.kt`): daily summary card (colored stats +
+  rings), "+ Record Activity" pill + history button, TODAY workout rows, weekly-goal widget
+  (progress ring + M–S day pills + goal editor dialog). **Record flow fixed**: a type picker
+  now actually calls `LiveWorkoutManager.start()` (previously nothing did).
+- **Workout summary** (`WorkoutSummaryScreen.kt`, new `activity_detail/{id}` route, wired from
+  rows + record-finish): hero header, 3-col hero band (distance/duration/pace or indoor
+  variant), stat tile grid, GPS route via the Canvas `WorkoutMapView` (**divergence: no map
+  SDK — polyline sketch, no tiles**), per-km splits with relative pace bars (iOS #43 pace
+  rounding honored). Not ported yet: HR/SpO₂ charts + zones, elevation, recording-quality card.
+- **Coach** (`CoachScreen.kt`): avatar sub-header + new-chat button, suggestion chips,
+  iOS bubble styling, markdown-lite (bold/bullets/headings), pill composer with circular
+  attach ("+") and send ("↑") buttons. Not ported yet: chat history browser (Android threads
+  are in-memory only), inline chart attachments in assistant replies.
+- **Vitals cards**: `ZoneLineChart.kt` — zone-split line (via ZoneLineSplitter), reference
+  bands, dashed rules, quiet right/bottom axes; replaces the per-card ThresholdBar +
+  green SimpleLineChart. **PR #5 interactive detail screens untouched** per the standing
+  constraint. BP kept the dual sys/dia line at this point (divergence retired later the same
+  day — see the vitals parity pass below).
+- **iOS #11 dance** folded in: `ActivityMeta` type order/label/icon + coach tool enums +
+  PendingActionExecutor label.
+
+Follow-ups: workout summary HR/SpO₂/elevation/quality sections; coach history + inline
+charts; Today per-metric visibility settings (iOS `MetricsService.isVisible` scopes);
+goal entity lacks distance/calories columns (rings use iOS defaults).
+
+### 2026-07-06 (later) vitals parity pass — detail screens, BP gauges, demo-data 1:1
+
+Owner request: metric detail pages, the Vitals BP card, and Vitals card order must match iOS;
+Today panels must render identically to the iPhone Simulator on the same demo data.
+
+- **Demo data 1:1** (`DemoDataSeeder.kt`): full rewrite to the exact SeedData.swift formulas —
+  deterministic sinusoids + fixed extreme days, no RNG (HR 2-hourly/30d + dense hourly 24h with
+  152/138 spikes; SpO₂ 6-hourly + 2-hourly 24h with 88/91 dips; daily stress×3 / fatigue / HRV /
+  BP / glucose / temperature at iOS clock hours, **including later-today rows** which iOS also
+  seeds). Activity dailies use the iOS 90-day formula; sleep nights use the iOS duration formula
+  + reference hypnogram pattern, scored through `SleepScore`. Demo device is now CONNECTED at
+  82% like iOS (data-display caps only, no BLE ids). Profile matches iOS demo physiology
+  (age 25, "not set").
+- **Demo full-history windows** (`VitalsViewModel`, `MeasurementDao.hasDemo`): mirrors iOS
+  `rangeSamples` — when a kind has demo rows, cards chart the whole seeded history instead of
+  24h. With the card charts' fixed 90-min gap rule (`ZoneLineChart.maxGapMs`, iOS
+  `maxGap(for: .twentyFourHours)`), sparse daily series (HRV/temp) render as the month-long
+  scatter of dots the Simulator shows. Line width 3dp + dot sizes matched to iOS; x labels
+  switch to day/month past 48h spans. BP/glucose "latest" now reads the series tail (demo
+  seeds future-today rows a `<= now` probe would skip).
+- **Vitals screen** (`Screens.kt`): card order now iOS's (HR, SpO₂, **BP, HRV**, Stress,
+  Fatigue, Glucose, Temp). BP card replaced the dual sys/dia line (previous divergence,
+  retired) with iOS's two 130dp `VitalRingGauge`s + SYSTOLIC/DIASTOLIC captions, zone-colored
+  value arcs. Stress/fatigue/glucose cards are now 190dp ring gauges with the
+  "subtitle · trend" footer (`VitalGaugeCardItem`), not line charts — `VitalRingGauge` is now
+  placed on screens (closes the "not yet placed" note above).
+- **Metric detail screens** (`Screens.kt` `VitalDetailScreen`, `VitalDetailViewModel`):
+  restyled to iOS MetricDetailView — centered inline title (sentence case), iOS-style
+  Today/Week/Month segmented control, chart card (24dp, unit label), LATEST/AVERAGE/MIN/MAX
+  single-row stats strip with dividers, REFERENCE ZONES card (engine zones w/ ≥/< range text,
+  new `DetailState.engineZones`, HRV baseline-aware), WHAT-THIS-MEANS card (iOS copy verbatim),
+  amber warning disclaimer for BP/glucose only. **PR #5 interactivity preserved**: the
+  interactive `TrendChart` (scrub/zoom/pan) and the day-paging arrows stay, tucked into the
+  chart card header. "Latest" stat is now the window's last reading (iOS semantics).
+  Removed: 2×2 stat tiles, trend-read row, ThresholdBar legend, generic disclaimer.
+- Verified on-device (`com.pulseloop.debug`) against a fresh iOS Simulator build: Today grid,
+  Vitals cards, HR + SpO₂ details show the same values/zones/scatter. Remaining nit: iOS's
+  seed fires HR workout spikes only when seeded at an even local hour (2-hour grid hits 18:00)
+  — same formula on both platforms, so this matches by construction.
 
 ### Porting notes per item
 
@@ -110,7 +195,8 @@ bands, quiet trailing axes; PR #5 gesture code untouched), `f756010` (VitalsScre
 VitalCard chrome + iOS metric accents, Today activity rings). Deliberately NOT ported: iOS's
 metric-detail/activity-trends screen rebuilds (Android's interactive detail screen is the
 divergence we keep, now restyled), the Today tile re-layout beyond the rings, and the
-settings screen split. `VitalRingGauge` is available but not yet placed on a screen. Distance/
+settings screen split. `VitalRingGauge` was not yet placed on a screen at this point (it is
+now — Today gauge/BP tiles and the Vitals gauge/BP cards use it). Distance/
 calorie ring goals are fixed at iOS defaults until `UserGoalEntity` grows those columns.*
 
 **#19 — Settings redesign + measurement frequency.**

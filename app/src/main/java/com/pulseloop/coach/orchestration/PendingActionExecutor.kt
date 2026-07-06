@@ -12,7 +12,7 @@ object PendingActionExecutor {
     private val activityLabels = mapOf(
         "walk" to "Walking", "run" to "Running", "cycle" to "Cycling",
         "gym" to "Gym", "squash" to "Squash", "sport" to "Sport",
-        "yoga" to "Yoga", "hike" to "Hiking", "other" to "Workout",
+        "yoga" to "Yoga", "dance" to "Dance", "hike" to "Hiking", "other" to "Workout",
         "outdoor_run" to "Running", "outdoor_walk" to "Walking",
     )
 

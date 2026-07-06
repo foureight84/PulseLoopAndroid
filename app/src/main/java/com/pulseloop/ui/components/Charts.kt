@@ -557,21 +557,8 @@ fun TrendChart(
 
             val labelStyle = TextStyle(fontSize = 10.sp, color = axisColor)
 
-            // Reference bands (iOS #35): faint zone-colored rects behind everything, so the
-            // line's zone colors read against the ranges they belong to.
-            if (zoneColoring && thresholds != null) {
-                for (z in thresholds.zones) {
-                    val bandTop = yForValue(minOf(z.end, max)).coerceIn(plotTop, plotBottom)
-                    val bandBottom = yForValue(maxOf(z.start, min)).coerceIn(plotTop, plotBottom)
-                    if (bandBottom > bandTop) {
-                        drawRect(
-                            color = z.color.copy(alpha = 0.08f),
-                            topLeft = Offset(plotLeft, bandTop),
-                            size = Size(plotRight - plotLeft, bandBottom - bandTop),
-                        )
-                    }
-                }
-            }
+            // No zone-band background: the iOS detail chart plots on a clean card, with the
+            // zone-split line + the REFERENCE ZONES card carrying the range context.
 
             // Quiet axes (iOS #35): ≤3 faint horizontal gridlines with trailing value labels.
             val gridCount = 3

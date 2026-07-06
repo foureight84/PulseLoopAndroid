@@ -29,6 +29,7 @@ import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.service.*
 import com.pulseloop.coach.summaries.CoachSummaryCoordinator
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.ui.components.AppHeader
 import com.pulseloop.ui.screens.*
 import com.pulseloop.ui.theme.PulseLoopTheme
 import com.pulseloop.ui.viewmodels.*
@@ -161,12 +162,14 @@ fun PulseLoopApp() {
         }
 
         // ── Navigation ───────────────────────────────────────────────────
+        // Tab order + icons mirror iOS MainTab (AppTheme.swift): Today (circle.circle),
+        // Vitals (heart), Activity (waveform.path.ecg), Sleep (moon), Coach (sparkles).
         val navController = rememberNavController()
         val tabs = listOf(
-            Tab("today", "Today", Icons.Filled.Today, Icons.Outlined.Today),
+            Tab("today", "Today", Icons.Filled.Adjust, Icons.Outlined.Adjust),
             Tab("vitals", "Vitals", Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
+            Tab("activity", "Activity", Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart),
             Tab("sleep", "Sleep", Icons.Filled.Bedtime, Icons.Outlined.Bedtime),
-            Tab("activity", "Activity", Icons.Filled.DirectionsRun, Icons.Outlined.DirectionsRun),
             Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
 
@@ -180,7 +183,44 @@ fun PulseLoopApp() {
 
         val isLandscape =
             LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val tabRoutes = remember(tabs) { tabs.map { it.route }.toSet() }
         Scaffold(
+            containerColor = com.pulseloop.ui.theme.PulseColors.background,
+            topBar = {
+                // Shared iOS-style header (PULSELOOP eyebrow + greeting + status pill) on tab
+                // routes only; pushed screens (settings, details, pairing) bring their own bars.
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val onTabRoute = navBackStackEntry?.destination?.route in tabRoutes
+                if (onTabRoute && !isLandscape) {
+                    Column(Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
+                        val ble by bleClient.state.collectAsState()
+                        val storedDevice by db.deviceDao().currentFlow()
+                            .collectAsState(initial = null)
+                        // Prefer live BLE state; fall back to the stored device so demo data
+                        // shows its ring instead of a permanently blank pill (RootViews.swift).
+                        val liveActive = ble.connectionState in setOf(
+                            com.pulseloop.ring.RingConnectionState.CONNECTED,
+                            com.pulseloop.ring.RingConnectionState.CONNECTING,
+                            com.pulseloop.ring.RingConnectionState.RECONNECTING,
+                            com.pulseloop.ring.RingConnectionState.SCANNING,
+                        )
+                        AppHeader(
+                            state = if (liveActive) ble.connectionState
+                                else storedDevice?.state ?: ble.connectionState,
+                            batteryPercent = ble.batteryPercent ?: storedDevice?.batteryPercent,
+                            onOpenSettings = { navController.navigate("settings") },
+                        )
+                        // Thin sync-progress accent under the greeting while history streams in.
+                        val syncPct = coordinator.syncProgress.collectAsState().value
+                        if (syncPct != null) {
+                            LinearProgressIndicator(
+                                progress = { (syncPct.coerceIn(0, 100)) / 100f },
+                                modifier = Modifier.fillMaxWidth().height(2.dp),
+                            )
+                        }
+                    }
+                }
+            },
             bottomBar = {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val currentDestination = navBackStackEntry?.destination
@@ -220,20 +260,30 @@ fun PulseLoopApp() {
                         }
                     }
                 } else {
-                    NavigationBar {
-                        tabs.forEach { tab ->
-                            val selected = isSelected(tab)
-                            NavigationBarItem(
-                                icon = {
-                                    Icon(
-                                        if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                        contentDescription = tab.label,
-                                    )
-                                },
-                                label = { Text(tab.label) },
-                                selected = selected,
-                                onClick = { onTab(tab) },
-                            )
+                    Column {
+                        HorizontalDivider(thickness = 1.dp, color = com.pulseloop.ui.theme.PulseColors.borderSubtle)
+                        NavigationBar(containerColor = com.pulseloop.ui.theme.PulseColors.background) {
+                            tabs.forEach { tab ->
+                                val selected = isSelected(tab)
+                                NavigationBarItem(
+                                    icon = {
+                                        Icon(
+                                            if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                            contentDescription = tab.label,
+                                        )
+                                    },
+                                    label = { Text(tab.label) },
+                                    selected = selected,
+                                    onClick = { onTab(tab) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = com.pulseloop.ui.theme.PulseColors.textPrimary,
+                                        selectedTextColor = com.pulseloop.ui.theme.PulseColors.textPrimary,
+                                        unselectedIconColor = com.pulseloop.ui.theme.PulseColors.textMuted,
+                                        unselectedTextColor = com.pulseloop.ui.theme.PulseColors.textMuted,
+                                        indicatorColor = com.pulseloop.ui.theme.PulseColors.accentSoft,
+                                    ),
+                                )
+                            }
                         }
                     }
                 }
@@ -244,10 +294,14 @@ fun PulseLoopApp() {
                 startDestination = "today",
                 modifier = Modifier.padding(padding),
             ) {
-                composable("today") { TodayScreen(navController, todayVM, coordinator) }
+                composable("today") { TodayScreen(navController, todayVM, coordinator, vitalsVM, sleepVM) }
                 composable("vitals") { VitalsScreen(navController = navController, viewModel = vitalsVM, coordinator = coordinator) }
                 composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM) }
-                composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM) }
+                composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM, liveWorkout = liveWorkout) }
+                composable("activity_detail/{id}") { backStackEntry ->
+                    val id = backStackEntry.arguments?.getString("id") ?: return@composable
+                    WorkoutSummaryScreen(sessionId = id, onBack = { navController.popBackStack() })
+                }
                 composable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
                 composable("settings") { SettingsScreen(navController, bleClient, coordinator) }
                 composable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
@@ -280,7 +334,10 @@ fun PulseLoopApp() {
                         onFinish = {
                             workoutState.activeSession?.let {
                                 kotlinx.coroutines.runBlocking { liveWorkout.finish(it) }
-                                navController.popBackStack()
+                                // Land on the summary (iOS RecordSummaryView), replacing the live screen.
+                                navController.navigate("activity_detail/${it.id}") {
+                                    popUpTo("record") { inclusive = true }
+                                }
                             }
                         },
                     )

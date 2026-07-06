@@ -75,10 +75,17 @@ fun VitalRingGauge(
             val strokePx = lineWidth.toPx()
             // Inset the arc radius by half the stroke so the stroke fits inside the frame (no
             // clipped ends), and so the marker can sit on the exact same centerline.
+            // The arc box is the centered inscribed SQUARE, not the raw canvas bounds — when a
+            // parent coerces the requested size (e.g. a fixed-height Today tile), drawing from
+            // width/height independently would stretch the ring into an oval.
             val inset = strokePx / 2
-            val arcTopLeft = Offset(inset, inset)
-            val arcSize = Size(this.size.width - strokePx, this.size.height - strokePx)
-            val radius = this.size.minDimension / 2 - inset
+            val dim = this.size.minDimension
+            val arcTopLeft = Offset(
+                (this.size.width - dim) / 2 + inset,
+                (this.size.height - dim) / 2 + inset,
+            )
+            val arcSize = Size(dim - strokePx, dim - strokePx)
+            val radius = dim / 2 - inset
             val center = Offset(this.size.width / 2, this.size.height / 2)
 
             fun tipCenter(fraction: Double): Offset {

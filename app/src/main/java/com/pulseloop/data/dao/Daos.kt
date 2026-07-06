@@ -38,6 +38,11 @@ interface MeasurementDao {
     @Query("SELECT value FROM measurements WHERE kindRaw = :kind AND timestamp <= :before ORDER BY timestamp DESC LIMIT 1")
     suspend fun latest(kind: String, before: Long = System.currentTimeMillis()): Double?
 
+    /** Whether any demo-seeded row exists for a kind — mirrors iOS `hasMockMeasurement(kind:)`,
+     *  which switches chart fetches from the range window to full history in demo mode. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurements WHERE kindRaw = :kind AND sourceRaw = 'demo')")
+    suspend fun hasDemo(kind: String): Boolean
+
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
@@ -129,6 +134,9 @@ interface ActivitySessionDao {
     @Query("SELECT * FROM activity_sessions WHERE statusRaw = 'recording' OR statusRaw = 'paused' LIMIT 1")
     suspend fun active(): ActivitySessionEntity?
 
+    @Query("SELECT * FROM activity_sessions WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): ActivitySessionEntity?
+
     @Query("SELECT * FROM activity_sessions ORDER BY startedAt DESC LIMIT :limit")
     suspend fun recent(limit: Int = 10): List<ActivitySessionEntity>
 
@@ -158,6 +166,9 @@ interface SleepSessionDao {
 
     @Query("SELECT * FROM sleep_sessions ORDER BY date DESC LIMIT :limit")
     fun recentFlow(limit: Int = 7): Flow<List<SleepSessionEntity>>
+
+    @Query("SELECT * FROM sleep_sessions WHERE date BETWEEN :start AND :end ORDER BY date ASC")
+    suspend fun inRange(start: Long, end: Long): List<SleepSessionEntity>
 
     @Upsert
     suspend fun upsert(session: SleepSessionEntity)

@@ -700,7 +700,7 @@ object ActionTools {
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
                 "date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "activity_type" to JsonObject(mapOf("type" to JsonPrimitive("string"), "enum" to JsonArray(listOf("walk", "run", "cycle", "gym", "squash", "sport", "yoga", "hike", "other").map { JsonPrimitive(it) }))),
+                "activity_type" to JsonObject(mapOf("type" to JsonPrimitive("string"), "enum" to JsonArray(listOf("walk", "run", "cycle", "gym", "squash", "sport", "yoga", "dance", "hike", "other").map { JsonPrimitive(it) }))),
                 "duration_min" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
                 "distance_km" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
                 "intensity" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))), "enum" to JsonArray(listOf("easy", "moderate", "hard").map { JsonPrimitive(it) }))),
@@ -743,7 +743,7 @@ object ActionTools {
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
-                "activity_type" to JsonObject(mapOf("type" to JsonPrimitive("string"), "enum" to JsonArray(listOf("walk", "run", "cycle", "gym", "squash", "sport", "yoga", "hike", "other").map { JsonPrimitive(it) }))),
+                "activity_type" to JsonObject(mapOf("type" to JsonPrimitive("string"), "enum" to JsonArray(listOf("walk", "run", "cycle", "gym", "squash", "sport", "yoga", "dance", "hike", "other").map { JsonPrimitive(it) }))),
                 "date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                 "start_time" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
                 "duration_min" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
@@ -799,7 +799,7 @@ object ActionTools {
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
                 "activity_id" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "type" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))), "enum" to JsonArray(listOf("walk", "run", "cycle", "gym", "squash", "sport", "yoga", "hike", "other").map { JsonPrimitive(it) }))),
+                "type" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))), "enum" to JsonArray(listOf("walk", "run", "cycle", "gym", "squash", "sport", "yoga", "dance", "hike", "other").map { JsonPrimitive(it) }))),
                 "notes" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
                 "distance_km" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
                 "duration_min" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
