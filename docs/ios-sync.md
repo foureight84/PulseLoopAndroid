@@ -23,9 +23,9 @@ intentional platform differences listed at the bottom.
 | | |
 |---|---|
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `dff0363` — Merge PR #47, 2026-07-05 |
-| **Last triage date** | 2026-07-05 |
-| **Range covered** | 138 commits / 28 first-parent items |
+| **Last triaged iOS commit** | `80195a6` — Merge PR #44, 2026-07-06 |
+| **Last triage date** | 2026-07-06 |
+| **Range covered** | 138 commits / 28 first-parent items, plus #48/#49/#44 (2026-07-06) |
 
 ---
 
@@ -47,6 +47,9 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#31](https://github.com/foureight84/PulseLoop/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
 | ☐ | [#24](https://github.com/foureight84/PulseLoop/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
 | ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | `4aad39a` |
+| ☐ | [#48](https://github.com/foureight84/PulseLoop/pull/48) `aff8574` | 07-05 | Pairing redesign: brand tabs, ring product images, onboarding flow, shared profile/goal editors | **PORT** | L | |
+| ☐ | [#49](https://github.com/foureight84/PulseLoop/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | |
+| ☐ | [#44](https://github.com/foureight84/PulseLoop/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | |
 
 ### 2026-07-06 design-parity sweep (screen audit → port)
 
@@ -226,6 +229,51 @@ camera/gallery pickers, per-provider payload converters, replay images only on l
 per-provider model prefs instead of iOS's shared string; orchestrator takes a per-turn client
 factory. Follow-ups: `notifications/CoachNotifications.kt` still hardcodes the OpenAI client
 (should adopt `CoachClientResolver`); chat attach is gallery-only (camera + EXIF rotation TBD).*
+
+**#48 — Pairing redesign + onboarding flow.**
+iOS replaced the pairing carousel's procedural ring art with real product photos (h59, jring,
+yawell-r05/r10/r11 + existing colmi-r02…r12 assets), added brand filter tabs ("All", "Colmi",
+"H59", "jring", "Yawell"), capability chips (blurb split on " · "), signal-strength dots
+(≥-65 dBm strong/success, ≥-80 medium/warning, else weak/danger) replacing raw dBm, and a
+connected-state success animation (ring halo + checkmark spring). It also introduced a 5-step
+onboarding flow (welcome → ring → profile → goals → baseline) with persisted progress
+(`onboarding.route.v2`, path must start at welcome else reset), skippable ring/profile steps,
+and extracted reusable `ProfileDraft`/`GoalDraft` + `ProfileEditorView`/`GoalEditorView` shared
+between onboarding and Settings. New model: Colmi R11 (pattern `^R11C_[0-9A-F]{4}$`, reuses the
+yawell-r11 image). Android baseline: 2-step OnboardingScreen, flat scan-list PairingScreen,
+procedural RingArtView, profile/goals edited inline in Settings. Port: copy PNGs to
+drawable-nodpi, add brand/imageRes to `WearableModel`, rebuild PairingScreen (tabs + carousel +
+dots + chips + signal dots), OnboardingFlow with DataStore-persisted step path, ProfileDraft/
+GoalDraft with unit conversions (in↔cm ×2.54, lb↔kg ÷2.2046226, locale-default units) and the
+iOS recommended goal defaults (10k steps / 8 km / 500 kcal / 45 min / 8 h / 4 workouts).
+
+**#49 — Settings rehaul + exact-model identification.**
+UI: hero device card on top (ring image 72pt, name, status line + tint, battery pill, relative
+"Synced X ago", context action: Connect / Set up a ring / Connecting…, none when connected)
+above five grouped sections (DEVICE, AI COACH, GENERAL, METRICS, RESOURCES) of icon+title+
+trailing-value+chevron rows with hairline dividers; "Notifications" renamed "Coach Check-Ins"
+and gated on coach enabled; developer row unlocked by 7 taps on the version row (2 s window,
+escalating haptics, toast). Logic: `advertisedNamePatterns` regexes per catalog model,
+`model(advertisedName:)` + `resolve(advertised, selected, family)` priority (BLE name > carousel
+selection > family default, jring-only default), `wearableModelID`/`advertisedName` persisted on
+Device and carried on `deviceIdentified`; new `deviceForgotten` event clears them. Weight input
+became decimal with comma/period-agnostic parsing (`LocalizedDecimalInput`). Family display name
+became "Colmi / Yawell ring". Android adaptation: keep content on sub-screens reachable from
+grouped rows where iOS does (Android previously kept one long scroll — that divergence is
+retired by this port); `DeviceHeroStatus` pure logic + tests port 1:1; UNUserNotificationCenter
+prompt maps to POST_NOTIFICATIONS runtime permission.
+
+**#44 — Home-screen widgets.**
+Three WidgetKit widgets fed by a JSON snapshot (`widget-snapshot.json` in the app group):
+(1) medium fixed Daily Activity (labels/values left, concentric rings right), (2) small
+configurable single-metric tile (10 metrics; tile styles rings/sleep/chart/gauge/BP), (3) medium
+configurable dual-metric tile. Snapshot: `WidgetSnapshotPublisher` rebuilds on data change
+(2 s debounce) + scene-phase edges, ≤48 downsampled chart points, colors as hex + token strings,
+hash-skip on unchanged content, background reloads throttled to 1/20 min. Staleness stamp after
+45 min; day-rollover shows "No data yet today". ADAPT for Android: Glance widgets + WorkManager/
+sync-triggered refresh, snapshot JSON in app files dir (no app-group needed — same process),
+config via Glance state/preferences instead of AppIntents. Reuse TodayViewModel/VitalCardFactory
+equivalents to build payloads.
 
 **#24 — Coach scheduler crash.**
 The iOS bug was `MainActor.assumeIsolated` on a background BGTask queue. No direct equivalent,
