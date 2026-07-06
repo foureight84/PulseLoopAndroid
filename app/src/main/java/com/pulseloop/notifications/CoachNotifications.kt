@@ -42,8 +42,22 @@ object CoachNotifications {
         }
     }
 
-    /** Schedule a daily check-in notification. Requires POST_NOTIFICATIONS on Android 13+. */
+    /**
+     * Schedule a daily check-in notification. Requires POST_NOTIFICATIONS on Android 13+.
+     *
+     * The opt-in gate lives HERE, not at the call sites: MainActivity re-runs its
+     * permission flows on every launch/resume and calls schedule() whenever they
+     * succeed, so a caller-side check would have to be repeated everywhere and one
+     * miss silently re-enqueues the daily worker the user turned off. Check-ins are
+     * gated on BOTH the coach master toggle and the check-in opt-in (iOS #49).
+     */
     fun schedule(context: Context) {
+        val keyStore = ApiKeyStore(context)
+        if (!keyStore.coachEnabled || !keyStore.notificationsEnabled) {
+            // Also clears work a previous build may have left enqueued despite the opt-out.
+            cancel(context)
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
@@ -97,12 +111,21 @@ class CoachNotificationWorker(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        // Re-check the opt-in at FIRE time, before any notification can be built:
+        // periodic work can outlive a toggle-off, so a disabled feature must mean
+        // no notification at all — not the generic fallback one.
+        val keyStore = ApiKeyStore(applicationContext)
+        if (!keyStore.coachEnabled || !keyStore.notificationsEnabled) {
+            CoachNotifications.cancel(applicationContext)
+            return Result.success()
+        }
+
         return try {
             val db = PulseLoopDatabase.getInstance(applicationContext)
-            val keyStore = ApiKeyStore(applicationContext)
 
-            // Only generate if coach is enabled and we have an API key
-            if (!keyStore.coachEnabled || keyStore.apiKey.isBlank()) {
+            // Coach is on but no API key: the user still opted into check-ins, so
+            // fall back to the generic scripted text.
+            if (keyStore.apiKey.isBlank()) {
                 CoachNotifications.showNow(
                     applicationContext,
                     "PulseLoop Coach",
