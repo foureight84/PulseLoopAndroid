@@ -192,6 +192,10 @@ data class UserProfileEntity(
 data class UserGoalEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val steps: Int = 10000,
+    /** Daily distance goal in meters (iOS UserGoal.distanceMeters, added in iOS #48). */
+    @ColumnInfo(defaultValue = "8000.0") val distanceMeters: Double = 8000.0,
+    /** Daily active-calorie goal in kcal (iOS UserGoal.calories, added in iOS #48). */
+    @ColumnInfo(defaultValue = "500") val calories: Int = 500,
     val sleepMinutes: Int = 480,
     val activeMinutes: Int = 45,
     val workoutsPerWeek: Int = 4,

@@ -1,82 +1,81 @@
 package com.pulseloop.ui.components
 
-import androidx.compose.foundation.Canvas
+import androidx.annotation.DrawableRes
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.pulseloop.R
 
 /**
- * Ported from RingArtView.swift.
- * A stylized, asset-free rendering of a smart ring for the pairing carousel:
- * a thick gradient band (torus) with a soft highlight and inner shadow.
+ * Ported from RingArtView.swift (iOS #48).
+ * Renders a smart ring's product art on a light circular "platter" for the pairing carousel
+ * and the Settings hero: a soft tinted glow behind a light gradient disc so black / gold /
+ * rose-gold rings all read on the dark theme.
  */
 @Composable
 fun RingArtView(
     tint: Color,
     modifier: Modifier = Modifier,
     size: Float = 180f,
+    @DrawableRes imageRes: Int? = null,
 ) {
-    val band = size * 0.16f
+    // Tint follows the selected model with a short cross-fade (iOS animates .easeInOut 0.25).
+    val animatedTint by animateColorAsState(tint, tween(250), label = "ringArtTint")
 
     Box(
         modifier = modifier.size(size.dp),
-        contentAlignment = androidx.compose.ui.Alignment.Center,
+        contentAlignment = Alignment.Center,
     ) {
-        // Soft glow behind the ring
+        // Soft themed glow so the platter sits in the app's color world.
         Box(
-            modifier = Modifier
-                .size((size * 0.95f).dp)
+            Modifier
+                .size(size.dp)
+                .blur((size * 0.13f).dp, BlurredEdgeTreatment.Unbounded)
                 .clip(CircleShape)
-                .background(tint.copy(alpha = 0.18f))
-                .blur((size * 0.12f).dp),
+                .background(animatedTint.copy(alpha = 0.22f)),
         )
 
-        // Main band with gradient
-        Canvas(Modifier.size(size.dp)) {
-            // Outer band
-            drawCircle(
-                brush = Brush.sweepGradient(
-                    listOf(
-                        tint.copy(alpha = 0.55f),
-                        tint,
-                        Color.White.copy(alpha = 0.85f),
-                        tint,
-                        tint.copy(alpha = 0.55f),
-                    ),
-                ),
-                radius = size / 2,
-                style = Stroke(width = band),
-            )
-
-            // Inner edge shadow for depth
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.35f),
-                radius = (size - band * 0.9f) / 2,
-                style = Stroke(width = band * 0.18f),
-            )
-        }
-
-        // Top highlight sweep
-        Canvas(Modifier.size(size.dp)) {
-            val highlightSize = (size - band * 0.4f) / 2
-            drawCircle(
-                color = Color.White.copy(alpha = 0.7f),
-                radius = highlightSize,
-                style = Stroke(width = band * 0.3f, cap = StrokeCap.Round),
-                // Draw only a portion (top arc)
+        // Light platter: vertical white→light-gray gradient, subtle border, soft drop shadow.
+        Box(
+            Modifier
+                .size(size.dp)
+                .shadow((size * 0.05f).dp, CircleShape)
+                .clip(CircleShape)
+                .background(Brush.verticalGradient(listOf(Color.White, Color(0xFFE0E0E0))))
+                .border(1.dp, Color.Black.copy(alpha = 0.06f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                painter = painterResource(imageRes ?: FALLBACK_IMAGE_RES),
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding((size * 0.08f).dp),
+                contentScale = ContentScale.Fit,
             )
         }
     }
 }
+
+/** Generic Colmi-style ring shown when no model-specific image is available. */
+private val FALLBACK_IMAGE_RES = R.drawable.ring_colmi_r09

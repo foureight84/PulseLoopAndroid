@@ -454,6 +454,14 @@ class RingBLEClient(private val context: Context) {
         enqueueOp(GattOp.Read(ch))
     }
 
+    /** True when the phone's Bluetooth adapter is on — gates the pairing UI (iOS `isBluetoothReady`). */
+    val isBluetoothEnabled: Boolean
+        get() = try { bluetoothAdapter.isEnabled } catch (_: Exception) { false }
+
+    /** A previously connected ring identity is stored — enables "Reconnect last ring". */
+    val hasLastKnownRing: Boolean
+        get() = lastKnownIdentifier != null
+
     private val lastKnownIdentifier: String?
         get() = prefs.getString(LAST_PERIPHERAL_KEY, null)
     private val lastKnownDeviceType: RingDeviceType?

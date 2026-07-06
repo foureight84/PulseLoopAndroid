@@ -257,6 +257,9 @@ interface UserGoalDao {
     @Query("SELECT * FROM user_goals LIMIT 1")
     suspend fun get(): UserGoalEntity?
 
+    @Query("SELECT * FROM user_goals LIMIT 1")
+    fun getFlow(): kotlinx.coroutines.flow.Flow<UserGoalEntity?>
+
     @Upsert
     suspend fun upsert(goal: UserGoalEntity)
 }

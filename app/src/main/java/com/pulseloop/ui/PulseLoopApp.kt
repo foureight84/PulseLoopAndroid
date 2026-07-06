@@ -165,6 +165,22 @@ fun PulseLoopApp() {
         // Tab order + icons mirror iOS MainTab (AppTheme.swift): Today (circle.circle),
         // Vitals (heart), Activity (waveform.path.ecg), Sleep (moon), Coach (sparkles).
         val navController = rememberNavController()
+
+        // First-launch gate (iOS #48): show the onboarding flow until it's completed.
+        // Existing installs that already have a completed profile or a paired ring are
+        // marked complete silently so an app update never re-onboards them.
+        LaunchedEffect(Unit) {
+            if (!apiKeyStore.onboardingCompleted) {
+                val profileDone = db.userProfileDao().get()?.onboardingCompleted == true
+                val hasRing = db.deviceDao().current() != null || bleClient.hasLastKnownRing
+                if (profileDone || hasRing) {
+                    apiKeyStore.onboardingCompleted = true
+                } else {
+                    navController.navigate("onboarding") { launchSingleTop = true }
+                }
+            }
+        }
+
         val tabs = listOf(
             Tab("today", "Today", Icons.Filled.Adjust, Icons.Outlined.Adjust),
             Tab("vitals", "Vitals", Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
@@ -234,7 +250,9 @@ fun PulseLoopApp() {
                         launchSingleTop = true
                     }
                 }
-                if (isLandscape) {
+                if (currentDestination?.route == "onboarding") {
+                    // The onboarding flow is full-screen chrome of its own — no tab bar.
+                } else if (isLandscape) {
                     // Landscape: a compact icon-only bar at ~half the standard height,
                     // so the short viewport keeps more room for content.
                     Surface(color = NavigationBarDefaults.containerColor) {
@@ -314,7 +332,21 @@ fun PulseLoopApp() {
                         apiKeyStore = apiKeyStore,
                     )
                 }
-                composable("onboarding") { OnboardingScreen(onComplete = { navController.navigate("pairing") }) }
+                composable("onboarding") {
+                    // The flow contains its own pairing step (iOS #48), so completion goes
+                    // straight to the main app instead of the standalone pairing route.
+                    OnboardingScreen(
+                        db = db,
+                        bleClient = bleClient,
+                        apiKeyStore = apiKeyStore,
+                        coordinator = coordinator,
+                        onFinished = {
+                            navController.navigate("today") {
+                                popUpTo("onboarding") { inclusive = true }
+                            }
+                        },
+                    )
+                }
                 composable("record") {
                     val workoutState = liveWorkout.state.collectAsState().value
                     RecordScreen(

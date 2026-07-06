@@ -494,13 +494,9 @@ fun SettingsScreen(
                 )
                 Spacer(Modifier.height(12.dp))
 
-                val imperial = keyStore.resolvedUnitSystem == UnitSystem.IMPERIAL
-                var age by remember { mutableStateOf("") }
-                var isMale by remember { mutableStateOf(true) }
-                var heightCmInput by remember { mutableStateOf("") }
-                var feet by remember { mutableStateOf("") }
-                var inches by remember { mutableStateOf("") }
-                var weightInput by remember { mutableStateOf("") }
+                // Shared editor (iOS #48) — same component as the onboarding Profile step.
+                // Units live in the dedicated Units card above, so hide that section here.
+                var profileDraft by remember { mutableStateOf<com.pulseloop.ui.onboarding.ProfileDraft?>(null) }
                 var bpSys by remember { mutableStateOf("") }
                 var bpDia by remember { mutableStateOf("") }
                 var glucoseRef by remember { mutableStateOf("") }
@@ -510,74 +506,21 @@ fun SettingsScreen(
 
                 LaunchedEffect(Unit) {
                     val p = db.userProfileDao().get()
-                    age = p?.age?.toString() ?: ""
-                    isMale = !"female".equals(p?.sex, ignoreCase = true)
-                    p?.heightCm?.let { cm ->
-                        if (imperial) {
-                            val totalIn = (cm / 2.54).toInt()
-                            feet = (totalIn / 12).toString()
-                            inches = (totalIn % 12).toString()
-                        } else heightCmInput = "%.0f".format(cm)
-                    }
-                    p?.weightKg?.let { kg ->
-                        weightInput = if (imperial) "%.0f".format(kg * 2.20462) else "%.0f".format(kg)
-                    }
+                    profileDraft = com.pulseloop.ui.onboarding.ProfileDraft.from(
+                        p, existingUnits = keyStore.resolvedUnitSystem,
+                    )
                     bpSys = keyStore.bpAdjustSystolic.takeIf { it > 0 }?.toString() ?: ""
                     bpDia = keyStore.bpAdjustDiastolic.takeIf { it > 0 }?.toString() ?: ""
                     glucoseOffset = keyStore.glucoseOffsetMgdl
                     glucoseRef = keyStore.glucoseRefMgdl.takeIf { it > 0 }?.let { "%.0f".format(it) } ?: ""
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = age, onValueChange = { age = it.filter(Char::isDigit).take(3) },
-                        label = { Text("Age") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true, modifier = Modifier.weight(1f),
+                profileDraft?.let { draft ->
+                    com.pulseloop.ui.onboarding.ProfileEditor(
+                        draft = draft,
+                        onDraftChange = { profileDraft = it },
+                        showUnits = false,
                     )
-                    // Sex toggle
-                    Row(Modifier.weight(1.4f), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FilterChip(selected = isMale, onClick = { isMale = true }, label = { Text("Male") }, modifier = Modifier.weight(1f))
-                        FilterChip(selected = !isMale, onClick = { isMale = false }, label = { Text("Female") }, modifier = Modifier.weight(1f))
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                if (imperial) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = feet, onValueChange = { feet = it.filter(Char::isDigit).take(1) },
-                            label = { Text("Height (ft)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true, modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = inches, onValueChange = { inches = it.filter(Char::isDigit).take(2) },
-                            label = { Text("(in)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true, modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = weightInput, onValueChange = { weightInput = it.filter(Char::isDigit).take(3) },
-                            label = { Text("Weight (lb)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true, modifier = Modifier.weight(1.2f),
-                        )
-                    }
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = heightCmInput, onValueChange = { heightCmInput = it.filter(Char::isDigit).take(3) },
-                            label = { Text("Height (cm)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true, modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = weightInput, onValueChange = { weightInput = it.filter(Char::isDigit).take(3) },
-                            label = { Text("Weight (kg)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true, modifier = Modifier.weight(1f),
-                        )
-                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -666,24 +609,12 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(12.dp))
                 Button(
+                    enabled = profileDraft != null,
                     onClick = {
                         scope.launch {
-                            val heightCm: Double? = if (imperial) {
-                                val f = feet.toIntOrNull()
-                                val i = inches.toIntOrNull() ?: 0
-                                f?.let { ((it * 12 + i) * 2.54) }
-                            } else heightCmInput.toDoubleOrNull()
-                            val weightKg: Double? = weightInput.toDoubleOrNull()?.let {
-                                if (imperial) it / 2.20462 else it
-                            }
+                            val draft = profileDraft ?: return@launch
                             val existing = db.userProfileDao().get()
-                            val entity = (existing ?: com.pulseloop.data.entity.UserProfileEntity()).copy(
-                                age = age.toIntOrNull(),
-                                sex = if (isMale) "male" else "female",
-                                heightCm = heightCm,
-                                weightKg = weightKg,
-                                updatedAt = System.currentTimeMillis(),
-                            )
+                            val entity = draft.applyTo(existing ?: com.pulseloop.data.entity.UserProfileEntity())
                             db.userProfileDao().upsert(entity)
                             val sysI = bpSys.toIntOrNull() ?: 0
                             val diaI = bpDia.toIntOrNull() ?: 0
@@ -701,6 +632,59 @@ fun SettingsScreen(
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 }
                 } // end else (!isColmi)
+            }
+        }
+
+        // Goals — the shared GoalEditor (iOS #48), same targets as the onboarding Goals step
+        // plus the weekly workouts slider.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Goals", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Daily and weekly targets behind the activity rings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                val goalUnits = keyStore.resolvedUnitSystem
+                var goalDraft by remember { mutableStateOf<com.pulseloop.ui.onboarding.GoalDraft?>(null) }
+                var goalSavedMsg by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(Unit) {
+                    goalDraft = com.pulseloop.ui.onboarding.GoalDraft.from(db.userGoalDao().get(), goalUnits)
+                }
+                goalDraft?.let { draft ->
+                    com.pulseloop.ui.onboarding.GoalEditor(
+                        draft = draft,
+                        onDraftChange = { goalDraft = it; goalSavedMsg = null },
+                        units = goalUnits,
+                        includeWeeklyWorkouts = true,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val existing = db.userGoalDao().get()
+                                db.userGoalDao().upsert(
+                                    draft.applyTo(
+                                        existing ?: com.pulseloop.data.entity.UserGoalEntity(),
+                                        goalUnits,
+                                        includeWeeklyWorkouts = true,
+                                    ),
+                                )
+                                coordinator?.setGoal(draft.steps.toInt())
+                                goalSavedMsg = if (coordinator?.isConnected == true)
+                                    "Saved & sent to ring ✓" else "Saved"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Save goals") }
+                    goalSavedMsg?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
             }
         }
 
@@ -838,6 +822,18 @@ fun SettingsScreen(
                     Text("Firmware: $fwDisplay", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 } else if (device.value != null) {
                     Text("Firmware: reading… (connect ring to read)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                }
+                if (device.value == null) {
+                    // No ring yet — route into the redesigned pairing screen (iOS #48).
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { navController?.navigate("pairing") },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Filled.Add, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add a ring")
+                    }
                 }
                 if (device.value != null) {
                     Spacer(Modifier.height(8.dp))

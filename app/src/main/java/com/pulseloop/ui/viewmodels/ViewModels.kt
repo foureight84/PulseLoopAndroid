@@ -56,9 +56,8 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         val sleepMinutes: Int? = null,
         val sleepScore: Int? = null,
         val lastUpdated: Long = 0L,
-        // Daily activity-ring goals. Steps come from the stored [UserGoalEntity]; distance and
-        // calories default to the iOS UserGoal values (8 km / 500 kcal) until the Android goal
-        // entity grows those fields.
+        // Daily activity-ring goals, read reactively from the stored [UserGoalEntity]
+        // (distance/calorie columns added with iOS #48; defaults match iOS UserGoal).
         val stepGoal: Int = 10000,
         val distanceGoalMeters: Double = 8000.0,
         val caloriesGoal: Int = 500,
@@ -84,8 +83,14 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         }
         viewModelScope.launch {
             try {
-                db.userGoalDao().get()?.let { goal ->
-                    _state.update { it.copy(stepGoal = goal.steps) }
+                db.userGoalDao().getFlow().collect { goal ->
+                    if (goal != null) {
+                        _state.update { it.copy(
+                            stepGoal = goal.steps,
+                            distanceGoalMeters = goal.distanceMeters,
+                            caloriesGoal = goal.calories,
+                        ) }
+                    }
                 }
             } catch (_: Exception) {}
         }
@@ -330,7 +335,12 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
                 _state.update { it.copy(finishedWorkouts = sessions.filter { s -> s.statusRaw == "finished" }) }
             }
         }
-        viewModelScope.launch { reloadGoals() }
+        // Reactive: goals saved from onboarding/Settings show up without a manual reload.
+        viewModelScope.launch {
+            try {
+                db.userGoalDao().getFlow().collect { if (it != null) reloadGoals() }
+            } catch (_: Exception) {}
+        }
     }
 
     suspend fun reloadGoals() {
@@ -339,6 +349,8 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
                 _state.update { it.copy(
                     stepGoal = goal.steps,
                     activeMinutesGoal = goal.activeMinutes,
+                    distanceGoalMeters = goal.distanceMeters,
+                    caloriesGoal = goal.calories,
                     sleepMinutesGoal = goal.sleepMinutes,
                     workoutsPerWeekGoal = goal.workoutsPerWeek,
                 ) }

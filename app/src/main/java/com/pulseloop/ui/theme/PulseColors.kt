@@ -37,6 +37,7 @@ object PulseColors {
     val bloodPressure = Color(0xFFFF6B9D)
     val bloodSugar = Color(0xFFFFB84D)
     val fatigue = Color(0xFFC77DFF)
+    val readiness = Color(0xFFD6FF65)
 
     // Sleep stage colors (DesignSystem/Charts.swift SleepStageColors)
     val stageDeep = Color(0xFF3F2DD8)
