@@ -95,6 +95,17 @@ class SleepStreamController(
         }
 
         if (streaming) {
+            // Stream watchdog — the missing piece. startWorkoutHeartRate() opens the
+            // 0x14 stream once, but the ring silently stops it after hiccups/inactivity;
+            // without a re-kick the controller believed it was streaming while the ring
+            // sat idle, producing bursty ~5-15min data instead of 1 Hz (observed
+            // 2026-07-06). If no HR sample has landed for STREAM_STALE_MS, re-issue the
+            // start command — the same self-heal the workout tick already does.
+            val sinceHr = System.currentTimeMillis() - coordinator.latestHRAt
+            if (coordinator.isConnected && sinceHr > STREAM_STALE_MS) {
+                coordinator.startWorkoutHeartRate()
+            }
+
             ticksSinceSpO2++
             if (ticksSinceSpO2 >= SPO2_EVERY_TICKS) {
                 ticksSinceSpO2 = 0
@@ -125,8 +136,12 @@ class SleepStreamController(
     }
 
     companion object {
-        private const val POLL_MS = 60_000L
-        /** ~3 minutes at the 60s poll cadence — denser than the old 30-min night SpO2 tick. */
-        private const val SPO2_EVERY_TICKS = 3
+        /** 20s poll so the stream watchdog re-kicks within 20s of the ring going idle —
+         *  the phone is charging during streaming, so the extra wakeups are free. */
+        private const val POLL_MS = 20_000L
+        /** No HR sample for this long while "streaming" ⇒ the ring stopped ⇒ re-kick. */
+        private const val STREAM_STALE_MS = 25_000L
+        /** ~3 minutes at the 20s poll cadence. */
+        private const val SPO2_EVERY_TICKS = 9
     }
 }
