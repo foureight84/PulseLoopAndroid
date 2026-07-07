@@ -102,6 +102,15 @@ class CoachClientResolverTest {
     }
 
     @Test
+    fun testCoachSettingsKeepNullEqualsOmitContract() {
+        // null store/effort must stay null so no `reasoning` field is sent.
+        assertNull(CoachClientResolver.coachSettings(null).reasoningEffort)
+        assertNull(CoachClientResolver.coachSettings(CoachProviderSettings()).reasoningEffort)
+        assertEquals("high", CoachClientResolver.coachSettings(
+            CoachProviderSettings(reasoningEffort = "high")).reasoningEffort)
+    }
+
+    @Test
     fun testBlankOpenRouterModelFallsBackToDefault() {
         val s = CoachProviderSettings(openRouterModel = "   ")
         assertEquals(OpenRouterModel.DEFAULT.slug, s.resolvedOpenRouterModel)

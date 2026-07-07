@@ -126,6 +126,10 @@ data class VitalCardState(
     val metric: MetricKind,
     val title: String,
     val valueText: String,
+    /** The raw reading behind [valueText], in the card's display unit (needle position for
+     *  gauges). Never parse [valueText] back — it's locale-formatted display text. Null when
+     *  there's no reading (or no single number, e.g. BP's composite label). */
+    val latestValue: Double? = null,
     val unitText: String?,
     val statusText: String,
     val statusToken: VitalColorToken,
@@ -206,7 +210,8 @@ object VitalsCardFactory {
         val domain = clampedDomain(samples, 40.0..140.0, pad = 8.0, hardLower = 40.0, hardUpper = 220.0)
         return VitalCardState(
             metric = MetricKind.HEART_RATE, title = MetricKind.HEART_RATE.title,
-            valueText = valueText, unitText = if (latest != null) "bpm range" else null,
+            valueText = valueText, latestValue = latest,
+            unitText = if (latest != null) "bpm range" else null,
             statusText = interp?.displayLabel ?: "No reading",
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = "$resting · $peak",
@@ -231,7 +236,8 @@ object VitalsCardFactory {
         val subtitle = lowest?.let { "Lowest ${it.toInt()} · ${samples.size} readings" }
         return VitalCardState(
             metric = MetricKind.SPO2, title = MetricKind.SPO2.title,
-            valueText = averageLabel(samples, latest), unitText = if (latest != null) "% avg" else null,
+            valueText = averageLabel(samples, latest), latestValue = latest,
+            unitText = if (latest != null) "% avg" else null,
             statusText = interp?.displayLabel ?: "No reading",
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = subtitle,
@@ -269,7 +275,8 @@ object VitalsCardFactory {
         }
         return VitalCardState(
             metric = MetricKind.HRV, title = MetricKind.HRV.title,
-            valueText = latest?.let { "${it.toInt()}" } ?: "--", unitText = if (latest != null) "ms" else null,
+            valueText = latest?.let { "${it.toInt()}" } ?: "--", latestValue = latest,
+            unitText = if (latest != null) "ms" else null,
             statusText = interp?.displayLabel ?: "Building baseline",
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = subtitle,
@@ -298,7 +305,7 @@ object VitalsCardFactory {
         val subtitle = if (metric == MetricKind.STRESS) "Lower is calmer" else "Ring model estimate"
         return VitalCardState(
             metric = metric, title = metric.title,
-            valueText = latest?.let { "${it.toInt()}" } ?: "--", unitText = null,
+            valueText = latest?.let { "${it.toInt()}" } ?: "--", latestValue = latest, unitText = null,
             statusText = interp?.displayLabel ?: "No data",
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = subtitle,
@@ -339,6 +346,7 @@ object VitalsCardFactory {
         return VitalCardState(
             metric = MetricKind.TEMPERATURE, title = MetricKind.TEMPERATURE.title,
             valueText = latest?.let { "%.1f".format(tempValue(it, units)) } ?: "--",
+            latestValue = latest?.let { tempValue(it, units) },
             unitText = if (latest != null) tempUnit(units) else null,
             statusText = interp?.displayLabel ?: "No data",
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
@@ -365,6 +373,8 @@ object VitalsCardFactory {
         // Chart uses the systolic series for the trend line; the gauge shows both.
         return VitalCardState(
             metric = MetricKind.BLOOD_PRESSURE, title = MetricKind.BLOOD_PRESSURE.title,
+            // No latestValue: the "sys/dia" label has no single number; BP gauges read the two
+            // series directly.
             valueText = valueText, unitText = if (sys != null) "mmHg" else null,
             statusText = interp?.displayLabel ?: "No reading",
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
@@ -410,7 +420,8 @@ object VitalsCardFactory {
         }
         return VitalCardState(
             metric = MetricKind.GLUCOSE, title = MetricKind.GLUCOSE.title,
-            valueText = valueText ?: "--", unitText = if (latest != null) gUnit.label else null,
+            valueText = valueText ?: "--", latestValue = latest?.let(::gv),
+            unitText = if (latest != null) gUnit.label else null,
             statusText = interp?.displayLabel ?: "No estimate",
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = "Estimated wellness metric",

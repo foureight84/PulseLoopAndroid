@@ -43,4 +43,19 @@ class OpenAIRequestBuilderTest {
         assertEquals("call_1", item["call_id"]!!.jsonPrimitive.content)
         assertEquals("""{"ok":true}""", item["output"]!!.jsonPrimitive.content)
     }
+
+    @Test
+    fun testReasoningParamsOmittedWhenNullOrBlank() {
+        // null = "don't send reasoning at all" — gpt-4o rejects the field.
+        assertTrue(OpenAIRequestBuilder.reasoningParams(null).isEmpty())
+        assertTrue(OpenAIRequestBuilder.reasoningParams("").isEmpty())
+        assertTrue(OpenAIRequestBuilder.reasoningParams("   ").isEmpty())
+    }
+
+    @Test
+    fun testReasoningParamsCarriesEffort() {
+        val params = OpenAIRequestBuilder.reasoningParams("medium")
+        assertEquals(setOf("reasoning"), params.keys)
+        assertEquals("medium", params["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
+    }
 }

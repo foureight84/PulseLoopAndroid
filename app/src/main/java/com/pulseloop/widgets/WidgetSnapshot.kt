@@ -147,6 +147,9 @@ data class WidgetMetricPayload(
     val kind: String,
     val title: String,
     val valueText: String,
+    /** The raw reading behind [valueText] in display units (gauge needle position) — never parse
+     *  the locale-formatted [valueText] back. Defaulted so pre-field snapshots still decode. */
+    val latestValue: Double? = null,
     val unitText: String? = null,
     val statusText: String,
     /** The resolved status color (gauge value arc / status label), as hex. */

@@ -5,7 +5,8 @@ import androidx.compose.ui.graphics.Color
 /**
  * The full iOS design-token set, ported 1:1 from AppTheme.swift (PulseColors).
  * Every screen chrome/card/accent color goes through here so Android and iOS
- * read the same color language. Zone colors live in [MetricColors]/ZonePalette.
+ * read the same color language. The zone hexes below are the single source of
+ * truth that [MetricColors] and ZonePalette alias.
  */
 object PulseColors {
     val background = Color(0xFF080A0F)
@@ -38,6 +39,17 @@ object PulseColors {
     val bloodSugar = Color(0xFFFFB84D)
     val fatigue = Color(0xFFC77DFF)
     val readiness = Color(0xFFD6FF65)
+
+    // Vitals reference-zone colors (AppTheme.swift zone*) — aliased by
+    // ZonePalette (fine iOS-parity palette) and [MetricColors] (coarse semantic palette)
+    val zoneBlue = Color(0xFF4DA3FF)
+    val zoneMint = Color(0xFF35E0A1)
+    val zoneCyan = Color(0xFF4DDCFF)
+    val zoneAmber = Color(0xFFFFB86B)
+    val zoneSoftAmber = Color(0xFFFFD9A0)
+    val zoneOrange = Color(0xFFFF8A4C)
+    val zoneRed = Color(0xFFFF4D6D)
+    val zoneCritical = Color(0xFFFF1744)
 
     // Sleep stage colors (DesignSystem/Charts.swift SleepStageColors)
     val stageDeep = Color(0xFF3F2DD8)

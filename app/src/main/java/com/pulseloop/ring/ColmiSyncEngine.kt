@@ -21,9 +21,18 @@ class ColmiSyncEngine(
     private val zone = ZoneId.systemDefault()
 
     /** User-chosen all-day measurement config, applied in the connect handshake and updatable
-     *  live. Defaults to the previous hard-coded behaviour (all vitals on, HR every 5 min)
-     *  until the coordinator pushes the persisted config. */
-    private var measurementSettings = MeasurementSettings.ALL_ON_DEFAULT
+     *  live. `null` ⇒ the user has never saved one: the ring's own settings (possibly
+     *  configured in the official app) are the source of truth, so the handshake reads them
+     *  and seeds the app config from the replies instead of force-writing defaults. */
+    private var measurementSettings: MeasurementSettings? = null
+
+    /** Sink for the config seeded from the ring's pref-read replies (no persisted config). */
+    private var onConfigSeeded: ((MeasurementSettings) -> Unit)? = null
+
+    // Read-reply seeding state: collected until both the auto-HR and temp prefs reported.
+    private var seedingFromRing = false
+    private var seededHrIntervalMinutes: Int? = null
+    private var seededTempEnabled: Boolean? = null
 
     /** The user's profile for the ring's user-preferences command. `null` ⇒ send the encoder's
      *  neutral defaults (matches prior behaviour) until the coordinator pushes real values. */
@@ -68,18 +77,71 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_HRV_PREF))
         writer?.enqueue(encoder.readTempPref())
         writer?.enqueue(encoder.readGoals())
-        // Enable all-day measurement so the ring actually accumulates data the history sync can
-        // return (without these, the metric history comes back empty). The exact interval/toggles
-        // come from the user's persisted config (defaulting to all-on / 5-min HR until the
-        // coordinator pushes it via setMeasurementSettings before runStartup).
-        enqueueMeasurementCommands(measurementSettings)
+        val settings = measurementSettings
+        if (settings != null) {
+            // The user saved a config in PulseLoop — it is the source of truth; push it so
+            // the ring accumulates the data the history sync returns.
+            enqueueMeasurementCommands(settings)
+        } else {
+            // Nothing persisted (fresh install / first connect): don't clobber ring-side
+            // settings the user may have configured elsewhere. The AUTO_HR_PREF / temp-pref
+            // reads above seed the app config from the ring's replies (handleRawNotify).
+            // SpO2/stress/HRV are still force-enabled — the history sync depends on them
+            // and they have always been enabled on connect.
+            seedingFromRing = true
+            seededHrIntervalMinutes = null
+            seededTempEnabled = null
+            writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_SPO2_PREF, enabled = true))
+            writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_STRESS_PREF, enabled = true))
+            writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = true))
+        }
         startHistorySync()
     }
 
     // MARK: Measurement settings + user profile (iOS #19)
 
-    override fun setMeasurementSettings(settings: MeasurementSettings) {
+    override fun setMeasurementSettings(settings: MeasurementSettings?) {
         measurementSettings = settings
+    }
+
+    override fun setOnMeasurementConfigSeeded(callback: (MeasurementSettings) -> Unit) {
+        onConfigSeeded = callback
+    }
+
+    /**
+     * Consume the connect handshake's pref-read replies while seeding (no persisted config).
+     * One exception to "the ring's settings win": all-day HR must be ON or the `0x15` HR
+     * history sync returns nothing — so a disabled reply gets a re-enable write, keeping
+     * the ring's reported interval.
+     */
+    override fun handleRawNotify(data: ByteArray) {
+        if (!seedingFromRing) return
+        decoder.decodeAutoHRPrefRead(data)?.let { readout ->
+            val interval = if (readout.intervalMinutes in 5..60) readout.intervalMinutes else 5
+            if (!readout.enabled) {
+                writer?.enqueue(encoder.autoHeartRate(enabled = true, intervalMinutes = interval))
+            }
+            seededHrIntervalMinutes = interval
+            finishSeedingIfComplete()
+        }
+        decoder.decodeTempPrefRead(data)?.let { enabled ->
+            seededTempEnabled = enabled
+            finishSeedingIfComplete()
+        }
+    }
+
+    /** Once both prefs reported, adopt the seeded config and surface it for persistence. */
+    private fun finishSeedingIfComplete() {
+        val interval = seededHrIntervalMinutes ?: return
+        val tempEnabled = seededTempEnabled ?: return
+        seedingFromRing = false
+        val settings = MeasurementSettings(
+            hrEnabled = true, hrIntervalMinutes = interval,   // HR forced on (see handleRawNotify)
+            spo2Enabled = true, stressEnabled = true, hrvEnabled = true,  // force-enabled at startup
+            temperatureEnabled = tempEnabled,
+        )
+        measurementSettings = settings
+        onConfigSeeded?.invoke(settings)
     }
 
     override fun applyMeasurementSettings(settings: MeasurementSettings) {

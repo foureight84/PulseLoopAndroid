@@ -69,14 +69,16 @@ class CoachSummaryService(
         // Resolve the active provider (key readiness + client + model). Without a
         // provider-settings store this falls back to the legacy OpenAI-only path.
         val resolution = providerSettings?.let { CoachClientResolver.resolve(it, apiKeyStore) }
+        val snapshot = providerSettings?.snapshot()
         val apiKey = if (resolution != null) resolution.key ?: "" else apiKeyStore.apiKey
-        val model = providerSettings
-            ?.let { CoachClientResolver.activeModel(it.snapshot(), apiKeyStore.model) }
+        val model = snapshot
+            ?.let { CoachClientResolver.activeModel(it, apiKeyStore.model) }
             ?: apiKeyStore.model.ifEmpty { "gpt-5.4" }
         val flags = CoachFeatureFlags(
             coachEnabled = apiKeyStore.coachEnabled && apiKey.isNotEmpty(),
             webSearchEnabled = apiKeyStore.webSearchEnabled,
             model = model,
+            settings = CoachClientResolver.coachSettings(snapshot),
         )
         val content = CoachSummaryGenerator.generate(
             kind, built.contextJson, built.fallback, flags, apiKey, resolution?.client,

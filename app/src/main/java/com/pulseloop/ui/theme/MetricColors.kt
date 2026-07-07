@@ -7,15 +7,15 @@ import androidx.compose.ui.graphics.Color
  * same thing everywhere.
  */
 object MetricColors {
-    // Values match the iOS #35 zone palette (AppTheme.swift / ZonePalette.kt) so both
+    // Aliases the iOS #35 zone tokens in [PulseColors] (AppTheme.swift zone*) so both
     // apps read the same color language: mint=optimal, cyan=normal, amber=watch,
     // red=concern, blue=low-side, orange=elevated.
-    val ZoneGood        = Color(0xFF35E0A1)   // optimal / healthy (zoneMint)
-    val ZoneNormal      = Color(0xFF4DDCFF)   // normal / acceptable (zoneCyan)
-    val ZoneBorderline  = Color(0xFFFFB86B)   // borderline / watch (zoneAmber)
-    val ZoneConcern     = Color(0xFFFF4D6D)   // high / concerning (zoneRed)
-    val ZoneLow         = Color(0xFF4DA3FF)   // below normal range (zoneBlue)
-    val ZoneElevated    = Color(0xFFFF8A4C)   // elevated / stage 1 (zoneOrange)
+    val ZoneGood        = PulseColors.zoneMint     // optimal / healthy
+    val ZoneNormal      = PulseColors.zoneCyan     // normal / acceptable
+    val ZoneBorderline  = PulseColors.zoneAmber    // borderline / watch
+    val ZoneConcern     = PulseColors.zoneRed      // high / concerning
+    val ZoneLow         = PulseColors.zoneBlue     // below normal range
+    val ZoneElevated    = PulseColors.zoneOrange   // elevated / stage 1
 
     /** For rendering — maps a zone color to a description for the trend read. */
     fun labelFor(color: Color): String = when (color) {

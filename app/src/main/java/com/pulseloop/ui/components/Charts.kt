@@ -9,7 +9,6 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
@@ -24,10 +23,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -152,50 +149,6 @@ fun SimpleLineChart(
 }
 
 /**
- * Dual-series line chart — draws two polylines on a shared Y-scale so paired
- * series (e.g. systolic over diastolic blood pressure) stay vertically aligned.
- */
-@Composable
-fun SimpleDualLineChart(
-    seriesA: List<Double>,
-    seriesB: List<Double>,
-    colorA: Color,
-    colorB: Color,
-    modifier: Modifier = Modifier,
-    lineWidth: Float = 2f,
-    showDots: Boolean = true,
-) {
-    if (seriesA.isEmpty() && seriesB.isEmpty()) return
-    // Shared scale across both series so the two lines are comparable.
-    val all = seriesA + seriesB
-    val min = all.min()
-    val max = all.max()
-    val range = if (max == min) 1.0 else max - min
-
-    Canvas(modifier = modifier.fillMaxWidth().height(100.dp)) {
-        val w = size.width
-        val h = size.height
-        val pad = 8f
-
-        fun drawSeries(points: List<Double>, color: Color) {
-            if (points.isEmpty()) return
-            val stepX = (w - pad * 2) / maxOf(1, points.size - 1)
-            val path = Path()
-            points.forEachIndexed { i, value ->
-                val x = pad + i * stepX
-                val y = pad + (h - pad * 2) * (1f - ((value - min) / range).toFloat())
-                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                if (showDots) drawCircle(color, 3f, Offset(x, y))
-            }
-            drawPath(path, color, style = Stroke(width = lineWidth, cap = StrokeCap.Round))
-        }
-
-        drawSeries(seriesA, colorA)
-        drawSeries(seriesB, colorB)
-    }
-}
-
-/**
  * Metric card with embedded mini sparkline — ported from MiniSparkline in DesignSystem.
  */
 @Composable
@@ -231,105 +184,6 @@ fun LegendDot(label: String, color: Color) {
         Box(Modifier.size(10.dp).background(color, CircleShape))
         Spacer(Modifier.width(4.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-// ──────────────────────── ThresholdBar ────────────────────────
-
-/**
- * Color-coded horizontal bar that shows where a value sits across good → average →
- * concerning zones. Renders each zone as a proportional segment with a marker at the
- * current value.
- */
-@Composable
-fun ThresholdBar(
-    value: Double?,
-    thresholds: MetricThresholds,
-    modifier: Modifier = Modifier,
-    showTicks: Boolean = true,
-    overrideZone: ThresholdZone? = null,
-) {
-    val textMeasurer = rememberTextMeasurer()
-    val barHeight = 14.dp
-    val tickStyle = TextStyle(fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    val zone = overrideZone ?: (value?.let { thresholds.zoneFor(it) })
-    val zoneLabel = zone?.label
-
-    Column(modifier = modifier.fillMaxWidth()) {
-        // The bar
-        Canvas(modifier = Modifier.fillMaxWidth().height(barHeight)) {
-            val w = size.width
-            val h = size.height
-            val totalRange = thresholds.displayMax - thresholds.displayMin
-            if (totalRange <= 0) return@Canvas
-
-            // Draw each zone segment
-            thresholds.zones.forEach { z ->
-                val left = ((z.start - thresholds.displayMin) / totalRange * w).toFloat()
-                val right = ((z.end - thresholds.displayMin) / totalRange * w).toFloat()
-                val segWidth = (right - left).coerceAtLeast(0f)
-                if (segWidth > 0f) {
-                    drawRoundRect(
-                        color = z.color,
-                        topLeft = Offset(left, 0f),
-                        size = Size(segWidth, h),
-                        cornerRadius = CornerRadius(h / 2f, h / 2f),
-                    )
-                }
-            }
-
-            // Draw the value marker — white pill with a subtle dark border so it
-            // stands out against any zone color
-            if (value != null) {
-                val clamped = ((value - thresholds.displayMin) / totalRange).coerceIn(0.0, 1.0)
-                val markerX = (clamped * w).toFloat()
-                val pillW = 5.dp.toPx()
-                val pillH = h + 6.dp.toPx()
-                val pillTop = -3.dp.toPx()
-                // Border
-                drawRoundRect(
-                    color = Color.Black.copy(alpha = 0.3f),
-                    topLeft = Offset(markerX - pillW / 2f - 0.5f, pillTop - 0.5f),
-                    size = Size(pillW + 1f, pillH + 1f),
-                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
-                )
-                // Fill
-                drawRoundRect(
-                    color = Color.White,
-                    topLeft = Offset(markerX - pillW / 2f, pillTop),
-                    size = Size(pillW, pillH),
-                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
-                )
-            }
-        }
-
-        // Tick labels
-        if (showTicks) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = formatTick(thresholds.displayMin),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (zoneLabel != null) {
-                    Text(
-                        text = zoneLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = zone?.color ?: MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Text(
-                    text = formatTick(thresholds.displayMax),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
     }
 }
 

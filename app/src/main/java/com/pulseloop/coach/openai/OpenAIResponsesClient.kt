@@ -166,6 +166,16 @@ object OpenAIRequestBuilder {
         "call_id" to JsonPrimitive(callId),
         "output" to JsonPrimitive(output),
     ))
+
+    /**
+     * Optional `reasoning` body entry from `CoachSettings.reasoningEffort`.
+     * null/blank → empty map, so the key is absent entirely — models like
+     * gpt-4o reject requests that carry `reasoning` at all. Forwarded verbatim
+     * by the OpenRouter adapter and ignored by Gemini.
+     */
+    fun reasoningParams(effort: String?): Map<String, JsonElement> =
+        if (effort.isNullOrBlank()) emptyMap()
+        else mapOf("reasoning" to JsonObject(mapOf("effort" to JsonPrimitive(effort))))
 }
 
 /**

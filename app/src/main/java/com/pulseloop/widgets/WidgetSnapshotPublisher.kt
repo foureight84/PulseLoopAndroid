@@ -243,6 +243,7 @@ object WidgetSnapshotPublisher {
             kind = kind.widgetKey,
             title = card.title,
             valueText = card.valueText,
+            latestValue = card.latestValue,
             unitText = card.unitText,
             statusText = card.statusText,
             statusColorHex = colorToHex(card.statusToken.toColor()),

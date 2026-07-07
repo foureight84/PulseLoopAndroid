@@ -116,12 +116,24 @@ interface RingSyncEngine {
 
     /** Store the all-day measurement config *without* sending — used just before [runStartup],
      *  which emits the relevant commands in the connect handshake (so we don't double-send).
+     *  `null` ⇒ the user has never saved a config: engines that can should seed one from the
+     *  device's own reported settings (see [setOnMeasurementConfigSeeded]) instead of
+     *  force-writing defaults over ring-side settings from another app.
      *  Devices without MEASUREMENT_INTERVAL ignore it. */
-    fun setMeasurementSettings(settings: MeasurementSettings) {}
+    fun setMeasurementSettings(settings: MeasurementSettings?) {}
 
     /** Store *and* immediately push the config — the live "Save" path while connected, so
      *  changes take effect without waiting for a reconnect. No-op if unsupported. */
     fun applyMeasurementSettings(settings: MeasurementSettings) {}
+
+    /** Register a sink for the measurement config seeded from the device's own reported
+     *  settings when none was pushed via [setMeasurementSettings] — the app layer persists
+     *  it as the device's initial config. No-op if unsupported. */
+    fun setOnMeasurementConfigSeeded(callback: (MeasurementSettings) -> Unit) {}
+
+    /** Inspect a raw inbound notify frame. Default no-op; engines that need reply payloads
+     *  the decoded-event stream doesn't carry (e.g. Colmi pref-read replies) hook in here. */
+    fun handleRawNotify(data: ByteArray) {}
 
     /** Store the user's profile *without* sending — the connect handshake sends it. No-op if unsupported. */
     fun setUserProfile(profile: UserProfileValues) {}

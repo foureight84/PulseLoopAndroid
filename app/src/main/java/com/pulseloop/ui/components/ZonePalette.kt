@@ -3,6 +3,7 @@ package com.pulseloop.ui.components
 import androidx.compose.ui.graphics.Color
 import com.pulseloop.service.MetricKind
 import com.pulseloop.service.VitalColorToken
+import com.pulseloop.ui.theme.PulseColors
 
 /**
  * Vitals reference-zone palette — ported from the `zone*` colors in AppTheme.swift (PulseColors).
@@ -13,28 +14,28 @@ import com.pulseloop.service.VitalColorToken
  * MetricThresholds); this is the finer iOS-parity palette the zone engine's tokens resolve to.
  */
 object ZonePalette {
-    val ZoneBlue      = Color(0xFF4DA3FF)   // low / cool
-    val ZoneMint      = Color(0xFF35E0A1)   // optimal / typical
-    val ZoneCyan      = Color(0xFF4DDCFF)   // normal (SpO₂/stress)
-    val ZoneAmber     = Color(0xFFFFB86B)   // caution
-    val ZoneSoftAmber = Color(0xFFFFD9A0)   // slight caution (distinct from amber)
-    val ZoneOrange    = Color(0xFFFF8A4C)   // elevated / low-oxygen / stage 1
-    val ZoneRed       = Color(0xFFFF4D6D)   // high / critical
-    val ZoneCritical  = Color(0xFFFF1744)   // brighter/deeper red for HR high vs the HR accent
+    val ZoneBlue      = PulseColors.zoneBlue        // low / cool
+    val ZoneMint      = PulseColors.zoneMint        // optimal / typical
+    val ZoneCyan      = PulseColors.zoneCyan        // normal (SpO₂/stress)
+    val ZoneAmber     = PulseColors.zoneAmber       // caution
+    val ZoneSoftAmber = PulseColors.zoneSoftAmber   // slight caution (distinct from amber)
+    val ZoneOrange    = PulseColors.zoneOrange      // elevated / low-oxygen / stage 1
+    val ZoneRed       = PulseColors.zoneRed         // high / critical
+    val ZoneCritical  = PulseColors.zoneCritical    // brighter/deeper red for HR high vs the HR accent
 
     /** Neutral "no information" color (iOS PulseColors.textMuted). */
-    val Neutral = Color(0xFF6F7A8C)
+    val Neutral = PulseColors.textMuted
 
     /** The brand accent color for a metric — iOS PulseColors metric accents. */
     fun accent(metric: MetricKind): Color = when (metric) {
-        MetricKind.HEART_RATE -> Color(0xFFFF4D6D)       // heartRate
-        MetricKind.SPO2 -> Color(0xFF4DDCFF)             // spo2
-        MetricKind.HRV -> Color(0xFF9D7CFF)              // hrv
-        MetricKind.BLOOD_PRESSURE -> Color(0xFFFF6B9D)   // bloodPressure
-        MetricKind.STRESS -> Color(0xFFFF8A4C)           // stress
-        MetricKind.FATIGUE -> Color(0xFFC77DFF)          // fatigue
-        MetricKind.GLUCOSE -> Color(0xFFFFB84D)          // bloodSugar
-        MetricKind.TEMPERATURE -> Color(0xFF2DD4D8)      // temperature
+        MetricKind.HEART_RATE -> PulseColors.heartRate
+        MetricKind.SPO2 -> PulseColors.spo2
+        MetricKind.HRV -> PulseColors.hrv
+        MetricKind.BLOOD_PRESSURE -> PulseColors.bloodPressure
+        MetricKind.STRESS -> PulseColors.stress
+        MetricKind.FATIGUE -> PulseColors.fatigue
+        MetricKind.GLUCOSE -> PulseColors.bloodSugar
+        MetricKind.TEMPERATURE -> PulseColors.temperature
     }
 }
 

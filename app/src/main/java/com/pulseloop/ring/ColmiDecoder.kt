@@ -5,6 +5,9 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 
+/** Ring-reported all-day HR config from a `0x16` auto-HR pref read reply. */
+data class ColmiAutoHRReadout(val enabled: Boolean, val intervalMinutes: Int)
+
 /**
  * Ported from [ColmiDecoder] in ColmiDecoder.swift.
  * Decodes Colmi frames into shared [RingDecodedEvent]s. Two channels:
@@ -174,9 +177,13 @@ object ColmiDecoder {
         val year = 2000 + hexLit(v[1])
         val month = hexLit(v[2])
         val day = hexLit(v[3])
-        val hour = minOf(23, maxOf(0, v[4].toInt() / 4))
+        // v[4] is a quarter-of-day slot index (0..95) — each 0x43 sample covers one
+        // 15-minute slice. Keep the full slice start: activity_buckets upserts by
+        // startEpoch, so collapsing to the hour would make same-hour slices overwrite
+        // each other and undercount the day's sum-of-buckets total.
+        val slot = v[4].toInt().coerceIn(0, 95)
         val ts = try {
-            LocalDate.of(year, month, day).atTime(hour, 0).atZone(zone).toInstant()
+            LocalDate.of(year, month, day).atTime(slot / 4, (slot % 4) * 15).atZone(zone).toInstant()
         } catch (_: Exception) {
             return emptyList()
         }
@@ -189,6 +196,34 @@ object ColmiDecoder {
         return listOf(RingDecodedEvent.ActivityBucket(
             _timestamp = ts, steps = steps, distanceMeters = distance
         ))
+    }
+
+    // MARK: Pref read replies (connect handshake)
+
+    /**
+     * Decode a `0x16` auto-HR pref **read** reply: `[0x16, action=READ(0x01), flag, interval]`.
+     * Mirrors the write shape (see [ColmiEncoder.autoHeartRate], per GadgetBridge): flag
+     * `0x01`=on / `0x02`=off, then the all-day sampling interval in minutes. Returns null for
+     * anything that isn't a read reply — write acks echo action `0x02`.
+     */
+    fun decodeAutoHRPrefRead(data: ByteArray): ColmiAutoHRReadout? {
+        val packet = ColmiPacket.validating(data) ?: return null
+        val v = packet.bytes.map { it.toUByte() }
+        if (v[0] != ColmiCommandID.AUTO_HR_PREF || v[1] != ColmiCommandID.PREF_READ) return null
+        return ColmiAutoHRReadout(enabled = v[2].toInt() == 0x01, intervalMinutes = v[3].toInt())
+    }
+
+    /**
+     * Decode a temperature-pref **read** reply: `[0x3A, 0x03, action=READ(0x01), enabled]`.
+     * Mirrors [ColmiEncoder.writeTempPref]'s extra `0x03` framing byte; enabled is
+     * `0x01`/`0x00`. Returns null for write acks (action `0x02`) and other 0x3A frames.
+     */
+    fun decodeTempPrefRead(data: ByteArray): Boolean? {
+        val packet = ColmiPacket.validating(data) ?: return null
+        val v = packet.bytes.map { it.toUByte() }
+        if (v[0] != ColmiCommandID.AUTO_TEMP_PREF || v[1].toInt() != 0x03 ||
+            v[2] != ColmiCommandID.PREF_READ) return null
+        return v[3].toInt() == 0x01
     }
 
     // MARK: Big-data (V2)

@@ -365,9 +365,9 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
 
                     Spacer(Modifier.height(8.dp))
                     ModelDropdown(
-                        "Reasoning effort", reasoningEffort ?: "medium",
-                        listOf("low" to "Fastest", "medium" to "Balanced (default)", "high" to "Deepest — more tokens"),
-                    ) { providerStore.reasoningEffort = it; reasoningEffort = it }
+                        "Reasoning effort", reasoningEffort ?: "default",
+                        listOf("default" to "Model decides (default)", "low" to "Fastest", "medium" to "Balanced", "high" to "Deepest — more tokens"),
+                    ) { providerStore.reasoningEffort = it.takeIf { s -> s != "default" }; reasoningEffort = providerStore.reasoningEffort }
 
                     // Image attachments (iOS #31): gates the attach button in the coach chat.
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1318,7 +1318,7 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showSeedDialog = false },
             title = { Text("Reseed Demo Data?") },
-            text = { Text("This will replace all existing demo data. Your synced ring data will not be affected.") },
+            text = { Text("This will replace all existing demo data. Your synced ring data — including sleep history — will not be affected.") },
             confirmButton = {
                 TextButton(onClick = {
                     showSeedDialog = false
@@ -1341,9 +1341,8 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
             title = { Text("Clear Demo Data?") },
             text = {
                 Text(
-                    "Removes all demo measurements, activity, and the demo device. Sleep history " +
-                    "is also cleared — a paired ring rebuilds it on the next connect. Synced ring " +
-                    "measurements and activity are not affected.",
+                    "Removes all demo measurements, activity, sleep, and the demo device. " +
+                    "Synced ring data is not affected.",
                 )
             },
             confirmButton = {

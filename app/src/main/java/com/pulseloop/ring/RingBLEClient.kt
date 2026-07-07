@@ -968,6 +968,10 @@ class RingBLEClient(private val context: Context) {
             val driver = activeDriver ?: return
             if (!driver.notifyUUIDs.any { it == characteristic.uuid.toString() }) return
 
+            // Raw seam: reply payloads the decoded-event stream doesn't carry
+            // (e.g. Colmi pref-read replies seeding the measurement config).
+            if (!forgetPending) activeSyncEngine?.handleRawNotify(value)
+
             for (decoded in driver.ingest(value, characteristic.uuid.toString())) {
                 // A forget is in flight: don't persist any more data or re-publish a
                 // "connected" device state (which would re-create the row we're clearing).
@@ -1008,7 +1012,16 @@ class RingBLEClient(private val context: Context) {
             resetReconnectBackoff()
             startKeepalive()  // Jring only — Colmi links idle without pings (official behavior)
             val device = gatt.device
-            val modelID = _state.value.activeWearableModelID
+            // Resolution can come back null (e.g. re-pairing while the carousel sits on a
+            // wrong-family model — resolve() rejects family mismatches). Keep a previously
+            // identified exact model when it belongs to the connected family rather than
+            // erasing it; a different-family leftover is stale and still clears.
+            val resolvedID = _state.value.activeWearableModelID
+            val modelID = resolvedID ?: lastKnownWearableModelID?.takeIf { prev ->
+                com.pulseloop.wearables.WearableModel.model(prev)?.family ==
+                    activeCoordinator?.deviceType
+            }
+            if (modelID != resolvedID) updateState { copy(activeWearableModelID = modelID) }
             val editor = prefs.edit()
                 .putString(LAST_PERIPHERAL_KEY, device.address)
                 .putString(LAST_DEVICE_TYPE_KEY, activeCoordinator?.deviceType?.name)

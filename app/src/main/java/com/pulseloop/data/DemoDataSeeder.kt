@@ -29,12 +29,15 @@ import kotlin.math.sin
  *
  * Fully deterministic (no RNG): every series is a sinusoid + fixed extreme days that walk each
  * metric through its threshold zones. Measurements use [MeasurementKind].name for kindRaw — the
- * same keys the readers (ViewModels, coach tools) query — and sleep sessions use the sync
- * engine's "sleep-$dayStart" id + waking-day keying so reseeds replace rather than duplicate.
+ * same keys the readers (ViewModels, coach tools) query. Sleep sessions are keyed by waking day
+ * like the sync engine but under their own "demo-sleep-$dayStart" ids + sourceRaw "demo", and
+ * days that already hold a synced ring session are skipped — so neither seeding nor clearing can
+ * ever touch a real night.
  *
  * Like iOS, the demo device is seeded as CONNECTED at 82% battery (data-display capabilities
  * only — no manual/realtime/find-device caps — and no BLE identifiers, so the sync coordinator
- * ignores it and a real ring that later connects becomes `current()` on its own).
+ * ignores it). Ring event handlers write through DeviceDao.currentReal(), and current() ranks a
+ * real ring above this row, so the demo device never absorbs a real ring's identity.
  */
 object DemoDataSeeder {
     private const val DEMO_DEVICE_ID = "demo-device"
@@ -52,6 +55,8 @@ object DemoDataSeeder {
             // Replace previous demo rows (real ring data is untouched).
             db.measurementDao().clearDemo()
             db.activityDailyDao().clearDemo()
+            db.sleepStageBlockDao().clearDemo()
+            db.sleepSessionDao().clearDemo()
 
             // Demo device — connected at 82% like the iOS demo seed, so the header pill and
             // capability-gated vitals cards match the Simulator.
@@ -114,19 +119,16 @@ object DemoDataSeeder {
     }
 
     /**
-     * Removes what [seed] wrote while leaving real ring data untouched: demo-tagged
-     * measurement/activity rows and the demo device row. Sleep sessions share their IDs
-     * with ring data (keyed by waking day), so they're cleared wholesale — the ring
-     * rebuilds them on the next connect (EventPersistenceSubscriber's CONNECT path),
-     * and without a ring they were all demo anyway.
+     * Removes exactly what [seed] wrote — demo-tagged measurement/activity/sleep rows and the
+     * demo device row — leaving real ring data untouched.
      */
     suspend fun clear(db: PulseLoopDatabase) = withContext(Dispatchers.IO) {
         db.withTransaction {
             db.measurementDao().clearDemo()
             db.activityDailyDao().clearDemo()
             db.deviceDao().deleteById(DEMO_DEVICE_ID)
-            db.sleepStageBlockDao().clear()
-            db.sleepSessionDao().clear()
+            db.sleepStageBlockDao().clearDemo()
+            db.sleepSessionDao().clearDemo()
         }
     }
 
@@ -238,12 +240,14 @@ object DemoDataSeeder {
 
     /**
      * One night ending at 7:10 on the morning `dayOffset` days ago — iOS SeedData's duration
-     * formula and reference stage pattern (sums to 455m, scaled to the night's total), keyed
-     * exactly like the sync engine (date = waking-day local midnight, id = "sleep-$dayStart")
-     * so reseeds upsert in place.
+     * formula and reference stage pattern (sums to 455m, scaled to the night's total). Keyed by
+     * waking day like the sync engine but under a demo-owned id ("demo-sleep-$dayStart",
+     * sourceRaw "demo"); a day that already has a synced ring session is left alone rather
+     * than overwritten with fabricated data.
      */
     private suspend fun seedSleepNight(db: PulseLoopDatabase, now: ZonedDateTime, dayOffset: Int) {
         val wakeDayStart = TimeUtil.startOfDayLocal(now.minusDays(dayOffset.toLong()).toInstant().toEpochMilli())
+        if (db.sleepSessionDao().ringByDay(wakeDayStart) != null) return
         val totalMinutes = 360 + ((sin(dayOffset * 0.8) + 1) * 70).toInt() + (if (dayOffset % 3 == 0) -25 else 15)
         val wake = wakeDayStart + (7 * 60 + 10) * 60_000L      // 7:10 AM
         val sleepStart = wake - totalMinutes * 60_000L
@@ -259,7 +263,7 @@ object DemoDataSeeder {
         val referenceTotal = pattern.sumOf { it.second }
         val scale = totalMinutes.toDouble() / referenceTotal
 
-        val sessionId = "sleep-$wakeDayStart"
+        val sessionId = "demo-sleep-$wakeDayStart"
         var minute = 0
         val blocks = pattern.mapIndexed { index, (stage, refMinutes) ->
             val duration = if (index == pattern.lastIndex)
@@ -281,6 +285,7 @@ object DemoDataSeeder {
             id = sessionId, date = wakeDayStart,
             startAt = sleepStart, endAt = wake,
             totalMinutes = totalMinutes,
+            sourceRaw = "demo",
         )
         db.sleepStageBlockDao().deleteBySession(sessionId)
         db.sleepSessionDao().upsert(session.copy(score = SleepScore.calculate(session, blocks).score))

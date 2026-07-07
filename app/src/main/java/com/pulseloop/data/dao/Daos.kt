@@ -14,11 +14,19 @@ data class Bucket(
 
 @Dao
 interface DeviceDao {
-    @Query("SELECT * FROM devices ORDER BY updatedAt DESC LIMIT 1")
+    // A real ring always outranks the seeded demo row ('demo-device'), regardless of which row
+    // was written last — otherwise a demo reseed would make the UI show a fake connected ring
+    // over the actually paired one.
+    @Query("SELECT * FROM devices ORDER BY (id = 'demo-device') ASC, updatedAt DESC LIMIT 1")
     suspend fun current(): DeviceEntity?
 
-    @Query("SELECT * FROM devices ORDER BY updatedAt DESC LIMIT 1")
+    @Query("SELECT * FROM devices ORDER BY (id = 'demo-device') ASC, updatedAt DESC LIMIT 1")
     fun currentFlow(): Flow<DeviceEntity?>
+
+    /** The paired ring's row only — ring event handlers write here so a real ring's identity,
+     *  battery, and state can never land on (or be deleted with) the demo device row. */
+    @Query("SELECT * FROM devices WHERE id != 'demo-device' ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun currentReal(): DeviceEntity?
 
     @Upsert
     suspend fun upsert(device: DeviceEntity)
@@ -162,8 +170,14 @@ interface ActivityGpsPointDao {
 
 @Dao
 interface SleepSessionDao {
-    @Query("SELECT * FROM sleep_sessions WHERE date = :day LIMIT 1")
+    // Ring sessions outrank demo ones if both ever exist for a day (the seeder skips days that
+    // have a ring session, so this is defensive).
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY (sourceRaw = 'demo') ASC LIMIT 1")
     suspend fun byDay(day: Long): SleepSessionEntity?
+
+    /** The synced (non-demo) session for a day — the sync path's upsert target. */
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' LIMIT 1")
+    suspend fun ringByDay(day: Long): SleepSessionEntity?
 
     @Query("SELECT * FROM sleep_sessions ORDER BY date DESC LIMIT :limit")
     suspend fun recent(limit: Int = 7): List<SleepSessionEntity>
@@ -179,6 +193,9 @@ interface SleepSessionDao {
 
     @Query("DELETE FROM sleep_sessions")
     suspend fun clear()
+
+    @Query("DELETE FROM sleep_sessions WHERE sourceRaw = 'demo'")
+    suspend fun clearDemo()
 }
 
 @Dao
@@ -197,6 +214,10 @@ interface SleepStageBlockDao {
 
     @Query("DELETE FROM sleep_stage_blocks")
     suspend fun clear()
+
+    /** Demo blocks only — demo sessions use the "demo-sleep-" id prefix. */
+    @Query("DELETE FROM sleep_stage_blocks WHERE sessionId LIKE 'demo-sleep-%'")
+    suspend fun clearDemo()
 }
 
 @Dao

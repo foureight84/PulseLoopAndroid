@@ -47,6 +47,35 @@ class TimeUtilTest {
     }
 
     @Test
+    fun `reference night before 4am is last night`() {
+        val now = millis(LocalDateTime.of(2026, 7, 5, 2, 0))
+        assertEquals(localMidnight(2026, 7, 4), TimeUtil.referenceNightLocal(now, zone))
+    }
+
+    @Test
+    fun `reference night from 4am on is today`() {
+        val now = millis(LocalDateTime.of(2026, 7, 5, 10, 0))
+        assertEquals(localMidnight(2026, 7, 5), TimeUtil.referenceNightLocal(now, zone))
+    }
+
+    @Test
+    fun `reference night after fall-back DST spans the 25-hour day`() {
+        // DST ends Nov 1 2026 (25-hour local day). At 01:30 on Nov 2 the reference must be
+        // Nov 1's true local midnight — a fixed -24h would land at 01:00 Nov 1 and miss the
+        // stored day key entirely.
+        val now = millis(LocalDateTime.of(2026, 11, 2, 1, 30))
+        assertEquals(localMidnight(2026, 11, 1), TimeUtil.referenceNightLocal(now, zone))
+    }
+
+    @Test
+    fun `reference night after spring-forward DST spans the 23-hour day`() {
+        // DST starts Mar 8 2026 (23-hour local day). At 01:30 on Mar 9 the reference must be
+        // Mar 8's true local midnight.
+        val now = millis(LocalDateTime.of(2026, 3, 9, 1, 30))
+        assertEquals(localMidnight(2026, 3, 8), TimeUtil.referenceNightLocal(now, zone))
+    }
+
+    @Test
     fun `cross-midnight night groups both packets onto one day key`() {
         val eveningPacket = millis(LocalDateTime.of(2026, 7, 4, 23, 45))
         val morningPacket = millis(LocalDateTime.of(2026, 7, 5, 0, 15))

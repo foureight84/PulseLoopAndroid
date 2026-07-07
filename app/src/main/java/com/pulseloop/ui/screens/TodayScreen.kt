@@ -216,13 +216,13 @@ private fun GaugeTile(card: VitalCardState, modifier: Modifier, onTap: () -> Uni
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             // A gauge needs only ONE reading — card.isEmpty is chart logic (<2 samples) and
             // would blank the glucose gauge (one fasting reading per day).
-            if (card.valueText.toDoubleOrNull() == null) {
+            if (card.latestValue == null) {
                 Text(card.statusText, fontSize = 12.sp, color = PulseColors.textMuted)
             } else {
                 // 108dp is what actually fits the 168dp tile after chrome (118 on iOS whose
                 // padding differs); the gauge draws its inscribed square either way.
                 VitalRingGauge(
-                    value = card.valueText.toDoubleOrNull() ?: 0.0,
+                    value = card.latestValue,
                     domain = card.yDomain,
                     zones = card.zones,
                     valueColor = card.statusToken.toColor(),

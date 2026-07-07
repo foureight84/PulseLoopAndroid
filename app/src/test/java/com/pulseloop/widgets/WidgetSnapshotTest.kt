@@ -28,7 +28,8 @@ class WidgetSnapshotTest {
 
     private fun sampleMetricPayload(now: Long) = WidgetMetricPayload(
         kind = MetricKind.HEART_RATE.widgetKey, title = "Heart rate",
-        valueText = "54-91", unitText = "bpm range", statusText = "Typical",
+        valueText = "54-91", latestValue = 72.5,
+        unitText = "bpm range", statusText = "Typical",
         statusColorHex = "#FF4D6D", isEmpty = false,
         samples = listOf(WidgetSamplePayload(t = now, v = 72.0)),
         yLower = 40.0, yUpper = 140.0,
@@ -79,6 +80,8 @@ class WidgetSnapshotTest {
         val hr = decoded.metrics[MetricKind.HEART_RATE.widgetKey]
         assertNotNull(hr)
         assertEquals("54-91", hr!!.valueText)
+        // The gauge reading crosses as a number, not by re-parsing the locale-formatted valueText.
+        assertEquals(72.5, hr.latestValue!!, 0.0)
         assertEquals(listOf(50.0, 60.0, 100.0, 120.0), hr.thresholds)
         assertEquals(72.0, hr.samples.first().v, 0.0)
         assertEquals("mint", hr.zones.first().colorToken)
@@ -88,6 +91,20 @@ class WidgetSnapshotTest {
         // Dates survive the epoch-seconds encoding to the second.
         assertEquals(snapshot.generatedAt, decoded.generatedAt)
         assertEquals(now, hr.samples.first().t)
+    }
+
+    @Test
+    fun decodingSnapshotWithoutLatestValueDefaultsToNull() {
+        // Persisted snapshots written before the field existed must still decode.
+        val legacy = WidgetSnapshotCodec.encode(
+            WidgetSnapshot(
+                generatedAt = 0, dayStart = 0,
+                metrics = mapOf(MetricKind.HEART_RATE.widgetKey to sampleMetricPayload(0)),
+            ),
+        ).replace(Regex("\"latestValue\":[^,]+,"), "")
+        val decoded = WidgetSnapshotCodec.decode(legacy)
+        assertNotNull(decoded)
+        assertNull(decoded!!.metrics[MetricKind.HEART_RATE.widgetKey]!!.latestValue)
     }
 
     // ── 2. Color-token bridge ──

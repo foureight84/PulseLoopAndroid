@@ -23,9 +23,11 @@ object DataRepairs {
      * window are additionally self-healed by `applyActivityBucket` on the next sync. Today's
      * row is out of scope — the live cumulative total re-ratchets on the next update.
      *
-     * No sleep counterpart is needed: sleep_sessions are cleared and rebuilt from the ring on
-     * every connect (see EventPersistenceSubscriber's CONNECTED handling), so rows split across
-     * midnight by the old start-of-day grouping disappear on the first sync after this update.
+     * No sleep counterpart is needed: sleep_sessions AND sleep_stage_blocks are cleared and
+     * rebuilt from the ring on every connect (see EventPersistenceSubscriber's CONNECTED
+     * handling), so rows keyed by the old start-of-day grouping — sessions split across
+     * midnight and stage blocks filed under what is now a different night's id — disappear
+     * on the first sync after this update.
      */
     suspend fun runIfNeeded(context: Context, db: PulseLoopDatabase = PulseLoopDatabase.getInstance(context)) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -79,15 +79,16 @@ fun PulseLoopApp() {
                 com.pulseloop.coach.config.CoachClientResolver.clientFactory(providerStore, apiKeyStore),
                 flagsProvider = {
                     val resolution = com.pulseloop.coach.config.CoachClientResolver.resolve(providerStore, apiKeyStore)
+                    val providerSettings = providerStore.snapshot()
                     CoachFeatureFlags(
                         coachEnabled = apiKeyStore.coachEnabled && resolution.key != null,
                         webSearchEnabled = apiKeyStore.webSearchEnabled,
                         writeToolsEnabled = false,  // safe default
                         liveMeasurementsEnabled = true,
                         model = com.pulseloop.coach.config.CoachClientResolver.activeModel(
-                            providerStore.snapshot(), apiKeyStore.model,
+                            providerSettings, apiKeyStore.model,
                         ),
-                        settings = CoachSettings(reasoningEffort = providerStore.reasoningEffort ?: "medium"),
+                        settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings),
                     )
                 },
                 toolContextFactory = { flags ->

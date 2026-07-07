@@ -4,6 +4,7 @@ import com.pulseloop.coach.gemini.GeminiClient
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.openai.ResponsesClient
 import com.pulseloop.coach.openrouter.OpenRouterClient
+import com.pulseloop.coach.tools.CoachSettings
 import com.pulseloop.settings.ApiKeyStore
 
 /**
@@ -73,6 +74,15 @@ object CoachClientResolver {
         store: CoachProviderSettingsStore,
         apiKeyStore: ApiKeyStore,
     ): () -> ResponsesClient = { resolve(store, apiKeyStore).client }
+
+    /**
+     * The per-request settings for the active provider, shared by the chat
+     * flags provider and the summary service. `reasoningEffort` keeps the
+     * store's null=omit contract: null (or no settings) sends no `reasoning`
+     * field, which models like gpt-4o require.
+     */
+    fun coachSettings(settings: CoachProviderSettings?): CoachSettings =
+        CoachSettings(reasoningEffort = settings?.reasoningEffort)
 
     /**
      * The model slug the orchestrator/services should put in the request body

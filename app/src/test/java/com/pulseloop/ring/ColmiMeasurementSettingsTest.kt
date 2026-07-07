@@ -68,6 +68,92 @@ class ColmiMeasurementSettingsTest {
     }
 
     @Test
+    fun `startup with no persisted config does not force-write HR or temp prefs`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.setMeasurementSettings(null)
+        engine.runStartup()
+        engine.destroy()
+
+        // No auto-HR write (0x16 0x02) and no temp write (0x3A 0x03 0x02) — the ring's own
+        // settings are read (0x16 0x01 / 0x3A 0x03 0x01) and seed the config instead.
+        assertTrue(writer.commands.none { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() })
+        assertTrue(writer.commands.none { it[0] == 0x3A.toByte() && it[2] == 0x02.toByte() })
+        assertTrue(writer.commands.any { it[0] == 0x16.toByte() && it[1] == 0x01.toByte() })
+        assertTrue(writer.commands.any { it[0] == 0x3A.toByte() && it[2] == 0x01.toByte() })
+        // SpO2/stress/HRV stay force-enabled — the history sync depends on them.
+        for (pref in byteArrayOf(0x2C, 0x36, 0x38)) {
+            val write = writer.commands.first { it[0] == pref && it[1] == 0x02.toByte() }
+            assertEquals(0x01.toByte(), write[2])
+        }
+    }
+
+    @Test
+    fun `ring-disabled all-day HR is re-enabled keeping the ring's interval`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.setMeasurementSettings(null)
+        engine.runStartup()
+        // Ring reports all-day HR off at a 60-minute interval (read reply: 0x16 0x01 0x02 60).
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x02, 60)))
+        engine.destroy()
+
+        val autoHr = writer.commands.first { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() }
+        assertEquals(0x01.toByte(), autoHr[2])   // forced on — 0x15 HR history needs it
+        assertEquals(60.toByte(), autoHr[3])     // but the ring's interval is respected
+    }
+
+    @Test
+    fun `ring-enabled all-day HR is left untouched`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.setMeasurementSettings(null)
+        engine.runStartup()
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30)))
+        engine.destroy()
+
+        assertTrue(writer.commands.none { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() })
+    }
+
+    @Test
+    fun `seeded config surfaces the ring's settings once both prefs reported`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        var seeded: MeasurementSettings? = null
+        engine.setMeasurementSettings(null)
+        engine.setOnMeasurementConfigSeeded { seeded = it }
+        engine.runStartup()
+
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30)))  // HR on, 30 min
+        assertEquals(null, seeded)  // waits for the temp reply
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, 0x00)))  // temp off
+        engine.destroy()
+
+        val settings = seeded!!
+        assertTrue(settings.hrEnabled)
+        assertEquals(30, settings.hrIntervalMinutes)
+        assertTrue(settings.spo2Enabled && settings.stressEnabled && settings.hrvEnabled)
+        assertTrue(!settings.temperatureEnabled)
+    }
+
+    @Test
+    fun `seeding ignores replies when a persisted config exists`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        var seeded: MeasurementSettings? = null
+        engine.setMeasurementSettings(MeasurementSettings.ALL_ON_DEFAULT)
+        engine.setOnMeasurementConfigSeeded { seeded = it }
+        engine.runStartup()
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x02, 60)))
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, 0x00)))
+        engine.destroy()
+
+        assertEquals(null, seeded)
+        // The persisted config was written exactly once — the reply didn't add a second write.
+        assertEquals(1, writer.commands.count { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() })
+    }
+
+    @Test
     fun `apply pushes all five measurement commands immediately`() {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)

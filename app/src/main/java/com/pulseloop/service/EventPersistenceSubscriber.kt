@@ -61,7 +61,9 @@ class EventPersistenceSubscriber(
                 // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
                 // device row, the ring's own teardown still emits a late DISCONNECTED — only
                 // a connection-establishing event may create a fresh row.
-                val existing = db.deviceDao().current()
+                // currentReal() (not current()) so a seeded demo-device row can never absorb a
+                // real ring's identity — the ring gets its own row instead.
+                val existing = db.deviceDao().currentReal()
                 if (existing == null &&
                     event.state != RingConnectionState.CONNECTED &&
                     event.state != RingConnectionState.CONNECTING) return
@@ -70,6 +72,13 @@ class EventPersistenceSubscriber(
                     RingConnectionState.CONNECTED -> {
                         db.measurementDao().clearDemo()
                         db.activityDailyDao().clearDemo()
+                        // Sessions rebuild from the ring on every connect. Blocks must be wiped
+                        // WITH them (no FK cascade at runtime): stale blocks keyed under an id a
+                        // rebuilt session reuses — e.g. rows from the pre-waking-day keying, which
+                        // filed a night's pre-midnight packets under what is now a different
+                        // night's id — would otherwise be merged into that night by
+                        // upsertSleepSession and corrupt its span and score.
+                        db.sleepStageBlockDao().clear()
                         db.sleepSessionDao().clear()
                         "CONNECTED"
                     }
@@ -95,10 +104,12 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.DeviceIdentified -> {
-                val device = db.deviceDao().current() ?: DeviceEntity()
+                val device = db.deviceDao().currentReal() ?: DeviceEntity()
                 db.deviceDao().upsert(device.copy(
                     deviceTypeRaw = event.deviceType.name,
-                    wearableModelID = event.wearableModelID,
+                    // A connect that can't resolve the exact model (e.g. re-pair with the
+                    // carousel on the wrong family) must not erase a previously stamped one.
+                    wearableModelID = event.wearableModelID ?: device.wearableModelID,
                     advertisedName = event.advertisedName ?: device.advertisedName,
                     capabilitiesRaw = event.capabilities.toCsv(),
                     updatedAt = System.currentTimeMillis(),
@@ -107,7 +118,7 @@ class EventPersistenceSubscriber(
             is PulseEvent.DeviceForgotten -> {
                 // Mirror iOS: forgetting clears the stored model identity (the row itself is
                 // cleared by the Forget flow; this covers a row that survives, e.g. offline forget).
-                db.deviceDao().current()?.let { device ->
+                db.deviceDao().currentReal()?.let { device ->
                     db.deviceDao().upsert(device.copy(
                         wearableModelID = null,
                         advertisedName = null,
@@ -116,7 +127,7 @@ class EventPersistenceSubscriber(
                 }
             }
             is PulseEvent.BatteryLevel -> {
-                val device = db.deviceDao().current() ?: DeviceEntity()
+                val device = db.deviceDao().currentReal() ?: DeviceEntity()
                 db.deviceDao().upsert(device.copy(
                     batteryPercent = event.percent,
                     updatedAt = System.currentTimeMillis(),
@@ -254,11 +265,12 @@ class EventPersistenceSubscriber(
         val totalDistance = buckets.sumOf { it.distanceMeters }
 
         val existing = db.activityDailyDao().byDay(dayStart)
-        // A past day's truth is the sum of its distinct buckets. For TODAY the live 0x0C
-        // cumulative total leads the bucket history (the in-progress slice isn't served yet,
-        // and the decoder collapses sub-hour slices), so ratchet against the existing row
-        // instead of overwriting — otherwise every reconnect visibly drops today's count
-        // until the next live update. Keep the stale-garbage escape from the live path.
+        // A past day's truth is the sum of its distinct buckets (now true 15-minute slices —
+        // see ColmiDecoder.decodeActivityHistory). For TODAY the live 0x0C cumulative total
+        // leads the bucket history (the in-progress slice isn't served yet), so ratchet
+        // against the existing row instead of overwriting — otherwise every reconnect visibly
+        // drops today's count until the next live update. Keep the stale-garbage escape from
+        // the live path.
         val isToday = dayStart == com.pulseloop.util.TimeUtil.startOfTodayLocal()
         val stale = existing != null && existing.steps > 200_000
         val ratchet = isToday && existing != null && !stale
@@ -303,7 +315,7 @@ class EventPersistenceSubscriber(
             db.sleepStageBlockDao().insert(it.copy(startMinute = ((it.startAt - sessionStart) / 60_000L).toInt()))
         }
 
-        val existing = db.sleepSessionDao().byDay(dayStart)
+        val existing = db.sleepSessionDao().ringByDay(dayStart)
         db.sleepSessionDao().upsert(
             (existing ?: SleepSessionEntity(id = sessionId, date = dayStart, startAt = sessionStart, endAt = sessionEnd, totalMinutes = totalMin, score = score)).copy(
                 startAt = sessionStart,

@@ -196,11 +196,8 @@ class CoachOrchestrator(
         textFormat: JsonObject,
         previousResponseId: String?,
     ): com.pulseloop.coach.openai.OpenAIResponse {
-        // Optional reasoning-effort hint; forwarded verbatim by the OpenRouter
-        // adapter and ignored by Gemini (mirrors iOS OpenAIRequestBuilder).
-        val reasoning = flags.settings.reasoningEffort.takeIf { it.isNotBlank() }?.let {
-            mapOf("reasoning" to JsonObject(mapOf("effort" to JsonPrimitive(it))))
-        } ?: emptyMap()
+        // Optional reasoning-effort hint (mirrors iOS OpenAIRequestBuilder).
+        val reasoning = OpenAIRequestBuilder.reasoningParams(flags.settings.reasoningEffort)
         val body = JsonObject(mapOf(
             "model" to JsonPrimitive(flags.model),
             "input" to JsonArray(input),

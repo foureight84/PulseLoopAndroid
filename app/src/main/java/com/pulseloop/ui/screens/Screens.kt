@@ -336,7 +336,7 @@ private fun VitalGaugeCardItem(
                 contentAlignment = Alignment.Center,
             ) {
                 VitalRingGauge(
-                    value = card.valueText.toDoubleOrNull() ?: 0.0,
+                    value = card.latestValue ?: 0.0,
                     domain = card.yDomain,
                     zones = card.zones,
                     valueColor = card.statusToken.toColor(),

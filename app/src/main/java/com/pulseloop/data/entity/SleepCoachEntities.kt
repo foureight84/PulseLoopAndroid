@@ -14,6 +14,8 @@ data class SleepSessionEntity(
     val totalMinutes: Int,
     val score: Int? = null,
     val syncedAt: Long? = null,
+    /** "ring" for synced sessions, "demo" for seeded ones — lets demo clears leave real data alone. */
+    val sourceRaw: String = "ring",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 )

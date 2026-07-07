@@ -190,6 +190,12 @@ class OpenRouterClientTest {
         assertEquals("low", body["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
     }
 
+    @Test
+    fun testAbsentReasoningStaysAbsent() {
+        val body = OpenRouterClient("key").buildRequestBody(request(listOf(msg("user", "hi"))))
+        assertNull(body["reasoning"])
+    }
+
     // ── Multimodal content parts ────────────────────────────────────────
 
     @Test

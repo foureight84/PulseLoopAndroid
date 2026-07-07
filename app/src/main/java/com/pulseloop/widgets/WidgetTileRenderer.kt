@@ -469,7 +469,7 @@ class WidgetTileRenderer(private val density: Float) {
     // ─────────────────────────── Ring gauge (iOS WidgetGaugeContent) ───────────────────────────
 
     private fun drawGaugeContent(canvas: Canvas, rect: RectF, payload: WidgetMetricPayload) {
-        val value = payload.valueText.toDoubleOrNull()
+        val value = payload.latestValue
         if (value == null || payload.isEmpty) {
             drawEmptyMessage(canvas, rect, payload.statusText, colorFromHex(payload.statusColorHex).toArgb())
             return

@@ -1,5 +1,6 @@
 package com.pulseloop.coach.summaries
 
+import com.pulseloop.coach.openai.OpenAIRequestBuilder
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.openai.ResponsesClient
 import com.pulseloop.coach.tools.CoachFeatureFlags
@@ -44,7 +45,7 @@ object CoachSummaryGenerator {
                 "model" to JsonPrimitive(flags.model),
                 "input" to input,
                 "text" to textFormat,
-            ))
+            ) + OpenAIRequestBuilder.reasoningParams(flags.settings.reasoningEffort))
             val resolved = client ?: OpenAIResponsesClient(apiKey)
             val bodyBytes = Json.encodeToString(JsonObject.serializer(), body).toByteArray()
             val response = resolved.send(bodyBytes)

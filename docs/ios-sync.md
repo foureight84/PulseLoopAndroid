@@ -305,6 +305,76 @@ main-thread access from a background worker, and Room calls on the right dispatc
 
 ---
 
+## Android-originated fixes (2026-07-06 review pass) — upstream candidates for iOS
+
+A post-port code review of the sync-triage branch found and fixed the issues below on
+Android. Several trace back to logic ported 1:1 from iOS, so the same bugs likely exist
+upstream — each entry says what changed here and whether iOS should look at it.
+
+**Likely applies to iOS — please check:**
+
+- **Demo seed can destroy real data.** Seeded sleep nights reused the sync engine's
+  `"sleep-<wakingDay>"` session ids (ported from SeedData.swift), so a reseed silently
+  overwrote up to 30 days of real synced sleep, and the demo clear wiped the sleep tables
+  wholesale. Android now keys demo nights under their own `"demo-sleep-<day>"` ids with a new
+  `sourceRaw` column on sleep sessions ("ring"/"demo", Room v6→v7), skips days that hold a
+  synced session, and seeds/clears only demo-tagged rows. If SeedData.swift shares session
+  ids with SleepService's, the Simulator/demo path has the same hazard.
+- **Demo device row absorbed a real ring's identity.** All device writes went through
+  `current()` (newest `updatedAt` wins), so after a seed the demo device row was the write
+  target for a real ring's connect/battery/identity events — and "Clear Demo Data" then
+  deleted the paired ring's only row. Android now ranks a real ring above the demo row in
+  `current()` and routes ring event handlers through a `currentReal()` that excludes the demo
+  row. Worth checking how the iOS demo device interacts with SwiftData's device fetch.
+- **Stale sleep stage blocks corrupt re-keyed sessions.** The waking-day re-keying (iOS #15)
+  collides with blocks stored under the old start-of-day ids: a rebuilt session's id can match
+  a *different* night's legacy blocks, and the stitch-by-startAt merge then produces ~25-hour
+  sessions with garbage scores. Android clears `sleep_stage_blocks` together with
+  `sleep_sessions` on every connect. If iOS's #15 migration didn't also migrate/purge stage
+  blocks keyed by the old grouping, the same corruption can appear there.
+- **Activity history slices were collapsed to hour granularity.** The 0x43 decoder mapped the
+  quarter-of-day slot index to `hour = idx/4, minute 0`, so up to four 15-minute slices shared
+  one bucket key and vanished from day totals (permanent undercount for past days, which have
+  no live-total ratchet). Android now decodes true 15-minute slice starts
+  (`hour = idx/4, minute = (idx%4)*15`). Check whether ActivityService's bucket keying (iOS
+  #17) does the same collapse.
+- **Connect handshake overrode ring-side measurement settings.** With no saved measurement
+  config (every fresh install/upgrade), the startup wrote ALL-ON defaults — 5-minute all-day
+  HR and temperature ON — over whatever the user had configured in the official Colmi app.
+  Android now *reads* the ring's auto-HR (`0x16`) and temperature prefs on first connect,
+  seeds the persisted config from the replies, and only writes when the ring reports all-day
+  HR disabled (keeping the #17 fix: HR history needs it on) — using the ring's own interval.
+  iOS #19 pushes its defaults the same way and could adopt the read-then-seed handshake.
+- **`reasoning.effort` was sent unconditionally → OpenAI 400s.** The provider store's
+  null-means-omit contract was lost at the settings boundary (null coalesced to "medium"),
+  so non-reasoning models (gpt-4o, gpt-4o-mini — both in the preset list) rejected every
+  coach turn. Android made the setting nullable end to end, added a "Model decides (default)"
+  option, and omits the `reasoning` key when unset; summaries now send the user's effort too
+  (they silently dropped it, diverging from CoachSummaryGenerator.swift). Check what iOS's
+  default effort is for the OpenAI provider with non-reasoning presets.
+- **A failed model resolve erased the stored exact model.** `DeviceIdentified` with a null
+  `wearableModelID` (re-pair with the carousel on the wrong family) overwrote a previously
+  stamped exact model, and the last-model pref was cleared with it — Settings reverted to the
+  generic family label. Android now falls back to the stored value on null (DB side) and
+  retains the pref when the previous model's family matches the connected device (BLE side).
+  iOS #49's resolve has the same null path; check its persistence behavior.
+
+**Android-only (platform-specific, no iOS action expected):**
+
+- `referenceNightLocal` computed "last night" as a fixed −24 h instead of calendar-aware
+  `minusDays(1)`, missing the stored day key for up to 4 hours after each DST transition
+  (iOS uses `Calendar`, which is already DST-correct).
+- Gauge renderers recovered readings by parsing the locale-formatted display string
+  (`toDoubleOrNull()` fails on comma-decimal locales the moment mmol/L glucose becomes
+  settable); the raw value now travels as `latestValue` on the card state and widget payload.
+  iOS passes numerics natively, but the widget-snapshot payload gained a field — mirror it if
+  the snapshot schema is ever shared.
+- Cleanups: orphaned `SimpleDualLineChart`/`ThresholdBar`/`MetricTile` composables removed;
+  zone/accent hexes single-sourced into `PulseColors` (they were triplicated across
+  `ZonePalette`/`MetricColors`/`PulseColors`, mirroring their AppTheme.swift home).
+
+---
+
 ## Intentional divergences (do not "fix")
 
 **Android-only — keep:**

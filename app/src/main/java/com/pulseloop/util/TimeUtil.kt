@@ -50,8 +50,11 @@ object TimeUtil {
      * SleepViewModel and the widget snapshot publisher so both read the same session.
      */
     fun referenceNightLocal(nowMs: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): Long {
-        val hour = Instant.ofEpochMilli(nowMs).atZone(zone).hour
-        val startOfToday = startOfDayLocal(nowMs, zone)
-        return if (hour < 4) startOfToday - 86_400_000L else startOfToday
+        // Calendar-aware minusDays, NOT a fixed -24h: stored day keys are true local midnights,
+        // so around a DST transition the subtraction must span the 23/25-hour day or the
+        // exact-match byDay lookup misses the night.
+        val zdt = Instant.ofEpochMilli(nowMs).atZone(zone)
+        val day = zdt.truncatedTo(ChronoUnit.DAYS)
+        return (if (zdt.hour < 4) day.minusDays(1) else day).toInstant().toEpochMilli()
     }
 }
