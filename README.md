@@ -30,11 +30,18 @@
 
 Android port of [PulseLoop](https://github.com/saksham2001/PulseLoopiOS/tree/main) — a smart ring companion app for the 56ff/Jring and Colmi/Yawell QRing platforms. Questions, ring compatibility reports, or debugging help — join us on [Discord](https://discord.gg/t9y85ebaKD).
 
+> [!NOTE]
+> **Feature requests and UI changes should go through the
+> [iOS app](https://github.com/saksham2001/PulseLoopiOS) first.** The full intention
+> of this app is to be as close to a 100% port of the iOS version as possible. The
+> only differences may be under the hood, where internal APIs and platform
+> functionality differ.
+
 ## Pairing Your Ring
 
-1. Open PulseLoop and navigate to the **Today** tab.
-2. Tap the Bluetooth icon (top-right) to open the ring scanner.
-3. With your ring nearby and awake (take it out of the charging case briefly), tap your ring when it appears in the device list.
+1. On first launch, the onboarding wizard walks you through pairing: swipe the carousel to your ring model, then tap **Connect ring**.
+2. Already past onboarding? Open **Settings** and tap the device card at the top to reach the same pairing screen.
+3. With your ring nearby and awake (take it off the charger briefly), tap your ring when it appears in the scan list.
 4. The ring will connect, sync history, and metrics will begin populating.
 
 ### Profile & Calibration
