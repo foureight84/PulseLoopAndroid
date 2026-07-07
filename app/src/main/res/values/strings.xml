@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Home-screen widgets (iOS #44). -->
+    <string name="widget_activity_label">Daily Activity</string>
+    <string name="widget_activity_description">Steps, distance, and calories with your progress rings.</string>
+    <string name="widget_metric_label">Metric Tile</string>
+    <string name="widget_metric_description">A Today tile of your choice — activity, sleep, heart rate, and more.</string>
+    <string name="widget_dual_label">Two Metric Tiles</string>
+    <string name="widget_dual_description">Two Today tiles side by side, each configurable.</string>
+</resources>

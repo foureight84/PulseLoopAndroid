@@ -114,16 +114,58 @@ class RingSyncCoordinator(
         // the ring re-emits CONNECTED on every 0x0C status packet, which would otherwise
         // keep resetting the bar to 0%.
         beginSyncProgress()
-        // Claim the ring for this app FIRST (0x48). The ring binds to the connecting app's
-        // id and otherwise can stay mute after another app (e.g. the official one) claimed it.
-        apiKeyStore?.ringAppId?.let { engine?.setAppId(it) }
-        engine?.runStartup()
-        // Push the user's profile so the ring's blood-sugar (profile-derived) and
-        // calorie algorithms run on real inputs. BP is a direct sensor reading and
-        // does not depend on user info. Matches the official app, which calls
-        // setUserInfo on every connect anyway.
-        pushUserSettingsFromStore()
-        lastSyncAt = System.currentTimeMillis()
+        scope.launch {
+            // Push the persisted measurement config + profile into the engine BEFORE
+            // runStartup so the connect handshake reflects them (the engine emits the
+            // commands itself, so we don't double-send here). iOS #19 parity.
+            // No persisted config (null) ⇒ the engine seeds one from the ring's own
+            // reported settings; persist that as the device's initial config.
+            val persisted = loadMeasurementSettings()
+            engine?.setMeasurementSettings(persisted)
+            if (persisted == null) {
+                engine?.setOnMeasurementConfigSeeded { seeded ->
+                    scope.launch { persistSeededMeasurementConfig(db, seeded) }
+                }
+            }
+            loadUserProfileValues()?.let { engine?.setUserProfile(it) }
+            // Claim the ring for this app FIRST (0x48). The ring binds to the connecting app's
+            // id and otherwise can stay mute after another app (e.g. the official one) claimed it.
+            apiKeyStore?.ringAppId?.let { engine?.setAppId(it) }
+            engine?.runStartup()
+            // Push the user's profile so the ring's blood-sugar (profile-derived) and
+            // calorie algorithms run on real inputs. BP is a direct sensor reading and
+            // does not depend on user info. Matches the official app, which calls
+            // setUserInfo on every connect anyway.
+            pushUserSettingsFromStore()
+            lastSyncAt = System.currentTimeMillis()
+        }
+    }
+
+    /** The persisted per-device measurement config, or null when the user never saved one. */
+    private suspend fun loadMeasurementSettings(): MeasurementSettings? =
+        loadPersistedMeasurementSettings(db)
+
+    private suspend fun loadUserProfileValues(): UserProfileValues? =
+        loadPersistedUserProfile(db, apiKeyStore)
+
+    /**
+     * Live "Save" from the Measurement settings section: persist nothing here (the view owns
+     * the Room write), just push the latest config to the connected ring so it takes effect
+     * immediately. No-op when disconnected — applied on the next connect handshake instead.
+     */
+    fun applyMeasurementSettings() {
+        if (!isConnected) return
+        scope.launch {
+            loadMeasurementSettings()?.let { engine?.applyMeasurementSettings(it) }
+        }
+    }
+
+    /** Live push of the profile-backed user-preferences command (Colmi 0x02-equivalent). */
+    fun applyUserProfileToRing() {
+        if (!isConnected) return
+        scope.launch {
+            loadUserProfileValues()?.let { engine?.applyUserProfile(it) }
+        }
     }
 
     /** Read the stored profile + BP calibration and push them to the ring. */
@@ -450,4 +492,67 @@ class RingSyncCoordinator(
         syncResetJob?.cancel()
         _syncProgress.value = null
     }
+}
+
+/**
+ * The persisted per-device measurement config, or null when the user never saved one.
+ * Shared by the foreground coordinator and the background [RingSyncWorker] so BOTH
+ * connect handshakes push the user's saved settings. null tells the engine to seed
+ * from the ring's own reported settings instead of force-writing all-on defaults —
+ * which would silently override ring-side settings (e.g. a 60-min HR interval or
+ * temperature off, configured in the official app) on every fresh install.
+ */
+internal suspend fun loadPersistedMeasurementSettings(db: PulseLoopDatabase): MeasurementSettings? {
+    val device = try { db.deviceDao().current() } catch (_: Exception) { null }
+        ?: return null
+    val config = try { db.deviceMeasurementConfigDao().byDevice(device.id) } catch (_: Exception) { null }
+        ?: return null
+    return MeasurementSettings(
+        hrEnabled = config.hrEnabled,
+        hrIntervalMinutes = config.hrIntervalMinutes,
+        spo2Enabled = config.spo2Enabled,
+        stressEnabled = config.stressEnabled,
+        hrvEnabled = config.hrvEnabled,
+        temperatureEnabled = config.temperatureEnabled,
+    )
+}
+
+/**
+ * Persist the config the engine seeded from the ring's own reported settings as this
+ * device's initial DeviceMeasurementConfig. Only fills the gap — a config the user saved
+ * (or a concurrent seed) always wins, and no row is written without a current device.
+ */
+internal suspend fun persistSeededMeasurementConfig(
+    db: PulseLoopDatabase,
+    settings: MeasurementSettings,
+) {
+    val device = try { db.deviceDao().current() } catch (_: Exception) { null } ?: return
+    val existing = try { db.deviceMeasurementConfigDao().byDevice(device.id) } catch (_: Exception) { null }
+    if (existing != null) return
+    try {
+        db.deviceMeasurementConfigDao().upsert(
+            com.pulseloop.data.entity.DeviceMeasurementConfigEntity(
+                deviceId = device.id,
+                hrIntervalMinutes = settings.hrIntervalMinutes,
+                hrEnabled = settings.hrEnabled,
+                spo2Enabled = settings.spo2Enabled,
+                stressEnabled = settings.stressEnabled,
+                hrvEnabled = settings.hrvEnabled,
+                temperatureEnabled = settings.temperatureEnabled,
+            )
+        )
+    } catch (_: Exception) {}
+}
+
+/** The persisted user profile as ring-protocol values, or null when no profile saved. */
+internal suspend fun loadPersistedUserProfile(
+    db: PulseLoopDatabase,
+    apiKeyStore: ApiKeyStore?,
+): UserProfileValues? {
+    val profile = try { db.userProfileDao().get() } catch (_: Exception) { null } ?: return null
+    return UserProfileValues.from(
+        metric = apiKeyStore?.resolvedUnitSystem != com.pulseloop.settings.UnitSystem.IMPERIAL,
+        sex = profile.sex, age = profile.age,
+        heightCm = profile.heightCm, weightKg = profile.weightKg,
+    )
 }

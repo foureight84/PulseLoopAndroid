@@ -1,6 +1,8 @@
 package com.pulseloop.coach.summaries
 
+import com.pulseloop.coach.openai.OpenAIRequestBuilder
 import com.pulseloop.coach.openai.OpenAIResponsesClient
+import com.pulseloop.coach.openai.ResponsesClient
 import com.pulseloop.coach.tools.CoachFeatureFlags
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -8,9 +10,11 @@ import kotlinx.serialization.json.*
 
 /**
  * Ported from CoachSummaryGenerator.swift.
- * Single-shot OpenAI call that produces a coach-card summary. No tools — just
+ * Single-shot model call that produces a coach-card summary. No tools — just
  * system + developer → strict {title, body, chips}. Falls back to scripted
- * content when the coach is disabled or the call fails.
+ * content when the coach is disabled or the call fails. The client comes from
+ * `CoachClientResolver` (so summaries follow the selected provider); the
+ * default keeps the legacy OpenAI-only path for callers that don't pass one.
  */
 object CoachSummaryGenerator {
     private val json = Json { prettyPrint = false }
@@ -21,6 +25,7 @@ object CoachSummaryGenerator {
         fallback: CoachSummaryContent,
         flags: CoachFeatureFlags,
         apiKey: String,
+        client: ResponsesClient? = null,
     ): CoachSummaryContent = withContext(Dispatchers.IO) {
         if (!flags.coachEnabled || apiKey.isBlank()) return@withContext fallback
         try {
@@ -40,10 +45,10 @@ object CoachSummaryGenerator {
                 "model" to JsonPrimitive(flags.model),
                 "input" to input,
                 "text" to textFormat,
-            ))
-            val client = OpenAIResponsesClient(apiKey)
+            ) + OpenAIRequestBuilder.reasoningParams(flags.settings.reasoningEffort))
+            val resolved = client ?: OpenAIResponsesClient(apiKey)
             val bodyBytes = Json.encodeToString(JsonObject.serializer(), body).toByteArray()
-            val response = client.send(bodyBytes)
+            val response = resolved.send(bodyBytes)
             val outputText = response.outputText ?: return@withContext fallback
             CoachSummaryContent.fromJson(outputText) ?: fallback
         } catch (_: Exception) {

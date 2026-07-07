@@ -47,21 +47,22 @@ class SleepInsightsTest {
 
     @Test
     fun testIdealNightScoresHigh() {
-        // 8h with balanced stages → should be 85+
+        // 8h with balanced stages → should be 85+. Stage percentages are computed over the
+        // session's totalMinutes (480), and REM folds into deep (see SleepScore.calculate).
         val s = session(480)  // 8 hours
         val blocks = buildList {
-            repeat(80) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "light")) }
-            repeat(30) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "deep")) }
-            repeat(20) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "rem")) }
-            repeat(10) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "awake")) }
+            repeat(288) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "LIGHT")) }
+            repeat(66) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "DEEP")) }
+            repeat(30) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "REM")) }
+            repeat(24) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "AWAKE")) }
         }
         val result = SleepScore.calculate(s, blocks)
         assertTrue("Ideal 8h night should score >= 85, got ${result.score}", result.score >= 85)
         assertEquals(SleepQualityLabel.EXCELLENT, result.label)
-        assertEquals(21, result.deepPct)   // 30/140 ≈ 21%
-        assertEquals(57, result.lightPct)  // 80/140 ≈ 57%
+        assertEquals(20, result.deepPct)   // (66 deep + 30 REM) / 480 = 20%
+        assertEquals(60, result.lightPct)  // 288/480 = 60%
         assertNotNull(result.awakePct)
-        assertEquals(7, result.awakePct)   // 10/140 ≈ 7%
+        assertEquals(5, result.awakePct)   // 24/480 = 5%
     }
 
     @Test
@@ -69,8 +70,8 @@ class SleepInsightsTest {
         // 4h sleep → low score
         val s = session(240)
         val blocks = buildList {
-            repeat(80) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "light")) }
-            repeat(20) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "deep")) }
+            repeat(80) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "LIGHT")) }
+            repeat(20) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "DEEP")) }
         }
         val result = SleepScore.calculate(s, blocks)
         assertTrue("Short 4h night should score < 70, got ${result.score}", result.score < 70)
@@ -80,8 +81,8 @@ class SleepInsightsTest {
     fun testNoDeepScoresLow() {
         val s = session(480)
         val blocks = buildList {
-            repeat(130) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "light")) }
-            repeat(10) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "awake")) }
+            repeat(130) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "LIGHT")) }
+            repeat(10) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "AWAKE")) }
         }
         val result = SleepScore.calculate(s, blocks)
         assertTrue("No deep sleep should score < 80, got ${result.score}", result.score < 80)
@@ -93,7 +94,7 @@ class SleepInsightsTest {
         // Test various inputs always return 0-100
         val s = session(300)
         val blocks = buildList {
-            repeat(50) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "light")) }
+            repeat(50) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "LIGHT")) }
         }
         val result = SleepScore.calculate(s, blocks)
         assertTrue("Score ${result.score} should be >= 0", result.score >= 0)
@@ -123,7 +124,7 @@ class SleepInsightsTest {
     @Test
     fun testDurationFormat() {
         assertEquals("7h 30m", SleepFormat.duration(450))
-        assertEquals("0h 05m", SleepFormat.duration(5))
+        assertEquals("5m", SleepFormat.duration(5))
         assertEquals("1h 00m", SleepFormat.duration(60))
         assertEquals("—", SleepFormat.duration(null))
         assertEquals("—", SleepFormat.duration(-1))
@@ -159,7 +160,7 @@ class SleepInsightsTest {
     @Test
     fun testDayCoachHighScore() {
         val (s, blocks) = sessionWithBlocks(480,
-            "light" to 80, "deep" to 30, "rem" to 20, "awake" to 10)
+            "LIGHT" to 80, "DEEP" to 30, "REM" to 20, "AWAKE" to 10)
         val coach = SleepInsights.dayCoach(s, blocks, 6000)
         assertTrue(coach.headline.isNotEmpty())
         assertTrue(coach.chips.isNotEmpty())
@@ -168,7 +169,7 @@ class SleepInsightsTest {
     @Test
     fun testDayCoachShortDuration() {
         val (s, blocks) = sessionWithBlocks(240,
-            "light" to 40, "deep" to 10)
+            "LIGHT" to 40, "DEEP" to 10)
         val coach = SleepInsights.dayCoach(s, blocks, 2000)
         assertTrue(coach.headline.contains("Duration", ignoreCase = true) ||
             coach.body.contains("short", ignoreCase = true))

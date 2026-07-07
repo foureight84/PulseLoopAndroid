@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -29,14 +30,21 @@ import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.service.*
 import com.pulseloop.coach.summaries.CoachSummaryCoordinator
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.ui.components.AppHeader
 import com.pulseloop.ui.screens.*
 import com.pulseloop.ui.theme.PulseLoopTheme
 import com.pulseloop.ui.viewmodels.*
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
+import dev.chrisbanes.haze.materials.HazeMaterials
+import dev.chrisbanes.haze.rememberHazeState
 
 /**
  * Root composable — ported from PulseLoopApp.swift + RootViews.swift.
  * Wires BLE, persistence, coach, and all ViewModels at app startup.
  */
+@OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
 fun PulseLoopApp() {
     PulseLoopTheme {
@@ -49,27 +57,48 @@ fun PulseLoopApp() {
         val coordinator = remember { RingSyncCoordinator(bleClient, db, apiKeyStore) }
         val gpsRecorder = remember { GpsRouteRecorder(context) }
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
-        val persistence = remember { EventPersistenceSubscriber(db) }
-        val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
+        val persistence = remember {
+            // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
+            // mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
+            EventPersistenceSubscriber(db) {
+                com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
+            }
+        }
+        val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
+        val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
 
         // ── Coach wiring ─────────────────────────────────────────────────
+        // Both the client AND the feature flags are resolved per turn through
+        // CoachClientResolver (OpenAI / Gemini / OpenRouter per the provider
+        // settings), so key/model/provider changes take effect on the next turn
+        // without rebuilding the orchestrator — a frozen flags snapshot would
+        // keep coachEnabled=false after a key is pasted, or send a stale model
+        // slug to a newly selected provider, until process restart.
         val coachOrchestrator = remember {
-            val apiKey = apiKeyStore.apiKey
-            val flags = CoachFeatureFlags(
-                coachEnabled = apiKeyStore.coachEnabled && apiKey.isNotEmpty(),
-                webSearchEnabled = apiKeyStore.webSearchEnabled,
-                writeToolsEnabled = false,  // safe default
-                liveMeasurementsEnabled = true,
-                model = apiKeyStore.model.ifEmpty { "gpt-5.4" },
+            CoachOrchestrator(
+                com.pulseloop.coach.config.CoachClientResolver.clientFactory(providerStore, apiKeyStore),
+                flagsProvider = {
+                    val resolution = com.pulseloop.coach.config.CoachClientResolver.resolve(providerStore, apiKeyStore)
+                    val providerSettings = providerStore.snapshot()
+                    CoachFeatureFlags(
+                        coachEnabled = apiKeyStore.coachEnabled && resolution.key != null,
+                        webSearchEnabled = apiKeyStore.webSearchEnabled,
+                        writeToolsEnabled = false,  // safe default
+                        liveMeasurementsEnabled = true,
+                        model = com.pulseloop.coach.config.CoachClientResolver.activeModel(
+                            providerSettings, apiKeyStore.model,
+                        ),
+                        settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings),
+                    )
+                },
+                toolContextFactory = { flags ->
+                    ToolExecutionContext(
+                        db = db,
+                        flags = flags,
+                        coordinator = coordinator,
+                    )
+                },
             )
-            val client = OpenAIResponsesClient(apiKey)
-            val registry = ToolRegistry(flags)
-            val toolContext = ToolExecutionContext(
-                db = db,
-                flags = flags,
-                coordinator = coordinator,
-            )
-            CoachOrchestrator(client, registry, flags, toolContext)
         }
 
         // ── ViewModels ───────────────────────────────────────────────────
@@ -77,7 +106,11 @@ fun PulseLoopApp() {
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
         val sleepVM = remember { SleepViewModel(db) }
         val activityVM = remember { ActivityViewModel(db) }
-        val coachVM = remember { CoachViewModel(db, coachOrchestrator) }
+        val coachVM = remember {
+            CoachViewModel(db, coachOrchestrator, attachmentPayloads = { refs ->
+                com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
+            })
+        }
 
         // ── Start services (one-shot on composition) ─────────────────────
         LaunchedEffect(Unit) {
@@ -148,12 +181,30 @@ fun PulseLoopApp() {
         }
 
         // ── Navigation ───────────────────────────────────────────────────
+        // Tab order + icons mirror iOS MainTab (AppTheme.swift): Today (circle.circle),
+        // Vitals (heart), Activity (waveform.path.ecg), Sleep (moon), Coach (sparkles).
         val navController = rememberNavController()
+
+        // First-launch gate (iOS #48): show the onboarding flow until it's completed.
+        // Existing installs that already have a completed profile or a paired ring are
+        // marked complete silently so an app update never re-onboards them.
+        LaunchedEffect(Unit) {
+            if (!apiKeyStore.onboardingCompleted) {
+                val profileDone = db.userProfileDao().get()?.onboardingCompleted == true
+                val hasRing = db.deviceDao().current() != null || bleClient.hasLastKnownRing
+                if (profileDone || hasRing) {
+                    apiKeyStore.onboardingCompleted = true
+                } else {
+                    navController.navigate("onboarding") { launchSingleTop = true }
+                }
+            }
+        }
+
         val tabs = listOf(
-            Tab("today", "Today", Icons.Filled.Today, Icons.Outlined.Today),
+            Tab("today", "Today", Icons.Filled.Adjust, Icons.Outlined.Adjust),
             Tab("vitals", "Vitals", Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
+            Tab("activity", "Activity", Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart),
             Tab("sleep", "Sleep", Icons.Filled.Bedtime, Icons.Outlined.Bedtime),
-            Tab("activity", "Activity", Icons.Filled.DirectionsRun, Icons.Outlined.DirectionsRun),
             Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
 
@@ -167,7 +218,73 @@ fun PulseLoopApp() {
 
         val isLandscape =
             LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val tabRoutes = remember(tabs) { tabs.map { it.route }.toSet() }
+
+        // iOS-style frosted tab bar (.ultraThinMaterial parity): the scrollable tabs
+        // render UNDER the bar (hazeSource on the NavHost) and the bar blurs whatever
+        // is behind it. Real RenderEffect blur on Android 12+, scrim fallback below.
+        // Custom style instead of HazeMaterials.ultraThin: the material's tint over
+        // the near-black palette reads almost opaque; a lighter tint + a faint white
+        // lift keeps the blurred content visible like the iOS bar.
+        val hazeState = rememberHazeState()
+        val glassStyle = dev.chrisbanes.haze.HazeStyle(
+            backgroundColor = com.pulseloop.ui.theme.PulseColors.background,
+            tints = listOf(
+                dev.chrisbanes.haze.HazeTint(com.pulseloop.ui.theme.PulseColors.background.copy(alpha = 0.42f)),
+                dev.chrisbanes.haze.HazeTint(Color.White.copy(alpha = 0.04f)),
+            ),
+            blurRadius = 24.dp,
+            noiseFactor = 0.02f,
+        )
+
         Scaffold(
+            containerColor = com.pulseloop.ui.theme.PulseColors.background,
+            topBar = {
+                // Shared iOS-style header (PULSELOOP eyebrow + greeting + status pill) on tab
+                // routes only; pushed screens (settings, details, pairing) bring their own bars.
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val onTabRoute = navBackStackEntry?.destination?.route in tabRoutes
+                if (onTabRoute && !isLandscape) {
+                    Column(
+                        Modifier
+                            // iOS-style scroll-under: blur strongest at the status bar,
+                            // fading to transparent at the header's bottom edge.
+                            .hazeEffect(state = hazeState, style = glassStyle) {
+                                progressive = dev.chrisbanes.haze.HazeProgressive.verticalGradient(
+                                    startIntensity = 1f,
+                                    endIntensity = 0f,
+                                )
+                            }
+                            .windowInsetsPadding(WindowInsets.statusBars),
+                    ) {
+                        val ble by bleClient.state.collectAsState()
+                        val storedDevice by db.deviceDao().currentFlow()
+                            .collectAsState(initial = null)
+                        // Prefer live BLE state; fall back to the stored device so demo data
+                        // shows its ring instead of a permanently blank pill (RootViews.swift).
+                        val liveActive = ble.connectionState in setOf(
+                            com.pulseloop.ring.RingConnectionState.CONNECTED,
+                            com.pulseloop.ring.RingConnectionState.CONNECTING,
+                            com.pulseloop.ring.RingConnectionState.RECONNECTING,
+                            com.pulseloop.ring.RingConnectionState.SCANNING,
+                        )
+                        AppHeader(
+                            state = if (liveActive) ble.connectionState
+                                else storedDevice?.state ?: ble.connectionState,
+                            batteryPercent = ble.batteryPercent ?: storedDevice?.batteryPercent,
+                            onOpenSettings = { navController.navigate("settings") },
+                        )
+                        // Thin sync-progress accent under the greeting while history streams in.
+                        val syncPct = coordinator.syncProgress.collectAsState().value
+                        if (syncPct != null) {
+                            LinearProgressIndicator(
+                                progress = { (syncPct.coerceIn(0, 100)) / 100f },
+                                modifier = Modifier.fillMaxWidth().height(2.dp),
+                            )
+                        }
+                    }
+                }
+            },
             bottomBar = {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val currentDestination = navBackStackEntry?.destination
@@ -181,10 +298,15 @@ fun PulseLoopApp() {
                         launchSingleTop = true
                     }
                 }
-                if (isLandscape) {
+                if (currentDestination?.route == "onboarding") {
+                    // The onboarding flow is full-screen chrome of its own — no tab bar.
+                } else if (isLandscape) {
                     // Landscape: a compact icon-only bar at ~half the standard height,
                     // so the short viewport keeps more room for content.
-                    Surface(color = NavigationBarDefaults.containerColor) {
+                    Surface(
+                        color = Color.Transparent,
+                        modifier = Modifier.hazeEffect(state = hazeState, style = glassStyle),
+                    ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -207,39 +329,103 @@ fun PulseLoopApp() {
                         }
                     }
                 } else {
-                    NavigationBar {
-                        tabs.forEach { tab ->
-                            val selected = isSelected(tab)
-                            NavigationBarItem(
-                                icon = {
-                                    Icon(
-                                        if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                        contentDescription = tab.label,
-                                    )
-                                },
-                                label = { Text(tab.label) },
-                                selected = selected,
-                                onClick = { onTab(tab) },
-                            )
+                    Column {
+                        HorizontalDivider(thickness = 1.dp, color = com.pulseloop.ui.theme.PulseColors.borderSubtle)
+                        NavigationBar(
+                            containerColor = Color.Transparent,
+                            modifier = Modifier.hazeEffect(state = hazeState, style = glassStyle),
+                        ) {
+                            tabs.forEach { tab ->
+                                val selected = isSelected(tab)
+                                NavigationBarItem(
+                                    icon = {
+                                        Icon(
+                                            if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                            contentDescription = tab.label,
+                                        )
+                                    },
+                                    label = { Text(tab.label) },
+                                    selected = selected,
+                                    onClick = { onTab(tab) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = com.pulseloop.ui.theme.PulseColors.textPrimary,
+                                        selectedTextColor = com.pulseloop.ui.theme.PulseColors.textPrimary,
+                                        unselectedIconColor = com.pulseloop.ui.theme.PulseColors.textMuted,
+                                        unselectedTextColor = com.pulseloop.ui.theme.PulseColors.textMuted,
+                                        indicatorColor = com.pulseloop.ui.theme.PulseColors.accentSoft,
+                                    ),
+                                )
+                            }
                         }
                     }
                 }
             },
         ) { padding ->
+            // The four scrollable tabs draw UNDER the glass top/bottom bars (they get the
+            // bar heights as extra content padding instead); every other route keeps the
+            // bars as an opaque floor/ceiling via this per-route padding wrapper.
+            val topPad = padding.calculateTopPadding()
+            val barPad = padding.calculateBottomPadding()
+            fun androidx.navigation.NavGraphBuilder.paddedComposable(
+                route: String,
+                content: @Composable (androidx.navigation.NavBackStackEntry) -> Unit,
+            ) = composable(route) { entry ->
+                Box(Modifier.fillMaxSize().padding(padding)) { content(entry) }
+            }
             NavHost(
                 navController = navController,
                 startDestination = "today",
-                modifier = Modifier.padding(padding),
+                modifier = Modifier.hazeSource(hazeState),
             ) {
-                composable("today") { TodayScreen(navController, todayVM, coordinator) }
-                composable("vitals") { VitalsScreen(navController = navController, viewModel = vitalsVM, coordinator = coordinator) }
-                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM) }
-                composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM) }
-                composable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
-                composable("settings") { SettingsScreen(navController, bleClient, coordinator) }
-                composable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
-                composable("vitals/{metric}") { backStackEntry ->
-                    val metric = backStackEntry.arguments?.getString("metric") ?: return@composable
+                composable("today") { TodayScreen(navController, todayVM, coordinator, vitalsVM, sleepVM, topBarPadding = topPad, bottomBarPadding = barPad) }
+                composable("vitals") { VitalsScreen(navController = navController, viewModel = vitalsVM, coordinator = coordinator, topBarPadding = topPad, bottomBarPadding = barPad) }
+                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM, topBarPadding = topPad, bottomBarPadding = barPad) }
+                composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM, liveWorkout = liveWorkout, topBarPadding = topPad, bottomBarPadding = barPad) }
+                paddedComposable("activity_detail/{id}") { backStackEntry ->
+                    val id = backStackEntry.arguments?.getString("id") ?: return@paddedComposable
+                    WorkoutSummaryScreen(sessionId = id, onBack = { navController.popBackStack() })
+                }
+                paddedComposable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
+                paddedComposable("settings") { SettingsScreen(navController, bleClient, coordinator) }
+                // Settings detail screens (iOS #49): each hub row pushes one of these.
+                paddedComposable("settings/wearable") {
+                    WearableSettingsScreen(
+                        bleClient = bleClient,
+                        coordinator = coordinator,
+                        onAddRing = { navController.navigate("pairing") },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                paddedComposable("settings/measurement") {
+                    MeasurementSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/coach") {
+                    CoachSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/checkins") {
+                    CheckInsSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/profile") {
+                    ProfileSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/calibration") {
+                    CalibrationSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/goals") {
+                    GoalsSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/privacy") {
+                    PrivacyDataSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/about") {
+                    AboutSettingsScreen(
+                        onOpenDebug = { navController.navigate("debug") },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                paddedComposable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
+                paddedComposable("vitals/{metric}") { backStackEntry ->
+                    val metric = backStackEntry.arguments?.getString("metric") ?: return@paddedComposable
                     VitalDetailScreen(
                         metric = metric,
                         onBack = { navController.popBackStack() },
@@ -247,8 +433,22 @@ fun PulseLoopApp() {
                         apiKeyStore = apiKeyStore,
                     )
                 }
-                composable("onboarding") { OnboardingScreen(onComplete = { navController.navigate("pairing") }) }
-                composable("record") {
+                paddedComposable("onboarding") {
+                    // The flow contains its own pairing step (iOS #48), so completion goes
+                    // straight to the main app instead of the standalone pairing route.
+                    OnboardingScreen(
+                        db = db,
+                        bleClient = bleClient,
+                        apiKeyStore = apiKeyStore,
+                        coordinator = coordinator,
+                        onFinished = {
+                            navController.navigate("today") {
+                                popUpTo("onboarding") { inclusive = true }
+                            }
+                        },
+                    )
+                }
+                paddedComposable("record") {
                     val workoutState = liveWorkout.state.collectAsState().value
                     RecordScreen(
                         activityName = workoutState.activeSession?.type ?: "Workout",
@@ -267,12 +467,15 @@ fun PulseLoopApp() {
                         onFinish = {
                             workoutState.activeSession?.let {
                                 kotlinx.coroutines.runBlocking { liveWorkout.finish(it) }
-                                navController.popBackStack()
+                                // Land on the summary (iOS RecordSummaryView), replacing the live screen.
+                                navController.navigate("activity_detail/${it.id}") {
+                                    popUpTo("record") { inclusive = true }
+                                }
                             }
                         },
                     )
                 }
-                composable("pairing") {
+                paddedComposable("pairing") {
                     PairingScreen(
                         bleClient = bleClient,
                         onConnected = { navController.popBackStack() },

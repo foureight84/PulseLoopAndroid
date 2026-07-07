@@ -1,11 +1,11 @@
 package com.pulseloop.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,261 +18,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.material.pullrefresh.PullRefreshIndicator
-import androidx.compose.material.pullrefresh.pullRefresh
-import androidx.compose.material.pullrefresh.rememberPullRefreshState
-import androidx.navigation.NavController
-import com.pulseloop.service.HeartRateZones
-import com.pulseloop.service.SleepCoach
-import com.pulseloop.service.SleepFormat
-import com.pulseloop.service.SleepInsights
-import com.pulseloop.service.SleepScore
-import com.pulseloop.service.SleepScoreResult
-import com.pulseloop.ui.components.LegendDot
-import com.pulseloop.ui.components.MetricThresholdTable
-import com.pulseloop.ui.components.MetricThresholds
-import com.pulseloop.ui.components.MetricTile
-import com.pulseloop.ui.components.SimpleDualLineChart
-import com.pulseloop.ui.components.SimpleLineChart
-import com.pulseloop.ui.components.ThresholdBar
+import androidx.compose.ui.unit.sp
+import com.pulseloop.service.MetricKind
 import com.pulseloop.ui.components.TrendChart
-import com.pulseloop.ui.components.bpZone
+import com.pulseloop.ui.components.ZoneLineChart
+import com.pulseloop.ui.components.VitalCard
+import com.pulseloop.ui.components.VitalRingGauge
+import com.pulseloop.ui.components.ZonePalette
+import com.pulseloop.ui.components.toColor
+import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.*
-import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/**
- * Today dashboard — ported from TodayView.swift.
- * Shows daily summary: steps, calories, distance, active minutes,
- * heart rate, SpO2, plus a mini sparkline for each.
- */
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.material.ExperimentalMaterialApi::class)
-@Composable
-fun TodayScreen(
-    navController: androidx.navigation.NavController? = null,
-    viewModel: TodayViewModel? = null,
-    coordinator: com.pulseloop.service.RingSyncCoordinator? = null,
-) {
-    val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(TodayViewModel.TodayState()) })
-    val syncPct = coordinator?.syncProgress?.collectAsState()?.value
-    val scope = rememberCoroutineScope()
-    var isRefreshing by remember { mutableStateOf(false) }
-    val units = ApiKeyStore(LocalContext.current).resolvedUnitSystem
-    val pullRefreshState = rememberPullRefreshState(
-        refreshing = isRefreshing,
-        onRefresh = {
-            isRefreshing = true
-            scope.launch {
-                coordinator?.pullToRefresh()
-                kotlinx.coroutines.delay(1500)
-                isRefreshing = false
-            }
-        },
-    )
-
-    Box(Modifier.fillMaxSize().pullRefresh(pullRefreshState)) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column {
-                    Text("Today", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                    // Connection status
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                        Icon(
-                            Icons.Filled.Bluetooth, null,
-                            modifier = Modifier.size(14.dp),
-                            tint = if (state.isConnected) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            if (syncPct != null) (if (syncPct > 0) "Syncing $syncPct%" else "Syncing…")
-                            else if (state.isConnected) "Connected · ${state.batteryPercent}%"
-                            else if (state.deviceState == "CONNECTING") "Connecting…"
-                            else "Disconnected",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (state.isConnected) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        // Last data refresh indicator
-                        if (state.lastUpdated > 0) {
-                            val secondsAgo = (System.currentTimeMillis() - state.lastUpdated) / 1000
-                            Text(
-                                if (secondsAgo < 5) "just now" else "${secondsAgo}s ago",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 8.dp),
-                            )
-                        }
-                    }
-                }
-                Row {
-                    if (navController != null) {
-                        IconButton(onClick = { navController.navigate("settings") }) {
-                            Icon(Icons.Filled.Settings, "Settings")
-                        }
-                        IconButton(onClick = {
-                            if (state.isConnected) {
-                                // Already connected — sync now
-                                scope.launch { coordinator?.syncNow() }
-                            } else {
-                                navController.navigate("pairing")
-                            }
-                        }) {
-                            Icon(
-                                if (state.isConnected) Icons.Filled.Sync else Icons.Filled.BluetoothConnected,
-                                contentDescription = if (state.isConnected) "Sync" else "Pair Ring",
-                                tint = if (state.isConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                            )
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricTile(
-                    modifier = Modifier.weight(1f),
-                    label = "Steps",
-                    value = formatNumber(state.steps),
-                    unit = "steps",
-                    trend = null,
-                )
-                MetricTile(
-                    modifier = Modifier.weight(1f),
-                    label = "Calories",
-                    value = state.calories?.let { formatNumber(it.toInt()) } ?: "--",
-                    unit = "kcal",
-                    trend = null,
-                )
-            }
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricTile(
-                    modifier = Modifier.weight(1f),
-                    label = "Distance",
-                    value = state.distanceMeters?.let { "%.1f".format(UnitConverter.distance(it, units)) } ?: "--",
-                    unit = UnitConverter.distanceUnit(units),
-                    trend = null,
-                )
-                MetricTile(
-                    modifier = Modifier.weight(1f),
-                    label = "Active",
-                    value = state.activeMinutes?.toString() ?: "--",
-                    unit = "min",
-                    trend = null,
-                )
-            }
-        }
-        // Distance + Active come from VM data above (no duplicate)
-
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Heart Rate", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        state.heartRate?.let { "$it bpm" } ?: "-- bpm",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(state.restingHR?.let { "Resting · %.0f bpm".format(it) } ?: "No recent data",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("SpO₂", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        state.spo2?.let { "$it%" } ?: "--%",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(if (state.spo2 != null) "Latest reading" else "No recent data",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricTile(Modifier.weight(1f), "Sleep", state.sleepMinutes?.let { "${it / 60}h ${it % 60}m" } ?: "--", "last night", null)
-                MetricTile(Modifier.weight(1f), "Battery", "${state.batteryPercent}%", if (state.isConnected) "connected" else "--", null)
-            }
-        }
-
-        // Blood pressure (shown whenever the ring supports it)
-        if (state.supportsBP) {
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Blood Pressure", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val hasBp = state.bloodPressureSystolic != null || state.bloodPressureDiastolic != null
-                        Text(
-                            "${state.bloodPressureSystolic ?: "--"} / ${state.bloodPressureDiastolic ?: "--"}",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = if (hasBp) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(if (hasBp) "mmHg" else "No recent data — take a measurement",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
-
-        // Blood sugar (shown whenever the ring supports it)
-        if (state.supportsGlucose) {
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Blood Sugar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            state.bloodSugar?.let { String.format("%.1f", it) } ?: "--",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = if (state.bloodSugar != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(if (state.bloodSugar != null) "mg/dL" else "No recent data",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
-
-        item {
-            if (state.steps == null) {
-                Text(
-                    "No ring data yet — pair a ring to see your metrics",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-            }
-        }
-    }
-
-        PullRefreshIndicator(
-            refreshing = isRefreshing,
-            state = pullRefreshState,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
-    }
-}
 
 /**
  * Vitals dashboard — ported from VitalsView.swift.
@@ -283,6 +44,9 @@ fun VitalsScreen(
     navController: androidx.navigation.NavController? = null,
     viewModel: VitalsViewModel? = null,
     coordinator: com.pulseloop.service.RingSyncCoordinator? = null,
+    // Heights of the glass top/bottom bars this screen scrolls under (0 when standalone).
+    topBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
+    bottomBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
     val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(VitalsViewModel.VitalsState()) })
     val scope = rememberCoroutineScope()
@@ -298,9 +62,22 @@ fun VitalsScreen(
         com.pulseloop.service.RingSyncCoordinator.COMBINED_MEASURE_SECONDS
     else
         com.pulseloop.service.RingSyncCoordinator.SPOT_MEASURE_SECONDS
+    // Card chrome state (value / status / trend / footer) is factory-built once per state
+    // emission, off the composition path — the cards below run no threshold math.
+    // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — too
+    // expensive to repeat on every recomposition of this state-collecting screen.
+    val vitalsScreenContext = LocalContext.current
+    val vitalsUnits = remember { ApiKeyStore(vitalsScreenContext) }.resolvedUnitSystem
+    val cards = remember(state, vitalsUnits) {
+        val inputs = state.toCardInputs(vitalsUnits)
+        MetricKind.entries.associateWith { metric -> VitalsCardFactory.card(metric, inputs, state.profile) }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp, end = 16.dp,
+            top = 16.dp + topBarPadding, bottom = 16.dp + bottomBarPadding,
+        ),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
@@ -358,142 +135,83 @@ fun VitalsScreen(
             Spacer(Modifier.height(8.dp))
         }
 
+        // Card order mirrors VitalsView.swift: HR, SpO₂, BP, HRV, Stress, Fatigue, Glucose, Temp.
+
         // Heart Rate
         item {
-            Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/hr") }) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Heart Rate", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    if (state.hrSamples.isNotEmpty()) {
-                        val avg = state.hrSamples.average().toInt()
-                        val min = state.hrSamples.min().toInt()
-                        val max = state.hrSamples.max().toInt()
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(state.latestHr?.toString() ?: "--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                            Text(" bpm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                        }
-                        val restingText = state.restingHr?.let { " · Resting: %.0f".format(it) } ?: ""
-                        Text("Range: $min – $max · Avg: $avg$restingText bpm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        MetricThresholdTable.forKind(MeasurementKind.HEART_RATE)?.let { th ->
-                            Spacer(Modifier.height(8.dp))
-                            ThresholdBar(value = state.latestHr?.toDouble(), thresholds = th)
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        SimpleLineChart(points = state.hrSamples, color = androidx.compose.ui.graphics.Color(0xFFE53935), thresholds = MetricThresholdTable.forKind(MeasurementKind.HEART_RATE))
-                    } else {
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text("--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(" bpm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                        }
-                        Text("No HR samples yet — sync your ring to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            VitalCard(
+                state = cards.getValue(MetricKind.HEART_RATE),
+                onTap = { navController?.navigate("vitals/hr") },
+            ) {
+                if (state.hrSamples.isNotEmpty()) {
+                    run {
+                        val card = cards.getValue(MetricKind.HEART_RATE)
+                        ZoneLineChart(
+                            samples = card.samples, zones = card.zones, yDomain = card.yDomain,
+                            accent = ZonePalette.accent(MetricKind.HEART_RATE),
+                            referenceBands = card.referenceBands, dashedRules = card.dashedRules,
+                        )
                     }
+                } else {
+                    Text("No HR samples yet — sync your ring to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
 
         // SpO2
         item {
-            Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/spo2") }) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Blood Oxygen", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    if (state.spo2Samples.isNotEmpty()) {
-                        val avg = state.spo2Samples.average().toInt()
-                        val min = state.spo2Samples.min().toInt()
-                        val max = state.spo2Samples.max().toInt()
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(state.latestSpo2?.toString() ?: "--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                            Text(" %", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+            VitalCard(
+                state = cards.getValue(MetricKind.SPO2),
+                onTap = { navController?.navigate("vitals/spo2") },
+            ) {
+                if (state.spo2Samples.isNotEmpty()) {
+                    run {
+                        val card = cards.getValue(MetricKind.SPO2)
+                        ZoneLineChart(
+                            samples = card.samples, zones = card.zones, yDomain = card.yDomain,
+                            accent = ZonePalette.accent(MetricKind.SPO2),
+                            referenceBands = card.referenceBands, dashedRules = card.dashedRules,
+                            showPoints = true,
+                        )
+                    }
+                } else {
+                    Text("No SpO₂ samples yet — take a reading to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        // Blood Pressure — two ring gauges side by side (VitalBloodPressureCard in Swift).
+        if (state.supportsBP) {
+            item {
+                VitalCard(
+                    state = cards.getValue(MetricKind.BLOOD_PRESSURE),
+                    onTap = { navController?.navigate("vitals/bp") },
+                ) {
+                    val sys = state.bpSystolic?.toDouble()
+                    val dia = state.bpDiastolic?.toDouble()
+                    if (sys != null && dia != null) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            BpGaugeColumn(
+                                title = "Systolic", value = sys, domain = 80.0..190.0,
+                                zones = cards.getValue(MetricKind.BLOOD_PRESSURE).zones,
+                                fallback = ZonePalette.accent(MetricKind.BLOOD_PRESSURE),
+                                modifier = Modifier.weight(1f),
+                            )
+                            BpGaugeColumn(
+                                title = "Diastolic", value = dia, domain = 50.0..130.0,
+                                zones = com.pulseloop.service.VitalsThresholdEngine.diastolicReferenceZones(),
+                                fallback = ZonePalette.accent(MetricKind.BLOOD_PRESSURE).copy(alpha = 0.7f),
+                                modifier = Modifier.weight(1f),
+                            )
                         }
-                        Text("Range: $min – $max% · Avg: $avg%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        MetricThresholdTable.forKind(MeasurementKind.SPO2)?.let { th ->
-                            Spacer(Modifier.height(8.dp))
-                            ThresholdBar(value = state.latestSpo2?.toDouble(), thresholds = th)
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        SimpleLineChart(points = state.spo2Samples, color = androidx.compose.ui.graphics.Color(0xFF1E88E5), thresholds = MetricThresholdTable.forKind(MeasurementKind.SPO2))
                     } else {
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text("--", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(" %", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                        }
-                        Text("No SpO₂ samples yet — take a reading to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("No blood pressure data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                }
-            }
-        }
-
-        // Stress (capability-gated)
-        if (state.supportsStress) {
-            item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/stress") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Stress", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val latest = state.latestStress?.toInt() ?: 0
-                        // The ring's valid stress range starts at 10 (official bands: 10-20 excellent …),
-                        // so treat anything below that as no reading rather than a misleading "Excellent".
-                        if (state.stressSamples.isNotEmpty() && latest >= 10) {
-                            // Bands match the official app's "Mental stress" interpretation
-                            // (<20 excellent, <40 good, <60 normal, <80 poor, else very poor).
-                            val label = when {
-                                latest < 20 -> "Excellent"
-                                latest < 40 -> "Good"
-                                latest < 60 -> "Normal"
-                                latest < 80 -> "Poor"
-                                else -> "Very Poor"
-                            }
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(label, style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text("  $latest / 100", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            MetricThresholdTable.forKind(MeasurementKind.STRESS)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = state.latestStress, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.stressSamples, color = androidx.compose.ui.graphics.Color(0xFF8E24AA), thresholds = MetricThresholdTable.forKind(MeasurementKind.STRESS))
-                        } else {
-                            Text("No stress data yet — take a measurement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fatigue (capability-gated) — TYPE_FATIGUE (byte[5]) from the combined measurement
-        if (state.supportsFatigue) {
-            item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/fatigue") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Fatigue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val latest = state.latestFatigue?.toInt() ?: 0
-                        // The ring's valid fatigue range starts at 10 (official bands: 10-20 excellent …),
-                        // so treat anything below that as no reading rather than a misleading "Excellent".
-                        if (state.fatigueSamples.isNotEmpty() && latest >= 10) {
-                            // Bands match the official app's "Body fatigue index" interpretation
-                            // (<20 excellent, <45 good, <60 normal, <80 poor, else very poor).
-                            val label = when {
-                                latest < 20 -> "Excellent"
-                                latest < 45 -> "Good"
-                                latest < 60 -> "Normal"
-                                latest < 80 -> "Poor"
-                                else -> "Very Poor"
-                            }
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(label, style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text("  $latest / 100", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            MetricThresholdTable.forKind(MeasurementKind.FATIGUE)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = state.latestFatigue, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.fatigueSamples, color = androidx.compose.ui.graphics.Color(0xFFFB8C00), thresholds = MetricThresholdTable.forKind(MeasurementKind.FATIGUE))
-                        } else {
-                            Text("No fatigue data yet — take a measurement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                    if (measuring) {
+                        Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
@@ -502,166 +220,85 @@ fun VitalsScreen(
         // HRV (capability-gated)
         if (state.supportsHrv) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/hrv") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("HRV", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val hrvVal = state.latestHrv
-                        if (hrvVal != null && state.hrvSamples.isNotEmpty()) {
-                            val hrvAvg = state.hrvSamples.average().toInt()
-                            val hrvMin = state.hrvSamples.min().toInt()
-                            val hrvMax = state.hrvSamples.max().toInt()
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(String.format("%.0f", hrvVal), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            Text("Range: $hrvMin – $hrvMax · Avg: $hrvAvg ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            MetricThresholdTable.forKind(MeasurementKind.HRV)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = state.latestHrv, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.hrvSamples, color = androidx.compose.ui.graphics.Color(0xFF43A047), thresholds = MetricThresholdTable.forKind(MeasurementKind.HRV))
-                        } else {
-                            Text("No HRV data yet — HRV builds up over a few hours of wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                VitalCard(
+                    state = cards.getValue(MetricKind.HRV),
+                    onTap = { navController?.navigate("vitals/hrv") },
+                ) {
+                    if (state.latestHrv != null && state.hrvSamples.isNotEmpty()) {
+                        run {
+                        val card = cards.getValue(MetricKind.HRV)
+                        ZoneLineChart(
+                            samples = card.samples, zones = card.zones, yDomain = card.yDomain,
+                            accent = ZonePalette.accent(MetricKind.HRV),
+                            referenceBands = card.referenceBands, dashedRules = card.dashedRules,
+                        )
+                    }
+                    } else {
+                        Text("No HRV data yet — HRV builds up over a few hours of wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+            }
+        }
+
+        // Stress — ring gauge card (VitalGaugeCard in Swift). The ring's valid stress range
+        // starts at 10 (official bands: 10-20 excellent …), so treat anything below that as no
+        // reading rather than a misleading "Excellent".
+        if (state.supportsStress) {
+            item {
+                VitalGaugeCardItem(
+                    card = cards.getValue(MetricKind.STRESS),
+                    hasReading = state.stressSamples.isNotEmpty() && (state.latestStress?.toInt() ?: 0) >= 10,
+                    emptyText = "No stress data yet — take a measurement.",
+                    onTap = { navController?.navigate("vitals/stress") },
+                )
+            }
+        }
+
+        // Fatigue — ring gauge card. TYPE_FATIGUE (byte[5]) from the combined measurement.
+        if (state.supportsFatigue) {
+            item {
+                VitalGaugeCardItem(
+                    card = cards.getValue(MetricKind.FATIGUE),
+                    hasReading = state.fatigueSamples.isNotEmpty() && (state.latestFatigue?.toInt() ?: 0) >= 10,
+                    emptyText = "No fatigue data yet — take a measurement.",
+                    onTap = { navController?.navigate("vitals/fatigue") },
+                )
+            }
+        }
+
+        // Blood Sugar — ring gauge card (VitalGlucoseCard in Swift).
+        if (state.supportsGlucose) {
+            item {
+                VitalGaugeCardItem(
+                    card = cards.getValue(MetricKind.GLUCOSE),
+                    hasReading = state.bloodSugar != null,
+                    emptyText = "No blood sugar data yet.",
+                    measuring = measuring,
+                    onTap = { navController?.navigate("vitals/glucose") },
+                )
             }
         }
 
         // Temperature (capability-gated)
         if (state.supportsTemp) {
             item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/temp") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Skin Temperature", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val tempVal = state.latestTemp
-                        if (tempVal != null && state.tempSamples.isNotEmpty()) {
-                            val units = com.pulseloop.settings.ApiKeyStore(LocalContext.current).resolvedUnitSystem
-                            val displayTemp = com.pulseloop.settings.UnitConverter.temperature(tempVal, units)
-                            val displayUnit = com.pulseloop.settings.UnitConverter.temperatureUnit(units)
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(String.format("%.1f", displayTemp), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" $displayUnit", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            val tempAvg = state.tempSamples.average()
-                            val tempMin = state.tempSamples.min()
-                            val tempMax = state.tempSamples.max()
-                            Text(
-                                String.format("Range: %.1f – %.1f · Avg: %.1f $displayUnit",
-                                    UnitConverter.temperature(tempMin, units),
-                                    UnitConverter.temperature(tempMax, units),
-                                    UnitConverter.temperature(tempAvg, units)),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                VitalCard(
+                    state = cards.getValue(MetricKind.TEMPERATURE),
+                    onTap = { navController?.navigate("vitals/temp") },
+                ) {
+                    val tempVal = state.latestTemp
+                    if (tempVal != null && state.tempSamples.isNotEmpty()) {
+                        run {
+                            // Factory-converted samples/zones so line + bands share the display unit.
+                            val card = cards.getValue(MetricKind.TEMPERATURE)
+                            ZoneLineChart(
+                                samples = card.samples, zones = card.zones, yDomain = card.yDomain,
+                                accent = ZonePalette.accent(MetricKind.TEMPERATURE),
+                                referenceBands = card.referenceBands, dashedRules = card.dashedRules,
                             )
-                            MetricThresholdTable.forKind(MeasurementKind.TEMPERATURE)?.let { th ->
-                                Spacer(Modifier.height(8.dp))
-                                ThresholdBar(value = tempVal, thresholds = th)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            SimpleLineChart(points = state.tempSamples, color = androidx.compose.ui.graphics.Color(0xFFFF7043))
-                        } else {
-                            Text("No temperature data yet — temperature trends appear after overnight wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                    }
-                }
-            }
-        }
-
-        // Blood Pressure (capability-gated)
-        if (state.supportsBP) {
-            item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/bp") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Blood Pressure", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        val bpSysColor = androidx.compose.ui.graphics.Color(0xFF5E35B1)
-                        val bpDiaColor = androidx.compose.ui.graphics.Color(0xFFB39DDB)
-                        if (state.bpSystolic != null || state.bpDiastolic != null) {
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text("${state.bpSystolic ?: "--"} / ${state.bpDiastolic ?: "--"}", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" mmHg", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            if (state.bpSysSamples.isNotEmpty()) {
-                                val sysMin = state.bpSysSamples.min().toInt()
-                                val sysMax = state.bpSysSamples.max().toInt()
-                                val sysAvg = state.bpSysSamples.average().toInt()
-                                val diaAvg = state.bpDiaSamples.average().takeIf { state.bpDiaSamples.isNotEmpty() }?.toInt()
-                                Text(
-                                    "Sys $sysMin – $sysMax · Avg $sysAvg${diaAvg?.let { "/$it" } ?: ""} mmHg",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                // BP threshold bar: position at systolic, zone from worse of sys/dia
-                                MetricThresholdTable.forKind(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC)?.let { th ->
-                                    Spacer(Modifier.height(8.dp))
-                                    ThresholdBar(
-                                        value = state.bpSystolic?.toDouble(),
-                                        thresholds = th,
-                                        overrideZone = bpZone(state.bpSystolic?.toDouble(), state.bpDiastolic?.toDouble()),
-                                    )
-                                }
-                                Spacer(Modifier.height(12.dp))
-                                SimpleDualLineChart(
-                                    seriesA = state.bpSysSamples,
-                                    seriesB = state.bpDiaSamples,
-                                    colorA = bpSysColor,
-                                    colorB = bpDiaColor,
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    LegendDot("Systolic", bpSysColor)
-                                    LegendDot("Diastolic", bpDiaColor)
-                                }
-                            }
-                        } else {
-                            Text("No blood pressure data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (measuring) {
-                            Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 4.dp))
-                        }
-                    }
-                }
-            }
-        }
-
-        // Blood Sugar (capability-gated)
-        if (state.supportsGlucose) {
-            item {
-                Card(Modifier.fillMaxWidth().clickable { navController?.navigate("vitals/glucose") }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Blood Sugar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        if (state.bloodSugar != null) {
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(String.format("%.1f", state.bloodSugar), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(" mg/dL", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            if (state.glucoseSamples.isNotEmpty()) {
-                                val gMin = state.glucoseSamples.min()
-                                val gMax = state.glucoseSamples.max()
-                                val gAvg = state.glucoseSamples.average()
-                                Text(
-                                    String.format("Range: %.1f – %.1f · Avg %.1f mg/dL", gMin, gMax, gAvg),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                MetricThresholdTable.forKind(MeasurementKind.BLOOD_SUGAR)?.let { th ->
-                                    Spacer(Modifier.height(8.dp))
-                                    ThresholdBar(value = state.bloodSugar, thresholds = th)
-                                }
-                                Spacer(Modifier.height(12.dp))
-                                SimpleLineChart(points = state.glucoseSamples, color = androidx.compose.ui.graphics.Color(0xFF00897B), thresholds = MetricThresholdTable.forKind(MeasurementKind.BLOOD_SUGAR))
-                            }
-                        } else {
-                            Text("No blood sugar data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (measuring) {
-                            Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 4.dp))
-                        }
+                    } else {
+                        Text("No temperature data yet — temperature trends appear after overnight wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -672,347 +309,91 @@ fun VitalsScreen(
 }
 
 /**
- * Sleep dashboard — ported from SleepView.swift.
+ * A one-line context footer for gauge cards (iOS `gaugeFooter`): subtitle + trend delta,
+ * e.g. "Lower is calmer · +2 vs earlier".
  */
-@Composable
-fun SleepScreen(
-    navController: androidx.navigation.NavController? = null,
-    viewModel: SleepViewModel? = null,
-) {
-    val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(SleepViewModel.SleepState()) })
-    val lastNight = state.lastNight
-    val totalHr = lastNight?.totalMinutes?.let { it / 60 }
-    val totalMin = lastNight?.totalMinutes?.let { it % 60 }
-    val timeStr = if (totalHr != null) "${totalHr}h ${totalMin}m" else "--"
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Sleep", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                if (navController != null) {
-                    IconButton(onClick = { navController.navigate("settings") }) {
-                        Icon(Icons.Filled.Settings, "Settings")
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        // ── Last Night card ─────────────────────────────────────────
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Last Night", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(timeStr, style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-                    if (lastNight != null) {
-                        Text(
-                            "${SleepFormat.clockTime(lastNight.startAt)} – ${SleepFormat.clockTime(lastNight.endAt)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        Text("No sleep data yet", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
-
-        // ── Sleep Score card ─────────────────────────────────────────
-        state.score?.let { s: SleepScoreResult ->
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Sleep Score", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        Text("${s.score} / 100", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
-                        Text(s.label.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.height(8.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                            StagePill("Deep", "${s.deepPct}%", Color(0xFF7C4DFF))
-                            StagePill("Light", "${s.lightPct}%", Color(0xFF64B5F6))
-                            if (s.awakePct != null) StagePill("Awake", "${s.awakePct}%", Color(0xFFFF8A65))
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Coach insight card ───────────────────────────────────────
-        state.coach?.let { c: SleepCoach ->
-            item {
-                Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text(c.headline, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(6.dp))
-                        Text(c.body, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (c.chips.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                c.chips.forEach { chip: String ->
-                                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
-                                        Text(chip, Modifier.padding(horizontal = 10.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Recent nights ────────────────────────────────────────────
-        if (state.recentSessions.size > 1) {
-            item {
-                Text("Recent Nights", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            }
-            state.recentSessions.drop(1).forEach { session ->
-                item {
-                    Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                java.time.Instant.ofEpochMilli(session.date).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString(),
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text("${session.totalMinutes / 60}h ${session.totalMinutes % 60}m", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** Small label used as an inline sleep stage badge. */
-@Composable
-private fun StagePill(label: String, value: String, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = color)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-private fun StageBadge(label: String, duration: String, color: androidx.compose.ui.graphics.Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = color)
-        Text(duration, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-    }
+private fun gaugeFooter(card: VitalCardState): String? {
+    val parts = listOfNotNull(card.subtitleText, card.trend.deltaText)
+    return if (parts.isEmpty()) card.lastUpdatedText else parts.joinToString(" · ")
 }
 
 /**
- * Activity dashboard — ported from ActivityView.swift.
+ * Full-width ring-gauge card for stress/fatigue/glucose (VitalGaugeCard/VitalGlucoseCard in
+ * Swift). No top value row — the gauge center IS the value; the footer carries context + trend.
  */
 @Composable
-fun ActivityScreen(
-    navController: androidx.navigation.NavController? = null,
-    viewModel: ActivityViewModel? = null,
+private fun VitalGaugeCardItem(
+    card: VitalCardState,
+    hasReading: Boolean,
+    emptyText: String,
+    measuring: Boolean = false,
+    onTap: () -> Unit,
 ) {
-    val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(ActivityViewModel.ActivityState()) })
-    val today = state.recentDays.firstOrNull()
-    val todaySteps = today?.steps ?: 0
-    val todayDistance = today?.distanceMeters ?: 0.0
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Activity", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                if (navController != null) {
-                    IconButton(onClick = { navController.navigate("settings") }) {
-                        Icon(Icons.Filled.Settings, "Settings")
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricTile(Modifier.weight(1f), "Steps", formatNumber(todaySteps), "today", null)
-                MetricTile(Modifier.weight(1f), "Distance", if (todayDistance > 0) "%.1f".format(todayDistance / 1000) else "--", "km", null)
-            }
-        }
-
-        if (state.recentWorkouts.isNotEmpty()) {
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Recent Workouts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(12.dp))
-                        state.recentWorkouts.forEach { wo ->
-                            val elapsed = wo.endedAt?.let { (it - wo.startedAt) / 1000 }?.toInt() ?: 0
-                            val min = elapsed / 60
-                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Column {
-                                    Text(wo.type, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                                    Text(
-                                        "${wo.distanceMeters?.let { "%.1f km · ".format(it / 1000) } ?: ""}${min} min",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Button(
-                onClick = { navController?.navigate("record") },
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+    VitalCard(state = card, showsValueRow = false, footerOverride = gaugeFooter(card), onTap = onTap) {
+        if (hasReading) {
+            Box(
+                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                Text("Start Workout")
-            }
-        }
-    }
-}
-
-/**
- * Coach chat screen — ported from CoachView.swift.
- */
-@Composable
-fun CoachScreen(
-    navController: androidx.navigation.NavController? = null,
-    viewModel: CoachViewModel? = null,
-) {
-    val state by (viewModel?.state?.collectAsState() ?: remember {
-        mutableStateOf(CoachViewModel.CoachState(
-            messages = listOf(CoachViewModel.ChatMessage("assistant",
-                "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
-        ))
-    })
-    var inputText by remember { mutableStateOf("") }
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    val scope = rememberCoroutineScope()
-
-    // Auto-scroll to bottom on new messages
-    LaunchedEffect(state.messages.size) {
-        if (state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.size - 1)
-        }
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        // Header
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Coach", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-            if (navController != null) {
-                IconButton(onClick = { navController.navigate("settings") }) {
-                    Icon(Icons.Filled.Settings, "Settings")
-                }
-            }
-        }
-
-        // Messages
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(state.messages.size) { idx ->
-                val msg = state.messages[idx]
-                val isUser = msg.role == "user"
-                Column(
-                    Modifier.fillMaxWidth(),
-                    horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
-                ) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isUser) MaterialTheme.colorScheme.primaryContainer
-                                else MaterialTheme.colorScheme.surfaceVariant,
-                        ),
-                        shape = MaterialTheme.shapes.medium,
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(
-                                if (isUser) "You" else "🤖 Coach",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(msg.text, style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                }
-            }
-
-            if (state.isThinking) {
-                item {
-                    Text(
-                        "Coach is thinking…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 16.dp),
-                    )
-                }
-            }
-
-            if (state.error != null) {
-                item {
-                    Text(
-                        "Error: ${state.error}",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(start = 16.dp),
-                    )
-                }
-            }
-        }
-
-        // Input
-        Surface(
-            tonalElevation = 2.dp,
-            shadowElevation = 2.dp,
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Ask your coach…") },
-                    singleLine = false,
-                    maxLines = 3,
-                    enabled = !state.isThinking,
+                VitalRingGauge(
+                    value = card.latestValue ?: 0.0,
+                    domain = card.yDomain,
+                    zones = card.zones,
+                    valueColor = card.statusToken.toColor(),
+                    centerValue = card.valueText,
+                    centerUnit = card.unitText,
+                    centerStatus = card.statusText,
+                    size = 190.dp,
+                    lineWidth = 16.dp,
                 )
-                IconButton(
-                    onClick = {
-                        if (inputText.isNotBlank() && viewModel != null) {
-                            viewModel.sendMessage(inputText.trim())
-                            inputText = ""
-                        }
-                    },
-                    enabled = inputText.isNotBlank() && !state.isThinking,
-                ) {
-                    Icon(Icons.Filled.Send, "Send")
-                }
             }
+        } else {
+            Text(emptyText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (measuring) {
+            Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
 
-private fun formatNumber(value: Int?): String {
-    if (value == null) return "--"
-    return "%,d".format(value)
+/** One BP gauge column (VitalBloodPressureCard.ringColumn): 130dp ring + SYSTOLIC/DIASTOLIC caption. */
+@Composable
+private fun BpGaugeColumn(
+    title: String,
+    value: Double,
+    domain: ClosedFloatingPointRange<Double>,
+    zones: List<com.pulseloop.service.MetricZone>,
+    fallback: Color,
+    modifier: Modifier = Modifier,
+) {
+    // Color the value arc by the zone the reading falls in (so a normal reading is green, not
+    // the metric's pink accent). Falls back to the metric color if no zone matches.
+    val valueColor = zones.firstOrNull {
+        (it.lower ?: Double.NEGATIVE_INFINITY) <= value && value < (it.upper ?: Double.POSITIVE_INFINITY)
+    }?.colorToken?.toColor() ?: fallback
+    Column(
+        modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        VitalRingGauge(
+            value = value,
+            domain = domain,
+            zones = zones,
+            valueColor = valueColor,
+            centerValue = "${value.toInt()}",
+            centerUnit = "mmHg",
+            size = 130.dp,
+            lineWidth = 11.dp,
+        )
+        Text(
+            title.uppercase(),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.8.sp,
+            color = PulseColors.textMuted,
+        )
+    }
 }
 
 // ──────────────────────── Vital Detail Screen ────────────────────────
@@ -1038,205 +419,178 @@ fun VitalDetailScreen(
     val title = metricDisplayName(metric)
 
     Column(Modifier.fillMaxSize()) {
-        // Header
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
+        // Inline nav bar (iOS .navigationBarTitleDisplayMode(.inline)): back on the leading
+        // edge, title centered.
+        Box(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
                 Icon(Icons.Filled.ArrowBack, "Back")
             }
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                title,
+                modifier = Modifier.align(Alignment.Center),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
 
         if (state.loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-        } else if (state.points.isEmpty()) {
-            // Empty state
-            Column(
-                Modifier.fillMaxSize().padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    "No ${title.lowercase()} data for this period",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Sync your ring or take a measurement",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         } else {
+            // iOS MetricDetailView layout: period selector, chart card, stats strip,
+            // reference zones, "what this means", and a warning disclaimer for estimated
+            // metrics. The chart keeps the Android-only interactivity (scrub/zoom/pan) and
+            // date paging.
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 40.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
-                // 1. Period selector — Today · Week · Month
+                // 1. Period selector — Today · Week · Month (iOS segmented picker)
                 item {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
+                    PeriodSegmentedControl(selected = state.period, onSelect = { vm.setPeriod(it) })
+                }
+
+                // 2. Chart card: unit label + interactive trend chart (24dp continuous corners).
+                item {
+                    val cardShape = RoundedCornerShape(24.dp)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(cardShape)
+                            .background(PulseColors.card)
+                            .border(1.dp, PulseColors.borderSubtle, cardShape)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Period.entries.forEach { p ->
-                            FilterChip(
-                                selected = state.period == p,
-                                onClick = { vm.setPeriod(p) },
-                                label = { Text(p.label) },
-                                modifier = Modifier.padding(horizontal = 4.dp),
+                        // Date navigator row: unit label leading (iOS), pager trailing
+                        // (Android-only paging kept from PR #5).
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                state.thresholds?.unitLabel ?: "",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = PulseColors.textMuted,
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { vm.prev() }, modifier = Modifier.size(28.dp)) {
+                                    Icon(Icons.Filled.ChevronLeft, "Previous", tint = PulseColors.textMuted)
+                                }
+                                Text(
+                                    text = dateLabel(state.anchor, state.period),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = PulseColors.textSecondary,
+                                )
+                                IconButton(
+                                    onClick = { vm.next() },
+                                    enabled = vm.canGoForward(),
+                                    modifier = Modifier.size(28.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.ChevronRight, "Next",
+                                        tint = if (vm.canGoForward()) PulseColors.textMuted else PulseColors.textMuted.copy(alpha = 0.3f),
+                                    )
+                                }
+                            }
+                        }
+                        if (state.points.size < 2) {
+                            Box(
+                                Modifier.fillMaxWidth().height(120.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    "Not enough data for this period.",
+                                    fontSize = 13.sp,
+                                    color = PulseColors.textMuted,
+                                )
+                            }
+                        } else {
+                            TrendChart(
+                                points = state.points,
+                                labels = state.labels,
+                                color = state.thresholds?.zones?.firstOrNull()?.color
+                                    ?: MaterialTheme.colorScheme.primary,
+                                secondary = state.secondary,
+                                colorSecondary = ZonePalette.accent(MetricKind.BLOOD_PRESSURE).copy(alpha = 0.5f),
+                                legendPrimary = if (state.isBP) "Systolic" else null,
+                                legendSecondary = if (state.isBP) "Diastolic" else null,
+                                thresholds = state.thresholds,
+                                timestamps = state.timestamps,
+                                tooltipTimeFormatter = { ts -> tooltipTime(ts, state.period) },
                             )
                         }
                     }
                 }
 
-                // 2. Date navigator
+                // 3. Stats strip — LATEST · AVERAGE · MIN · MAX in one row with dividers.
                 item {
+                    val cardShape = RoundedCornerShape(24.dp)
                     Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(cardShape)
+                            .background(PulseColors.card)
+                            .border(1.dp, PulseColors.borderSubtle, cardShape)
+                            .padding(horizontal = 10.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = { vm.prev() }) {
-                            Icon(Icons.Filled.ChevronLeft, "Previous")
-                        }
-                        Text(
-                            text = dateLabel(state.anchor, state.period),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        IconButton(
-                            onClick = { vm.next() },
-                            enabled = vm.canGoForward(),
-                        ) {
-                            Icon(Icons.Filled.ChevronRight, "Next")
-                        }
+                        DetailStat("Latest", state.latest?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStatDivider()
+                        DetailStat("Average", state.avg?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStatDivider()
+                        DetailStat("Min", state.min?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStatDivider()
+                        DetailStat("Max", state.max?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
                     }
                 }
 
-                // 3. Trend chart (pinch to zoom, drag to scrub)
-                item {
-                    TrendChart(
-                        points = state.points,
-                        labels = state.labels,
-                        color = state.thresholds?.zones?.firstOrNull()?.color
-                            ?: MaterialTheme.colorScheme.primary,
-                        secondary = state.secondary,
-                        colorSecondary = androidx.compose.ui.graphics.Color(0xFFB39DDB),
-                        legendPrimary = if (state.isBP) "Systolic" else null,
-                        legendSecondary = if (state.isBP) "Diastolic" else null,
-                        thresholds = state.thresholds,
-                        timestamps = state.timestamps,
-                        tooltipTimeFormatter = { ts -> tooltipTime(ts, state.period) },
-                    )
-                }
-
-                // 4. Trend read
-                item {
-                    val (arrow, trendText) = trendCopy(state.trend, state.thresholds?.higherIsBetter ?: false)
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = arrow,
-                            style = MaterialTheme.typography.headlineSmall,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = trendText,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
-
-                // 5. Stat tiles — Latest · Avg · Min · Max
-                item {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        StatTile(
-                            modifier = Modifier.weight(1f),
-                            label = "Latest",
-                            value = state.latest?.let { formatStat(it, metric) } ?: "--",
-                            unit = state.thresholds?.unitLabel ?: "",
-                        )
-                        StatTile(
-                            modifier = Modifier.weight(1f),
-                            label = "Avg",
-                            value = state.avg?.let { formatStat(it, metric) } ?: "--",
-                            unit = state.thresholds?.unitLabel ?: "",
-                        )
-                    }
-                }
-                item {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        StatTile(
-                            modifier = Modifier.weight(1f),
-                            label = "Min",
-                            value = state.min?.let { formatStat(it, metric) } ?: "--",
-                            unit = state.thresholds?.unitLabel ?: "",
-                        )
-                        StatTile(
-                            modifier = Modifier.weight(1f),
-                            label = "Max",
-                            value = state.max?.let { formatStat(it, metric) } ?: "--",
-                            unit = state.thresholds?.unitLabel ?: "",
-                        )
-                    }
-                }
-                // Resting HR — heart rate only
-                state.resting?.let { resting ->
+                // 4. Reference zones — colored dot + label + range per zone.
+                if (state.engineZones.isNotEmpty()) {
                     item {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        val cardShape = RoundedCornerShape(20.dp)
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(cardShape)
+                                .background(PulseColors.card)
+                                .border(1.dp, PulseColors.borderSubtle, cardShape)
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            StatTile(
-                                modifier = Modifier.weight(1f),
-                                label = "Resting",
-                                value = formatStat(resting, metric),
-                                unit = state.thresholds?.unitLabel ?: "",
+                            Text(
+                                "REFERENCE ZONES",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 1.sp,
+                                color = PulseColors.textMuted,
                             )
-                            Spacer(Modifier.weight(1f))
-                        }
-                    }
-                }
-
-                // 6. Threshold bar + legend
-                state.thresholds?.let { th ->
-                    item {
-                        val barValue = if (state.isBP) state.latest else (state.latest ?: state.avg)
-                        ThresholdBar(
-                            value = barValue,
-                            thresholds = th,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            th.zones.forEach { zone ->
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                            state.engineZones.forEach { zone ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
                                     Box(
                                         Modifier
-                                            .size(10.dp)
-                                            .background(zone.color, CircleShape),
+                                            .size(8.dp)
+                                            .background(zone.colorToken.toColor(), CircleShape),
                                     )
-                                    Spacer(Modifier.width(4.dp))
                                     Text(
                                         zone.label,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = PulseColors.textPrimary,
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        zoneRangeText(zone, metric, units),
+                                        fontSize = 12.sp,
+                                        color = PulseColors.textMuted,
                                     )
                                 }
                             }
@@ -1244,62 +598,195 @@ fun VitalDetailScreen(
                     }
                 }
 
-                // 7. Explainer
+                // 5. What this means
                 item {
-                    Text(
-                        text = metricExplainer(metric),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                // 8. Disclaimer
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        ),
+                    val cardShape = RoundedCornerShape(20.dp)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(cardShape)
+                            .background(PulseColors.card)
+                            .border(1.dp, PulseColors.borderSubtle, cardShape)
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Text(
-                            text = DISCLAIMER_TEXT,
-                            modifier = Modifier.padding(12.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            "WHAT THIS MEANS",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 1.sp,
+                            color = PulseColors.textMuted,
+                        )
+                        Text(
+                            metricExplainer(metric),
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            color = PulseColors.textSecondary,
                         )
                     }
                 }
 
-                item { Spacer(Modifier.height(16.dp)) }
+                // 6. Estimated-metric disclaimer (BP + glucose only, iOS warning card).
+                metricDisclaimer(metric)?.let { disclaimer ->
+                    item {
+                        val cardShape = RoundedCornerShape(20.dp)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(cardShape)
+                                .background(ZonePalette.ZoneAmber.copy(alpha = 0.10f))
+                                .border(1.dp, ZonePalette.ZoneAmber.copy(alpha = 0.30f), cardShape)
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Warning, null,
+                                tint = ZonePalette.ZoneAmber,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                disclaimer,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                color = PulseColors.textSecondary,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-private const val DISCLAIMER_TEXT =
-    "For reference only — not a substitute for medical devices, and not a medical diagnosis. " +
-    "Wearable readings can vary; talk to a healthcare professional about any health concerns."
+/** iOS-style segmented control for Today/Week/Month. */
+@Composable
+private fun PeriodSegmentedControl(selected: Period, onSelect: (Period) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(PulseColors.cardSoft)
+            .padding(2.dp),
+    ) {
+        Period.entries.forEach { p ->
+            val isSelected = selected == p
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (isSelected) Color.White.copy(alpha = 0.16f) else Color.Transparent)
+                    .clickable { onSelect(p) }
+                    .padding(vertical = 7.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    p.label,
+                    fontSize = 13.sp,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (isSelected) PulseColors.textPrimary else PulseColors.textSecondary,
+                )
+            }
+        }
+    }
+}
 
+/** One column of the LATEST/AVERAGE/MIN/MAX strip. */
+@Composable
+private fun DetailStat(title: String, value: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            title.uppercase(),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.6.sp,
+            color = PulseColors.textMuted,
+            maxLines = 1,
+        )
+        Text(
+            value,
+            fontSize = 32.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = PulseColors.textPrimary,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun DetailStatDivider() {
+    Box(
+        Modifier
+            .width(1.dp)
+            .height(34.dp)
+            .background(PulseColors.borderSubtle),
+    )
+}
+
+/** "60–101" / "≥ 120" / "< 60" for a reference zone, converted to display units. */
+private fun zoneRangeText(
+    zone: com.pulseloop.service.MetricZone,
+    metric: String,
+    units: UnitSystem,
+): String {
+    fun display(v: Double): Double = if (metric == "temp") UnitConverter.temperature(v, units) else v
+    fun fmt(v: Double): String =
+        if (metric == "temp") "%.1f".format(display(v)) else "${display(v).toInt()}"
+    val lo = zone.lower
+    val hi = zone.upper
+    return when {
+        lo != null && hi != null -> "${fmt(lo)}–${fmt(hi)}"
+        lo != null -> "≥ ${fmt(lo)}"
+        hi != null -> "< ${fmt(hi)}"
+        else -> ""
+    }
+}
+
+/** Warning-card copy for estimated metrics (iOS `disclaimerText`); null hides the card. */
+private fun metricDisclaimer(metric: String): String? = when (metric) {
+    "glucose" ->
+        "Estimated wellness metric — not for dosing or diabetes decisions. No smart ring or watch is " +
+        "FDA-authorized to measure or estimate glucose on its own."
+    "bp" ->
+        "Ring blood pressure is an estimate. Calibrate against a validated cuff in Settings → Calibration, " +
+        "and talk to a clinician about persistent high or low readings."
+    else -> null
+}
+
+/** Detail titles use MetricKind.title's sentence case (iOS navigation titles). */
 private fun metricDisplayName(metric: String): String = when (metric) {
-    "hr"      -> "Heart Rate"
-    "spo2"    -> "Blood Oxygen"
+    "hr"      -> "Heart rate"
+    "spo2"    -> "Blood oxygen"
     "stress"  -> "Stress"
     "fatigue" -> "Fatigue"
     "hrv"     -> "HRV"
-    "temp"    -> "Skin Temperature"
-    "bp"      -> "Blood Pressure"
-    "glucose" -> "Blood Sugar"
+    "temp"    -> "Skin temperature"
+    "bp"      -> "Blood pressure"
+    "glucose" -> "Blood sugar"
     else      -> metric
 }
 
+/** "WHAT THIS MEANS" copy, verbatim from iOS MetricDetailView `explainerText`. */
 private fun metricExplainer(metric: String): String = when (metric) {
-    "hr" -> "Resting heart rate reflects your cardiovascular fitness. Lower resting HR generally indicates better fitness, though individual baselines vary."
-    "spo2" -> "Blood oxygen saturation (SpO₂) indicates how well your body absorbs oxygen. Most healthy people have levels above 95%."
-    "stress" -> "Stress estimation is based on heart rate variability patterns. Higher values suggest more physiological stress; lower values reflect relaxation."
-    "fatigue" -> "Fatigue index estimates your body's recovery state. Higher values suggest accumulated fatigue; lower values indicate you're well-rested."
-    "hrv" -> "Heart rate variability (HRV) reflects autonomic nervous system balance. Higher HRV is typically associated with better recovery and resilience. HRV is highly personal — compare against your own baseline."
-    "temp" -> "Skin temperature is not body temperature. It can reflect environmental exposure and circadian rhythms. Informational only."
-    "bp" -> "Blood pressure readings consist of systolic (pressure during heartbeats) and diastolic (pressure between beats). Ranges are general wellness references, not diagnostic."
-    "glucose" -> "Blood sugar levels fluctuate throughout the day. Ranges differ for fasting vs. post-meal measurements. Treat ranges as rough guides only."
+    "hr" -> "Resting heart rate reflects how hard your heart works at rest. A typical adult range is 60–100 bpm; " +
+        "fitness, medication, caffeine, and stress all shift it."
+    "spo2" -> "Blood oxygen (SpO₂) is the percentage of oxygen your blood carries. 95–100% is normal; " +
+        "altitude and lung conditions can lower it."
+    "hrv" -> "Heart-rate variability is the variation between beats. It's highly individual, so we track it " +
+        "against your personal baseline rather than a universal cutoff."
+    "bp" -> "Blood pressure is systolic over diastolic (mmHg). The category is the worse of the two. " +
+        "A ring estimate is not a substitute for a cuff."
+    "stress" -> "A device wellness score from 0–100 based on heart-rate patterns. Lower is calmer. " +
+        "It's an estimate, not a medical stress measure."
+    "fatigue" -> "A device wellness score from 0–100 estimating tiredness. Higher means more fatigue. " +
+        "It's a ring estimate, not a clinical scale."
+    "glucose" -> "An estimated glucose value. No smart ring is cleared to measure glucose, so treat this " +
+        "as a wellness estimate only."
+    "temp" -> "Skin temperature from the ring runs cooler than core body temperature. " +
+        "Trends over time matter more than any single reading."
     else -> ""
 }
 
@@ -1333,43 +820,3 @@ private fun formatStat(value: Double, metric: String): String = when (metric) {
     else -> "%.0f".format(value)
 }
 
-private fun trendCopy(trend: VitalDetailViewModel.Trend, higherIsBetter: Boolean): Pair<String, String> {
-    val arrow = when (trend) {
-        VitalDetailViewModel.Trend.UP   -> "↑"
-        VitalDetailViewModel.Trend.DOWN -> "↓"
-        VitalDetailViewModel.Trend.FLAT -> "→"
-    }
-    val text = when (trend) {
-        VitalDetailViewModel.Trend.FLAT -> "Holding steady."
-        VitalDetailViewModel.Trend.DOWN ->
-            if (higherIsBetter) "Trending down vs the previous period."
-            else "Trending down — generally a positive direction."
-        VitalDetailViewModel.Trend.UP ->
-            if (higherIsBetter) "Trending up — generally a positive direction."
-            else "Trending up vs the previous period."
-    }
-    return Pair(arrow, text)
-}
-
-@Composable
-private fun StatTile(
-    modifier: Modifier = Modifier,
-    label: String,
-    value: String,
-    unit: String,
-) {
-    Card(modifier = modifier) {
-        Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "$label $unit",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}

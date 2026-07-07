@@ -61,6 +61,11 @@ class ApiKeyStore(context: Context) {
         get() = prefs.getBoolean(KEY_ONBOARDING, false)
         set(value) { prefs.edit().putBoolean(KEY_ONBOARDING, value).apply() }
 
+    /** Unlocked by tapping the version 7× in About (iOS #49); shows the Developer settings row. */
+    var developerUnlocked: Boolean
+        get() = prefs.getBoolean(KEY_DEVELOPER_UNLOCKED, false)
+        set(value) { prefs.edit().putBoolean(KEY_DEVELOPER_UNLOCKED, value).apply() }
+
     /** Unit system: null = auto-detect from locale, "metric" or "imperial" = manual */
     var unitSystem: String?
         get() = if (prefs.contains(KEY_UNIT_SYSTEM)) prefs.getString(KEY_UNIT_SYSTEM, null) else null
@@ -125,6 +130,7 @@ class ApiKeyStore(context: Context) {
         private const val KEY_MORNING_HOUR = "morning_hour"
         private const val KEY_EVENING_HOUR = "evening_hour"
         private const val KEY_ONBOARDING = "onboarding_completed"
+        private const val KEY_DEVELOPER_UNLOCKED = "developer_unlocked"
         private const val KEY_UNIT_SYSTEM = "unit_system"
         private const val KEY_BP_ADJ_SYS = "bp_adjust_systolic"
         private const val KEY_BP_ADJ_DIA = "bp_adjust_diastolic"

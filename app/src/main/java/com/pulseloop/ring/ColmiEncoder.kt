@@ -48,8 +48,35 @@ object ColmiEncoder {
     fun writePref(command: UByte, enabled: Boolean): ByteArray =
         byteArrayOf(command.toByte(), ColmiCommandID.PREF_WRITE.toByte(), if (enabled) 0x01 else 0x00)
 
+    /**
+     * Enable/disable all-day **heart-rate** monitoring. Auto-HR (`0x16`) has a different shape from
+     * the other prefs (per GadgetBridge `onSetHeartRateMeasurementInterval`): the on/off flag is
+     * `0x01`(on)/`0x02`(off) — *not* `0x01`/`0x00` — and it carries the sampling interval in minutes.
+     * The interval is rounded to a 5-minute multiple, 5…60. Without this the ring records no
+     * background HR, so the HR-history sync (`0x15`) comes back empty.
+     */
+    fun autoHeartRate(enabled: Boolean, intervalMinutes: Int = 5): ByteArray {
+        val interval = ((intervalMinutes / 5) * 5).coerceIn(5, 60)
+        return byteArrayOf(
+            ColmiCommandID.AUTO_HR_PREF.toByte(),
+            ColmiCommandID.PREF_WRITE.toByte(),
+            if (enabled) 0x01 else 0x02,
+            interval.toByte(),
+        )
+    }
+
     fun readTempPref(): ByteArray = byteArrayOf(
         ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_READ.toByte()
+    )
+
+    /**
+     * Enable/disable all-day temperature monitoring. Mirrors [readTempPref]'s extra `0x03`
+     * framing byte before the write flag. Verified against hardware (`3a 03 02 01` was acked
+     * by a Colmi ring).
+     */
+    fun writeTempPref(enabled: Boolean): ByteArray = byteArrayOf(
+        ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_WRITE.toByte(),
+        if (enabled) 0x01 else 0x00,
     )
 
     fun readGoals(): ByteArray = byteArrayOf(ColmiCommandID.GOALS.toByte(), ColmiCommandID.PREF_READ.toByte())
@@ -173,16 +200,12 @@ object ColmiEncoder {
 object ColmiCoordinator : WearableCoordinator {
     override val deviceType = RingDeviceType.COLMI_R02
 
-    private val namePatterns = listOf(
-        Regex("^R02_.*"), Regex("^R03_.*"), Regex("^R06_.*"),
-        Regex("^COLMI R07_.*"), Regex("^R09_.*"), Regex("^COLMI R10_.*"),
-        Regex("^COLMI R12_.*"), Regex("^R05_[0-9A-F]{4}$"),
-        Regex("^R10_[0-9A-F]{4}$"), Regex("^R11C?_[0-9A-F]{4}$"),
-        Regex("^H59_.*"),
-    )
-
     override fun matches(name: String?, advertisement: AdvertisementInfo): Boolean {
-        if (name != null && namePatterns.any { it.matches(name) }) return true
+        // The whole Colmi/Yawell ring family advertises under many names but shares one protocol;
+        // the per-model catalog owns the name patterns (iOS #49 ColmiCoordinator.matches).
+        if (com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)?.family == RingDeviceType.COLMI_R02) {
+            return true
+        }
         return advertisement.serviceUUIDs.contains(ColmiUUIDs.SERVICE_V1) ||
             advertisement.serviceUUIDs.contains(ColmiUUIDs.SERVICE_V2)
     }
@@ -196,6 +219,7 @@ object ColmiCoordinator : WearableCoordinator {
         WearableCapability.REALTIME_HEART_RATE,
         WearableCapability.REALTIME_STEPS,
         WearableCapability.FIND_DEVICE, WearableCapability.POWER_OFF, WearableCapability.FACTORY_RESET,
+        WearableCapability.MEASUREMENT_INTERVAL,  // 0x16 interval + per-vital prefs (iOS #19)
         // NOTE: Colmi rings do NOT support blood pressure or blood sugar.
         // See docs/ring-hardware-reference.md §3.
     )

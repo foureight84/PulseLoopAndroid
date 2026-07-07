@@ -11,6 +11,12 @@ import kotlinx.coroutines.*
  */
 class EventPersistenceSubscriber(
     private val db: PulseLoopDatabase,
+    /**
+     * Fired after a data-bearing event lands in Room (measurements, activity, sleep) — the
+     * Android analog of iOS `PulseDataChange`. The widget snapshot publisher hooks this
+     * (debounced) so home-screen widgets refresh after every ring-sync batch.
+     */
+    private val onDataPersisted: (() -> Unit)? = null,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
@@ -27,11 +33,26 @@ class EventPersistenceSubscriber(
     private suspend fun persist(event: PulseEvent) {
         try {
             persistUnsafe(event)
+            if (isDataEvent(event)) onDataPersisted?.invoke()
         } catch (e: Exception) {
             // Swallow individual persistence failures so one bad event
             // (malformed ring packet, DB constraint, etc.) never crashes the app.
             android.util.Log.e("EventPersistence", "Failed to persist event", e)
         }
+    }
+
+    /** Events that change what the Today tiles (and therefore the widgets) show. */
+    private fun isDataEvent(event: PulseEvent): Boolean = when (event) {
+        is PulseEvent.HeartRateSample,
+        is PulseEvent.Spo2Result,
+        is PulseEvent.HistoryMeasurement,
+        is PulseEvent.StressSample,
+        is PulseEvent.HrvSample,
+        is PulseEvent.TemperatureSample,
+        is PulseEvent.ActivityUpdate,
+        is PulseEvent.ActivityBucket,
+        is PulseEvent.SleepTimeline -> true
+        else -> false
     }
 
     private suspend fun persistUnsafe(event: PulseEvent) {
@@ -40,7 +61,9 @@ class EventPersistenceSubscriber(
                 // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
                 // device row, the ring's own teardown still emits a late DISCONNECTED — only
                 // a connection-establishing event may create a fresh row.
-                val existing = db.deviceDao().current()
+                // currentReal() (not current()) so a seeded demo-device row can never absorb a
+                // real ring's identity — the ring gets its own row instead.
+                val existing = db.deviceDao().currentReal()
                 if (existing == null &&
                     event.state != RingConnectionState.CONNECTED &&
                     event.state != RingConnectionState.CONNECTING) return
@@ -49,6 +72,13 @@ class EventPersistenceSubscriber(
                     RingConnectionState.CONNECTED -> {
                         db.measurementDao().clearDemo()
                         db.activityDailyDao().clearDemo()
+                        // Sessions rebuild from the ring on every connect. Blocks must be wiped
+                        // WITH them (no FK cascade at runtime): stale blocks keyed under an id a
+                        // rebuilt session reuses — e.g. rows from the pre-waking-day keying, which
+                        // filed a night's pre-midnight packets under what is now a different
+                        // night's id — would otherwise be merged into that night by
+                        // upsertSleepSession and corrupt its span and score.
+                        db.sleepStageBlockDao().clear()
                         db.sleepSessionDao().clear()
                         "CONNECTED"
                     }
@@ -74,15 +104,30 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.DeviceIdentified -> {
-                val device = db.deviceDao().current() ?: DeviceEntity()
+                val device = db.deviceDao().currentReal() ?: DeviceEntity()
                 db.deviceDao().upsert(device.copy(
                     deviceTypeRaw = event.deviceType.name,
+                    // A connect that can't resolve the exact model (e.g. re-pair with the
+                    // carousel on the wrong family) must not erase a previously stamped one.
+                    wearableModelID = event.wearableModelID ?: device.wearableModelID,
+                    advertisedName = event.advertisedName ?: device.advertisedName,
                     capabilitiesRaw = event.capabilities.toCsv(),
                     updatedAt = System.currentTimeMillis(),
                 ))
             }
+            is PulseEvent.DeviceForgotten -> {
+                // Mirror iOS: forgetting clears the stored model identity (the row itself is
+                // cleared by the Forget flow; this covers a row that survives, e.g. offline forget).
+                db.deviceDao().currentReal()?.let { device ->
+                    db.deviceDao().upsert(device.copy(
+                        wearableModelID = null,
+                        advertisedName = null,
+                        updatedAt = System.currentTimeMillis(),
+                    ))
+                }
+            }
             is PulseEvent.BatteryLevel -> {
-                val device = db.deviceDao().current() ?: DeviceEntity()
+                val device = db.deviceDao().currentReal() ?: DeviceEntity()
                 db.deviceDao().upsert(device.copy(
                     batteryPercent = event.percent,
                     updatedAt = System.currentTimeMillis(),
@@ -140,7 +185,11 @@ class EventPersistenceSubscriber(
                 upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
             }
             is PulseEvent.ActivityBucket -> {
-                upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, 0.0, event.distanceMeters)
+                // Per-slice ring history: upserted by timestamp + the day total recomputed as the
+                // sum of distinct buckets, so re-syncs are idempotent (no drift). Routing these
+                // through upsertActivityDaily's max() ratchet collapsed a history day's total to
+                // its single largest bucket. Calories omitted (unverified ring field).
+                applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)
@@ -195,11 +244,54 @@ class EventPersistenceSubscriber(
         }
     }
 
+    /**
+     * Persist one intraday activity bucket from ring history (a Colmi `0x43` sample) and recompute
+     * its day's total. The bucket is **upserted by its start time**, so re-syncing the same bucket
+     * *replaces* it (never accumulates), and the day's `activity_daily` row is recomputed as the
+     * **sum of distinct buckets** for that day. Mirrors `ActivityService.applyActivityBucket` on
+     * iOS (the GadgetBridge model). Calories intentionally untouched (unverified ring field).
+     */
+    private suspend fun applyActivityBucket(ts: Long, steps: Int, distanceM: Double) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        db.activityBucketDao().upsert(ActivityBucketEntity(
+            startEpoch = ts,
+            date = dayStart,
+            steps = steps,
+            distanceMeters = distanceM,
+        ))
+
+        val buckets = db.activityBucketDao().byDay(dayStart)
+        val totalSteps = buckets.sumOf { it.steps }
+        val totalDistance = buckets.sumOf { it.distanceMeters }
+
+        val existing = db.activityDailyDao().byDay(dayStart)
+        // A past day's truth is the sum of its distinct buckets (now true 15-minute slices —
+        // see ColmiDecoder.decodeActivityHistory). For TODAY the live 0x0C cumulative total
+        // leads the bucket history (the in-progress slice isn't served yet), so ratchet
+        // against the existing row instead of overwriting — otherwise every reconnect visibly
+        // drops today's count until the next live update. Keep the stale-garbage escape from
+        // the live path.
+        val isToday = dayStart == com.pulseloop.util.TimeUtil.startOfTodayLocal()
+        val stale = existing != null && existing.steps > 200_000
+        val ratchet = isToday && existing != null && !stale
+        db.activityDailyDao().upsert(
+            (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
+                steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
+                distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
+                source = if (ratchet) existing!!.source else "ring_history",
+                syncedAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>) {
         if (stages.isEmpty()) return
-        // Local-day key so a night is attributed to the correct local date (and stitches
-        // with same-night packets) rather than flipping at UTC midnight.
-        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
+        // a night that starts before midnight lands under the morning of waking instead of being
+        // split into two sessions at midnight. Matches the iOS reference
+        // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
+        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
         val sessionId = "sleep-$dayStart"
 
         // The ring streams a night as many 15-minute 0x11 packets that must be STITCHED,
@@ -223,7 +315,7 @@ class EventPersistenceSubscriber(
             db.sleepStageBlockDao().insert(it.copy(startMinute = ((it.startAt - sessionStart) / 60_000L).toInt()))
         }
 
-        val existing = db.sleepSessionDao().byDay(dayStart)
+        val existing = db.sleepSessionDao().ringByDay(dayStart)
         db.sleepSessionDao().upsert(
             (existing ?: SleepSessionEntity(id = sessionId, date = dayStart, startAt = sessionStart, endAt = sessionEnd, totalMinutes = totalMin, score = score)).copy(
                 startAt = sessionStart,

@@ -34,6 +34,60 @@ interface WearableDriver {
 }
 
 /**
+ * Ported from [MeasurementSettings] in WearableDriver.swift (iOS #19).
+ * User-chosen all-day measurement configuration, passed as a plain value from the app layer into
+ * a sync engine (the engine never reads Room itself). Devices that support MEASUREMENT_INTERVAL
+ * (Colmi) translate this into the relevant ring commands; others ignore it.
+ */
+data class MeasurementSettings(
+    val hrEnabled: Boolean,
+    /** All-day HR sampling interval in minutes (Colmi clamps to 5..60 in 5-min steps). */
+    val hrIntervalMinutes: Int,
+    val spo2Enabled: Boolean,
+    val stressEnabled: Boolean,
+    val hrvEnabled: Boolean,
+    val temperatureEnabled: Boolean,
+) {
+    companion object {
+        /** The firmware default (matches the previous hard-coded Colmi startup behaviour). */
+        val ALL_ON_DEFAULT = MeasurementSettings(
+            hrEnabled = true, hrIntervalMinutes = 5,
+            spo2Enabled = true, stressEnabled = true, hrvEnabled = true, temperatureEnabled = true,
+        )
+    }
+}
+
+/**
+ * Ported from [UserProfileValues] in WearableDriver.swift (iOS #19).
+ * The user's profile projected to the byte-ish shape a ring's user-preferences command expects.
+ * Devices that don't take a profile ignore it.
+ */
+data class UserProfileValues(
+    val metric: Boolean,
+    /** Ring gender byte: 0x00 female, 0x01 male, 0x02 unspecified/other (Colmi convention). */
+    val gender: UByte,
+    val age: UByte,
+    val heightCm: UByte,
+    val weightKg: UByte,
+) {
+    companion object {
+        /** Build from stored profile fields, clamping to byte ranges with neutral fallbacks. */
+        fun from(metric: Boolean, sex: String?, age: Int?, heightCm: Double?, weightKg: Double?) =
+            UserProfileValues(
+                metric = metric,
+                gender = when (sex?.lowercase()) {
+                    "female" -> 0x00u
+                    "male" -> 0x01u
+                    else -> 0x02u
+                },
+                age = (age ?: 25).coerceIn(0, 255).toUByte(),
+                heightCm = (heightCm ?: 175.0).toInt().coerceIn(0, 255).toUByte(),
+                weightKg = (weightKg ?: 70.0).toInt().coerceIn(0, 255).toUByte(),
+            )
+    }
+}
+
+/**
  * Ported from [RingSyncEngine] in WearableDriver.swift.
  * Per-device orchestration of command flows.
  */
@@ -59,6 +113,33 @@ interface RingSyncEngine {
     fun setBloodPressureAdjust(systolic: Int, diastolic: Int) {}
     /** Claim the ring for this app's id so it streams data to us. No-op if unsupported. */
     fun setAppId(appId: String) {}
+
+    /** Store the all-day measurement config *without* sending — used just before [runStartup],
+     *  which emits the relevant commands in the connect handshake (so we don't double-send).
+     *  `null` ⇒ the user has never saved a config: engines that can should seed one from the
+     *  device's own reported settings (see [setOnMeasurementConfigSeeded]) instead of
+     *  force-writing defaults over ring-side settings from another app.
+     *  Devices without MEASUREMENT_INTERVAL ignore it. */
+    fun setMeasurementSettings(settings: MeasurementSettings?) {}
+
+    /** Store *and* immediately push the config — the live "Save" path while connected, so
+     *  changes take effect without waiting for a reconnect. No-op if unsupported. */
+    fun applyMeasurementSettings(settings: MeasurementSettings) {}
+
+    /** Register a sink for the measurement config seeded from the device's own reported
+     *  settings when none was pushed via [setMeasurementSettings] — the app layer persists
+     *  it as the device's initial config. No-op if unsupported. */
+    fun setOnMeasurementConfigSeeded(callback: (MeasurementSettings) -> Unit) {}
+
+    /** Inspect a raw inbound notify frame. Default no-op; engines that need reply payloads
+     *  the decoded-event stream doesn't carry (e.g. Colmi pref-read replies) hook in here. */
+    fun handleRawNotify(data: ByteArray) {}
+
+    /** Store the user's profile *without* sending — the connect handshake sends it. No-op if unsupported. */
+    fun setUserProfile(profile: UserProfileValues) {}
+
+    /** Store *and* immediately push the profile — the live path when the profile saves. No-op if unsupported. */
+    fun applyUserProfile(profile: UserProfileValues) {}
 }
 
 /**

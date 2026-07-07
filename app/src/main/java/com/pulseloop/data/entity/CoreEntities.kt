@@ -20,6 +20,8 @@ data class DeviceEntity(
     val batteryPercent: Int? = null,
     val stateRaw: String = RingConnectionState.IDLE.name,
     val deviceTypeRaw: String = RingDeviceType.JRING.name,
+    /** Exact catalog model (e.g. `colmi-r10`), separate from the protocol/driver family (iOS #49). */
+    val wearableModelID: String? = null,
     val capabilitiesRaw: String = "",   // CSV of WearableCapability names
     val lastConnectedAt: Long? = null,
     val lastDisconnectedAt: Long? = null,
@@ -72,6 +74,46 @@ data class ActivityDailyEntity(
     val source: String = "mock",
     val syncedAt: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * Ported from [ActivityBucketSample] in PulseModels.swift.
+ * One intraday activity bucket from a ring's history sync (a Colmi `0x43` sample).
+ * Keyed by `startEpoch` (the bucket's start time, epoch millis) so re-syncing the same bucket
+ * **replaces** it rather than accumulating — the daily total is then the sum of distinct buckets.
+ * This is the GadgetBridge model and the fix for daily totals drifting across repeated syncs.
+ */
+@Entity(
+    tableName = "activity_buckets",
+    indices = [Index("date")],
+)
+data class ActivityBucketEntity(
+    /** Bucket start time in epoch millis — the primary key, so the same bucket upserts. */
+    @PrimaryKey val startEpoch: Long,
+    val date: Long,                 // epoch millis, local start of day, for per-day queries
+    val steps: Int = 0,
+    val distanceMeters: Double = 0.0,
+    val source: String = "ring_history",
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * Ported from [DeviceMeasurementConfig] in PulseModels.swift (iOS PR #19).
+ * Per-device background-measurement preferences pushed to the ring on save and on connect:
+ * all-day HR sampling interval plus per-vital enable toggles.
+ */
+@Entity(tableName = "device_measurement_configs")
+data class DeviceMeasurementConfigEntity(
+    /** The DeviceEntity id this config belongs to. */
+    @PrimaryKey val deviceId: String,
+    /** All-day HR sampling interval, minutes. 5-minute steps, 5..60. */
+    val hrIntervalMinutes: Int = 5,
+    val hrEnabled: Boolean = true,
+    val spo2Enabled: Boolean = true,
+    val stressEnabled: Boolean = true,
+    val hrvEnabled: Boolean = true,
+    val temperatureEnabled: Boolean = true,
     val updatedAt: Long = System.currentTimeMillis(),
 )
 
@@ -151,9 +193,23 @@ data class UserProfileEntity(
 @Entity(tableName = "user_goals")
 data class UserGoalEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
-    val steps: Int = 10000,
+    val steps: Int = DEFAULT_STEPS,
+    /** Daily distance goal in meters (iOS UserGoal.distanceMeters, added in iOS #48). */
+    @ColumnInfo(defaultValue = "8000.0") val distanceMeters: Double = DEFAULT_DISTANCE_METERS,
+    /** Daily active-calorie goal in kcal (iOS UserGoal.calories, added in iOS #48). */
+    @ColumnInfo(defaultValue = "500") val calories: Int = DEFAULT_CALORIES,
     val sleepMinutes: Int = 480,
     val activeMinutes: Int = 45,
     val workoutsPerWeek: Int = 4,
     val updatedAt: Long = System.currentTimeMillis(),
-)
+) {
+    companion object {
+        // Canonical no-goal-row fallbacks (match iOS UserGoal). Every surface that
+        // renders ring progress against a goal — Today tiles, Activity screen, the
+        // widget snapshot — must fall back through these, not a local literal, or the
+        // widget and the app disagree the day one copy changes.
+        const val DEFAULT_STEPS = 10_000
+        const val DEFAULT_DISTANCE_METERS = 8_000.0
+        const val DEFAULT_CALORIES = 500
+    }
+}

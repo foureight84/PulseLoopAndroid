@@ -9,7 +9,6 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
@@ -24,15 +23,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -151,50 +149,6 @@ fun SimpleLineChart(
 }
 
 /**
- * Dual-series line chart — draws two polylines on a shared Y-scale so paired
- * series (e.g. systolic over diastolic blood pressure) stay vertically aligned.
- */
-@Composable
-fun SimpleDualLineChart(
-    seriesA: List<Double>,
-    seriesB: List<Double>,
-    colorA: Color,
-    colorB: Color,
-    modifier: Modifier = Modifier,
-    lineWidth: Float = 2f,
-    showDots: Boolean = true,
-) {
-    if (seriesA.isEmpty() && seriesB.isEmpty()) return
-    // Shared scale across both series so the two lines are comparable.
-    val all = seriesA + seriesB
-    val min = all.min()
-    val max = all.max()
-    val range = if (max == min) 1.0 else max - min
-
-    Canvas(modifier = modifier.fillMaxWidth().height(100.dp)) {
-        val w = size.width
-        val h = size.height
-        val pad = 8f
-
-        fun drawSeries(points: List<Double>, color: Color) {
-            if (points.isEmpty()) return
-            val stepX = (w - pad * 2) / maxOf(1, points.size - 1)
-            val path = Path()
-            points.forEachIndexed { i, value ->
-                val x = pad + i * stepX
-                val y = pad + (h - pad * 2) * (1f - ((value - min) / range).toFloat())
-                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                if (showDots) drawCircle(color, 3f, Offset(x, y))
-            }
-            drawPath(path, color, style = Stroke(width = lineWidth, cap = StrokeCap.Round))
-        }
-
-        drawSeries(seriesA, colorA)
-        drawSeries(seriesB, colorB)
-    }
-}
-
-/**
  * Metric card with embedded mini sparkline — ported from MiniSparkline in DesignSystem.
  */
 @Composable
@@ -230,105 +184,6 @@ fun LegendDot(label: String, color: Color) {
         Box(Modifier.size(10.dp).background(color, CircleShape))
         Spacer(Modifier.width(4.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-// ──────────────────────── ThresholdBar ────────────────────────
-
-/**
- * Color-coded horizontal bar that shows where a value sits across good → average →
- * concerning zones. Renders each zone as a proportional segment with a marker at the
- * current value.
- */
-@Composable
-fun ThresholdBar(
-    value: Double?,
-    thresholds: MetricThresholds,
-    modifier: Modifier = Modifier,
-    showTicks: Boolean = true,
-    overrideZone: ThresholdZone? = null,
-) {
-    val textMeasurer = rememberTextMeasurer()
-    val barHeight = 14.dp
-    val tickStyle = TextStyle(fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    val zone = overrideZone ?: (value?.let { thresholds.zoneFor(it) })
-    val zoneLabel = zone?.label
-
-    Column(modifier = modifier.fillMaxWidth()) {
-        // The bar
-        Canvas(modifier = Modifier.fillMaxWidth().height(barHeight)) {
-            val w = size.width
-            val h = size.height
-            val totalRange = thresholds.displayMax - thresholds.displayMin
-            if (totalRange <= 0) return@Canvas
-
-            // Draw each zone segment
-            thresholds.zones.forEach { z ->
-                val left = ((z.start - thresholds.displayMin) / totalRange * w).toFloat()
-                val right = ((z.end - thresholds.displayMin) / totalRange * w).toFloat()
-                val segWidth = (right - left).coerceAtLeast(0f)
-                if (segWidth > 0f) {
-                    drawRoundRect(
-                        color = z.color,
-                        topLeft = Offset(left, 0f),
-                        size = Size(segWidth, h),
-                        cornerRadius = CornerRadius(h / 2f, h / 2f),
-                    )
-                }
-            }
-
-            // Draw the value marker — white pill with a subtle dark border so it
-            // stands out against any zone color
-            if (value != null) {
-                val clamped = ((value - thresholds.displayMin) / totalRange).coerceIn(0.0, 1.0)
-                val markerX = (clamped * w).toFloat()
-                val pillW = 5.dp.toPx()
-                val pillH = h + 6.dp.toPx()
-                val pillTop = -3.dp.toPx()
-                // Border
-                drawRoundRect(
-                    color = Color.Black.copy(alpha = 0.3f),
-                    topLeft = Offset(markerX - pillW / 2f - 0.5f, pillTop - 0.5f),
-                    size = Size(pillW + 1f, pillH + 1f),
-                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
-                )
-                // Fill
-                drawRoundRect(
-                    color = Color.White,
-                    topLeft = Offset(markerX - pillW / 2f, pillTop),
-                    size = Size(pillW, pillH),
-                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
-                )
-            }
-        }
-
-        // Tick labels
-        if (showTicks) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = formatTick(thresholds.displayMin),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (zoneLabel != null) {
-                    Text(
-                        text = zoneLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = zone?.color ?: MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Text(
-                    text = formatTick(thresholds.displayMax),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
     }
 }
 
@@ -423,7 +278,7 @@ fun TrendChart(
     val surfaceColor = MaterialTheme.colorScheme.surface
     val onSurfaceColor = MaterialTheme.colorScheme.onSurface
     val outlineColor = MaterialTheme.colorScheme.outline
-    val gridColor = Color.LightGray.copy(alpha = 0.3f)
+    val gridColor = axisColor.copy(alpha = 0.15f)
 
     // Zoom/pan window normalized to [0,1] over the time domain. windowSize = 1/zoom.
     // Min visible window is 30 min; index fallback caps by point count.
@@ -505,14 +360,15 @@ fun TrendChart(
         }
 
         Canvas(modifier = canvasModifier) {
-            val gutter = 36.dp.toPx()
-            val rightPad = 10.dp.toPx()
+            // iOS #35 look: value labels sit trailing (right), so the gutter moves there.
+            val gutter = 40.dp.toPx()
+            val leftPad = 12.dp.toPx()
             val topPad = 10.dp.toPx()
             val bottomPad = 22.dp.toPx()
             val w = size.width
             val h = size.height
-            val plotLeft = gutter
-            val plotRight = w - rightPad
+            val plotLeft = leftPad
+            val plotRight = w - gutter
             val plotTop = topPad
             val plotBottom = h - bottomPad
             val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
@@ -555,22 +411,35 @@ fun TrendChart(
 
             val labelStyle = TextStyle(fontSize = 10.sp, color = axisColor)
 
-            // Gridlines + Y-axis value labels (max at top → min at bottom)
-            val gridCount = 4
+            // No zone-band background: the iOS detail chart plots on a clean card, with the
+            // zone-split line + the REFERENCE ZONES card carrying the range context.
+
+            // Quiet axes (iOS #35): ≤3 faint horizontal gridlines with trailing value labels.
+            val gridCount = 3
             for (g in 0..gridCount) {
                 val y = plotTop + plotH * g / gridCount
                 drawLine(gridColor, Offset(plotLeft, y), Offset(plotRight, y), 1f)
                 val value = max - (max - min) * g / gridCount
                 val tl = textMeasurer.measure(valueFormatter(value), labelStyle)
-                drawText(tl, topLeft = Offset(plotLeft - 6.dp.toPx() - tl.size.width, y - tl.size.height / 2f))
+                drawText(tl, topLeft = Offset(plotRight + 6.dp.toPx(), y - tl.size.height / 2f))
             }
 
             // Series — clipped to the plot rect so zoomed-out points don't bleed over the axes.
+            // The primary line is drawn zone-split and gap-broken (iOS #35): each sample pair
+            // splits at zone boundaries so a piece never spans two zones, and runs separated
+            // by more than the range-tuned max gap break instead of bridging.
+            val maxGapMs = if (useTime) ZoneLineSplitter.maxGapMs(fullRangeMs) else Long.MAX_VALUE
             val primaryOffsets = points.mapIndexed { i, v -> Offset(xForIndex(i), yForValue(v)) }
             val secondaryOffsets = secondary.mapIndexed { i, v -> Offset(xForSecondary(i), yForValue(v)) }
             clipRect(plotLeft, plotTop, plotRight, plotBottom) {
-                drawTrendSeries(secondaryOffsets, secondary, colorSecondary, false, thresholds, min, max, plotTop, plotBottom)
-                drawTrendSeries(primaryOffsets, points, color, zoneColoring, thresholds, min, max, plotTop, plotBottom)
+                drawTrendSeries(
+                    secondaryOffsets, secondary, colorSecondary, false, thresholds, min, max,
+                    plotTop, plotBottom, if (useTime) timestamps else emptyList(), maxGapMs,
+                )
+                drawTrendSeries(
+                    primaryOffsets, points, color, zoneColoring, thresholds, min, max,
+                    plotTop, plotBottom, if (useTime) timestamps else emptyList(), maxGapMs,
+                )
                 // Current-value marker at the last primary point
                 primaryOffsets.lastOrNull()?.let { o ->
                     val c = if (zoneColoring) thresholds?.zoneFor(points.last())?.color ?: color else color
@@ -694,8 +563,11 @@ fun TrendChart(
 }
 
 /**
- * Draws one trend series (gradient fill under the line, the line itself, and per-point dots).
- * Offsets are pre-projected screen coordinates; callers should [clipRect] to the plot bounds.
+ * Draws one trend series in the iOS #35 style: a zone-split, gap-broken line whose pieces
+ * are each colored by the single zone they lie in (no vertical-gradient approximation),
+ * plus per-point dots when sparse. Non-zone series (e.g. BP's dual lines) keep a flat
+ * color with a soft under-fill. Offsets are pre-projected screen coordinates; callers
+ * should [clipRect] to the plot bounds.
  */
 private fun DrawScope.drawTrendSeries(
     offsets: List<Offset>,
@@ -707,36 +579,70 @@ private fun DrawScope.drawTrendSeries(
     dataMax: Double,
     plotTop: Float,
     plotBottom: Float,
+    timestamps: List<Long> = emptyList(),
+    maxGapMs: Long = Long.MAX_VALUE,
 ) {
     if (offsets.isEmpty()) return
+    val lineWidth = 3f
 
-    // Gradient fill under the line
-    val fill = Path()
-    offsets.forEachIndexed { i, o -> if (i == 0) fill.moveTo(o.x, o.y) else fill.lineTo(o.x, o.y) }
-    fill.lineTo(offsets.last().x, plotBottom)
-    fill.lineTo(offsets.first().x, plotBottom)
-    fill.close()
-    drawPath(
-        fill,
-        brush = Brush.verticalGradient(
-            colors = listOf(seriesColor.copy(alpha = 0.25f), seriesColor.copy(alpha = 0.02f)),
-        ),
-    )
+    val runs = if (timestamps.size == offsets.size) {
+        ZoneLineSplitter.segmentsByGap(timestamps, maxGapMs)
+    } else listOf(offsets.indices)
 
-    val lineBrush = if (zoneColored && thresholds != null) {
-        Brush.verticalGradient(
-            colorStops = zoneGradientStops(dataMin, dataMax, thresholds),
-            startY = plotTop,
-            endY = plotBottom,
-        )
-    } else null
-
-    val line = Path()
-    offsets.forEachIndexed { i, o -> if (i == 0) line.moveTo(o.x, o.y) else line.lineTo(o.x, o.y) }
-    if (lineBrush != null) {
-        drawPath(line, brush = lineBrush, style = Stroke(width = 2f, cap = StrokeCap.Round))
+    if (!(zoneColored && thresholds != null)) {
+        // Flat-color series: soft under-fill + line, drawn per gap-run.
+        for (run in runs) {
+            val runOffsets = offsets.slice(run)
+            if (runOffsets.size == 1) {
+                drawCircle(seriesColor, 4f, runOffsets[0])
+                continue
+            }
+            val fill = Path()
+            runOffsets.forEachIndexed { i, o -> if (i == 0) fill.moveTo(o.x, o.y) else fill.lineTo(o.x, o.y) }
+            fill.lineTo(runOffsets.last().x, plotBottom)
+            fill.lineTo(runOffsets.first().x, plotBottom)
+            fill.close()
+            drawPath(
+                fill,
+                brush = Brush.verticalGradient(
+                    colors = listOf(seriesColor.copy(alpha = 0.18f), seriesColor.copy(alpha = 0.02f)),
+                ),
+            )
+            val line = Path()
+            runOffsets.forEachIndexed { i, o -> if (i == 0) line.moveTo(o.x, o.y) else line.lineTo(o.x, o.y) }
+            drawPath(line, seriesColor, style = Stroke(width = lineWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
     } else {
-        drawPath(line, seriesColor, style = Stroke(width = 2f, cap = StrokeCap.Round))
+        // Zone-split line: each sample pair splits at every zone boundary it crosses, so a
+        // drawn piece never spans two zones and its midpoint lands squarely in its zone.
+        val boundaries = thresholds.zones.map { it.start }.drop(1).sorted()
+        val yPerValue = if (dataMax == dataMin) 0f else (plotBottom - plotTop) / (dataMax - dataMin).toFloat()
+        fun yFor(v: Double): Float = plotBottom - ((v - dataMin).toFloat() * yPerValue)
+        for (run in runs) {
+            if (run.last == run.first) {
+                // A lone reading in its window still deserves a visible dot.
+                val i = run.first
+                drawCircle(thresholds.zoneFor(values[i])?.color ?: seriesColor, 4f, offsets[i])
+                continue
+            }
+            for (i in run.first until run.last) {
+                val pieces = ZoneLineSplitter.split(
+                    offsets[i].x.toDouble(), values[i],
+                    offsets[i + 1].x.toDouble(), values[i + 1],
+                    boundaries,
+                )
+                for ((start, end) in pieces) {
+                    val mid = (start.value + end.value) / 2
+                    drawLine(
+                        color = thresholds.zoneFor(mid)?.color ?: seriesColor,
+                        start = Offset(start.x.toFloat(), yFor(start.value)),
+                        end = Offset(end.x.toFloat(), yFor(end.value)),
+                        strokeWidth = lineWidth,
+                        cap = StrokeCap.Round,
+                    )
+                }
+            }
+        }
     }
 
     // Per-point dots only when sparse — at high density they merge into a blob and

@@ -14,17 +14,29 @@ data class Bucket(
 
 @Dao
 interface DeviceDao {
-    @Query("SELECT * FROM devices ORDER BY updatedAt DESC LIMIT 1")
+    // A real ring always outranks the seeded demo row ('demo-device'), regardless of which row
+    // was written last — otherwise a demo reseed would make the UI show a fake connected ring
+    // over the actually paired one.
+    @Query("SELECT * FROM devices ORDER BY (id = 'demo-device') ASC, updatedAt DESC LIMIT 1")
     suspend fun current(): DeviceEntity?
 
-    @Query("SELECT * FROM devices ORDER BY updatedAt DESC LIMIT 1")
+    @Query("SELECT * FROM devices ORDER BY (id = 'demo-device') ASC, updatedAt DESC LIMIT 1")
     fun currentFlow(): Flow<DeviceEntity?>
+
+    /** The paired ring's row only — ring event handlers write here so a real ring's identity,
+     *  battery, and state can never land on (or be deleted with) the demo device row. */
+    @Query("SELECT * FROM devices WHERE id != 'demo-device' ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun currentReal(): DeviceEntity?
 
     @Upsert
     suspend fun upsert(device: DeviceEntity)
 
     @Query("DELETE FROM devices")
     suspend fun clear()
+
+    /** Targeted removal (e.g. the demo device) without touching a paired ring's row. */
+    @Query("DELETE FROM devices WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -37,6 +49,11 @@ interface MeasurementDao {
 
     @Query("SELECT value FROM measurements WHERE kindRaw = :kind AND timestamp <= :before ORDER BY timestamp DESC LIMIT 1")
     suspend fun latest(kind: String, before: Long = System.currentTimeMillis()): Double?
+
+    /** Whether any demo-seeded row exists for a kind — mirrors iOS `hasMockMeasurement(kind:)`,
+     *  which switches chart fetches from the range window to full history in demo mode. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurements WHERE kindRaw = :kind AND sourceRaw = 'demo')")
+    suspend fun hasDemo(kind: String): Boolean
 
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
@@ -94,9 +111,43 @@ interface ActivityDailyDao {
 }
 
 @Dao
+interface ActivityBucketDao {
+    @Query("SELECT * FROM activity_buckets WHERE date = :day ORDER BY startEpoch ASC")
+    suspend fun byDay(day: Long): List<ActivityBucketEntity>
+
+    /** Distinct past days that have synced buckets — the DataRepairs recompute scope. */
+    @Query("SELECT DISTINCT date FROM activity_buckets WHERE date < :day ORDER BY date ASC")
+    suspend fun daysBefore(day: Long): List<Long>
+
+    @Upsert
+    suspend fun upsert(bucket: ActivityBucketEntity)
+
+    @Query("DELETE FROM activity_buckets")
+    suspend fun clear()
+}
+
+@Dao
+interface DeviceMeasurementConfigDao {
+    @Query("SELECT * FROM device_measurement_configs WHERE deviceId = :deviceId LIMIT 1")
+    suspend fun byDevice(deviceId: String): DeviceMeasurementConfigEntity?
+
+    @Query("SELECT * FROM device_measurement_configs WHERE deviceId = :deviceId LIMIT 1")
+    fun byDeviceFlow(deviceId: String): Flow<DeviceMeasurementConfigEntity?>
+
+    @Upsert
+    suspend fun upsert(config: DeviceMeasurementConfigEntity)
+
+    @Query("DELETE FROM device_measurement_configs")
+    suspend fun clear()
+}
+
+@Dao
 interface ActivitySessionDao {
     @Query("SELECT * FROM activity_sessions WHERE statusRaw = 'recording' OR statusRaw = 'paused' LIMIT 1")
     suspend fun active(): ActivitySessionEntity?
+
+    @Query("SELECT * FROM activity_sessions WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): ActivitySessionEntity?
 
     @Query("SELECT * FROM activity_sessions ORDER BY startedAt DESC LIMIT :limit")
     suspend fun recent(limit: Int = 10): List<ActivitySessionEntity>
@@ -119,8 +170,14 @@ interface ActivityGpsPointDao {
 
 @Dao
 interface SleepSessionDao {
-    @Query("SELECT * FROM sleep_sessions WHERE date = :day LIMIT 1")
+    // Ring sessions outrank demo ones if both ever exist for a day (the seeder skips days that
+    // have a ring session, so this is defensive).
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY (sourceRaw = 'demo') ASC LIMIT 1")
     suspend fun byDay(day: Long): SleepSessionEntity?
+
+    /** The synced (non-demo) session for a day — the sync path's upsert target. */
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' LIMIT 1")
+    suspend fun ringByDay(day: Long): SleepSessionEntity?
 
     @Query("SELECT * FROM sleep_sessions ORDER BY date DESC LIMIT :limit")
     suspend fun recent(limit: Int = 7): List<SleepSessionEntity>
@@ -128,11 +185,17 @@ interface SleepSessionDao {
     @Query("SELECT * FROM sleep_sessions ORDER BY date DESC LIMIT :limit")
     fun recentFlow(limit: Int = 7): Flow<List<SleepSessionEntity>>
 
+    @Query("SELECT * FROM sleep_sessions WHERE date BETWEEN :start AND :end ORDER BY date ASC")
+    suspend fun inRange(start: Long, end: Long): List<SleepSessionEntity>
+
     @Upsert
     suspend fun upsert(session: SleepSessionEntity)
 
     @Query("DELETE FROM sleep_sessions")
     suspend fun clear()
+
+    @Query("DELETE FROM sleep_sessions WHERE sourceRaw = 'demo'")
+    suspend fun clearDemo()
 }
 
 @Dao
@@ -148,6 +211,13 @@ interface SleepStageBlockDao {
 
     @Query("DELETE FROM sleep_stage_blocks WHERE sessionId = :sessionId")
     suspend fun deleteBySession(sessionId: String)
+
+    @Query("DELETE FROM sleep_stage_blocks")
+    suspend fun clear()
+
+    /** Demo blocks only — demo sessions use the "demo-sleep-" id prefix. */
+    @Query("DELETE FROM sleep_stage_blocks WHERE sessionId LIKE 'demo-sleep-%'")
+    suspend fun clearDemo()
 }
 
 @Dao
@@ -214,6 +284,9 @@ interface UserProfileDao {
 interface UserGoalDao {
     @Query("SELECT * FROM user_goals LIMIT 1")
     suspend fun get(): UserGoalEntity?
+
+    @Query("SELECT * FROM user_goals LIMIT 1")
+    fun getFlow(): kotlinx.coroutines.flow.Flow<UserGoalEntity?>
 
     @Upsert
     suspend fun upsert(goal: UserGoalEntity)

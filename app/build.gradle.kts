@@ -121,9 +121,21 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
+    // Widgets: publish snapshots on app foreground/background transitions (iOS scene-phase parity).
+    implementation("androidx.lifecycle:lifecycle-process:2.8.6")
+
+    // Home-screen widgets (iOS #44): Glance app widgets. 1.1.0 matches compose BOM 2024.06.00
+    // (compose 1.6.x) and Kotlin 2.0.21.
+    implementation("androidx.glance:glance-appwidget:1.1.0")
+    implementation("androidx.glance:glance-material3:1.1.0")
 
     // Phase 5: Coach — OkHttp for OpenAI API
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Frosted-glass top/bottom bars (iOS .ultraThinMaterial parity): real backdrop blur
+    // via RenderEffect on Android 12+, translucent scrim fallback on older devices.
+    implementation("dev.chrisbanes.haze:haze:1.6.10")
+    implementation("dev.chrisbanes.haze:haze-materials:1.6.10")
 
     // Phase 6: Location for GPS route recording
     implementation("com.google.android.gms:play-services-location:21.3.0")

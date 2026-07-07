@@ -58,11 +58,19 @@ class RingSyncWorker(
         val keyStore = ApiKeyStore(applicationContext)
         val db = PulseLoopDatabase.getInstance(applicationContext)
 
-        // Only sync if a ring was previously paired
-        val device = db.deviceDao().current()
+        // Only sync if a REAL ring was previously paired — the seeded demo device row
+        // must not trigger background BLE connects.
+        val device = db.deviceDao().currentReal()
         if (device == null) return Result.success()
 
         val bleClient = RingBLEClient(applicationContext)
+
+        // Load the persisted measurement config + profile up front so the connect
+        // handshake pushes the user's saved settings. Null (never saved) makes the
+        // engine seed from the ring's own pref reads instead of force-writing
+        // defaults, so ring-side settings from the official app are preserved.
+        val measurementSettings = loadPersistedMeasurementSettings(db)
+        val profileValues = loadPersistedUserProfile(db, keyStore)
 
         return try {
             withTimeout(SYNC_TIMEOUT_SECONDS * 1000L) {
@@ -74,6 +82,8 @@ class RingSyncWorker(
                     connected = true
                     // Run startup sync to pull activity, HR, sleep, etc.
                     val engine = bleClient.syncEngine
+                    engine?.setMeasurementSettings(measurementSettings)
+                    profileValues?.let { engine?.setUserProfile(it) }
                     engine?.runStartup()
                 }
 

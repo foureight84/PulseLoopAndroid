@@ -48,4 +48,6 @@ data class CoachFeatureFlags(
     val settings: CoachSettings = CoachSettings(),
 )
 
-data class CoachSettings(val reasoningEffort: String = "medium")
+/** `reasoningEffort` is an optional hint ("low"/"medium"/"high"); null = omit
+ *  from the request (required by models like gpt-4o that reject `reasoning`). */
+data class CoachSettings(val reasoningEffort: String? = null)

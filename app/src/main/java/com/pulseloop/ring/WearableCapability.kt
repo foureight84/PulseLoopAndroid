@@ -31,7 +31,12 @@ enum class WearableCapability(val key: String) {
     REALTIME_STEPS("realtimeSteps"),
     FIND_DEVICE("findDevice"),
     POWER_OFF("powerOff"),
-    FACTORY_RESET("factoryReset");
+    FACTORY_RESET("factoryReset"),
+
+    // Configurable all-day measurement: the device exposes a settable HR sampling interval and
+    // per-vital monitoring toggles (Colmi `0x16` + prefs). The generic jring has no such control,
+    // so it never declares this and the Measurement settings section stays hidden for it.
+    MEASUREMENT_INTERVAL("measurementInterval");
 
     companion object {
         fun fromCsv(csv: String): Set<WearableCapability> =
@@ -48,5 +53,7 @@ enum class WearableCapability(val key: String) {
  */
 enum class RingDeviceType(val displayName: String) {
     JRING("SMART_RING"),
-    COLMI_R02("Colmi R02");
+    // One protocol family covering the whole Colmi/Yawell line — the exact model comes from
+    // WearableModel (iOS #49), so the family label stays honest about the ambiguity.
+    COLMI_R02("Colmi / Yawell ring");
 }

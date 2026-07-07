@@ -93,18 +93,34 @@ class ColmiDecoderTest {
 
     @Test
     fun `live activity notification`() {
-        // steps=500 (0xF4 0x01 0x00), cal=1234 (0xD2 0x04 0x00), dist=300 (0x2C 0x01 0x00)
+        // Fields are BIG-endian u24 (verified against on-ring frames; the iOS decoder still
+        // reads little-endian): steps=500 (0x00 0x01 0xF4), calories raw=123000 → 123 kcal
+        // (0x01 0xE0 0x78), distance=300 m (0x00 0x01 0x2C).
         val frame = ColmiPacket.frame(byteArrayOf(
             0x73, 0x12,
-            0xF4.toByte(), 0x01, 0x00,
-            0xD2.toByte(), 0x04, 0x00,
-            0x2C.toByte(), 0x01, 0x00,
+            0x00, 0x01, 0xF4.toByte(),
+            0x01, 0xE0.toByte(), 0x78,
+            0x00, 0x01, 0x2C,
         ))
         val events = ColmiDecoder.decodeNormal(frame)
         val activity = events.first() as RingDecodedEvent.ActivityUpdate
         assertEquals(500, activity.steps)
         assertEquals(300, activity.distanceMeters)
         assertEquals(123, activity.calories)
+    }
+
+    @Test
+    fun `live activity with implausible step count decodes as ack`() {
+        // A little-endian (or corrupt) frame inflates steps past the plausibility guard;
+        // the decoder must not let one bad packet poison the day's total.
+        val frame = ColmiPacket.frame(byteArrayOf(
+            0x73, 0x12,
+            0xF4.toByte(), 0x01, 0x00,   // BE read = 15,991,040 steps
+            0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00,
+        ))
+        val events = ColmiDecoder.decodeNormal(frame)
+        assertTrue(events.first() is RingDecodedEvent.CommandAck)
     }
 
     // MARK: Big-data
@@ -121,8 +137,8 @@ class ColmiDecoderTest {
     @Test
     fun `temperature big data`() {
         var payload = byteArrayOf(0x00, 0x1E.toByte())
-        payload += byteArrayOf(150.toByte()) // t00 = 150 → 35.0°C
-        payload += ByteArray(46) // pad
+        payload += byteArrayOf(150.toByte(), 0) // hour 0: t00 = 150 → 35.0°C, t30 empty
+        payload += ByteArray(46) // pad to a full 24h of pairs so length ≥ 50
         val frame = bigData(ColmiCommandID.BIG_DATA_TEMPERATURE, payload)
         val events = ColmiDecoder.decodeBigData(frame, zone = zone)
         val temps = events.filterIsInstance<RingDecodedEvent.TemperatureSample>()
@@ -255,6 +271,74 @@ class ColmiDecoderTest {
     }
 
     @Test
+    fun `activity buckets keep 15-minute slice starts`() {
+        // v[4] is a quarter-of-day slot index (0..95): slot 77 (0x4D) = 19:15, not 19:00.
+        // Collapsing to the hour would make same-hour slices share a startEpoch and
+        // upsert-replace each other in activity_buckets.
+        val frame = ColmiPacket.frame(byteArrayOf(
+            0x43, 0x26, 0x06, 0x17,      // 2026-06-17
+            0x4D,                        // slot 77 → 19:15
+            0x00, 0x01,                  // packet 0 of 1
+            0x00, 0x00,                  // calories (unused)
+            0x64, 0x00,                  // steps = 100
+            0x50, 0x00,                  // distance = 80 m
+        ))
+        val now = Instant.parse("2026-06-18T00:00:00Z")
+        val events = ColmiDecoder.decodeHistory(
+            frame, day = LocalDate.of(2026, 6, 17), now = now, zone = zone
+        )
+        val bucket = events.first() as RingDecodedEvent.ActivityBucket
+        assertEquals(Instant.parse("2026-06-17T19:15:00Z"), bucket._timestamp)
+        assertEquals(100, bucket.steps)
+        assertEquals(80, bucket.distanceMeters)
+    }
+
+    @Test
+    fun `same-hour activity slices decode to distinct timestamps`() {
+        val now = Instant.parse("2026-06-18T00:00:00Z")
+        val timestamps = (76..79).map { slot ->   // 19:00, 19:15, 19:30, 19:45
+            val frame = ColmiPacket.frame(byteArrayOf(
+                0x43, 0x26, 0x06, 0x17, slot.toByte(),
+                0x00, 0x01, 0x00, 0x00, 0x64, 0x00, 0x50, 0x00,
+            ))
+            val events = ColmiDecoder.decodeHistory(
+                frame, day = LocalDate.of(2026, 6, 17), now = now, zone = zone
+            )
+            (events.first() as RingDecodedEvent.ActivityBucket)._timestamp
+        }
+        assertEquals(4, timestamps.distinct().size)
+        assertEquals(Instant.parse("2026-06-17T19:45:00Z"), timestamps.last())
+    }
+
+    // MARK: Pref read replies
+
+    @Test
+    fun `auto HR pref read reply decodes enabled flag and interval`() {
+        // [0x16, READ, flag(0x01=on/0x02=off), interval minutes]
+        val on = ColmiDecoder.decodeAutoHRPrefRead(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30)))!!
+        assertTrue(on.enabled)
+        assertEquals(30, on.intervalMinutes)
+
+        val off = ColmiDecoder.decodeAutoHRPrefRead(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x02, 60)))!!
+        assertFalse(off.enabled)
+        assertEquals(60, off.intervalMinutes)
+    }
+
+    @Test
+    fun `auto HR pref write ack is not a read reply`() {
+        assertNull(ColmiDecoder.decodeAutoHRPrefRead(ColmiPacket.frame(byteArrayOf(0x16, 0x02, 0x01, 5))))
+        assertNull(ColmiDecoder.decodeAutoHRPrefRead(ColmiPacket.frame(byteArrayOf(0x03, 84, 1))))
+    }
+
+    @Test
+    fun `temp pref read reply decodes enabled flag`() {
+        // [0x3A, 0x03, READ, enabled] — mirrors writeTempPref's extra 0x03 framing byte.
+        assertEquals(true, ColmiDecoder.decodeTempPrefRead(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, 0x01))))
+        assertEquals(false, ColmiDecoder.decodeTempPrefRead(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, 0x00))))
+        assertNull(ColmiDecoder.decodeTempPrefRead(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x02, 0x01))))
+    }
+
+    @Test
     fun `realtime heart rate no reading reply`() {
         val frame = hexToBytes("9eee000000000000000000000000008c")
         val events = ColmiDecoder.decodeNormal(frame)
@@ -308,6 +392,29 @@ class ColmiDecoderTest {
         assertEquals(0x1A.toByte(), cmd[0])
         assertEquals(0x10.toByte(), cmd[1]) // 10000 & 0xff
         assertEquals(0x27.toByte(), cmd[2]) // (10000 >> 8) & 0xff
+    }
+
+    // Auto-HR (0x16) has a different shape from the other prefs: on/off is 0x01/0x02
+    // (not 0x01/0x00) and carries the sampling interval in minutes. Parity with
+    // ColmiDecoderTests.swift (PR #17).
+    @Test
+    fun `auto heart rate enable carries 0x01 flag and interval`() {
+        val cmd = ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 5)
+        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x01, 0x05), cmd)
+    }
+
+    @Test
+    fun `auto heart rate disable uses 0x02 flag`() {
+        val cmd = ColmiEncoder.autoHeartRate(enabled = false, intervalMinutes = 5)
+        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x02, 0x05), cmd)
+    }
+
+    @Test
+    fun `auto heart rate interval rounds to 5-minute multiples within 5-60`() {
+        assertEquals(5.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 7)[3])
+        assertEquals(60.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 90)[3])
+        assertEquals(5.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 0)[3])
+        assertEquals(30.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 33)[3])
     }
 
     // MARK: Helpers
