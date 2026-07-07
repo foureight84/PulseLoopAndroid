@@ -40,9 +40,9 @@ Android port of [PulseLoop](https://github.com/saksham2001/PulseLoopiOS/tree/mai
 ### Profile & Calibration
 
 For accurate blood sugar and calorie estimation on **56ff/Jring rings**, the ring
-needs your physical profile. Enter your **age, height, weight, and sex** in the
-Settings menu under Profile. This data is stored **only on your phone** — it is
-never transmitted off-device.
+needs your physical profile. Enter your **age, height, weight, and sex** during
+onboarding, or any time under **Settings → User Profile**. This data is stored
+**only on your phone** — it is never transmitted off-device.
 
 **Blood pressure is a direct sensor reading** — it does not require user profile.
 **Colmi rings do not need profile at all** — they measure all metrics directly
@@ -50,7 +50,9 @@ from their sensors and do not support blood pressure or blood sugar.
 
 For **56ff/Jring rings**, you can optionally calibrate blood pressure by entering
 reference values from a cuff. For blood sugar, you can enter a reference lab/meter
-reading to apply a display offset. These are stored locally as calibration offsets.
+reading to apply a display offset. Both live under **Settings → Calibration**
+(shown only for rings that support BP/blood sugar) and are stored locally as
+calibration offsets.
 
 ---
 
@@ -76,9 +78,10 @@ reading to apply a display offset. These are stored locally as calibration offse
 - **Combined measurement button** — one-tap spot measurement for BP, SpO₂, stress, fatigue, and blood sugar with a visible countdown progress bar. Found at the top of the Vitals screen.
 
 ### Settings & Calibration
-- **User profile** — age, height, weight, and sex stored locally on-device and sent to 56ff/Jring rings for blood sugar (profile-derived estimate) and calorie algorithms. Blood pressure is a direct sensor reading. Colmi rings do not use this.
-- **Blood pressure calibration** — enter reference systolic/diastolic values from a cuff to apply an offset. 56ff/Jring only.
-- **Blood sugar calibration** — enter a reference glucose reading from lab work or a glucometer to calibrate the ring's profile-derived blood sugar estimates. 56ff/Jring only.
+- **User profile** (Settings → User Profile) — age, height, weight, and sex stored locally on-device and sent to 56ff/Jring rings for blood sugar (profile-derived estimate) and calorie algorithms. Blood pressure is a direct sensor reading. Colmi rings do not use this.
+- **Blood pressure calibration** (Settings → Calibration) — enter reference systolic/diastolic values from a cuff to apply an offset. 56ff/Jring only.
+- **Blood sugar calibration** (Settings → Calibration) — enter a reference glucose reading from lab work or a glucometer to calibrate the ring's profile-derived blood sugar estimates. 56ff/Jring only.
+- **Privacy & Data** (Settings → Privacy & Data) — demo-data controls (reseed/clear) and the anonymized diagnostics export for bug reports.
 
 ### Simplified Ring Management
 - **Forget ring** — removes the ring from the app in one tap. The unbind command is sent to the ring to release it for pairing with other apps.
@@ -101,10 +104,15 @@ reading to apply a display offset. These are stored locally as calibration offse
 
 ## Debug & Diagnostics
 
-PulseLoop Android ships a built-in diagnostics tool (an Android-only addition — iOS has a
-simpler debug view): **Settings → Debug**.
+PulseLoop Android ships built-in diagnostics (an Android-only addition — iOS has a
+simpler debug view), in two places:
 
-The Debug screen shows a live view of what the app and ring are doing:
+- **Exporting a log for a bug report**: **Settings → Privacy & Data → Export
+  Diagnostics** — no developer unlock needed.
+- **The full Debug console**: **Settings → Developer**, unlocked by tapping the
+  version row in **Settings → About PulseLoop** seven times.
+
+The Debug console shows a live view of what the app and ring are doing:
 
 - **Raw BLE packet trace** — every frame sent/received, with hex payload and the decoded packet kind
 - **Live event log** — the decoded event stream (measurements, sync stages, connection changes) as it flows through the app
@@ -112,7 +120,8 @@ The Debug screen shows a live view of what the app and ring are doing:
 
 ### Exporting a diagnostics report
 
-The share button on the Debug screen produces a single JSON report you can attach to a
+**Export Diagnostics** (Settings → Privacy & Data, also available on the Debug
+console) produces a single JSON report you can attach to a
 [GitHub issue](https://github.com/foureight84/PulseLoopAndroid/issues) or share on
 [Discord](https://discord.gg/t9y85ebaKD) when reporting a bug. It contains:
 
@@ -122,8 +131,9 @@ The share button on the Debug screen produces a single JSON report you can attac
 - Recent crash stack traces (uncaught exceptions are persisted on-device by the built-in crash logger)
 - The app's own logcat, including in-process `BluetoothGatt` callbacks
 
-**Privacy redaction is ON by default** and resets to ON for every export — the report is
-privacy-safe unless you explicitly opt out for a single export. When redaction is on:
+**Anonymization is ON by default** (the "Anonymize export" toggle) and resets to ON for
+every export — the report is privacy-safe unless you explicitly opt out for a single
+export. When anonymization is on:
 health-measurement packet payloads are reduced to their opcode (connection/pairing control
 frames stay whole so protocol issues remain debuggable), the ring name is masked, and log/logcat
 text is scrubbed of identifiers. No health values, names, or addresses leave the report intact.
