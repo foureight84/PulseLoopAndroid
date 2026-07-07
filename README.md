@@ -67,11 +67,11 @@ calibration offsets.
 
 | Pairing | Today Dashboard | Vitals Dashboard |
 |---|---|---|
-| ![Pairing](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/pairing-scan.png) | ![Today](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/today-dashboard.png) | ![Vitals](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/vitals-dashboard.png) |
+| ![Pairing](screenshots/pairing-scan.png) | ![Today](screenshots/today-dashboard.png) | ![Vitals](screenshots/vitals-dashboard.png) |
 
 | Vitals Detail | Sleep Score |
 |---|---|
-| ![Detail](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/vitals-detail.png) | ![Sleep](https://raw.githubusercontent.com/foureight84/PulseLoopAndroid/main/screenshots/sleep-score.png) |
+| ![Detail](screenshots/vitals-detail.png) | ![Sleep](screenshots/sleep-score.png) |
 
 ---
 
