@@ -222,9 +222,18 @@ fun PulseLoopApp() {
         // iOS-style frosted tab bar (.ultraThinMaterial parity): the scrollable tabs
         // render UNDER the bar (hazeSource on the NavHost) and the bar blurs whatever
         // is behind it. Real RenderEffect blur on Android 12+, scrim fallback below.
+        // Custom style instead of HazeMaterials.ultraThin: the material's tint over
+        // the near-black palette reads almost opaque; a lighter tint + a faint white
+        // lift keeps the blurred content visible like the iOS bar.
         val hazeState = rememberHazeState()
-        val glassStyle = HazeMaterials.ultraThin(
-            containerColor = com.pulseloop.ui.theme.PulseColors.background,
+        val glassStyle = dev.chrisbanes.haze.HazeStyle(
+            backgroundColor = com.pulseloop.ui.theme.PulseColors.background,
+            tints = listOf(
+                dev.chrisbanes.haze.HazeTint(com.pulseloop.ui.theme.PulseColors.background.copy(alpha = 0.42f)),
+                dev.chrisbanes.haze.HazeTint(Color.White.copy(alpha = 0.04f)),
+            ),
+            blurRadius = 24.dp,
+            noiseFactor = 0.02f,
         )
 
         Scaffold(
