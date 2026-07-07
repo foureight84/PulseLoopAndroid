@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Hold the CPU awake during overnight streaming — a foreground service keeps
+         the process alive but Doze still defers coroutine timers without this. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Phase 2: BLE permissions -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
 

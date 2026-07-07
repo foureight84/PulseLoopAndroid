@@ -42,6 +42,15 @@ class SleepStreamController(
     private var ticksSinceSpO2 = 0
     private var streamStartedAt = 0L
 
+    /** Held while streaming so Doze can't defer the poll loop's 20s timer. The FGS
+     *  keeps the process alive; this keeps the CPU running the timer. Charging is a
+     *  gate, so an all-night partial wakelock costs no user battery. */
+    private val wakeLock: android.os.PowerManager.WakeLock by lazy {
+        (context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "pulseloop:sleepstream")
+            .apply { setReferenceCounted(false) }
+    }
+
     fun start() {
         job?.cancel()
         job = scope.launch {
@@ -60,6 +69,7 @@ class SleepStreamController(
         if (streaming) {
             coordinator.stopWorkoutHeartRate()
             SleepForegroundService.stop(context)
+            if (wakeLock.isHeld) wakeLock.release()
             streaming = false
         }
     }
@@ -77,6 +87,7 @@ class SleepStreamController(
 
         if (gatesPass && !streaming) {
             SleepForegroundService.start(context)  // keep the process alive through Doze
+            if (!wakeLock.isHeld) wakeLock.acquire(11 * 3_600_000L)  // cap: whole window
             coordinator.startWorkoutHeartRate()
             streaming = true
             ticksSinceSpO2 = 0
@@ -84,6 +95,7 @@ class SleepStreamController(
         } else if (!gatesPass && streaming) {
             coordinator.stopWorkoutHeartRate()
             SleepForegroundService.stop(context)
+            if (wakeLock.isHeld) wakeLock.release()
             streaming = false
             // Night ended. If it ended because the phone was UNPLUGGED (not because
             // the clock left the window or the ring dropped), that's the wake signal —
