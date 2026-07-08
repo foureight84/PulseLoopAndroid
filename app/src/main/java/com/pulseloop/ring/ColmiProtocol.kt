@@ -32,6 +32,10 @@ object ColmiCommandID {
     const val AUTO_HRV_PREF: UByte = 0x38u
     const val SYNC_HRV: UByte = 0x39u
     const val AUTO_TEMP_PREF: UByte = 0x3Au
+    // Device-support / capability bitfield read (QRing DeviceSupportReq, opcode 60). The
+    // reply's byte[1] carries feature bits; bit 3 (0x08) = supportBlePair — the ring wants
+    // an OS-level bond. Free opcode in this map (see docs/qring-ble-adoption.md).
+    const val DEVICE_SUPPORT: UByte = 0x3Cu
     const val SYNC_ACTIVITY: UByte = 0x43u
     const val BP_READ: UByte = 0x14u
     const val BP_CONFIRM: UByte = 0x0Eu

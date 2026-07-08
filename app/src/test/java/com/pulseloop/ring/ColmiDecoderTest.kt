@@ -395,18 +395,33 @@ class ColmiDecoderTest {
     }
 
     // Auto-HR (0x16) has a different shape from the other prefs: on/off is 0x01/0x02
-    // (not 0x01/0x00) and carries the sampling interval in minutes. Parity with
-    // ColmiDecoderTests.swift (PR #17).
+    // (not 0x01/0x00) and carries the sampling interval in minutes, then the four trailing
+    // fields the official QRing app sends (hrStart, hrTooLow, hrTooHigh, hrTooSwitch — all 0
+    // = no HR alarms). The full record is required by newer RT-series firmware (R09) to arm
+    // background HR. See docs/qring-ble-adoption.md §Auto-HR.
     @Test
-    fun `auto heart rate enable carries 0x01 flag and interval`() {
+    fun `auto heart rate enable carries 0x01 flag, interval and zeroed alarm fields`() {
         val cmd = ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 5)
-        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x01, 0x05), cmd)
+        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00), cmd)
     }
 
     @Test
     fun `auto heart rate disable uses 0x02 flag`() {
         val cmd = ColmiEncoder.autoHeartRate(enabled = false, intervalMinutes = 5)
-        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x02, 0x05), cmd)
+        assertArrayEquals(byteArrayOf(0x16, 0x02, 0x02, 0x05, 0x00, 0x00, 0x00, 0x00), cmd)
+    }
+
+    // Device-support (0x3C): supportBlePair is bit 3 (0x08) of the first feature byte (frame[1]).
+    @Test
+    fun `device support decodes supportBlePair bit`() {
+        // frame[1] = 0x08 → bond wanted
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x08))))
+        // frame[1] = 0x0F (bit set among others) → still true
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x0F))))
+        // frame[1] = 0x07 (bit clear) → false
+        assertEquals(false, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x07))))
+        // Not a device-support frame → null
+        assertNull(ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30))))
     }
 
     @Test

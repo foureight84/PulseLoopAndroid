@@ -50,10 +50,18 @@ object ColmiEncoder {
 
     /**
      * Enable/disable all-day **heart-rate** monitoring. Auto-HR (`0x16`) has a different shape from
-     * the other prefs (per GadgetBridge `onSetHeartRateMeasurementInterval`): the on/off flag is
-     * `0x01`(on)/`0x02`(off) — *not* `0x01`/`0x00` — and it carries the sampling interval in minutes.
-     * The interval is rounded to a 5-minute multiple, 5…60. Without this the ring records no
-     * background HR, so the HR-history sync (`0x15`) comes back empty.
+     * the other prefs: the on/off flag is `0x01`(on)/`0x02`(off) — *not* `0x01`/`0x00` — and it
+     * carries the sampling interval in minutes (rounded to a 5-minute multiple, 5…60). Without this
+     * the ring records no background HR, so the HR-history sync (`0x15`) comes back empty.
+     *
+     * The payload is the **full 7-field record** the official QRing app sends
+     * (`HeartRateSettingReq.getWriteInstance`, Oudmon SDK): after the interval come
+     * `hrStart, hrTooLow, hrTooHigh, hrTooSwitch`. Older R02 firmware accepts the short
+     * 4-byte form, but newer RT-series firmware (e.g. R09 / RT09) ACKs the short frame yet
+     * never arms background sampling — HR then only measures on a physical button press.
+     * Sending the full record (alarm fields zeroed = "no HR alerts configured", exactly what
+     * QRing sends when the user hasn't set alarms) fixes auto-HR on R09 with no R02 regression.
+     * See docs/qring-ble-adoption.md §Auto-HR.
      */
     fun autoHeartRate(enabled: Boolean, intervalMinutes: Int = 5): ByteArray {
         val interval = ((intervalMinutes / 5) * 5).coerceIn(5, 60)
@@ -62,8 +70,20 @@ object ColmiEncoder {
             ColmiCommandID.PREF_WRITE.toByte(),
             if (enabled) 0x01 else 0x02,
             interval.toByte(),
+            // hrStart, hrTooLow, hrTooHigh, hrTooSwitch — 0 = no HR alarms (hrStart 0 → the
+            // firmware's own 5-min default). The four trailing bytes are what newer firmware
+            // requires to treat this as a complete HR-setting write.
+            0x00, 0x00, 0x00, 0x00,
         )
     }
+
+    /**
+     * Read the ring's device-support/capability bitfield (QRing `DeviceSupportReq`, opcode
+     * `0x3C`, no sub-data). The reply is parsed by [ColmiDecoder.decodeDeviceSupport]; its
+     * `supportBlePair` bit tells us whether to create an OS-level bond, mirroring the official
+     * app. See docs/qring-ble-adoption.md §Pairing.
+     */
+    fun deviceSupport(): ByteArray = byteArrayOf(ColmiCommandID.DEVICE_SUPPORT.toByte())
 
     fun readTempPref(): ByteArray = byteArrayOf(
         ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_READ.toByte()
