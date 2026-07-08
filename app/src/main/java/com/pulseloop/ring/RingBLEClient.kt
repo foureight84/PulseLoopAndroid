@@ -597,17 +597,30 @@ class RingBLEClient(private val context: Context) {
      * Idempotent: skipped when already bonded/bonding, so it fires at most once per ring. Runs
      * after service discovery (the reply that triggers it arrives post-CONNECTED), so it does
      * not race discoverServices()/requestMtu().
+     *
+     * It also waits for the GATT op queue to fall idle before calling createBond(). The
+     * device-support (0x3C) reply lands mid-startup, while the battery/pref reads, seeding
+     * writes, and the first history-sync request are still queued or in flight. createBond()
+     * on a busy link can force a transient disconnect/re-encrypt on some firmware, dropping
+     * those in-flight ops — the very churn bonding is meant to end. Bonding in a quiet gap
+     * (no op in flight) avoids interrupting an active transfer; the wait is bounded, so a
+     * long-running sync still bonds after [awaitOpsFlushed]'s timeout rather than never.
      */
     private fun bondActiveDevice() {
         if (!hasPermissions()) return
-        val device = bluetoothGatt?.device ?: return
-        try {
-            if (device.bondState == BluetoothDevice.BOND_NONE) {
-                Log.i("RingBLEClient", "Ring advertises supportBlePair — creating OS bond")
-                device.createBond()
+        scope.launch {
+            awaitOpsFlushed()
+            // The link may have dropped while we waited for the queue to settle.
+            if (!hasPermissions()) return@launch
+            val device = bluetoothGatt?.device ?: return@launch
+            try {
+                if (device.bondState == BluetoothDevice.BOND_NONE) {
+                    Log.i("RingBLEClient", "Ring advertises supportBlePair — creating OS bond")
+                    device.createBond()
+                }
+            } catch (e: Exception) {
+                Log.w("RingBLEClient", "createBond() failed: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w("RingBLEClient", "createBond() failed: ${e.message}")
         }
     }
 

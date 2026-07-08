@@ -159,7 +159,11 @@ it never parsed `0x3C`. So the fix had to *teach PulseLoop to read `0x3C`* and r
   it — that ring relies on 5b instead.)
 - **No connect-time race:** the bond fires when the `0x3C` reply arrives *during startup*
   (post-CONNECTED, post-discovery), so it does NOT race `requestMtu()/discoverServices()` —
-  the original reason bonding was removed.
+  the original reason bonding was removed. The `0x3C` reply also lands while the rest of the
+  startup handshake (battery/pref reads, seeding writes, first history-sync request) is still
+  queued or in flight, so `bondActiveDevice()` first `awaitOpsFlushed()`s (bounded) and calls
+  `createBond()` only in a quiet gap — `createBond()` on a busy link can force a transient
+  re-encrypt/disconnect on some firmware that would drop those in-flight ops.
 - **Idempotent:** guarded on `BOND_NONE`, so it bonds at most once per ring.
 - **Visible UX change (intended):** the ring now appears in the phone's Bluetooth
   paired-devices list and lights the status-bar BT icon — this is the point, and matches
