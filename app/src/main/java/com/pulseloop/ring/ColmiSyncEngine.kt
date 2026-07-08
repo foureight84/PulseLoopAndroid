@@ -29,6 +29,10 @@ class ColmiSyncEngine(
     /** Sink for the config seeded from the ring's pref-read replies (no persisted config). */
     private var onConfigSeeded: ((MeasurementSettings) -> Unit)? = null
 
+    /** Invoked when the ring's device-support reply advertises `supportBlePair`; the BLE client
+     *  creates the OS bond in response (mirrors the official QRing app). */
+    private var onBondRequested: (() -> Unit)? = null
+
     // Read-reply seeding state: collected until both the auto-HR and temp prefs reported.
     private var seedingFromRing = false
     private var seededHrIntervalMinutes: Int? = null
@@ -70,6 +74,9 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.phoneName())
         writer?.enqueue(encoder.setDateTime())
         writer?.enqueue(userPreferencesCommand())
+        // Read the ring's capability bitfield early: the reply's supportBlePair bit drives the
+        // OS bond (see handleRawNotify → onBondRequested). Harmless on rings that don't answer.
+        writer?.enqueue(encoder.deviceSupport())
         writer?.enqueue(encoder.battery())
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_HR_PREF))
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_STRESS_PREF))
@@ -108,6 +115,10 @@ class ColmiSyncEngine(
         onConfigSeeded = callback
     }
 
+    override fun setOnBondRequested(callback: () -> Unit) {
+        onBondRequested = callback
+    }
+
     /**
      * Consume the connect handshake's pref-read replies while seeding (no persisted config).
      * One exception to "the ring's settings win": all-day HR must be ON or the `0x15` HR
@@ -115,6 +126,12 @@ class ColmiSyncEngine(
      * the ring's reported interval.
      */
     override fun handleRawNotify(data: ByteArray) {
+        // Device-support reply is independent of config seeding: if the ring wants a bond, ask
+        // the client to create one. Return early — a 0x3C frame carries nothing else we consume.
+        decoder.decodeDeviceSupport(data)?.let { supportsBlePair ->
+            if (supportsBlePair) onBondRequested?.invoke()
+            return
+        }
         if (!seedingFromRing) return
         decoder.decodeAutoHRPrefRead(data)?.let { readout ->
             val interval = if (readout.intervalMinutes in 5..60) readout.intervalMinutes else 5

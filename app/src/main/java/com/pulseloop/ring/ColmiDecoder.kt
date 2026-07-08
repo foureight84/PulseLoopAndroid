@@ -226,6 +226,20 @@ object ColmiDecoder {
         return v[3].toInt() == 0x01
     }
 
+    /**
+     * Decode a `0x3C` device-support reply and return whether the ring wants an OS-level bond.
+     * Frame layout mirrors QRing's `DeviceSupportFunctionRsp.acceptData`: opcode at `[0]`, the
+     * first feature byte at `[1]`, where bit 3 (`0x08`) is `supportBlePair`. Returns null for any
+     * frame that isn't a device-support reply — callers treat null as "not a bond signal", so a
+     * wrong guess degrades to today's no-bond behaviour rather than misbehaving.
+     */
+    fun decodeDeviceSupport(data: ByteArray): Boolean? {
+        val packet = ColmiPacket.validating(data) ?: return null
+        val v = packet.bytes.map { it.toUByte() }
+        if (v[0] != ColmiCommandID.DEVICE_SUPPORT) return null
+        return (v[1].toInt() and 0x08) != 0
+    }
+
     // MARK: Big-data (V2)
 
     fun decodeBigData(

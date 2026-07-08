@@ -325,6 +325,23 @@ class RingBLEClient(private val context: Context) {
 
     private fun connectionWatchdogTick() {
         if (!bluetoothAdapter.isEnabled || !hasPermissions()) return
+        // Time out a hung CONNECTING attempt FIRST — before the last-known-ring guard below —
+        // so it also covers a first-ever pairing (no stored ring yet). The official QRing app
+        // arms this timeout on every connect (mTimeoutRunnable). Without it, a first pair that
+        // stalls after connectGatt (CCCD write dropped, GATT-133, or a link the firmware won't
+        // hold without a bond) sits on "Connecting…" forever with no exit.
+        if (_state.value.connectionState == RingConnectionState.CONNECTING) {
+            if (connectingStartedAt > 0 &&
+                System.currentTimeMillis() - connectingStartedAt > CONNECT_TIMEOUT_MS) {
+                Log.w("RingBLEClient", "Connect attempt hung >${CONNECT_TIMEOUT_MS}ms")
+                // A reconnect can retry the stored ring; a first pair has nothing to retry, so
+                // fail the attempt cleanly and surface an error rather than spinning.
+                if (lastKnownIdentifier != null) forceReconnect()
+                else failConnectAttempt(
+                    "Couldn't connect to the ring. Make sure it's nearby and awake, then try again.")
+            }
+            return
+        }
         if (lastKnownIdentifier == null) return
         when (_state.value.connectionState) {
             RingConnectionState.CONNECTED -> {
@@ -355,15 +372,7 @@ class RingBLEClient(private val context: Context) {
             RingConnectionState.DISCONNECTED,
             RingConnectionState.FAILED,
             RingConnectionState.IDLE -> connectLastKnown()
-            RingConnectionState.CONNECTING -> {
-                // A reconnect can hang indefinitely (autoConnect pending against a device
-                // that never re-advertises). Time it out and retry with a fresh GATT.
-                if (connectingStartedAt > 0 &&
-                    System.currentTimeMillis() - connectingStartedAt > CONNECT_TIMEOUT_MS) {
-                    Log.w("RingBLEClient", "Connect attempt hung >${CONNECT_TIMEOUT_MS}ms — retrying")
-                    forceReconnect()
-                }
-            }
+            // CONNECTING is handled above (before the last-known-ring guard).
             else -> {
                 // SCANNING: a pairing scan proceeds untouched, but a reconnect scan that
                 // ran a full watchdog interval without sighting the ring moves on to the
@@ -377,6 +386,27 @@ class RingBLEClient(private val context: Context) {
     private fun forceReconnect() {
         // beginConnect (via connectLastKnown) closes the stale GATT before opening a new one.
         connectLastKnown()
+    }
+
+    /**
+     * Abort a stalled connect attempt that has no stored ring to retry (a first pairing that
+     * hung). Tears the half-open GATT down and surfaces an error so the pairing UI leaves the
+     * "Connecting…" state instead of spinning forever.
+     */
+    private fun failConnectAttempt(reason: String) {
+        val gatt = bluetoothGatt
+        bluetoothGatt = null
+        writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
+        resetOpQueue()
+        if (gatt != null) {
+            try { gatt.disconnect() } catch (_: Exception) {}
+            closeGattQuietly(gatt)
+        }
+        connectingStartedAt = 0
+        updateState { copy(connectionState = RingConnectionState.FAILED, lastError = reason) }
+        PulseEventBus.publishBlocking(
+            PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
+        )
     }
 
     /**
@@ -558,6 +588,43 @@ class RingBLEClient(private val context: Context) {
     }
 
     /**
+     * Create an OS-level bond with the connected ring — invoked by the sync engine only when
+     * the ring's device-support reply advertises `supportBlePair` (Colmi R09 and newer). The
+     * official QRing app does exactly this, which is why its rings appear in the phone's
+     * paired-devices list and hold a stable link; connecting GATT-only (no bond) is what left
+     * PulseLoop's users stuck on "Connecting" and cycling Bluetooth to recover.
+     *
+     * Idempotent: skipped when already bonded/bonding, so it fires at most once per ring. Runs
+     * after service discovery (the reply that triggers it arrives post-CONNECTED), so it does
+     * not race discoverServices()/requestMtu().
+     *
+     * It also waits for the GATT op queue to fall idle before calling createBond(). The
+     * device-support (0x3C) reply lands mid-startup, while the battery/pref reads, seeding
+     * writes, and the first history-sync request are still queued or in flight. createBond()
+     * on a busy link can force a transient disconnect/re-encrypt on some firmware, dropping
+     * those in-flight ops — the very churn bonding is meant to end. Bonding in a quiet gap
+     * (no op in flight) avoids interrupting an active transfer; the wait is bounded, so a
+     * long-running sync still bonds after [awaitOpsFlushed]'s timeout rather than never.
+     */
+    private fun bondActiveDevice() {
+        if (!hasPermissions()) return
+        scope.launch {
+            awaitOpsFlushed()
+            // The link may have dropped while we waited for the queue to settle.
+            if (!hasPermissions()) return@launch
+            val device = bluetoothGatt?.device ?: return@launch
+            try {
+                if (device.bondState == BluetoothDevice.BOND_NONE) {
+                    Log.i("RingBLEClient", "Ring advertises supportBlePair — creating OS bond")
+                    device.createBond()
+                }
+            } catch (e: Exception) {
+                Log.w("RingBLEClient", "createBond() failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Send a keepalive ping every 15s to prevent the ring's ~20s idle timeout.
      * **Jring (56ff) only.** 0x3A is that SDK's lightweight ping/pong command; on the
      * Colmi/QRing protocol the same opcode is CMD_DEVICE_SUGAR_LIPIDS — not a ping —
@@ -589,6 +656,9 @@ class RingBLEClient(private val context: Context) {
         activeCoordinator = coordinator
         activeDriver = driver
         activeSyncEngine = driver.makeSyncEngine()
+        // Capability-gated bonding: the engine fires this only when the ring's device-support
+        // reply advertises supportBlePair (Colmi R09 and newer). See docs/qring-ble-adoption.md.
+        activeSyncEngine?.setOnBondRequested { bondActiveDevice() }
         updateState {
             copy(
                 activeDeviceType = coordinator.deviceType,
@@ -784,16 +854,15 @@ class RingBLEClient(private val context: Context) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         bluetoothGatt = gatt
-                        // Do NOT create an OS-level bond. The 56ff protocol is unencrypted
-                        // (verified in the official SDK's SampleGattAttributes — no auth on
-                        // 33f3/33f4), so bonding is not required to read/write characteristics.
-                        // We intentionally skip it because bonding:
-                        //   (a) makes the OS treat the ring as a connected BT device, which is
-                        //       what lights up the phone's status-bar Bluetooth icon, and
-                        //   (b) previously ran here racing requestMtu()/discoverServices(),
-                        //       a known Android instability that caused the frequent disconnects.
-                        // Jring links are kept alive by the 0x3A keepalive; Colmi links idle
-                        // (official behavior) and the watchdog reconnects when they drop.
+                        // Do NOT bond *here*. Bonding at connect time raced
+                        // requestMtu()/discoverServices() — a known Android instability that
+                        // caused frequent disconnects. Instead we bond later, and only when the
+                        // ring asks: the Colmi engine reads the device-support bitfield during
+                        // startup and, if supportBlePair is set (R09 and newer), calls back into
+                        // bondActiveDevice() — well after discovery, matching the official QRing
+                        // app (which also bonds post-discovery, gated on supportBlePair). Rings
+                        // that don't advertise the bit (jring 56ff, older R02) are never bonded,
+                        // preserving prior behaviour. See docs/qring-ble-adoption.md §Pairing.
                         // Request a high-priority connection interval, matching the official app
                         // (BluetoothLeService.requestConnectionPriority(1) on connect).
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)

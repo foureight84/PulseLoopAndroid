@@ -135,6 +135,11 @@ interface RingSyncEngine {
      *  the decoded-event stream doesn't carry (e.g. Colmi pref-read replies) hook in here. */
     fun handleRawNotify(data: ByteArray) {}
 
+    /** Register a callback the engine invokes when the connected ring reports that it wants an
+     *  OS-level Bluetooth bond (Colmi `supportBlePair`). The client owns the actual
+     *  [android.bluetooth.BluetoothDevice.createBond] call. No-op if unsupported. */
+    fun setOnBondRequested(callback: () -> Unit) {}
+
     /** Store the user's profile *without* sending — the connect handshake sends it. No-op if unsupported. */
     fun setUserProfile(profile: UserProfileValues) {}
 

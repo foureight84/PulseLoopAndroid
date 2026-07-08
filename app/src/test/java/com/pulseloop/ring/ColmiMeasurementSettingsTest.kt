@@ -58,7 +58,7 @@ class ColmiMeasurementSettingsTest {
         engine.runStartup()
         engine.destroy()
 
-        val autoHr = writer.commands.first { it[0] == 0x16.toByte() && it.size == 4 && it[1] == 0x02.toByte() }
+        val autoHr = writer.commands.first { it[0] == 0x16.toByte() && it.size == 8 && it[1] == 0x02.toByte() }
         assertEquals(0x01.toByte(), autoHr[2])       // enabled
         assertEquals(15.toByte(), autoHr[3])         // configured interval
         val stress = writer.commands.first { it[0] == 0x36.toByte() && it[1] == 0x02.toByte() }
@@ -190,5 +190,35 @@ class ColmiMeasurementSettingsTest {
     fun `colmi declares the measurement interval capability, jring does not`() {
         assertTrue(ColmiCoordinator.capabilities.contains(WearableCapability.MEASUREMENT_INTERVAL))
         assertTrue(!JringCoordinator.capabilities.contains(WearableCapability.MEASUREMENT_INTERVAL))
+    }
+
+    // MARK: Capability-gated bonding (QRing supportBlePair)
+
+    @Test
+    fun `startup reads the device-support capability bitfield`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.setMeasurementSettings(null)
+        engine.runStartup()
+        engine.destroy()
+
+        assertTrue(writer.commands.any { it[0] == 0x3C.toByte() })  // DeviceSupportReq
+    }
+
+    @Test
+    fun `supportBlePair reply requests a bond, non-support reply does not`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        var bondRequests = 0
+        engine.setOnBondRequested { bondRequests++ }
+
+        // Feature byte with bit 3 set → bond wanted.
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3C, 0x08)))
+        assertEquals(1, bondRequests)
+
+        // Feature byte without bit 3 → no bond.
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3C, 0x07)))
+        assertEquals(1, bondRequests)
+        engine.destroy()
     }
 }
