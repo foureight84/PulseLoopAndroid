@@ -37,6 +37,9 @@ class SleepStreamController(
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var job: Job? = null
 
+    /** Night mode active: charging + in window. FGS/wakelock/reconnect run whenever
+     *  this is true, independent of whether the ring is connected yet. */
+    private var active = false
     /** True only when THIS controller opened the stream — never stop one we don't own. */
     private var streaming = false
     private var ticksSinceSpO2 = 0
@@ -66,12 +69,12 @@ class SleepStreamController(
     fun destroy() {
         job?.cancel()
         job = null
-        if (streaming) {
-            coordinator.stopWorkoutHeartRate()
+        if (streaming) coordinator.stopWorkoutHeartRate()
+        if (active) {
             SleepForegroundService.stop(context)
             if (wakeLock.isHeld) wakeLock.release()
-            streaming = false
         }
+        streaming = false; active = false
     }
 
     private suspend fun tick() {
@@ -83,25 +86,30 @@ class SleepStreamController(
             return
         }
 
-        val gatesPass = inNightWindow() && coordinator.isConnected && isCharging()
+        // "Night mode" gates on charging + window ONLY — NOT connection. Overnight
+        // the ring may be off (on its charger) and put on mid-night; if we gated on
+        // isConnected, the FGS/wakelock/reconnect machinery would never run and the
+        // phone would sit in Doze, never reconnecting until the user woke and opened
+        // the app (observed 2026-07-08: ring on at 4am, no link until 09:58). So we
+        // enter night mode on charging+window, hold the process/CPU awake, and
+        // ACTIVELY reconnect; streaming begins the moment the ring is connected.
+        val nightMode = inNightWindow() && isCharging()
 
-        if (gatesPass && !streaming) {
-            SleepForegroundService.start(context)  // keep the process alive through Doze
-            if (!wakeLock.isHeld) wakeLock.acquire(11 * 3_600_000L)  // cap: whole window
-            coordinator.startWorkoutHeartRate()
-            streaming = true
-            ticksSinceSpO2 = 0
+        if (nightMode && !active) {
+            SleepForegroundService.start(context)
+            if (!wakeLock.isHeld) wakeLock.acquire(11 * 3_600_000L)
+            active = true
             streamStartedAt = System.currentTimeMillis()
-        } else if (!gatesPass && streaming) {
-            coordinator.stopWorkoutHeartRate()
+        } else if (!nightMode && active) {
+            if (streaming) coordinator.stopWorkoutHeartRate()
             SleepForegroundService.stop(context)
             if (wakeLock.isHeld) wakeLock.release()
-            streaming = false
-            // Night ended. If it ended because the phone was UNPLUGGED (not because
-            // the clock left the window or the ring dropped), that's the wake signal —
-            // screen the span we just streamed, right now.
+            val wasStreaming = streaming
+            active = false; streaming = false
+            // Unplug = wake signal: screen the span if we actually streamed >=30min.
             val start = streamStartedAt
-            if (!isCharging() && start > 0 && System.currentTimeMillis() - start > 30 * 60_000L) {
+            if (wasStreaming && !isCharging() && start > 0 &&
+                System.currentTimeMillis() - start > 30 * 60_000L) {
                 scope.launch {
                     try { onNightEnded?.invoke(start, System.currentTimeMillis()) }
                     catch (e: Exception) { android.util.Log.e("SleepStream", "night-end screen failed", e) }
@@ -109,17 +117,24 @@ class SleepStreamController(
             }
         }
 
-        if (streaming) {
-            // Stream watchdog — the missing piece. startWorkoutHeartRate() opens the
-            // 0x14 stream once, but the ring silently stops it after hiccups/inactivity;
-            // without a re-kick the controller believed it was streaming while the ring
-            // sat idle, producing bursty ~5-15min data instead of 1 Hz (observed
-            // 2026-07-06). If no HR sample has landed for STREAM_STALE_MS, re-issue the
-            // start command — the same self-heal the workout tick already does.
-            val sinceHr = System.currentTimeMillis() - coordinator.latestHRAt
-            if (coordinator.isConnected && sinceHr > STREAM_STALE_MS) {
+        if (active && !coordinator.isConnected) {
+            // Awake + charging but no ring: actively pull it back (ring just put on,
+            // or Doze dropped the link). isConnected stays false until it lands.
+            coordinator.reconnectIfNeeded()
+            streaming = false
+            return
+        }
+
+        if (active && coordinator.isConnected) {
+            if (!streaming) {
                 coordinator.startWorkoutHeartRate()
+                streaming = true
+                ticksSinceSpO2 = 0
             }
+            // Stream watchdog — the ring silently stops the 0x14 stream after
+            // hiccups; re-kick if no sample for STREAM_STALE_MS.
+            val sinceHr = System.currentTimeMillis() - coordinator.latestHRAt
+            if (sinceHr > STREAM_STALE_MS) coordinator.startWorkoutHeartRate()
 
             ticksSinceSpO2++
             if (ticksSinceSpO2 >= SPO2_EVERY_TICKS) {

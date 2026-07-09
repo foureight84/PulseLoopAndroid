@@ -190,6 +190,10 @@ class RingSyncCoordinator(
         engine?.runStartup()
     }
 
+    /** Actively re-establish the link if it's dropped — used by the overnight
+     *  controller so a ring put on mid-night reconnects without user interaction. */
+    fun reconnectIfNeeded() = client.reconnectIfNeeded()
+
     fun findRing() {
         if (!isConnected) return
         engine?.findDevice()
