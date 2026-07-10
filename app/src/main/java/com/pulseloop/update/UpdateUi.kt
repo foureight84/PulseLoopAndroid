@@ -4,6 +4,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -15,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.pulseloop.BuildConfig
+import com.pulseloop.ui.components.MarkdownLite
 import kotlinx.coroutines.launch
 
 /**
@@ -39,7 +43,19 @@ fun UpdateDialog(info: UpdateInfo, onDismiss: () -> Unit) {
                     Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                 } else {
-                    Text(info.changelog, style = MaterialTheme.typography.bodySmall)
+                    MarkdownLite(
+                        info.changelog,
+                        modifier = Modifier
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        // Theme colors — the dialog surface follows light/dark, unlike the
+                        // coach's fixed dark cards, so the fixed PulseColors defaults would
+                        // be near-invisible on a light dialog.
+                        headingColor = MaterialTheme.colorScheme.onSurface,
+                        bodyColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        bulletColor = MaterialTheme.colorScheme.primary,
+                        boldColor = MaterialTheme.colorScheme.onSurface,
+                    )
                     error?.let {
                         Spacer(Modifier.height(8.dp))
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)

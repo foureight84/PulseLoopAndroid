@@ -159,6 +159,20 @@ class RingBLEClient(private val context: Context) {
     private var connectingStartedAt: Long = 0L
     private var watchdogJob: Job? = null
 
+    // MARK: Service-discovery gate
+    //
+    // Android permits exactly ONE outstanding GATT operation. requestMtu() starts an ATT
+    // MTU exchange; issuing discoverServices() before that exchange's callback returns makes
+    // discoverServices() come back false and be silently dropped on strict stacks (observed
+    // on realme/Android 16 with the jring 56ff: MTU negotiated to 512, but services were
+    // never discovered, the notify-CCCD write that gates CONNECTED never ran, and the connect
+    // hung until the 30s watchdog killed it). The connect handshake runs OUTSIDE the op queue,
+    // so it needs its own serialization: request the MTU, then kick off discovery from
+    // onMtuChanged (with a fallback in case that callback never arrives). This mirrors the
+    // official QRing app (BleBaseControl), which settles ~500ms then discovers, retries once
+    // after ~1000ms if rejected, and never overlaps discovery with another GATT op.
+    private val serviceDiscoveryStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
     init { startConnectionWatchdog() }
 
     // MARK: Public API
@@ -555,6 +569,7 @@ class RingBLEClient(private val context: Context) {
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         resetOpQueue()
+        serviceDiscoveryStarted.set(false)
         val coordinator = coordinators.firstOrNull { it.deviceType == deviceType } ?: JringCoordinator
         // Resolve the exact catalog model for this connection: Bluetooth identity wins over the
         // user's carousel selection; family mismatches are rejected (iOS #49 beginConnect).
@@ -854,6 +869,7 @@ class RingBLEClient(private val context: Context) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         bluetoothGatt = gatt
+                        serviceDiscoveryStarted.set(false)
                         // Do NOT bond *here*. Bonding at connect time raced
                         // requestMtu()/discoverServices() — a known Android instability that
                         // caused frequent disconnects. Instead we bond later, and only when the
@@ -866,8 +882,20 @@ class RingBLEClient(private val context: Context) {
                         // Request a high-priority connection interval, matching the official app
                         // (BluetoothLeService.requestConnectionPriority(1) on connect).
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                        gatt.requestMtu(512)
-                        gatt.discoverServices()
+                        // Request a larger MTU (helps history-sync throughput), then discover
+                        // services ONLY after the MTU exchange completes — never overlap the two
+                        // (see serviceDiscoveryStarted). Discovery is kicked off from onMtuChanged;
+                        // if requestMtu() is rejected outright, or its callback never arrives,
+                        // fall back to discovering anyway so the connect can't hang.
+                        val mtuRequested = try { gatt.requestMtu(512) } catch (_: Exception) { false }
+                        if (!mtuRequested) {
+                            startServiceDiscovery(gatt)
+                        } else {
+                            scope.launch {
+                                delay(MTU_DISCOVERY_FALLBACK_MS)
+                                if (gatt === bluetoothGatt) startServiceDiscovery(gatt)
+                            }
+                        }
                     } else {
                         updateState { copy(lastError = "GATT connect failed: $status") }
                         handleDisconnect(gatt)
@@ -1119,7 +1147,36 @@ class RingBLEClient(private val context: Context) {
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            // No-op for Phase 2; MTU negotiation may be added later
+            if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
+            // The MTU exchange has retired — the single-outstanding-op slot is free, so it is
+            // now safe to discover services (status is ignored: even a failed negotiation frees
+            // the slot, and discovery must proceed either way).
+            startServiceDiscovery(gatt)
+        }
+    }
+
+    /**
+     * Begin service discovery exactly once per connection, off the GATT-op critical path.
+     * Called from onMtuChanged (the MTU exchange has completed) or, as a fallback, a delayed
+     * job after connect — whichever fires first wins via [serviceDiscoveryStarted]. A small
+     * settle delay before discovery, plus one retry if the stack rejects it, mirrors the
+     * official QRing app (BleBaseControl: waitFor(500) → discoverServices, waitFor(1000) → retry).
+     */
+    private fun startServiceDiscovery(gatt: BluetoothGatt) {
+        if (!serviceDiscoveryStarted.compareAndSet(false, true)) return
+        scope.launch {
+            delay(SERVICE_DISCOVERY_SETTLE_MS)
+            if (gatt !== bluetoothGatt) return@launch
+            if (gatt.discoverServices()) return@launch
+            // Rejected at issue (transient busy state) — retry once after a longer pause.
+            Log.w("RingBLEClient", "discoverServices() rejected — retrying")
+            delay(SERVICE_DISCOVERY_RETRY_MS)
+            if (gatt !== bluetoothGatt) return@launch
+            if (!gatt.discoverServices()) {
+                // Still rejected: leave the CONNECTING watchdog to time the attempt out and
+                // retry from a fresh connectGatt rather than sitting half-open forever.
+                Log.w("RingBLEClient", "discoverServices() rejected twice — connect will time out")
+            }
         }
     }
 
@@ -1182,6 +1239,13 @@ class RingBLEClient(private val context: Context) {
         private const val LINK_STALE_MS = 50_000L
         /** A CONNECTING attempt that hasn't completed in this long is retried from scratch. */
         private const val CONNECT_TIMEOUT_MS = 30_000L
+        /** Settle delay after the MTU exchange before discovering services (official app: waitFor(500)). */
+        private const val SERVICE_DISCOVERY_SETTLE_MS = 500L
+        /** Pause before re-issuing a stack-rejected discoverServices() (official app: waitFor(1000)). */
+        private const val SERVICE_DISCOVERY_RETRY_MS = 1_000L
+        /** If the onMtuChanged callback never arrives, discover services anyway after this long.
+         *  Comfortably inside CONNECT_TIMEOUT_MS so a stuck MTU exchange still leaves time to sync. */
+        private const val MTU_DISCOVERY_FALLBACK_MS = 3_000L
         /** Unattended reconnect attempts before giving up until user action / app foreground
          *  (official QRing app: maxReconnect = 10). */
         private const val MAX_RECONNECT_ATTEMPTS = 10
