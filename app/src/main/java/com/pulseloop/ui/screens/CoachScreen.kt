@@ -32,16 +32,13 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.coach.attachments.CoachAttachmentRef
 import kotlinx.coroutines.launch
 import com.pulseloop.coach.attachments.CoachAttachmentStore
+import com.pulseloop.ui.components.MarkdownLite
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.CoachViewModel
 
@@ -195,55 +192,6 @@ private fun MessageBubble(msg: CoachViewModel.ChatMessage) {
                 }
             }
         }
-    }
-}
-
-/**
- * Minimal markdown for assistant replies: `**bold**` inline, `- `/`* ` bullet lines with purple
- * dots, `## ` headings as semibold lines. Full rendering (tables, inline charts) is a follow-up.
- */
-@Composable
-private fun MarkdownLite(text: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        text.split("\n").forEach { rawLine ->
-            val line = rawLine.trimEnd()
-            when {
-                line.isBlank() -> Spacer(Modifier.height(2.dp))
-                line.startsWith("#") -> Text(
-                    line.trimStart('#', ' '),
-                    fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary,
-                )
-                line.startsWith("- ") || line.startsWith("* ") || line.startsWith("• ") -> Row {
-                    Box(
-                        Modifier
-                            .padding(top = 7.dp, end = 8.dp)
-                            .size(5.dp)
-                            .clip(CircleShape)
-                            .background(PulseColors.accent),
-                    )
-                    Text(boldSpans(line.substring(2)), fontSize = 14.sp, lineHeight = 20.sp, color = PulseColors.textSecondary)
-                }
-                else -> Text(boldSpans(line), fontSize = 14.sp, lineHeight = 20.sp, color = PulseColors.textSecondary)
-            }
-        }
-    }
-}
-
-/** Renders `**bold**` runs semibold in the primary text color. */
-private fun boldSpans(line: String): AnnotatedString = buildAnnotatedString {
-    var rest = line
-    while (true) {
-        val start = rest.indexOf("**")
-        val end = if (start >= 0) rest.indexOf("**", start + 2) else -1
-        if (start < 0 || end < 0) {
-            append(rest)
-            return@buildAnnotatedString
-        }
-        append(rest.substring(0, start))
-        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)) {
-            append(rest.substring(start + 2, end))
-        }
-        rest = rest.substring(end + 2)
     }
 }
 
