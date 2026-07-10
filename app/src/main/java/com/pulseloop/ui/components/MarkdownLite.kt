@@ -77,7 +77,7 @@ private val CODE_RE = Regex("""`([^`]+)`""")
  * first (so their contents can still carry `**bold**`), then bold the `**…**` runs. Bare URLs
  * are left untouched — dropping them would hide the changelog's "Full Changelog" link target.
  */
-private fun mdInline(raw: String, boldColor: Color): AnnotatedString {
+internal fun mdInline(raw: String, boldColor: Color): AnnotatedString {
     val line = raw
         .replace(LINK_RE) { it.groupValues[1] }
         .replace(CODE_RE) { it.groupValues[1] }

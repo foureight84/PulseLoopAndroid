@@ -83,7 +83,11 @@ class RingBLEClient(private val context: Context) {
     private val bluetoothAdapter: BluetoothAdapter = bluetoothManager.adapter
     private val scanner: BluetoothLeScanner? = bluetoothAdapter.bluetoothLeScanner
 
-    private var bluetoothGatt: BluetoothGatt? = null
+    // @Volatile: written on the binder thread (onConnectionStateChange) and on Main (connect
+    // teardown), and read from both — including the connect-handshake identity guards
+    // (gatt === bluetoothGatt) that gate MTU-fallback and service discovery. Volatile keeps
+    // those cross-thread reads from seeing a stale reference.
+    @Volatile private var bluetoothGatt: BluetoothGatt? = null
     private var discoveredPeripherals: MutableMap<String, BluetoothDevice> = mutableMapOf()
     // Advertised name of the device we're connecting to, captured at connect time so it can be
     // persisted as the device's display name (the connect callbacks otherwise only know the MAC).
