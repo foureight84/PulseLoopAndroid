@@ -256,6 +256,12 @@ class ColmiSyncEngine(
                     sleepOnlyWatchdogJob?.cancel(); sleepOnlyWatchdogJob = null
                     return
                 }
+                // Only the pipeline's own SLEEP stage should advance to HRV. Ignore a stray sleep
+                // completion that arrives when we're not on SLEEP — e.g. a standalone reply that
+                // landed after a full sync started (startHistorySync cleared sleepOnlyActive), or a
+                // late reply after the watchdog already skipped SLEEP. Otherwise it jumps/duplicates
+                // the pipeline (ACTIVITY→HRV, skipping HR/STRESS/SPO2, or a second HRV request).
+                if (stage != Stage.SLEEP) return
                 stage = Stage.HRV; daysAgo = 0; requestHRV(); armWatchdog()
             }
             ColmiCommandID.BIG_DATA_TEMPERATURE -> {

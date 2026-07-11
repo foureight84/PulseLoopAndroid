@@ -63,12 +63,29 @@ class ColmiSleepSyncTest {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
         engine.runStartup()               // sleepOnlyActive stays false; stage in pipeline
-        val countAfterStartup = writer.commands.size
+        engine.handleBigDataComplete(ColmiCommandID.BIG_DATA_SPO2)   // drive the pipeline onto SLEEP
+        val countAfterSleepRequest = writer.commands.size
 
         engine.handleBigDataComplete(ColmiCommandID.BIG_DATA_SLEEP)  // normal pipeline sleep→hrv
 
         assertTrue("HRV request should be enqueued after in-pipeline sleep",
-            writer.commands.size > countAfterStartup)
+            writer.commands.size > countAfterSleepRequest)
+        engine.destroy()
+    }
+
+    @Test
+    fun `a stray sleep completion off the SLEEP stage does not jump the pipeline`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.runStartup()               // stage = ACTIVITY, sleepOnlyActive = false
+        val countAfterStartup = writer.commands.size
+
+        // A standalone sleep reply that landed after a full sync started (or a late reply after the
+        // watchdog skipped SLEEP): must NOT advance/duplicate the pipeline into HRV.
+        engine.handleBigDataComplete(ColmiCommandID.BIG_DATA_SLEEP)
+
+        assertEquals("stray sleep completion must not enqueue anything",
+            countAfterStartup, writer.commands.size)
         engine.destroy()
     }
 

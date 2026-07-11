@@ -646,10 +646,13 @@ class CoachViewModel(
                 } else {
                     ChatMessage("assistant", result.assistant.plainText)
                 }
+                // The red error bubble (above) already carries the code + reason; don't also set
+                // `error`, or CoachScreen renders a duplicate "Error: <code>" footer for the same
+                // failure. `error` stays null here and is reserved for the catch-block path below,
+                // which shows a plain (non-error-bubble) apology and needs the footer.
                 _state.update { it.copy(
                     messages = it.messages + reply,
                     isThinking = false,
-                    error = turnError?.code,
                 ) }
             } catch (e: Exception) {
                 _state.update { it.copy(
