@@ -42,10 +42,15 @@ import com.pulseloop.ui.viewmodels.SleepViewModel
 fun SleepScreen(
     navController: androidx.navigation.NavController? = null,
     viewModel: SleepViewModel? = null,
+    // Invoked once when the screen opens: triggers a dedicated on-demand sleep sync (QRing
+    // parity) so opening this screen actively pulls last night's sleep instead of relying on
+    // the background full-sync's SLEEP stage. No-op when disconnected / unsupported.
+    onOpen: () -> Unit = {},
     // Heights of the glass top/bottom bars this screen scrolls under (0 when standalone).
     topBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
     bottomBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
+    LaunchedEffect(Unit) { onOpen() }
     val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(SleepViewModel.SleepState()) })
 
     LazyColumn(

@@ -94,6 +94,13 @@ data class UserProfileValues(
 interface RingSyncEngine {
     fun runStartup()
     fun handle(event: RingDecodedEvent)
+
+    /** On-demand, standalone sleep fetch — request just the sleep record without running the
+     *  whole history pipeline (which buries sleep behind activity/HR/stress/SpO₂ and can lose it
+     *  to a watchdog stage-skip). Mirrors the official QRing app, which fires a dedicated sleep
+     *  request when its sleep screen opens. No-op on devices whose history sync isn't staged this
+     *  way (jring fetches sleep in one bulk history request, so it has nothing to decouple). */
+    fun syncSleepNow() {}
     fun startHeartRate()
     fun stopHeartRate()
     fun measureHeartRateSpot() { startHeartRate() }

@@ -208,6 +208,18 @@ class RingSyncCoordinator(
         runStartupSequence()
     }
 
+    /**
+     * On-demand, sleep-only sync (QRing-style): fetch just the sleep record without running the
+     * whole history pipeline. Wired to the Sleep screen opening so a user who wants last night's
+     * sleep gets a dedicated request instead of depending on the full sync's SLEEP stage
+     * surviving four earlier stages. No-op when disconnected, or on rings that fetch sleep in
+     * bulk (jring).
+     */
+    fun syncSleepNow() {
+        if (!isConnected) return
+        engine?.syncSleepNow()
+    }
+
     /** Pull-to-refresh entry point. */
     suspend fun pullToRefresh() {
         if (isConnected) {

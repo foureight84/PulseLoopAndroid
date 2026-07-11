@@ -146,6 +146,13 @@ class RingBLEClient(private val context: Context) {
     private val opQueue = ArrayDeque<GattOp>()
     private var inFlightOp: GattOp? = null
 
+    // Consecutive GATT ops that failed to issue (writeCharacteristic == false) or never got a
+    // completion callback. A run of these means the framework's single-operation slot is wedged
+    // — retrying into it just spins — so once the run crosses OP_FAILURE_RECONNECT_THRESHOLD we
+    // force a reconnect, the only thing that clears mDeviceBusy. Reset on any successful
+    // completion. Guarded by opLock. See docs/colmi-sleep-sync-diagnosis.md.
+    private var consecutiveOpFailures = 0
+
     // MARK: Connection state
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -715,6 +722,42 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
+    /** A log label that survives R8 minification (release logs showed only the obfuscated "J").
+     *  For a command write it embeds the command byte, so a dropped sleep request reads
+     *  `cmd:0x27` instead of an opaque class name. */
+    private fun opLabel(op: GattOp): String = when (op) {
+        is GattOp.CommandWrite -> "cmd:0x%02x".format(if (op.data.isNotEmpty()) op.data[0].toInt() and 0xFF else 0)
+        is GattOp.Read -> "read"
+        is GattOp.DescriptorWrite -> "cccd"
+    }
+
+    /** Record a dropped/timed-out op and, if the run of failures means the GATT slot is wedged,
+     *  kick a reconnect. Returns true when recovery was triggered — the caller must then stop
+     *  pumping, since the queue is being torn down. */
+    private fun noteOpFailureAndMaybeRecover(): Boolean {
+        val wedged = synchronized(opLock) {
+            consecutiveOpFailures++
+            if (consecutiveOpFailures >= OP_FAILURE_RECONNECT_THRESHOLD) {
+                consecutiveOpFailures = 0  // reset in-lock so a concurrent failure can't re-trigger
+                true
+            } else false
+        }
+        if (wedged) recoverWedgedLink()
+        return wedged
+    }
+
+    /** Clear the failure run after any successful GATT completion (the stack is responsive). */
+    private fun resetOpFailures() = synchronized(opLock) { consecutiveOpFailures = 0 }
+
+    /** The single-op slot is wedged: drop the queue and reconnect from scratch to clear the
+     *  Android stack's stuck busy flag, instead of endlessly dropping commands into it. Mirrors
+     *  the official SDKs, which reset the link on terminal write failure. */
+    private fun recoverWedgedLink() {
+        Log.w("RingBLEClient", "GATT op slot wedged — forcing reconnect to clear it")
+        resetOpQueue()
+        scope.launch { forceReconnect() }
+    }
+
     private fun pumpOps() {
         while (true) {
             val gatt = bluetoothGatt ?: return
@@ -738,10 +781,15 @@ class RingBLEClient(private val context: Context) {
                     } else {
                         val target = if (op.useCommandChannel) commandChar ?: wChar else wChar
                         target.value = op.data
-                        PulseEventBus.publishBlocking(
-                            PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
-                                RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
-                        )
+                        // Publish the outgoing packet once, on the first issue attempt only — a
+                        // retry storm used to log 200 duplicate CommandAcks, flooding the 200-entry
+                        // diagnostics ring buffer and evicting the real reply packets.
+                        if (op.attempts == 0) {
+                            PulseEventBus.publishBlocking(
+                                PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
+                                    RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
+                            )
+                        }
                         gatt.writeCharacteristic(target)
                     }
                 }
@@ -760,7 +808,11 @@ class RingBLEClient(private val context: Context) {
                 scope.launch {
                     delay(OP_TIMEOUT_MS)
                     if (inFlightOp === op) {
-                        Log.w("RingBLEClient", "GATT op ACK timed out — unblocking queue")
+                        Log.w("RingBLEClient", "GATT op ACK timed out — unblocking queue: ${opLabel(op)}")
+                        // A lost completion callback leaves the framework slot busy: don't just
+                        // free our slot and pump the next op into a still-busy stack (that is the
+                        // spin-and-drop loop). Escalate to a reconnect once enough pile up.
+                        if (noteOpFailureAndMaybeRecover()) return@launch
                         completeOp { it === op }  // never retire a successor issued meanwhile
                     }
                 }
@@ -775,14 +827,17 @@ class RingBLEClient(private val context: Context) {
             if (op.attempts < MAX_OP_ATTEMPTS - 1) {
                 op.attempts++
                 synchronized(opLock) { opQueue.addFirst(op) }
-                Log.w("RingBLEClient", "GATT op rejected at issue — retrying: ${op::class.simpleName}")
+                Log.w("RingBLEClient", "GATT op rejected at issue — retrying (${op.attempts}/$MAX_OP_ATTEMPTS): ${opLabel(op)}")
                 scope.launch {
                     delay(OP_RETRY_DELAY_MS)
                     pumpOps()
                 }
                 return
             }
-            Log.w("RingBLEClient", "GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${op::class.simpleName}")
+            Log.w("RingBLEClient", "GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${opLabel(op)}")
+            // The slot may be wedged — escalate to a reconnect rather than pump the next op into
+            // the same busy stack (the tear-down aborts the loop).
+            if (noteOpFailureAndMaybeRecover()) return
             // Loop on to the next queued op.
         }
     }
@@ -1008,6 +1063,7 @@ class RingBLEClient(private val context: Context) {
         ) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT read completed — link is alive
+            resetOpFailures()
             // Retire the in-flight op regardless of payload, before any early return —
             // but only if it IS the read this callback answers (a stale post-timeout ACK
             // must not retire the op that was issued after it).
@@ -1036,6 +1092,7 @@ class RingBLEClient(private val context: Context) {
         ) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
+            resetOpFailures()  // a real completion — the stack is responsive again
             completeOp { it is GattOp.CommandWrite }
         }
 
@@ -1099,6 +1156,7 @@ class RingBLEClient(private val context: Context) {
         ) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // descriptor ACK — link is alive
+            resetOpFailures()
             // Retire the in-flight op before any early return, so the queue drains.
             completeOp { it is GattOp.DescriptorWrite && it.descriptor === descriptor }
 
@@ -1261,10 +1319,18 @@ class RingBLEClient(private val context: Context) {
         /** Max wait for any GATT op's completion callback before unblocking the queue
          *  (prevents a stuck in-flight op stranding every subsequent operation). */
         private const val OP_TIMEOUT_MS = 4_000L
-        /** Total issue attempts for an op the stack rejects before it is dropped. */
-        private const val MAX_OP_ATTEMPTS = 3
+        /** Total issue attempts for an op the stack rejects before it is dropped. The official
+         *  QRing/JRing SDKs retry a rejected write persistently (JRing: up to ~30×) rather than
+         *  giving up after a few — a slow/high-latency link (the R10 negotiated interval=99,
+         *  latency=4) can leave the single-op slot briefly busy across several attempts. */
+        private const val MAX_OP_ATTEMPTS = 6
         /** Pause before re-issuing a stack-rejected op (lets a transient busy state clear). */
-        private const val OP_RETRY_DELAY_MS = 150L
+        private const val OP_RETRY_DELAY_MS = 200L
+        /** Consecutive dropped/timed-out ops that mean the framework's single-op slot is wedged
+         *  (mDeviceBusy stuck true after a lost completion callback). Retrying into it only spins,
+         *  so we force a reconnect — the one thing that clears the flag — instead of silently
+         *  dropping commands (which is how the sleep/history request went missing on the R10). */
+        private const val OP_FAILURE_RECONNECT_THRESHOLD = 3
         /** Default bound for [awaitOpsFlushed]. */
         private const val OPS_FLUSH_TIMEOUT_MS = 10_000L
         /** Max wait for the ring's UNBOND_ACK after a forget before forcing teardown. */
