@@ -161,11 +161,19 @@ private fun MessageBubble(msg: CoachViewModel.ChatMessage) {
         Modifier.fillMaxWidth(),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
+        val errorColor = Color(0xFFF87171)
         Column(
             Modifier
                 .widthIn(max = if (isUser) 300.dp else 360.dp)
                 .clip(RoundedCornerShape(24.dp))
-                .background(if (isUser) PulseColors.accent else PulseColors.card)
+                .background(
+                    when {
+                        isUser -> PulseColors.accent
+                        msg.isError -> errorColor.copy(alpha = 0.12f)
+                        else -> PulseColors.card
+                    }
+                )
+                .then(if (msg.isError) Modifier.border(1.dp, errorColor.copy(alpha = 0.5f), RoundedCornerShape(24.dp)) else Modifier)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -185,10 +193,10 @@ private fun MessageBubble(msg: CoachViewModel.ChatMessage) {
                 }
             }
             if (msg.text.isNotBlank()) {
-                if (isUser) {
-                    Text(msg.text, fontSize = 14.sp, lineHeight = 20.sp, color = Color.White)
-                } else {
-                    MarkdownLite(msg.text)
+                when {
+                    isUser -> Text(msg.text, fontSize = 14.sp, lineHeight = 20.sp, color = Color.White)
+                    msg.isError -> Text(msg.text, fontSize = 14.sp, lineHeight = 20.sp, color = errorColor)
+                    else -> MarkdownLite(msg.text)
                 }
             }
         }

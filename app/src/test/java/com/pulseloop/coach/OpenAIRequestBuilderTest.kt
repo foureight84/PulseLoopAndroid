@@ -58,4 +58,26 @@ class OpenAIRequestBuilderTest {
         assertEquals(setOf("reasoning"), params.keys)
         assertEquals("medium", params["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
     }
+
+    @Test
+    fun testReasoningGatedForNonReasoningModels() {
+        // A set effort must NOT be sent to models that reject `reasoning` — the ungated combo
+        // (non-reasoning model + effort) otherwise fails every coach turn (issue #19).
+        assertTrue(OpenAIRequestBuilder.reasoningParams("high", "gpt-4o").isEmpty())
+        assertTrue(OpenAIRequestBuilder.reasoningParams("high", "gpt-4o-mini").isEmpty())
+        assertTrue(OpenAIRequestBuilder.reasoningParams("medium", "gpt-3.5-turbo").isEmpty())
+        assertTrue(OpenAIRequestBuilder.reasoningParams("low", "chatgpt-4o-latest").isEmpty())
+        // OpenRouter vendor prefix is stripped before matching.
+        assertTrue(OpenAIRequestBuilder.reasoningParams("high", "openai/gpt-4o").isEmpty())
+    }
+
+    @Test
+    fun testReasoningAllowedForReasoningModels() {
+        // Reasoning models (and unknown/future slugs) still carry the effort when set.
+        assertEquals("high", OpenAIRequestBuilder.reasoningParams("high", "gpt-5.4")["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
+        assertEquals(setOf("reasoning"), OpenAIRequestBuilder.reasoningParams("medium", "gpt-5.5").keys)
+        assertEquals(setOf("reasoning"), OpenAIRequestBuilder.reasoningParams("low", "o3-mini").keys)
+        // Null effort is still omitted regardless of model.
+        assertTrue(OpenAIRequestBuilder.reasoningParams(null, "gpt-5.4").isEmpty())
+    }
 }

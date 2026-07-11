@@ -588,6 +588,9 @@ class CoachViewModel(
         val text: String,
         /** Image attachments on a user turn (iOS #31); thumbnails render from the stored files. */
         val attachments: List<com.pulseloop.coach.attachments.CoachAttachmentRef> = emptyList(),
+        /** A failed turn — render as a distinct error bubble showing the real provider error
+         *  (code + reason) instead of the generic fallback. See [sendMessage]. */
+        val isError: Boolean = false,
     )
 
     private val _state = MutableStateFlow(CoachState(
@@ -629,9 +632,21 @@ class CoachViewModel(
                     userText, packet, priorMessages,
                     userImages = attachmentPayloads(attachments),
                 )
+                // A failed turn returns a FIXED fallback string in `result.assistant`; showing
+                // only that made every failing question look like "the same answer every time"
+                // and hid the real cause (e.g. a model the key can't access, or a `reasoning`
+                // field a non-reasoning model rejects). Surface `result.error` instead so the
+                // user sees the actual provider code + reason and can act on it.
+                val turnError = result.error
+                val reply = if (turnError != null) {
+                    ChatMessage("assistant", turnError.plainText, isError = true)
+                } else {
+                    ChatMessage("assistant", result.assistant.plainText)
+                }
                 _state.update { it.copy(
-                    messages = it.messages + ChatMessage("assistant", result.assistant.plainText),
+                    messages = it.messages + reply,
                     isThinking = false,
+                    error = turnError?.code,
                 ) }
             } catch (e: Exception) {
                 _state.update { it.copy(
