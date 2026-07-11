@@ -588,6 +588,9 @@ class CoachViewModel(
         val text: String,
         /** Image attachments on a user turn (iOS #31); thumbnails render from the stored files. */
         val attachments: List<com.pulseloop.coach.attachments.CoachAttachmentRef> = emptyList(),
+        /** A failed turn — render as a distinct error bubble showing the real provider error
+         *  (code + reason) instead of the generic fallback. See [sendMessage]. */
+        val isError: Boolean = false,
     )
 
     private val _state = MutableStateFlow(CoachState(
@@ -615,7 +618,10 @@ class CoachViewModel(
         viewModelScope.launch {
             try {
                 val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db)
-                val prior = _state.value.messages.dropLast(1)
+                // Drop error bubbles: they're app-generated diagnostics (a provider HTTP error),
+                // not real assistant turns. Replaying them as assistant history would feed the
+                // model garbage like "Coach error · HTTP 404 …" as if it had said it.
+                val prior = _state.value.messages.dropLast(1).filter { !it.isError }
                 // Replay images only on the most recent prior user turn that has attachments,
                 // keeping context coherent without ballooning payloads with old base64.
                 val lastAttached = prior.indexOfLast { it.role == "user" && it.attachments.isNotEmpty() }
@@ -629,8 +635,23 @@ class CoachViewModel(
                     userText, packet, priorMessages,
                     userImages = attachmentPayloads(attachments),
                 )
+                // A failed turn returns a FIXED fallback string in `result.assistant`; showing
+                // only that made every failing question look like "the same answer every time"
+                // and hid the real cause (e.g. a model the key can't access, or a `reasoning`
+                // field a non-reasoning model rejects). Surface `result.error` instead so the
+                // user sees the actual provider code + reason and can act on it.
+                val turnError = result.error
+                val reply = if (turnError != null) {
+                    ChatMessage("assistant", turnError.plainText, isError = true)
+                } else {
+                    ChatMessage("assistant", result.assistant.plainText)
+                }
+                // The red error bubble (above) already carries the code + reason; don't also set
+                // `error`, or CoachScreen renders a duplicate "Error: <code>" footer for the same
+                // failure. `error` stays null here and is reserved for the catch-block path below,
+                // which shows a plain (non-error-bubble) apology and needs the footer.
                 _state.update { it.copy(
-                    messages = it.messages + ChatMessage("assistant", result.assistant.plainText),
+                    messages = it.messages + reply,
                     isThinking = false,
                 ) }
             } catch (e: Exception) {

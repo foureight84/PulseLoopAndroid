@@ -1,6 +1,6 @@
 # iOS → Android Sync Ledger
 
-Tracks which upstream iOS changes (github.com/foureight84/PulseLoop) have been evaluated
+Tracks which upstream iOS changes (github.com/saksham2001/PulseLoopiOS) have been evaluated
 and/or ported to this Android app. The goal is feature and visual parity, minus the
 intentional platform differences listed at the bottom.
 
@@ -22,10 +22,11 @@ intentional platform differences listed at the bottom.
 
 | | |
 |---|---|
+| **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `80195a6` — Merge PR #44, 2026-07-06 |
-| **Last triage date** | 2026-07-06 |
-| **Range covered** | 138 commits / 28 first-parent items, plus #48/#49/#44 (2026-07-06) |
+| **Last triaged iOS commit** | `e00c24b` — glass-UI fixup, 2026-07-10 |
+| **Last triage date** | 2026-07-10 |
+| **Range covered** | 99 commits / 15 first-parent items since `80195a6` (2026-07-10) |
 
 ---
 
@@ -35,21 +36,79 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 
 | # | iOS PR | Merged | Title | Verdict | Effort | Android commit |
 |---|--------|--------|-------|---------|--------|----------------|
-| ☑ | [#17](https://github.com/foureight84/PulseLoop/pull/17) `26a6075` | 06-24 | Colmi HR enable + activity sample idempotency | **PORT** | M | `1a4f007` |
-| ☑ | [#15](https://github.com/foureight84/PulseLoop/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
-| ☑ | [#11](https://github.com/foureight84/PulseLoop/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | `4aad39a` |
-| ☐ | [#43](https://github.com/foureight84/PulseLoop/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
-| ☐ | [#41](https://github.com/foureight84/PulseLoop/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | |
-| ☑ | [#35](https://github.com/foureight84/PulseLoop/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
-| ☑ | [#19](https://github.com/foureight84/PulseLoop/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | `f4bcd47` |
-| ☑ | [#9](https://github.com/foureight84/PulseLoop/pull/9) `cd62903` | 06-26 | Coach: multi-provider (Gemini) | **PORT** | L | `049058d`+`4d81a07` |
-| ☑ | [#22](https://github.com/foureight84/PulseLoop/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | `049058d`+`4d81a07` |
-| ☑ | [#31](https://github.com/foureight84/PulseLoop/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
-| ☐ | [#24](https://github.com/foureight84/PulseLoop/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
+| ☑ | [#17](https://github.com/saksham2001/PulseLoopiOS/pull/17) `26a6075` | 06-24 | Colmi HR enable + activity sample idempotency | **PORT** | M | `1a4f007` |
+| ☑ | [#15](https://github.com/saksham2001/PulseLoopiOS/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
+| ☑ | [#11](https://github.com/saksham2001/PulseLoopiOS/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | `4aad39a` |
+| ☐ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
+| ☐ | [#41](https://github.com/saksham2001/PulseLoopiOS/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | |
+| ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
+| ☑ | [#19](https://github.com/saksham2001/PulseLoopiOS/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | `f4bcd47` |
+| ☑ | [#9](https://github.com/saksham2001/PulseLoopiOS/pull/9) `cd62903` | 06-26 | Coach: multi-provider (Gemini) | **PORT** | L | `049058d`+`4d81a07` |
+| ☑ | [#22](https://github.com/saksham2001/PulseLoopiOS/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | `049058d`+`4d81a07` |
+| ☑ | [#31](https://github.com/saksham2001/PulseLoopiOS/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
+| ☐ | [#24](https://github.com/saksham2001/PulseLoopiOS/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
 | ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | `4aad39a` |
-| ☑ | [#48](https://github.com/foureight84/PulseLoop/pull/48) `aff8574` | 07-05 | Pairing redesign: brand tabs, ring product images, onboarding flow, shared profile/goal editors | **PORT** | L | `a38ddf5` |
-| ☑ | [#49](https://github.com/foureight84/PulseLoop/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | `de60096` |
-| ☑ | [#44](https://github.com/foureight84/PulseLoop/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | `c8efccd` |
+| ☑ | [#48](https://github.com/saksham2001/PulseLoopiOS/pull/48) `aff8574` | 07-05 | Pairing redesign: brand tabs, ring product images, onboarding flow, shared profile/goal editors | **PORT** | L | `a38ddf5` |
+| ☑ | [#49](https://github.com/saksham2001/PulseLoopiOS/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | `de60096` |
+| ☑ | [#44](https://github.com/saksham2001/PulseLoopiOS/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | `c8efccd` |
+| ☐ | [#71](https://github.com/saksham2001/PulseLoopiOS/pull/71) `4fd008a` | 07-10 | Colmi R08 ring support (catalog entry) | **PORT** | S | |
+| ☐ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** | L | |
+| ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
+| ☐ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | |
+| ☐ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | |
+| ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
+| ☐ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **PORT** | L | |
+| ☐ | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | Activity UI sync-alerts bugfix | **ADAPT** | S | |
+| ☐ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | |
+| ☐ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | |
+| ☐ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | |
+
+### 2026-07-10 triage (since #44 / `80195a6` → `e00c24b`, 99 commits / 15 first-parent)
+
+> **Port order: do these AFTER the Colmi sleep-sync fix lands.** The sleep issue
+> (see `colmi-sleep-sync-diagnosis.md`) is the priority; these ports queue behind it.
+> None of them depend on sleep, but we're sequencing deliberately so the sleep fix
+> isn't destabilised by unrelated BLE/activity churn landing at the same time.
+
+**Sleep status check (the reason this triage was run):** iOS has **NOT** addressed the
+Colmi sleep-sync reliability problem. The only Colmi `ColmiSyncEngine` change in this range
+(PR #57's `isVitalsBackfill`) adds a post-workout fast-path that *skips* sleep — sleep is
+still stage 5 of the chained pipeline, still watchdog-force-skipped when a write is dropped.
+No merged or open iOS PR decouples sleep into an independent request or fixes the
+write-queue drop. So there is nothing to port for sleep; Android leads here. See
+`colmi-sleep-sync-diagnosis.md` for the fix plan.
+
+**Relevant → port (queued behind the sleep fix), highest value first:**
+
+- **#71 Colmi R08 support** (`4fd008a`) — add R08 to the wearables catalog. Small, safe,
+  our catalog is the direct analogue of iOS's. Verify advertised-name pattern.
+- **#77 jring protocol-parity fixes** (`4241d54`) — RingBLEClient + JringSyncEngine +
+  new JringClock (+120 lines on the engine). Behavioural BLE fixes for jring; read the diff
+  carefully and port as Kotlin rules. **Do not** let this touch the Colmi path mid-sleep-fix.
+- **#57 activity-recording redesign** (`8182d8d`) — activity tracking rehaul + post-workout
+  vitals backfill (HR+SpO2 only, skips sleep) + wall-clock realtime-HR keepalive (replaces
+  the packet-count keepalive that starved when frames failed to parse — Android has the same
+  packet-count keepalive in `ColmiSyncEngine.observedRealtimeHeartRate`, worth adopting).
+- **#54 MiniMax coach provider** (`cda2e9c`) — another provider in the multi-provider coach;
+  mechanical PORT.
+- **#64 long-press reorder/hide cards** (`338226a`) — Today/Vitals card management. PORT.
+- **#65 coach transparency/context rehaul** (`4a60cfe`) — ADAPT into the Android coach.
+- **#56 TK5 ring support** (`440aaf4`) — whole new ring family (SmartHealth protocol) with
+  its own decoder/encoder/sync engine + multi-record periodic history. Large; only if we
+  want TK5 on Android. Its "periodic multi-record history" is a different sync shape worth
+  studying regardless.
+- **#61 activity UI sync-alerts** (`39b611f`), **#63 jring "HR" label** (`748e79f`),
+  **#42 coach card de-dupe** (`9633fe3`), **#74 measurement-frequency relocation** (`ea3e22d`)
+  — small UI/label ADAPTs.
+
+**Skip (iOS-only or non-portable):**
+
+- **#62 Liquid Glass UI** (`1c3808e`) + **`e00c24b` glass fixups** — iOS 26 material; Android
+  keeps its own surfaces. SKIP as a visual language (cherry-pick spacing tweaks only if a
+  specific screen regressed).
+- **#76 default coach to Apple on-device model** (`5c452c8`) — Apple Intelligence, iOS-only
+  (a standing intentional divergence). SKIP.
+- `6fdfb99` "Remove tasks folder" — repo chore. SKIP.
 
 ### 2026-07-06 design-parity sweep (screen audit → port)
 
@@ -289,18 +348,18 @@ main-thread access from a background worker, and Room calls on the right dispatc
 
 | iOS PR | Title | Note |
 |--------|-------|------|
-| [#20](https://github.com/foureight84/PulseLoop/pull/20) `6fe428f` | Perf re-architecture (event bus, decoupled persistence, memoized today-summary) | Android already built this way: `PulseEventBus` (SharedFlow), `EventPersistenceSubscriber`, `RingSyncCoordinator`, reactive `TodayViewModel` |
-| [#32](https://github.com/foureight84/PulseLoop/pull/32) `3e855ac` | 56ff low-level protocol (user profile, BP calibration, bind handshake, combined measurement, keepalive/watchdog) | This was iOS porting **Android's** work upstream — Android is the origin |
+| [#20](https://github.com/saksham2001/PulseLoopiOS/pull/20) `6fe428f` | Perf re-architecture (event bus, decoupled persistence, memoized today-summary) | Android already built this way: `PulseEventBus` (SharedFlow), `EventPersistenceSubscriber`, `RingSyncCoordinator`, reactive `TodayViewModel` |
+| [#32](https://github.com/saksham2001/PulseLoopiOS/pull/32) `3e855ac` | 56ff low-level protocol (user profile, BP calibration, bind handshake, combined measurement, keepalive/watchdog) | This was iOS porting **Android's** work upstream — Android is the origin |
 
 ## Skipped (iOS-only / docs / CI / release)
 
 | iOS PR / commit | Title | Reason |
 |--------|-------|--------|
-| [#30](https://github.com/foureight84/PulseLoop/pull/30) `c42ec85` | Apple on-device coach (FoundationModels) | iOS 26 Apple Intelligence only. Revisit if Android adopts on-device LLM (AI Edge / ML Kit). The anomaly-detection notifications inside this PR could port separately if ever wanted |
-| [#38](https://github.com/foureight84/PulseLoop/pull/38) `cc9a058` | TestFlight release config | iOS release metadata |
-| [#47](https://github.com/foureight84/PulseLoop/pull/47) [#46](https://github.com/foureight84/PulseLoop/pull/46) [#39](https://github.com/foureight84/PulseLoop/pull/39) | Release-IPA CI workflow + fixes | iOS CI |
-| [#45](https://github.com/foureight84/PulseLoop/pull/45) [#37](https://github.com/foureight84/PulseLoop/pull/37) [#28](https://github.com/foureight84/PulseLoop/pull/28) [#23](https://github.com/foureight84/PulseLoop/pull/23) | Sideloading guide, iOS-vs-Android refresh, MkDocs site, README updates | Docs |
-| [#7](https://github.com/foureight84/PulseLoop/pull/7) `c9897c9` | OSS setup (templates, SwiftLint, CI) | Repo governance; Android repo has its own |
+| [#30](https://github.com/saksham2001/PulseLoopiOS/pull/30) `c42ec85` | Apple on-device coach (FoundationModels) | iOS 26 Apple Intelligence only. Revisit if Android adopts on-device LLM (AI Edge / ML Kit). The anomaly-detection notifications inside this PR could port separately if ever wanted |
+| [#38](https://github.com/saksham2001/PulseLoopiOS/pull/38) `cc9a058` | TestFlight release config | iOS release metadata |
+| [#47](https://github.com/saksham2001/PulseLoopiOS/pull/47) [#46](https://github.com/saksham2001/PulseLoopiOS/pull/46) [#39](https://github.com/saksham2001/PulseLoopiOS/pull/39) | Release-IPA CI workflow + fixes | iOS CI |
+| [#45](https://github.com/saksham2001/PulseLoopiOS/pull/45) [#37](https://github.com/saksham2001/PulseLoopiOS/pull/37) [#28](https://github.com/saksham2001/PulseLoopiOS/pull/28) [#23](https://github.com/saksham2001/PulseLoopiOS/pull/23) | Sideloading guide, iOS-vs-Android refresh, MkDocs site, README updates | Docs |
+| [#7](https://github.com/saksham2001/PulseLoopiOS/pull/7) `c9897c9` | OSS setup (templates, SwiftLint, CI) | Repo governance; Android repo has its own |
 | `25e49fd` `577c5f3` `35d1aa7` `ee42b10` | Direct commits: docs/screenshots/tagline | Docs |
 
 ---

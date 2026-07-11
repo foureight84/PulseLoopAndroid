@@ -196,8 +196,9 @@ class CoachOrchestrator(
         textFormat: JsonObject,
         previousResponseId: String?,
     ): com.pulseloop.coach.openai.OpenAIResponse {
-        // Optional reasoning-effort hint (mirrors iOS OpenAIRequestBuilder).
-        val reasoning = OpenAIRequestBuilder.reasoningParams(flags.settings.reasoningEffort)
+        // Optional reasoning-effort hint (mirrors iOS OpenAIRequestBuilder). Gated by model so a
+        // non-reasoning model (e.g. gpt-4o) doesn't get a `reasoning` field it would reject.
+        val reasoning = OpenAIRequestBuilder.reasoningParams(flags.settings.reasoningEffort, flags.model)
         val body = JsonObject(mapOf(
             "model" to JsonPrimitive(flags.model),
             "input" to JsonArray(input),

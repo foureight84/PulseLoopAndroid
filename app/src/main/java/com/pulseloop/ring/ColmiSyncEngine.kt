@@ -49,6 +49,12 @@ class ColmiSyncEngine(
     private var daysAgo = 0
     private var syncDay = LocalDate.now(zone)
 
+    /** A standalone sleep-only request is outstanding (see [syncSleepNow]). Set true when we fire
+     *  `bigDataSleep()` outside the staged history sync; its big-data completion clears it and
+     *  must NOT advance the pipeline into HRV. Volatile: set on Main, read on the notify thread. */
+    @Volatile private var sleepOnlyActive = false
+    private var sleepOnlyWatchdogJob: Job? = null
+
     // Watchdog
     private var watchdogJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -103,6 +109,26 @@ class ColmiSyncEngine(
             writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = true))
         }
         startHistorySync()
+    }
+
+    /**
+     * On-demand sleep fetch (QRing parity): request just the sleep big-data record, off the
+     * staged history pipeline, so it can't be lost to an earlier stage's watchdog skip. The
+     * decoder emits sleep events from the reply exactly as it does during a full sync; the only
+     * difference is [handleBigDataComplete] must not advance into HRV afterwards
+     * ([sleepOnlyActive]). If a full history sync is already running it will fetch sleep itself,
+     * so this becomes a no-op then.
+     */
+    override fun syncSleepNow() {
+        if (sleepOnlyActive) return  // one already outstanding — don't double-request
+        if (stage != Stage.IDLE && stage != Stage.DONE) return  // a full sync already covers sleep
+        sleepOnlyActive = true
+        requestSleep()
+        sleepOnlyWatchdogJob?.cancel()
+        sleepOnlyWatchdogJob = scope.launch {
+            delay(watchdogTimeoutMs)
+            sleepOnlyActive = false  // reply never completed — give up quietly, no pipeline advance
+        }
     }
 
     // MARK: Measurement settings + user profile (iOS #19)
@@ -196,6 +222,10 @@ class ColmiSyncEngine(
     }
 
     private fun startHistorySync() {
+        // A full sync fetches sleep itself; cancel any standalone sleep-only request so its
+        // big-data completion doesn't short-circuit the pipeline's own SLEEP stage.
+        sleepOnlyActive = false
+        sleepOnlyWatchdogJob?.cancel(); sleepOnlyWatchdogJob = null
         daysAgo = 0
         stage = Stage.ACTIVITY
         requestActivity()
@@ -219,6 +249,19 @@ class ColmiSyncEngine(
                 stage = Stage.SLEEP; requestSleep(); armWatchdog()
             }
             ColmiCommandID.BIG_DATA_SLEEP -> {
+                // A standalone sleep-only fetch just completed: the decoder already emitted the
+                // sleep events; do NOT drive the full-sync pipeline into HRV.
+                if (sleepOnlyActive) {
+                    sleepOnlyActive = false
+                    sleepOnlyWatchdogJob?.cancel(); sleepOnlyWatchdogJob = null
+                    return
+                }
+                // Only the pipeline's own SLEEP stage should advance to HRV. Ignore a stray sleep
+                // completion that arrives when we're not on SLEEP — e.g. a standalone reply that
+                // landed after a full sync started (startHistorySync cleared sleepOnlyActive), or a
+                // late reply after the watchdog already skipped SLEEP. Otherwise it jumps/duplicates
+                // the pipeline (ACTIVITY→HRV, skipping HR/STRESS/SPO2, or a second HRV request).
+                if (stage != Stage.SLEEP) return
                 stage = Stage.HRV; daysAgo = 0; requestHRV(); armWatchdog()
             }
             ColmiCommandID.BIG_DATA_TEMPERATURE -> {

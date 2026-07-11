@@ -176,6 +176,22 @@ object OpenAIRequestBuilder {
     fun reasoningParams(effort: String?): Map<String, JsonElement> =
         if (effort.isNullOrBlank()) emptyMap()
         else mapOf("reasoning" to JsonObject(mapOf("effort" to JsonPrimitive(effort))))
+
+    /**
+     * Model-aware form: also drops `reasoning` for models that don't support it. OpenAI's legacy
+     * chat models (gpt-4o, gpt-4, gpt-3.5, chatgpt-*) reject any request carrying `reasoning` with
+     * an HTTP 400 — which, combined with the un-gated Settings combo (a non-reasoning model + a set
+     * effort), failed *every* coach turn and showed the user one identical fallback. We default to
+     * ALLOWING reasoning so unknown/future models aren't blocked, and suppress only the known
+     * non-reasoning families. The OpenRouter `vendor/model` prefix is stripped before matching.
+     */
+    fun reasoningParams(effort: String?, model: String): Map<String, JsonElement> =
+        if (!modelSupportsReasoning(model)) emptyMap() else reasoningParams(effort)
+
+    private fun modelSupportsReasoning(model: String): Boolean {
+        val slug = model.lowercase().substringAfterLast('/')  // strip OpenRouter vendor prefix
+        return !(slug.startsWith("gpt-4") || slug.startsWith("gpt-3") || slug.startsWith("chatgpt"))
+    }
 }
 
 /**

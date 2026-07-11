@@ -379,7 +379,7 @@ fun PulseLoopApp() {
             ) {
                 composable("today") { TodayScreen(navController, todayVM, coordinator, vitalsVM, sleepVM, topBarPadding = topPad, bottomBarPadding = barPad) }
                 composable("vitals") { VitalsScreen(navController = navController, viewModel = vitalsVM, coordinator = coordinator, topBarPadding = topPad, bottomBarPadding = barPad) }
-                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM, topBarPadding = topPad, bottomBarPadding = barPad) }
+                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM, onOpen = { coordinator.syncSleepNow() }, topBarPadding = topPad, bottomBarPadding = barPad) }
                 composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM, liveWorkout = liveWorkout, topBarPadding = topPad, bottomBarPadding = barPad) }
                 paddedComposable("activity_detail/{id}") { backStackEntry ->
                     val id = backStackEntry.arguments?.getString("id") ?: return@paddedComposable
