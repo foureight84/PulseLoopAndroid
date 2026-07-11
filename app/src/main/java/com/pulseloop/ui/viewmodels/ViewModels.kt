@@ -618,7 +618,10 @@ class CoachViewModel(
         viewModelScope.launch {
             try {
                 val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db)
-                val prior = _state.value.messages.dropLast(1)
+                // Drop error bubbles: they're app-generated diagnostics (a provider HTTP error),
+                // not real assistant turns. Replaying them as assistant history would feed the
+                // model garbage like "Coach error · HTTP 404 …" as if it had said it.
+                val prior = _state.value.messages.dropLast(1).filter { !it.isError }
                 // Replay images only on the most recent prior user turn that has attachments,
                 // keeping context coherent without ballooning payloads with old base64.
                 val lastAttached = prior.indexOfLast { it.role == "user" && it.attachments.isNotEmpty() }
