@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.coach.attachments.CoachAttachmentRef
@@ -53,6 +54,8 @@ import com.pulseloop.ui.viewmodels.CoachViewModel
 fun CoachScreen(
     navController: androidx.navigation.NavController? = null,
     viewModel: CoachViewModel? = null,
+    topBarPadding: Dp = 0.dp,
+    bottomBarPadding: Dp = 0.dp,
 ) {
     val state by (viewModel?.state?.collectAsState() ?: remember {
         mutableStateOf(CoachViewModel.CoachState())
@@ -66,12 +69,15 @@ fun CoachScreen(
     }
 
     Column(Modifier.fillMaxSize().background(PulseColors.background)) {
-        CoachSubHeader(onNewChat = { viewModel?.newConversation() })
-
         LazyColumn(
             modifier = Modifier.weight(1f),
             state = listState,
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            // The coach header is the frosted glass top bar (rendered by PulseLoopApp); pad the
+            // chat down by its height so messages scroll up UNDER it like every other tab.
+            contentPadding = PaddingValues(
+                start = 16.dp, end = 16.dp,
+                top = topBarPadding + 8.dp, bottom = 8.dp,
+            ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(state.messages.size) { idx ->
@@ -98,6 +104,7 @@ fun CoachScreen(
             onInputChange = { inputText = it },
             isThinking = state.isThinking,
             showChips = state.messages.count { it.role == "user" } == 0,
+            bottomBarPadding = bottomBarPadding,
             onSend = { text, staged ->
                 viewModel?.sendMessage(text, staged)
                 inputText = ""
@@ -106,14 +113,19 @@ fun CoachScreen(
     }
 }
 
-// ─────────────────────────── Sub-header ───────────────────────────
+// ─────────────────────────── Header ───────────────────────────
 
+/**
+ * Coach avatar header — the bespoke "PulseLoop Coach" identity row with a new-chat button.
+ * [PulseLoopApp] renders this as the Coach tab's frosted glass top bar, so it carries NO opaque
+ * background of its own (the caller supplies the haze material, exactly like [AppHeader]); the
+ * chat then scrolls under it.
+ */
 @Composable
-private fun CoachSubHeader(onNewChat: () -> Unit) {
+fun CoachHeader(onNewChat: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .background(PulseColors.secondaryBackground)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -218,6 +230,7 @@ private fun Composer(
     onInputChange: (String) -> Unit,
     isThinking: Boolean,
     showChips: Boolean,
+    bottomBarPadding: Dp = 0.dp,
     onSend: (String, List<CoachAttachmentRef>) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -240,11 +253,18 @@ private fun Composer(
     }
     val canSend = (inputText.isNotBlank() || staged.isNotEmpty()) && !isThinking
 
+    // Coach draws full-bleed under the bottom nav bar, so the composer must lift itself: above the
+    // keyboard while it's open, above the nav bar otherwise. max() (not sum) of the two insets
+    // keeps the composer flush to the keyboard instead of leaving a nav-bar-height gap when typing.
+    // Fixes the keyboard overlapping the input (issue #22).
+    val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val composerBottom = maxOf(bottomBarPadding, imeBottom)
+
     Column(
         Modifier
             .fillMaxWidth()
             .background(PulseColors.secondaryBackground)
-            .padding(bottom = 8.dp),
+            .padding(bottom = composerBottom + 8.dp),
     ) {
         if (showChips) {
             Row(

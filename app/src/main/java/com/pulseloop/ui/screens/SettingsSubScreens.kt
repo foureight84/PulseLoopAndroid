@@ -244,6 +244,13 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         label: String, value: String, visible: Boolean, saved: Boolean,
                         onValue: (String) -> Unit, onVisibility: () -> Unit, onSave: () -> Unit, onRemove: () -> Unit,
                     ) {
+                        // Saving an API key gave no feedback (issue #22). Flash a brief "Saved ✓"
+                        // confirmation after a save from either the button or the keyboard's Done.
+                        var justSaved by remember { mutableStateOf(false) }
+                        LaunchedEffect(justSaved) {
+                            if (justSaved) { kotlinx.coroutines.delay(2000); justSaved = false }
+                        }
+                        val save = { onSave(); justSaved = true }
                         OutlinedTextField(
                             value = value,
                             onValueChange = onValue,
@@ -261,15 +268,23 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                     )
                                 }
                             },
-                            keyboardActions = KeyboardActions(onDone = { onSave() }),
+                            keyboardActions = KeyboardActions(onDone = { if (value.isNotBlank()) save() }),
                         )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = onSave, enabled = value.isNotBlank(), modifier = Modifier.weight(1f)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Button(onClick = save, enabled = value.isNotBlank(), modifier = Modifier.weight(1f)) {
                                 Text(if (saved) "Update Key" else "Save Key")
                             }
                             if (saved) {
                                 OutlinedButton(onClick = onRemove, modifier = Modifier.weight(1f)) { Text("Remove") }
                             }
+                        }
+                        if (justSaved) {
+                            Text(
+                                "Saved ✓",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = PulseColors.success,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
                         }
                     }
 

@@ -39,9 +39,10 @@ class CoachProviderSettingsStore(context: Context) {
 
     val hasOpenRouterKey: Boolean get() = openRouterApiKey.isNotBlank()
 
-    /** Gemini model slug (see [GeminiModel] presets). */
+    /** Gemini model slug (see [GeminiModel] presets). Retired 2.x slugs are remapped to the
+     *  current rolling alias on read so no one stays stuck on a deprecated model (issue #22). */
     var geminiModel: String
-        get() = prefs.getString(KEY_GEMINI_MODEL, GeminiModel.DEFAULT.slug) ?: GeminiModel.DEFAULT.slug
+        get() = GeminiModel.migrateSlug(prefs.getString(KEY_GEMINI_MODEL, GeminiModel.DEFAULT.slug) ?: GeminiModel.DEFAULT.slug)
         set(value) { prefs.edit().putString(KEY_GEMINI_MODEL, value).apply() }
 
     /** OpenRouter `vendor/model` slug. Free-form; blank falls back to the
