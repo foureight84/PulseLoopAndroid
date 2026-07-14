@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Launcher label. Overridden to "PulseLoop Debug" in the debug source set so a debug
+         build (com.pulseloop.debug) is visually distinct from a release install on the same phone. -->
+    <string name="app_name">PulseLoop</string>
+
     <!-- Home-screen widgets (iOS #44). -->
     <string name="widget_activity_label">Daily Activity</string>
     <string name="widget_activity_description">Steps, distance, and calories with your progress rings.</string>

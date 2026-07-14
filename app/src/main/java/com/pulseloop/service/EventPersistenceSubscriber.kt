@@ -309,12 +309,12 @@ class EventPersistenceSubscriber(
         val deepMin = merged.filter { it.stageRaw == SleepStage.DEEP.name }.sumOf { it.durationMinutes }
         val score = computeSleepScore(deepMin, totalMin)
 
-        // Rewrite the full accumulated set with start minutes relative to the night start.
-        db.sleepStageBlockDao().deleteBySession(sessionId)
-        merged.forEach {
-            db.sleepStageBlockDao().insert(it.copy(startMinute = ((it.startAt - sessionStart) / 60_000L).toInt()))
-        }
-
+        // Upsert the parent session BEFORE its stage blocks. sleep_stage_blocks has a foreign key
+        // to sleep_sessions(id), and both tables are cleared on every connect (see
+        // DeviceStateChanged), so the first packet of a night finds no parent row: inserting blocks
+        // first throws FOREIGN KEY constraint failed, persist() swallows it, and the whole night is
+        // silently dropped. Parent-first matches DemoDataSeeder — which is exactly why demo sleep
+        // persists while real ring sleep did not.
         val existing = db.sleepSessionDao().ringByDay(dayStart)
         db.sleepSessionDao().upsert(
             (existing ?: SleepSessionEntity(id = sessionId, date = dayStart, startAt = sessionStart, endAt = sessionEnd, totalMinutes = totalMin, score = score)).copy(
@@ -326,6 +326,12 @@ class EventPersistenceSubscriber(
                 updatedAt = System.currentTimeMillis(),
             )
         )
+
+        // Rewrite the full accumulated set with start minutes relative to the night start.
+        db.sleepStageBlockDao().deleteBySession(sessionId)
+        merged.forEach {
+            db.sleepStageBlockDao().insert(it.copy(startMinute = ((it.startAt - sessionStart) / 60_000L).toInt()))
+        }
     }
 
     /**

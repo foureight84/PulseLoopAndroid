@@ -5,14 +5,30 @@ package com.pulseloop.coach.config
  * Preset Gemini model choices surfaced in Settings.
  */
 enum class GeminiModel(val slug: String, val blurb: String) {
-    FLASH_25("gemini-2.5-flash", "Fast & capable (default)"),
-    FLASH_20("gemini-2.0-flash", "Previous generation"),
-    PRO_25("gemini-2.5-pro", "Best reasoning");
+    // Rolling `-latest` aliases (docs: ai.google.dev/gemini-api/docs/models) point at the most
+    // recent release for each variation and are updated with a two-week notice — so the presets
+    // never go stale again (issue #22). Current generation behind them: 3.5 Flash / 3.1 Flash-Lite.
+    FLASH_LATEST("gemini-flash-latest", "Fast & capable (default)"),
+    FLASH_LITE_LATEST("gemini-flash-lite-latest", "Fastest & lowest cost"),
+    PRO_LATEST("gemini-pro-latest", "Best reasoning");
 
     val label: String get() = slug
 
     companion object {
-        val DEFAULT = FLASH_25
+        val DEFAULT = FLASH_LATEST
+
+        /**
+         * Remap a retired 2.x preset slug to the current rolling alias so a user stored on a
+         * now-deprecated model isn't stuck serving 404s (issue #22 — "model old"). Applied on
+         * read in [CoachProviderSettingsStore.geminiModel]. A slug we don't recognise (a model the
+         * user typed elsewhere, or one already current) passes through untouched.
+         */
+        fun migrateSlug(slug: String): String = when (slug) {
+            "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash" -> FLASH_LATEST.slug
+            "gemini-2.5-flash-lite", "gemini-2.0-flash-lite" -> FLASH_LITE_LATEST.slug
+            "gemini-2.5-pro", "gemini-1.5-pro" -> PRO_LATEST.slug
+            else -> slug
+        }
     }
 }
 

@@ -243,7 +243,21 @@ fun PulseLoopApp() {
                 // Shared iOS-style header (PULSELOOP eyebrow + greeting + status pill) on tab
                 // routes only; pushed screens (settings, details, pairing) bring their own bars.
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val onTabRoute = navBackStackEntry?.destination?.route in tabRoutes
+                val route = navBackStackEntry?.destination?.route
+                val onTabRoute = route in tabRoutes
+                if (onTabRoute && isLandscape) {
+                    // Edge-to-edge draws content under the transparent status bar. In landscape the
+                    // tabs render no full header, so without a backdrop scrolled content (chat
+                    // bubbles, charts) bleeds through the status bar. Keep a status-bar-height glass
+                    // strip so the status bar stays legible on every tab — matching the landscape
+                    // bottom bar's glass — while content still scrolls under it.
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .hazeEffect(state = hazeState, style = glassStyle)
+                            .windowInsetsPadding(WindowInsets.statusBars),
+                    )
+                }
                 if (onTabRoute && !isLandscape) {
                     Column(
                         Modifier
@@ -257,30 +271,37 @@ fun PulseLoopApp() {
                             }
                             .windowInsetsPadding(WindowInsets.statusBars),
                     ) {
-                        val ble by bleClient.state.collectAsState()
-                        val storedDevice by db.deviceDao().currentFlow()
-                            .collectAsState(initial = null)
-                        // Prefer live BLE state; fall back to the stored device so demo data
-                        // shows its ring instead of a permanently blank pill (RootViews.swift).
-                        val liveActive = ble.connectionState in setOf(
-                            com.pulseloop.ring.RingConnectionState.CONNECTED,
-                            com.pulseloop.ring.RingConnectionState.CONNECTING,
-                            com.pulseloop.ring.RingConnectionState.RECONNECTING,
-                            com.pulseloop.ring.RingConnectionState.SCANNING,
-                        )
-                        AppHeader(
-                            state = if (liveActive) ble.connectionState
-                                else storedDevice?.state ?: ble.connectionState,
-                            batteryPercent = ble.batteryPercent ?: storedDevice?.batteryPercent,
-                            onOpenSettings = { navController.navigate("settings") },
-                        )
-                        // Thin sync-progress accent under the greeting while history streams in.
-                        val syncPct = coordinator.syncProgress.collectAsState().value
-                        if (syncPct != null) {
-                            LinearProgressIndicator(
-                                progress = { (syncPct.coerceIn(0, 100)) / 100f },
-                                modifier = Modifier.fillMaxWidth().height(2.dp),
+                        if (route == "coach") {
+                            // Coach keeps its bespoke avatar header, rendered here as the same
+                            // frosted glass bar the other tabs use so the chat scrolls under it
+                            // (owner choice, issue #22).
+                            CoachHeader(onNewChat = { coachVM.newConversation() })
+                        } else {
+                            val ble by bleClient.state.collectAsState()
+                            val storedDevice by db.deviceDao().currentFlow()
+                                .collectAsState(initial = null)
+                            // Prefer live BLE state; fall back to the stored device so demo data
+                            // shows its ring instead of a permanently blank pill (RootViews.swift).
+                            val liveActive = ble.connectionState in setOf(
+                                com.pulseloop.ring.RingConnectionState.CONNECTED,
+                                com.pulseloop.ring.RingConnectionState.CONNECTING,
+                                com.pulseloop.ring.RingConnectionState.RECONNECTING,
+                                com.pulseloop.ring.RingConnectionState.SCANNING,
                             )
+                            AppHeader(
+                                state = if (liveActive) ble.connectionState
+                                    else storedDevice?.state ?: ble.connectionState,
+                                batteryPercent = ble.batteryPercent ?: storedDevice?.batteryPercent,
+                                onOpenSettings = { navController.navigate("settings") },
+                            )
+                            // Thin sync-progress accent under the greeting while history streams in.
+                            val syncPct = coordinator.syncProgress.collectAsState().value
+                            if (syncPct != null) {
+                                LinearProgressIndicator(
+                                    progress = { (syncPct.coerceIn(0, 100)) / 100f },
+                                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -385,7 +406,16 @@ fun PulseLoopApp() {
                     val id = backStackEntry.arguments?.getString("id") ?: return@paddedComposable
                     WorkoutSummaryScreen(sessionId = id, onBack = { navController.popBackStack() })
                 }
-                paddedComposable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
+                // Coach draws full-bleed under the glass top/bottom bars (like the other tabs), so
+                // the chat frosts under its header and the composer can clear the keyboard itself.
+                composable("coach") {
+                    CoachScreen(
+                        navController = navController,
+                        viewModel = coachVM,
+                        topBarPadding = topPad,
+                        bottomBarPadding = barPad,
+                    )
+                }
                 paddedComposable("settings") { SettingsScreen(navController, bleClient, coordinator) }
                 // Settings detail screens (iOS #49): each hub row pushes one of these.
                 paddedComposable("settings/wearable") {
