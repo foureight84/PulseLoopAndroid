@@ -250,7 +250,7 @@ fun PulseLoopApp() {
             ) {
                 composable("today") { TodayScreen(navController, todayVM, coordinator) }
                 composable("vitals") { VitalsScreen(navController = navController, viewModel = vitalsVM, coordinator = coordinator) }
-                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM) }
+                composable("sleep") { SleepScreen(navController = navController, viewModel = sleepVM, sleepStream = sleepStream) }
                 composable("activity") { ActivityScreen(navController = navController, viewModel = activityVM) }
                 composable("coach") { CoachScreen(navController = navController, viewModel = coachVM) }
                 composable("settings") { SettingsScreen(navController, bleClient, coordinator) }

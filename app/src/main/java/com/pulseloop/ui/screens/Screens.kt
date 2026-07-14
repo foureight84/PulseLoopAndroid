@@ -723,8 +723,10 @@ fun VitalsScreen(
 fun SleepScreen(
     navController: androidx.navigation.NavController? = null,
     viewModel: SleepViewModel? = null,
+    sleepStream: com.pulseloop.service.SleepStreamController? = null,
 ) {
     val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(SleepViewModel.SleepState()) })
+    val tracking by (sleepStream?.tracking?.collectAsState() ?: remember { mutableStateOf(false) })
     val lastNight = state.lastNight
     val totalHr = lastNight?.totalMinutes?.let { it / 60 }
     val totalMin = lastNight?.totalMinutes?.let { it % 60 }
@@ -764,6 +766,30 @@ fun SleepScreen(
                 }
             }
             Spacer(Modifier.height(8.dp))
+        }
+
+        // ── Manual sleep-tracking button ─────────────────────────────
+        if (sleepStream != null) {
+            item {
+                Button(
+                    onClick = { if (tracking) sleepStream.stopManual() else sleepStream.startManual() },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    colors = if (tracking) ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
+                ) {
+                    Icon(if (tracking) Icons.Filled.Stop else Icons.Filled.Bedtime, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (tracking) "Stop Sleep Tracking" else "Start Sleep Tracking")
+                }
+                if (tracking) {
+                    Text(
+                        "Recording heart rate & SpO₂. Keep the ring on and the phone nearby; tap Stop when you wake.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
         }
 
         // ── Last Night card ─────────────────────────────────────────

@@ -40,6 +40,35 @@ class SleepStreamController(
     /** Night mode active: charging + in window. FGS/wakelock/reconnect run whenever
      *  this is true, independent of whether the ring is connected yet. */
     private var active = false
+
+    /** Manual override: when true, night mode is forced on regardless of the clock
+     *  window or charging state — the user tapped "Start Sleep Tracking". This is the
+     *  reliable path; the automatic gates are a convenience that can misfire. */
+    private val _tracking = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val tracking: kotlinx.coroutines.flow.StateFlow<Boolean> = _tracking
+    @Volatile private var manual = false
+    private var manualStartAt = 0L
+
+    /** User-triggered start. Bypasses all gates; runs until stopManual(). */
+    fun startManual() {
+        manual = true
+        manualStartAt = System.currentTimeMillis()
+        _tracking.value = true
+    }
+
+    /** User-triggered stop. Ends the session and screens the manual span. */
+    fun stopManual() {
+        val start = manualStartAt
+        manual = false
+        _tracking.value = false
+        // The tick will tear down FGS/wakelock/stream on the next pass; screen now.
+        if (start > 0 && System.currentTimeMillis() - start > 20 * 60_000L) {
+            scope.launch {
+                try { onNightEnded?.invoke(start, System.currentTimeMillis()) }
+                catch (e: Exception) { android.util.Log.e("SleepStream", "manual screen failed", e) }
+            }
+        }
+    }
     /** True only when THIS controller opened the stream — never stop one we don't own. */
     private var streaming = false
     private var ticksSinceSpO2 = 0
@@ -93,7 +122,8 @@ class SleepStreamController(
         // the app (observed 2026-07-08: ring on at 4am, no link until 09:58). So we
         // enter night mode on charging+window, hold the process/CPU awake, and
         // ACTIVELY reconnect; streaming begins the moment the ring is connected.
-        val nightMode = inNightWindow() && isCharging()
+        // Manual overrides everything; otherwise the automatic charging+window gates.
+        val nightMode = manual || (inNightWindow() && isCharging())
 
         if (nightMode && !active) {
             SleepForegroundService.start(context)
