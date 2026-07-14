@@ -245,6 +245,19 @@ fun PulseLoopApp() {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val route = navBackStackEntry?.destination?.route
                 val onTabRoute = route in tabRoutes
+                if (onTabRoute && isLandscape) {
+                    // Edge-to-edge draws content under the transparent status bar. In landscape the
+                    // tabs render no full header, so without a backdrop scrolled content (chat
+                    // bubbles, charts) bleeds through the status bar. Keep a status-bar-height glass
+                    // strip so the status bar stays legible on every tab — matching the landscape
+                    // bottom bar's glass — while content still scrolls under it.
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .hazeEffect(state = hazeState, style = glassStyle)
+                            .windowInsetsPadding(WindowInsets.statusBars),
+                    )
+                }
                 if (onTabRoute && !isLandscape) {
                     Column(
                         Modifier

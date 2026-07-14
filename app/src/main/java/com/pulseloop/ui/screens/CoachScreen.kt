@@ -1,5 +1,6 @@
 package com.pulseloop.ui.screens
 
+import android.content.res.Configuration
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -63,6 +65,10 @@ fun CoachScreen(
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val ctx = LocalContext.current
+    // Landscape drops the shared glass header (and its new-chat button), so offer new-chat inline
+    // with the composer instead — the header's affordance brought down in line with the input.
+    val isLandscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     LaunchedEffect(state.messages.size) {
         if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
@@ -105,6 +111,8 @@ fun CoachScreen(
             isThinking = state.isThinking,
             showChips = state.messages.count { it.role == "user" } == 0,
             bottomBarPadding = bottomBarPadding,
+            showNewChat = isLandscape,
+            onNewChat = { viewModel?.newConversation() },
             onSend = { text, staged ->
                 viewModel?.sendMessage(text, staged)
                 inputText = ""
@@ -231,6 +239,8 @@ private fun Composer(
     isThinking: Boolean,
     showChips: Boolean,
     bottomBarPadding: Dp = 0.dp,
+    showNewChat: Boolean = false,
+    onNewChat: () -> Unit = {},
     onSend: (String, List<CoachAttachmentRef>) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -322,6 +332,22 @@ private fun Composer(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (showNewChat) {
+                // Landscape has no Coach header — bring its new-chat button down in line with the
+                // input. Bordered circle + "+" glyph mirrors the header's affordance exactly so the
+                // control reads the same in both orientations.
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(PulseColors.card)
+                        .border(1.dp, PulseColors.borderSubtle, CircleShape)
+                        .clickable(onClick = onNewChat),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.Add, "New chat", tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
+                }
+            }
             if (imageInputEnabled) {
                 Box(
                     Modifier
