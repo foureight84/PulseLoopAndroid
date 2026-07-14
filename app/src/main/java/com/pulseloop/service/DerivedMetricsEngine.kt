@@ -121,7 +121,7 @@ class DerivedMetricsEngine(
         // measurement and gives the apnea screen below a richer series. ──
         val hour = java.time.LocalTime.now().hour
         // ── Morning jobs: derived sleep, then fatigue (needs the sleep row) ──
-        if (hour in 5..15) {
+        if (hour in 5..20) {
             val lastNightDay = com.pulseloop.util.TimeUtil.startOfTodayLocal()
             deriveSleepIfMissing(lastNightDay)
             deriveFatigueOncePerDay(lastNightDay, now)
@@ -142,20 +142,21 @@ class DerivedMetricsEngine(
         val hr = db.measurementDao().range(MeasurementKind.HEART_RATE.name, windowStart, windowEnd)
         if (hr.size < MIN_NIGHT_SAMPLES) return
 
-        // Daytime baseline: yesterday 10:00-20:00 median.
-        val daytime = db.measurementDao().range(
-            MeasurementKind.HEART_RATE.name,
-            dayStart - 14 * 3_600_000L, dayStart - 4 * 3_600_000L,
-        ).map { it.value }.medianOrNull() ?: return
-
-        // 10-min buckets. Thresholds self-anchor to the night's own low HR:
-        // a daytime-median anchor alone proved unstable (a workout day inflated
-        // it and scored 11h "asleep"). Asleep = below BOTH the daytime-derived
-        // ceiling and nightLow*1.12; deep = within 5% of the night's floor.
+        // 10-min buckets.
         val buckets = hr.groupBy { (it.timestamp - windowStart) / BUCKET_MS }
             .mapValues { (_, rows) -> rows.map { it.value }.medianOrNull() }
-        val nightLow = buckets.values.filterNotNull().percentileOrNull(0.05) ?: return
-        val asleepThresh = minOf(daytime * SLEEP_HR_FACTOR, nightLow * 1.12)
+        val bucketVals = buckets.values.filterNotNull()
+        val nightLow = bucketVals.percentileOrNull(0.05) ?: return
+
+        // Asleep = HR within 15% of the night's own floor. This single self-anchored
+        // rule is robust to both failure modes the daytime-baseline approach hit:
+        // (a) no daytime HR when the ring wasn't worn during the day made the estimate
+        // bail entirely, and (b) an all-sleep tracked window (went to bed before
+        // tracking start) collapsed the derived ceiling BELOW the sleeping HR, scoring
+        // zero minutes. Anchoring only to nightLow avoids both — awake HR sits well
+        // above nightLow*1.15, so it's excluded without needing an explicit ceiling.
+        // (2026-07-14: a perfectly-tracked 8h night was producing no session at all.)
+        val asleepThresh = nightLow * SLEEP_HR_MARGIN
         val asleep = { i: Long -> (buckets[i] ?: Double.MAX_VALUE) <= asleepThresh }
 
         // Longest run, tolerating up to 2 consecutive non-sleep buckets (brief wakes).
@@ -288,7 +289,8 @@ class DerivedMetricsEngine(
         private const val TICK_MS = 30 * 60_000L
         private const val HRV_WINDOW_MS = 10 * 60_000L
         private const val BUCKET_MS = 10 * 60_000L
-        private const val SLEEP_HR_FACTOR = 0.88  // 0.92 flagged quiet-awake time as sleep
+        /** Asleep = bucket HR within this factor of the night's 5th-pct floor. */
+        private const val SLEEP_HR_MARGIN = 1.15
         private const val MIN_SLEEP_MINUTES = 180
         private const val MIN_NIGHT_SAMPLES = 500
     }
