@@ -306,8 +306,9 @@ class DerivedMetricsEngine(
         private const val BUCKET_MS = 10 * 60_000L
         /** Asleep = bucket HR within this factor of the night's 5th-pct floor. */
         private const val SLEEP_HR_MARGIN = 1.15
-        /** Mid-sleep wake buckets tolerated before the sleep window ends (60min). */
-        private const val WAKE_TOLERANCE_BUCKETS = 6
+        /** Mid-sleep wake tolerated before the window ends (120min: bridges a long
+         *  restless middle / biphasic gap; a real morning wake+activity exceeds it). */
+        private const val WAKE_TOLERANCE_BUCKETS = 12
         private const val MIN_SLEEP_MINUTES = 180
         private const val MIN_NIGHT_SAMPLES = 500
     }
