@@ -20,8 +20,16 @@ class ColmiMeasurementSettingsTest {
 
     @Test
     fun `temp pref write mirrors the extra 0x03 framing byte`() {
-        assertArrayEquals(byteArrayOf(0x3A, 0x03, 0x02, 0x01), ColmiEncoder.writeTempPref(enabled = true))
-        assertArrayEquals(byteArrayOf(0x3A, 0x03, 0x02, 0x00), ColmiEncoder.writeTempPref(enabled = false))
+        // Full 6-field record (QRing SugarLipidsSettingReq.getWriteInstance((byte)3, …)):
+        // enable, interval 30, start 5, remind-interval 10, alert bits 0, custom byte 0xB9
+        // (38.5 °C, inert with bits=0). The old 4-byte truncated form read as interval=0 on
+        // RT-series firmware — ACKed but never armed background sampling.
+        assertArrayEquals(
+            byteArrayOf(0x3A, 0x03, 0x02, 0x01, 30, 5, 10, 0x00, 0xB9.toByte()),
+            ColmiEncoder.writeTempPref(enabled = true))
+        assertArrayEquals(
+            byteArrayOf(0x3A, 0x03, 0x02, 0x00, 30, 5, 10, 0x00, 0xB9.toByte()),
+            ColmiEncoder.writeTempPref(enabled = false))
     }
 
     // MARK: UserProfileValues mapping
@@ -63,7 +71,7 @@ class ColmiMeasurementSettingsTest {
         assertEquals(15.toByte(), autoHr[3])         // configured interval
         val stress = writer.commands.first { it[0] == 0x36.toByte() && it[1] == 0x02.toByte() }
         assertEquals(0x00.toByte(), stress[2])       // stress off
-        val temp = writer.commands.first { it[0] == 0x3A.toByte() && it.size == 4 && it[2] == 0x02.toByte() }
+        val temp = writer.commands.first { it[0] == 0x3A.toByte() && it.size == 9 && it[2] == 0x02.toByte() }
         assertEquals(0x00.toByte(), temp[3])         // temperature off
     }
 
@@ -212,12 +220,13 @@ class ColmiMeasurementSettingsTest {
         var bondRequests = 0
         engine.setOnBondRequested { bondRequests++ }
 
-        // Feature byte with bit 3 set → bond wanted.
-        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3C, 0x08)))
+        // Feature byte (full-frame [2] — QRing rsp classes see the opcode-stripped slice, so
+        // their bArr[1] is full-frame byte 2) with bit 3 set → bond wanted.
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x08)))
         assertEquals(1, bondRequests)
 
         // Feature byte without bit 3 → no bond.
-        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3C, 0x07)))
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x07)))
         assertEquals(1, bondRequests)
         engine.destroy()
     }

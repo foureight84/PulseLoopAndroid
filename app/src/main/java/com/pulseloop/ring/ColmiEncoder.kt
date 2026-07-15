@@ -26,6 +26,9 @@ object ColmiEncoder {
             bcd(zdt.hour).toByte(),
             bcd(zdt.minute).toByte(),
             bcd(zdt.second).toByte(),
+            // Language byte (QRing SetTimeReq subData[6]): 0 = zh_CN, 1 = en. Zero-padding
+            // used to select Chinese on display-equipped Colmi-family devices.
+            if (java.util.Locale.getDefault().language == "zh") 0x00 else 0x01,
         )
     }
 
@@ -38,7 +41,10 @@ object ColmiEncoder {
         0x00,
         if (metric) 0x00 else 0x01,
         gender.toByte(), age.toByte(), heightCm.toByte(), weightKg.toByte(),
-        0x00, 0x00, 0x00,
+        // BP reference 120/90: QRing (TimeFormatReq callers) hardcodes these unconditionally —
+        // firmware may use them as PPG calibration baselines, so never send 0/0. Trailing
+        // HR-warn threshold stays 0 (= alerts off, matching QRing when unset).
+        0x78, 0x5A, 0x00,
     )
 
     fun battery(): ByteArray = byteArrayOf(ColmiCommandID.BATTERY.toByte())
@@ -91,26 +97,34 @@ object ColmiEncoder {
 
     /**
      * Enable/disable all-day temperature monitoring. Mirrors [readTempPref]'s extra `0x03`
-     * framing byte before the write flag. Verified against hardware (`3a 03 02 01` was acked
-     * by a Colmi ring).
+     * framing byte before the write flag, then the **full 6-field record** QRing always sends
+     * (`SugarLipidsSettingReq.getWriteInstance((byte)3, …)`): interval, start, remind-interval,
+     * remind bits, custom-alert byte ((°C×10)−200). Firmware defaults per QRing's
+     * `BloodSugarLipidsSettingRsp`: interval 30 min, start 5, remind 10; alert bits 0 = alerts
+     * off, so the custom byte (38.5 °C) is inert. The old 4-byte `3a 03 02 <en>` form was the
+     * same truncation bug class as the short 0x16 auto-HR write: RT-series firmware ACKs it but
+     * reads interval = 0 and never arms background sampling.
      */
     fun writeTempPref(enabled: Boolean): ByteArray = byteArrayOf(
         ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_WRITE.toByte(),
         if (enabled) 0x01 else 0x00,
+        30, 5, 10, 0x00, 0xB9.toByte(),
     )
 
     fun readGoals(): ByteArray = byteArrayOf(ColmiCommandID.GOALS.toByte(), ColmiCommandID.PREF_READ.toByte())
 
-    fun manualHeartRate(enable: Boolean = true): ByteArray = if (enable) {
+    fun manualHeartRate(enable: Boolean = true, lastBpm: Int = 0): ByteArray = if (enable) {
         byteArrayOf(ColmiCommandID.MANUAL_HEART_RATE.toByte(), ColmiCommandID.RT_HEART_RATE.toByte())
     } else {
         // Stop MUST use CMD_STOP_REAL_TIME (0x6A). The old [0x69, 0x02] was another
         // CMD_START_REAL_TIME (reading type 2), so the optical sensor never switched off
         // and the ring kept pulsing until it timed out. Mirror the SpO₂ stop frame.
+        // On a successful measurement QRing reports the final reading in byte 2
+        // (stopHeartRate((byte) heartValue)) so the ring's own log records it; 0 = cancelled.
         byteArrayOf(
             ColmiCommandID.REALTIME_STOP.toByte(),
             ColmiCommandID.RT_HEART_RATE.toByte(),
-            0x00, 0x00,
+            lastBpm.coerceIn(0, 255).toByte(), 0x00,
         )
     }
 
@@ -130,7 +144,10 @@ object ColmiEncoder {
         byteArrayOf(
             ColmiCommandID.MANUAL_HEART_RATE.toByte(),
             ColmiCommandID.RT_SPO2.toByte(),
-            ColmiCommandID.RT_ACTION_START.toByte(),
+            // QRing sends BCD(25) = 0x25 as the third byte for every reading type ≥ 3
+            // (StartHeartRateReq.getSimpleReq). colmi_r02_client's Action.START (0x01) works on
+            // R02-class firmware but is a byte the official app never sends; follow QRing.
+            0x25,
         )
     } else {
         byteArrayOf(
@@ -162,7 +179,10 @@ object ColmiEncoder {
         )
     }
 
-    fun syncStress(): ByteArray = byteArrayOf(ColmiCommandID.SYNC_STRESS.toByte())
+    /** Stress history request. QRing (`PressureReq`) pages `[0x37, dayIndex]` over today+6 past
+     *  days; the old bare `[0x37]` (zero padding = day 0) only ever fetched today. */
+    fun syncStress(daysAgo: Int = 0): ByteArray =
+        byteArrayOf(ColmiCommandID.SYNC_STRESS.toByte(), daysAgo.coerceIn(0, 255).toByte())
 
     fun syncHRV(daysAgo: Int): ByteArray {
         val d = daysAgo.coerceIn(0, 255).toUInt()
@@ -175,42 +195,63 @@ object ColmiEncoder {
         )
     }
 
-    // Big-data requests
-    fun bigDataSpo2(): ByteArray = byteArrayOf(
-        ColmiCommandID.BIG_DATA_V2.toByte(), ColmiCommandID.BIG_DATA_SPO2.toByte(),
-        0x01, 0x00, 0xFF.toByte(), 0x00, 0xFF.toByte(),
-    )
-
-    fun bigDataSleep(): ByteArray = byteArrayOf(
-        ColmiCommandID.BIG_DATA_V2.toByte(), ColmiCommandID.BIG_DATA_SLEEP.toByte(),
-        0x01, 0x00, 0xFF.toByte(), 0x00, 0xFF.toByte(),
-    )
-
-    fun bigDataTemperature(): ByteArray = byteArrayOf(
-        ColmiCommandID.BIG_DATA_V2.toByte(), ColmiCommandID.BIG_DATA_TEMPERATURE.toByte(),
-        0x01, 0x00, 0x3E, 0x81.toByte(), 0x02,
-    )
-
-    fun bigDataBloodSugar(): ByteArray = byteArrayOf(
-        ColmiCommandID.BIG_DATA_V2.toByte(), ColmiCommandID.BIG_DATA_BLOOD_SUGAR.toByte(),
-        0x01, 0x00, 0xFF.toByte(), 0x00, 0xFF.toByte(),
-    )
-
-    /** Request BP history from the ring. [fromUnix] = starting epoch (0 = all available). */
-    fun syncBp(fromUnix: Int = 0): ByteArray {
-        val ts = fromUnix.toUInt()
-        return byteArrayOf(
-            ColmiCommandID.BP_READ.toByte(),
-            (ts and 0xFFu).toByte(),
-            ((ts shr 8) and 0xFFu).toByte(),
-            ((ts shr 16) and 0xFFu).toByte(),
-            ((ts shr 24) and 0xFFu).toByte(),
-            0x00, 0x32,  // count = 50
-        )
+    // Big-data requests (0xBC family). Frame = [0xBC, action, len u16 LE, CRC16 u16 LE, payload],
+    // exactly QRing's LargeDataHandler.addHeader(action, payload) with CRC16/MODBUS over the
+    // payload (init 0xFFFF, poly 0xA001, LE on the wire).
+    private fun crc16Modbus(payload: ByteArray): Int {
+        var crc = 0xFFFF
+        for (b in payload) {
+            crc = crc xor (b.toInt() and 0xFF)
+            repeat(8) { crc = if (crc and 1 != 0) (crc ushr 1) xor 0xA001 else crc ushr 1 }
+        }
+        return crc
     }
 
-    fun confirmBp(success: Boolean = true): ByteArray =
-        byteArrayOf(ColmiCommandID.BP_CONFIRM.toByte(), if (success) 0x00 else 0xFF.toByte())
+    private fun bigDataRequest(action: UByte, payload: ByteArray): ByteArray {
+        val crc = crc16Modbus(payload)
+        return byteArrayOf(
+            ColmiCommandID.BIG_DATA_V2.toByte(), action.toByte(),
+            (payload.size and 0xFF).toByte(), ((payload.size shr 8) and 0xFF).toByte(),
+            (crc and 0xFF).toByte(), ((crc shr 8) and 0xFF).toByte(),
+        ) + payload
+    }
+
+    fun bigDataSpo2(): ByteArray =
+        bigDataRequest(ColmiCommandID.BIG_DATA_SPO2, byteArrayOf(0xFF.toByte()))
+
+    /**
+     * New_Sleep_Protocol (big-data action 39): 2-byte payload [0xFF, 0x01] — 0xFF = "all
+     * history", 0x01 = protocol version. The pre-fix 1-byte [0xFF] payload
+     * (bc 27 01 00 ff 00 ff) is silently ignored by the ring, so sleep never synced.
+     * On the wire: bc 27 02 00 81 80 ff 01 ≡ QRing's addHeader(39, {0xFF, 0x01}).
+     */
+    fun bigDataSleep(): ByteArray =
+        bigDataRequest(ColmiCommandID.BIG_DATA_SLEEP, byteArrayOf(0xFF.toByte(), 0x01))
+
+    /**
+     * Legacy temperature series (action 37); payload = day count. QRing requests 6 days for a
+     * first/stale sync and 2 once today has synced — always ask for 6 so backfill after a gap
+     * isn't capped at two days. Rings whose 0x3C reply sets supportIntervalTemp use
+     * [bigDataIntervalTemperature] instead; QRing never sends action 37 to those.
+     */
+    fun bigDataTemperature(days: Int = 6): ByteArray =
+        bigDataRequest(ColmiCommandID.BIG_DATA_TEMPERATURE, byteArrayOf(days.coerceIn(1, 255).toByte()))
+
+    /**
+     * Interval temperature history (action 119): payload [dayIndex, packetIndex]. A day's series
+     * can span several packets; the reply header carries packetCount/packetIndex and the app
+     * must re-request packetIndex+1 until the last one (QRing LargeDataHandler §119) —
+     * [ColmiSyncEngine.handleBigDataComplete] drives that continuation.
+     */
+    fun bigDataIntervalTemperature(daysAgo: Int, packetIndex: Int): ByteArray = bigDataRequest(
+        ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE,
+        byteArrayOf(daysAgo.coerceIn(0, 255).toByte(), packetIndex.coerceIn(0, 255).toByte()),
+    )
+
+    // No BP / blood-sugar request builders: Colmi rings support neither (see
+    // ColmiCoordinator.capabilities). The decoder keeps its defensive parsers for
+    // stray 0x14 / big-data 0x47 frames, but nothing must ever request them —
+    // unsupported requests trigger frame re-emission storms (PR #26).
 }
 
 /**

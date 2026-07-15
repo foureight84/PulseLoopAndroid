@@ -3,6 +3,7 @@ package com.pulseloop.ring
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import kotlinx.coroutines.*
 
@@ -10,8 +11,9 @@ import kotlinx.coroutines.*
  * Ported from [ColmiSyncEngine] in ColmiSyncEngine.swift.
  * Colmi R02 sync engine: response-driven history state machine + realtime-HR keepalive.
  *
- * Stage order: activity(0..7) → HR(0..7) → stress → spo2(bigdata) → sleep(bigdata)
- * → hrv(0..6) → temperature(bigdata) → done.
+ * Stage order: activity(0..7) → HR(0..7) → stress(0..6) → spo2(bigdata) → sleep(bigdata)
+ * → hrv(0..6) → temperature(bigdata; interval action 119 when the ring supports it, paged
+ * per day 0..6 with per-packet continuation, else legacy action 37) → done.
  */
 class ColmiSyncEngine(
     private var writer: RingCommandWriter?,
@@ -43,11 +45,27 @@ class ColmiSyncEngine(
     private var userProfile: UserProfileValues? = null
 
     // History state machine
-    private enum class Stage { IDLE, ACTIVITY, HEART_RATE, STRESS, SPO2, SLEEP, HRV, BP, TEMPERATURE, BLOOD_SUGAR, DONE }
+    private enum class Stage { IDLE, ACTIVITY, HEART_RATE, STRESS, SPO2, SLEEP, HRV, TEMPERATURE, DONE }
 
     private var stage = Stage.IDLE
     private var daysAgo = 0
     private var syncDay = LocalDate.now(zone)
+
+    // Per-day paged-stage metadata from the ring's packet 0 (QRing ReadHeartRateRsp /
+    // PressureRsp / HRVRsp): how many packets the day has (drives terminal detection) and the
+    // sampling cadence in minutes (drives the decoder's timestamp grid). Reset on every request.
+    private var expectedPackets: Int? = null
+    private var slotMinutes: Int? = null
+
+    /** From the 0x3C device-support reply: ring uses the interval-temperature big-data path
+     *  (action 119) instead of the legacy action 37 that such firmware may not answer. */
+    private var supportsIntervalTemp = false
+
+    /** Highest interval-temperature packet index seen for the current day, or -1 at the start of
+     *  a day. Guards the action-119 continuation against firmware that never advances the index
+     *  (see [handleBigDataComplete]) — a re-request loop would otherwise re-arm the watchdog
+     *  forever, the same unbounded-write failure this PR fixes elsewhere. */
+    private var lastIntervalTempPacket = -1
 
     /** A standalone sleep-only request is outstanding (see [syncSleepNow]). Set true when we fire
      *  `bigDataSleep()` outside the staged history sync; its big-data completion clears it and
@@ -63,17 +81,23 @@ class ColmiSyncEngine(
 
     // Realtime HR keepalive
     private var realtimeHRActive = false
-    private var realtimeHRPacketCount = 0
+    private var realtimeKeepaliveJob: Job? = null
     private var manualHRActive = false
     private var manualSpO2Active = false
+
+    /** Last bpm seen while a manual spot measurement runs: QRing reports it in the 0x6A stop
+     *  frame so the ring's own measurement log records the reading (0 = cancelled). */
+    private var lastManualBpm = 0
 
     companion object {
         fun isHistoryOpcode(op: UByte): Boolean =
             op == ColmiCommandID.SYNC_ACTIVITY ||
             op == ColmiCommandID.SYNC_HEART_RATE ||
             op == ColmiCommandID.SYNC_STRESS ||
-            op == ColmiCommandID.SYNC_HRV ||
-            op == ColmiCommandID.BP_READ
+            op == ColmiCommandID.SYNC_HRV
+
+        /** 20 s wall-clock re-arm, matching QRing's HeartActivity timer. */
+        private const val REALTIME_KEEPALIVE_MS = 20_000L
     }
 
     override fun runStartup() {
@@ -152,10 +176,12 @@ class ColmiSyncEngine(
      * the ring's reported interval.
      */
     override fun handleRawNotify(data: ByteArray) {
-        // Device-support reply is independent of config seeding: if the ring wants a bond, ask
-        // the client to create one. Return early — a 0x3C frame carries nothing else we consume.
-        decoder.decodeDeviceSupport(data)?.let { supportsBlePair ->
-            if (supportsBlePair) onBondRequested?.invoke()
+        // Device-support reply is independent of config seeding: remember the temperature-path
+        // capability and, if the ring wants a bond, ask the client to create one. Return early —
+        // a 0x3C frame carries nothing else we consume.
+        decoder.decodeDeviceSupport(data)?.let { support ->
+            supportsIntervalTemp = support.supportsIntervalTemp
+            if (support.supportsBlePair) onBondRequested?.invoke()
             return
         }
         if (!seedingFromRing) return
@@ -232,20 +258,73 @@ class ColmiSyncEngine(
         armWatchdog()
     }
 
-    override fun handle(event: RingDecodedEvent) {}
+    override fun handle(event: RingDecodedEvent) {
+        if (manualHRActive && event is RingDecodedEvent.HeartRateSample) lastManualBpm = event.bpm
+    }
 
     // MARK: Driver hooks
 
     fun handleHistoryFrame(data: ByteArray): List<RingDecodedEvent> {
-        val events = decoder.decodeHistory(data, day = syncDay)
+        captureStageMetadata(data)
+        val events = decoder.decodeHistory(data, day = syncDay, slotMinutes = slotMinutes)
         advanceAfterPagedFrame(data)
         armWatchdog()
         return events
     }
 
-    fun handleBigDataComplete(type: UByte) {
+    /**
+     * Capture what the ring's own frames tell us about the current paged day, before decoding:
+     * - packet 0 carries the day's packet count (v[2], drives terminal detection) and the
+     *   sampling cadence in minutes (v[3]) — QRing's ReadHeartRateRsp/PressureRsp/HRVRsp;
+     * - packet 1 echoes which day the log actually belongs to (HR: start time as
+     *   "local-wall-clock read as UTC" at v[2..5]; stress/HRV: day offset at v[2]) — trust the
+     *   echo over the request-side [syncDay] so a late or shifted reply can't be attributed to
+     *   the wrong day.
+     */
+    private fun captureStageMetadata(data: ByteArray) {
+        val packet = ColmiPacket.validating(data) ?: return
+        val v = packet.bytes.map { it.toUByte() }
+        when (v[0]) {
+            ColmiCommandID.SYNC_HEART_RATE, ColmiCommandID.SYNC_STRESS, ColmiCommandID.SYNC_HRV -> {}
+            else -> return
+        }
+        when (v[1].toInt()) {
+            0 -> {
+                expectedPackets = v[2].toInt().takeIf { it in 2..64 }
+                slotMinutes = v[3].toInt().takeIf { it in 1..240 }
+            }
+            1 -> when (v[0]) {
+                ColmiCommandID.SYNC_HEART_RATE -> {
+                    val echo = v[2].toLong() or (v[3].toLong() shl 8) or
+                        (v[4].toLong() shl 16) or (v[5].toLong() shl 24)
+                    if (echo > 0) {
+                        val candidate = Instant.ofEpochSecond(echo).atZone(ZoneOffset.UTC).toLocalDate()
+                        // Trust the echo only within ±2 days of the requested day: it corrects the
+                        // ≤1-day tz mis-attribution it was added for, but a garbage ring clock
+                        // (e.g. an all-0xFF echo → year 2106) would otherwise stamp HR samples far
+                        // in the future — decodeHRHistory has no time clamp of its own.
+                        if (!candidate.isBefore(syncDay.minusDays(2)) &&
+                            !candidate.isAfter(syncDay.plusDays(2))) {
+                            syncDay = candidate
+                        }
+                    }
+                }
+                else -> {
+                    val offset = v[2].toInt()
+                    if (offset in 0..29) syncDay = dayStart(offset)
+                }
+            }
+            else -> {}
+        }
+    }
+
+    fun handleBigDataComplete(type: UByte, data: ByteArray? = null) {
         when (type) {
             ColmiCommandID.BIG_DATA_SPO2 -> {
+                // Same stray-frame guard as SLEEP/TEMPERATURE below: rings can re-emit a big-data
+                // frame outside its stage, and an unguarded advance would jump the pipeline back
+                // to SLEEP and re-request it.
+                if (stage != Stage.SPO2) return
                 stage = Stage.SLEEP; requestSleep(); armWatchdog()
             }
             ColmiCommandID.BIG_DATA_SLEEP -> {
@@ -265,49 +344,98 @@ class ColmiSyncEngine(
                 stage = Stage.HRV; daysAgo = 0; requestHRV(); armWatchdog()
             }
             ColmiCommandID.BIG_DATA_TEMPERATURE -> {
-                stage = Stage.BLOOD_SUGAR; requestBloodSugar(); armWatchdog()
+                // Temperature is the final history stage: Colmi rings support neither blood pressure
+                // nor blood sugar (see ColmiCoordinator.capabilities and this class's stage-order doc).
+                // Finishing here — instead of querying blood sugar (0x47) — avoids an unsupported
+                // request the ring answers by re-emitting its temperature frame, which re-entered this
+                // branch and looped into a GATT write storm that starved the sleep sync. The stage
+                // guard also makes a repeated temperature frame idempotent (finish once, then ignore).
+                if (stage == Stage.TEMPERATURE) finishSync()
             }
-            ColmiCommandID.BIG_DATA_BLOOD_SUGAR -> finishSync()
-        }
-    }
-
-    fun observedRealtimeHeartRate() {
-        if (!realtimeHRActive) return
-        realtimeHRPacketCount = (realtimeHRPacketCount + 1) % 30
-        if (realtimeHRPacketCount == 0) {
-            writer?.enqueue(encoder.realtimeHeartRateContinue())
+            ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE -> {
+                if (stage != Stage.TEMPERATURE) return
+                // Interval temperature (action 119) needs app-driven continuation (QRing
+                // LargeDataHandler §119): the header carries packetCount [8] / packetIndex [9];
+                // re-request packetIndex+1 until the day's last packet, then move to the next
+                // day (0..6) and finish after the oldest.
+                val packetCount = data?.getOrNull(8)?.toInt()?.and(0xFF) ?: 0
+                val packetIndex = data?.getOrNull(9)?.toInt()?.and(0xFF) ?: 0
+                // Progress guard: only continue paging a day while the index strictly advances.
+                // A reply that repeats/regresses the index (misbehaving firmware) would otherwise
+                // make us re-request the same packet forever, each reply re-arming the watchdog so
+                // it never breaks the loop — the request-storm class this PR exists to kill. On a
+                // stalled index we drop to the next day instead.
+                val advanced = packetIndex > lastIntervalTempPacket
+                lastIntervalTempPacket = packetIndex
+                when {
+                    advanced && packetCount > 0 && packetIndex < packetCount - 1 -> {
+                        writer?.enqueue(encoder.bigDataIntervalTemperature(daysAgo, packetIndex + 1))
+                        armWatchdog()
+                    }
+                    daysAgo < 6 -> {
+                        daysAgo++
+                        lastIntervalTempPacket = -1
+                        writer?.enqueue(encoder.bigDataIntervalTemperature(daysAgo, 0))
+                        armWatchdog()
+                    }
+                    else -> finishSync()
+                }
+            }
+            // BIG_DATA_SLEEP_LUNCH (0x3E) arrives unsolicited alongside the action-39 sleep
+            // reply on rings with nap support; the decoder already emitted its events and it
+            // must never advance the pipeline — no branch, intentionally.
         }
     }
 
     // MARK: Stage requests
 
+    private fun resetStageMetadata() {
+        expectedPackets = null
+        slotMinutes = null
+    }
+
     private fun requestActivity() {
         syncDay = dayStart(daysAgo)
+        resetStageMetadata()
         writer?.enqueue(encoder.syncActivity(daysAgo))
     }
 
     private fun requestHeartRate() {
         syncDay = dayStart(daysAgo)
-        val unix = syncDay.atStartOfDay(zone).toEpochSecond().toInt()
+        resetStageMetadata()
+        // The ring indexes its daily HR logs on "local wall clock read as UTC": QRing sends
+        // localMidnightEpoch + tzOffset (= the calendar date at 00:00 UTC) and subtracts the
+        // offset back from the echo. Sending the true local-midnight epoch landed inside the
+        // ring's previous day in GMT+ timezones.
+        val unix = syncDay.atStartOfDay(ZoneOffset.UTC).toEpochSecond().toInt()
         writer?.enqueue(encoder.syncHeartRate(unix))
     }
 
     private fun requestStress() {
-        syncDay = LocalDate.now(zone)
-        writer?.enqueue(encoder.syncStress())
+        syncDay = dayStart(daysAgo)
+        resetStageMetadata()
+        writer?.enqueue(encoder.syncStress(daysAgo))
     }
 
     private fun requestHRV() {
         syncDay = dayStart(daysAgo)
+        resetStageMetadata()
         writer?.enqueue(encoder.syncHRV(daysAgo))
     }
 
-    private fun requestBp() { writer?.enqueue(encoder.syncBp()) }
-
     private fun requestSpo2() { writer?.enqueue(encoder.bigDataSpo2()) }
     private fun requestSleep() { writer?.enqueue(encoder.bigDataSleep()) }
-    private fun requestTemperature() { writer?.enqueue(encoder.bigDataTemperature()) }
-    private fun requestBloodSugar() { writer?.enqueue(encoder.bigDataBloodSugar()) }
+
+    private fun requestTemperature() {
+        if (supportsIntervalTemp) {
+            // Modern path (QRing gates on the same 0x3C bit): per-day interval series, starting
+            // at today packet 0; handleBigDataComplete drives packet/day continuation.
+            lastIntervalTempPacket = -1
+            writer?.enqueue(encoder.bigDataIntervalTemperature(daysAgo, 0))
+        } else {
+            writer?.enqueue(encoder.bigDataTemperature())
+        }
+    }
 
     private fun dayStart(daysAgo: Int): LocalDate = LocalDate.now(zone).minusDays(daysAgo.toLong())
 
@@ -326,27 +454,44 @@ class ColmiSyncEngine(
             }
             Stage.HEART_RATE -> {
                 if (daysAgo < 7) { daysAgo++; requestHeartRate() }
-                else { stage = Stage.STRESS; requestStress() }
+                else { daysAgo = 0; stage = Stage.STRESS; requestStress() }
             }
-            Stage.STRESS -> { stage = Stage.SPO2; requestSpo2() }
+            Stage.STRESS -> {
+                // Stress pages over today+6 like HRV (QRing PressureRepository); the old
+                // single bare-0x37 request only ever fetched today.
+                if (daysAgo < 6) { daysAgo++; requestStress() }
+                else { stage = Stage.SPO2; requestSpo2() }
+            }
             Stage.HRV -> {
+                // Skip BP: Colmi rings don't support it (see ColmiCoordinator.capabilities).
                 if (daysAgo < 6) { daysAgo++; requestHRV() }
-                else { stage = Stage.BP; requestBp() }
-            }
-            Stage.BP -> {
-                // BP is a single bulk response, not paged
-                stage = Stage.TEMPERATURE; requestTemperature()
+                else { daysAgo = 0; stage = Stage.TEMPERATURE; requestTemperature() }
             }
             else -> {}
         }
     }
 
+    /**
+     * A day's last data packet. QRing ends a day at packet == size−1, where size comes from the
+     * day's packet 0 ([captureStageMetadata]) — the old hardcoded checks (nothing for HR, 4 for
+     * stress/HRV) meant an HR day with data NEVER completed: the watchdog force-skipped the
+     * whole stage and days 1..7 were never requested. Fallbacks when packet 0 was missed:
+     * stress/HRV keep the old size-5 assumption; HR ends on packet 23 (24 packets ≥ a full
+     * 5-min-cadence day — QRing's today-cap) or the watchdog.
+     */
     private fun isTerminalPacket(data: ByteArray): Boolean {
         val v = data.map { it.toUByte() }
         if (v.size < 7) return false
+        val packetNr = v[1].toInt()
         return when (v[0]) {
-            ColmiCommandID.SYNC_STRESS, ColmiCommandID.SYNC_HRV -> v[1].toInt() == 4
-            ColmiCommandID.SYNC_ACTIVITY -> v[5].toInt() == v[6].toInt() - 1
+            ColmiCommandID.SYNC_STRESS, ColmiCommandID.SYNC_HRV ->
+                packetNr >= 2 && packetNr == (expectedPackets ?: 5) - 1
+            ColmiCommandID.SYNC_HEART_RATE ->
+                (packetNr >= 2 && packetNr == (expectedPackets ?: -1) - 1) || packetNr == 23
+            // Gate the steps/day-count equality off the 0xF0 header packet — QRing evaluates it
+            // only for data packets, and a header satisfying it would end the day early.
+            ColmiCommandID.SYNC_ACTIVITY ->
+                packetNr != 0xF0 && v[5].toInt() == v[6].toInt() - 1
             else -> false
         }
     }
@@ -366,14 +511,12 @@ class ColmiSyncEngine(
     private fun forceAdvanceStage(stuck: Stage) {
         when (stuck) {
             Stage.ACTIVITY -> { daysAgo = 0; stage = Stage.HEART_RATE; requestHeartRate() }
-            Stage.HEART_RATE -> { stage = Stage.STRESS; requestStress() }
+            Stage.HEART_RATE -> { daysAgo = 0; stage = Stage.STRESS; requestStress() }
             Stage.STRESS -> { stage = Stage.SPO2; requestSpo2() }
             Stage.SPO2 -> { stage = Stage.SLEEP; requestSleep() }
             Stage.SLEEP -> { daysAgo = 0; stage = Stage.HRV; requestHRV() }
-            Stage.HRV -> { stage = Stage.BP; requestBp() }
-            Stage.BP -> { stage = Stage.TEMPERATURE; requestTemperature() }
-            Stage.TEMPERATURE -> { stage = Stage.BLOOD_SUGAR; requestBloodSugar() }
-            Stage.BLOOD_SUGAR -> finishSync()
+            Stage.HRV -> { daysAgo = 0; stage = Stage.TEMPERATURE; requestTemperature() }  // BP unsupported — skip
+            Stage.TEMPERATURE -> finishSync()  // blood sugar unsupported — temperature is terminal
             else -> {}
         }
         if (stage != Stage.DONE) armWatchdog()
@@ -389,14 +532,24 @@ class ColmiSyncEngine(
 
     override fun startHeartRate() {
         realtimeHRActive = true
-        realtimeHRPacketCount = 0
         writer?.enqueue(encoder.realtimeHeartRate(enable = true))
+        // Re-arm the stream on a wall-clock timer like QRing (20 s), not per received frame:
+        // a frame-count keepalive starves exactly when the ring pauses the stream to wait for
+        // the continue, killing the session.
+        realtimeKeepaliveJob?.cancel()
+        realtimeKeepaliveJob = scope.launch {
+            while (isActive) {
+                delay(REALTIME_KEEPALIVE_MS)
+                if (realtimeHRActive) writer?.enqueue(encoder.realtimeHeartRateContinue())
+            }
+        }
     }
 
     override fun stopHeartRate() {
+        realtimeKeepaliveJob?.cancel(); realtimeKeepaliveJob = null
         if (manualHRActive) {
             manualHRActive = false
-            writer?.enqueue(encoder.manualHeartRate(enable = false))
+            writer?.enqueue(encoder.manualHeartRate(enable = false, lastBpm = lastManualBpm))
         }
         if (!realtimeHRActive) return
         realtimeHRActive = false
@@ -405,6 +558,7 @@ class ColmiSyncEngine(
 
     override fun measureHeartRateSpot() {
         manualHRActive = true
+        lastManualBpm = 0
         writer?.enqueue(encoder.manualHeartRate(enable = true))
     }
 

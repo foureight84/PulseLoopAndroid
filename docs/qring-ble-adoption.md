@@ -124,7 +124,7 @@ gaps remained.
 **QRing bonds, gated on a capability bit.** After reading the device-support response it does:
 ```java
 // DeviceCmdInit.java
-if (deviceSupportFunctionRsp.supportBlePair) {   // = responseFrame[1] & 0x08
+if (deviceSupportFunctionRsp.supportBlePair) {   // = responseFrame[2] & 0x08 (see note)
     BleOperateManager.getInstance().bleCreateBond();   // BluetoothDevice.createBond()
 }
 ```
@@ -141,9 +141,14 @@ it never parsed `0x3C`. So the fix had to *teach PulseLoop to read `0x3C`* and r
 **The fix (implemented) — the "clean `supportBlePair` gate":**
 1. `ColmiCommandID.DEVICE_SUPPORT = 0x3C` + `ColmiEncoder.deviceSupport()` (opcode only,
    no sub-data — matches QRing's `DeviceSupportReq`).
-2. `ColmiDecoder.decodeDeviceSupport(frame)` → `Boolean?`: returns `frame[1] & 0x08`, or
-   `null` if it isn't a `0x3C` frame. **Fail-safe:** a wrong guess returns `null` → no bond
-   → today's behavior, never a crash.
+2. `ColmiDecoder.decodeDeviceSupport(frame)` → `ColmiDeviceSupport?`: `supportBlePair` =
+   `frame[2] & 0x08` and `supportIntervalTemp` = `frame[9] & 0x80`, or `null` if it isn't a
+   `0x3C` frame. **Fail-safe:** a wrong guess returns `null` → no bond → today's behavior,
+   never a crash. **OFFSET NOTE (bug fixed post-adoption):** QRing's `QCDataParser` strips
+   the opcode (and checksum) before any rsp class runs — `acceptData(copyOfRange(bArr, 1,
+   len-1))` — so `DeviceSupportFunctionRsp`'s `bArr[1]` is FULL-frame byte **2**, not 1.
+   The first port read `frame[1]`, a byte QRing never parses, so the bond gate keyed off
+   undefined data.
 3. `ColmiSyncEngine.runStartup` enqueues `deviceSupport()`; `handleRawNotify` decodes the
    reply *before* the config-seeding guard and, if `supportBlePair`, invokes a new
    `onBondRequested` callback.
@@ -250,8 +255,9 @@ The iOS app mirrors these classes (Swift). Apply the same behavior:
 
 iOS specifics to translate:
 - **Auto-HR:** same 8-byte payload. Trivial, no platform caveats.
-- **`0x3C` read + `supportBlePair`:** same decode (`frame[1] & 0x08`), same startup enqueue
-  and engine callback.
+- **`0x3C` read + `supportBlePair`:** same decode (`frame[2] & 0x08` — full-frame index;
+  QRing rsp classes see the opcode-stripped slice, so their `bArr[1]` = full-frame `[2]`),
+  same startup enqueue and engine callback.
 - **Bonding is different on iOS.** CoreBluetooth has **no `createBond()`** — bonding/pairing
   is triggered *implicitly* by accessing an encrypted characteristic, and the OS shows the
   pairing sheet. So the iOS equivalent of "honor `supportBlePair`" is usually a no-op at the
@@ -269,6 +275,8 @@ iOS specifics to translate:
 - `com/oudmon/ble/base/communication/rsp/HeartRateSettingRsp.java` — field semantics
 - `com/oudmon/ble/base/communication/req/DeviceSupportReq.java` — `0x3C` request (opcode 60)
 - `com/oudmon/ble/base/communication/rsp/DeviceSupportFunctionRsp.java` — `supportBlePair = byte[1] & 8`
+  of the opcode-stripped slice (`QCDataParser.java:34`) = **full-frame byte 2**; `supportIntervalTemp
+  = byte[8] & 0x80` = full-frame byte 9
 - `com/qcwireless/smart/ui/base/watch/DeviceCmdInit.java` — bond gate on `supportBlePair`
 - `com/oudmon/ble/base/bluetooth/BleBaseControl.java` — `bleCreateBond`, `connectGatt`,
   `mTimeoutRunnable` (40s), `mReconnectRunnable`, `refreshDeviceCache`

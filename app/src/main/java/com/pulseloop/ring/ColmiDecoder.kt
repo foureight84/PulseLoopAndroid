@@ -8,6 +8,9 @@ import java.time.temporal.ChronoUnit
 /** Ring-reported all-day HR config from a `0x16` auto-HR pref read reply. */
 data class ColmiAutoHRReadout(val enabled: Boolean, val intervalMinutes: Int)
 
+/** Capability bits from the 0x3C device-support reply (see [ColmiDecoder.decodeDeviceSupport]). */
+data class ColmiDeviceSupport(val supportsBlePair: Boolean, val supportsIntervalTemp: Boolean)
+
 /**
  * Ported from [ColmiDecoder] in ColmiDecoder.swift.
  * Decodes Colmi frames into shared [RingDecodedEvent]s. Two channels:
@@ -109,60 +112,73 @@ object ColmiDecoder {
         return data[1].toInt() and 0xFF
     }
 
+    /**
+     * [slotMinutes] is the sampling cadence reported by the day's packet 0 (HR: default 5,
+     * stress/HRV: default 30) — the engine captures it per stage and passes it through; QRing
+     * reads the same byte (`range`) in its rsp classes. Hardcoding it compressed history for
+     * any user-configured interval ≠ default.
+     */
     fun decodeHistory(
-        data: ByteArray, day: LocalDate, now: Instant = Instant.now(), zone: ZoneId = ZoneId.systemDefault()
+        data: ByteArray, day: LocalDate, now: Instant = Instant.now(),
+        zone: ZoneId = ZoneId.systemDefault(), slotMinutes: Int? = null
     ): List<RingDecodedEvent> {
         val packet = ColmiPacket.validating(data) ?: return emptyList()
         val v = packet.bytes.map { it.toUByte() }
         return when (v[0]) {
-            ColmiCommandID.SYNC_HEART_RATE -> decodeHRHistory(v, day, zone)
-            ColmiCommandID.SYNC_STRESS -> decodeStressHistory(v, day, zone)
-            ColmiCommandID.SYNC_HRV -> decodeHRVHistory(v, day, zone)
+            ColmiCommandID.SYNC_HEART_RATE -> decodeHRHistory(v, day, zone, slotMinutes ?: 5)
+            ColmiCommandID.SYNC_STRESS -> decodeStressHistory(v, day, zone, slotMinutes ?: 30)
+            ColmiCommandID.SYNC_HRV -> decodeHRVHistory(v, day, zone, slotMinutes ?: 30)
             ColmiCommandID.SYNC_ACTIVITY -> decodeActivityHistory(v, zone, now)
             else -> emptyList()
         }
     }
 
-    private fun decodeHRHistory(v: List<UByte>, day: LocalDate, zone: ZoneId): List<RingDecodedEvent> {
+    private fun decodeHRHistory(
+        v: List<UByte>, day: LocalDate, zone: ZoneId, slotMin: Int
+    ): List<RingDecodedEvent> {
         val packetNr = v[1].toInt()
         if (packetNr == 0xFF || packetNr == 0) return emptyList()
         val startIndex = if (packetNr == 1) 6 else 2
         val base = day.atStartOfDay(zone)
-        val minutesInPrevious = if (packetNr > 1) 9 * 5 + (packetNr - 2) * 13 * 5 else 0
+        val minutesInPrevious = if (packetNr > 1) (9 + (packetNr - 2) * 13) * slotMin else 0
         return (startIndex until v.size - 1).mapNotNull { i ->
             val bpm = v[i].toInt()
             if (bpm == 0) return@mapNotNull null
-            val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * 5).toLong()).toInstant()
+            val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * slotMin).toLong()).toInstant()
             RingDecodedEvent.HistoryMeasurement(
                 kind_field = MeasurementKind.HEART_RATE, value = bpm.toDouble(), _timestamp = ts
             )
         }
     }
 
-    private fun decodeStressHistory(v: List<UByte>, day: LocalDate, zone: ZoneId): List<RingDecodedEvent> {
+    private fun decodeStressHistory(
+        v: List<UByte>, day: LocalDate, zone: ZoneId, slotMin: Int
+    ): List<RingDecodedEvent> {
         val packetNr = v[1].toInt()
         if (packetNr == 0xFF || packetNr == 0) return emptyList()
         val startIndex = if (packetNr == 1) 3 else 2
         val base = day.atStartOfDay(zone)
-        val minutesInPrevious = if (packetNr > 1) 12 * 30 + (packetNr - 2) * 13 * 30 else 0
+        val minutesInPrevious = if (packetNr > 1) (12 + (packetNr - 2) * 13) * slotMin else 0
         return (startIndex until v.size - 1).mapNotNull { i ->
             val stress = v[i].toInt()
             if (stress == 0) return@mapNotNull null
-            val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * 30).toLong()).toInstant()
+            val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * slotMin).toLong()).toInstant()
             RingDecodedEvent.StressSample(value = stress, _timestamp = ts)
         }
     }
 
-    private fun decodeHRVHistory(v: List<UByte>, day: LocalDate, zone: ZoneId): List<RingDecodedEvent> {
+    private fun decodeHRVHistory(
+        v: List<UByte>, day: LocalDate, zone: ZoneId, slotMin: Int
+    ): List<RingDecodedEvent> {
         val packetNr = v[1].toInt()
         if (packetNr == 0xFF || packetNr == 0) return emptyList()
         val startIndex = if (packetNr == 1) 3 else 2
         val base = day.atStartOfDay(zone)
-        val minutesInPrevious = if (packetNr > 1) 12 * 30 + (packetNr - 2) * 13 * 30 else 0
+        val minutesInPrevious = if (packetNr > 1) (12 + (packetNr - 2) * 13) * slotMin else 0
         return (startIndex until v.size - 1).mapNotNull { i ->
             val hrv = v[i].toInt()
             if (hrv == 0) return@mapNotNull null
-            val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * 30).toLong()).toInstant()
+            val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * slotMin).toLong()).toInstant()
             RingDecodedEvent.HrvSample(value = hrv, _timestamp = ts)
         }
     }
@@ -227,17 +243,25 @@ object ColmiDecoder {
     }
 
     /**
-     * Decode a `0x3C` device-support reply and return whether the ring wants an OS-level bond.
-     * Frame layout mirrors QRing's `DeviceSupportFunctionRsp.acceptData`: opcode at `[0]`, the
-     * first feature byte at `[1]`, where bit 3 (`0x08`) is `supportBlePair`. Returns null for any
-     * frame that isn't a device-support reply — callers treat null as "not a bond signal", so a
-     * wrong guess degrades to today's no-bond behaviour rather than misbehaving.
+     * Decode a `0x3C` device-support reply into the capability bits we act on.
+     *
+     * OFFSET NOTE: QRing's `QCDataParser` strips the opcode (and checksum) before
+     * `DeviceSupportFunctionRsp.acceptData` runs, so the rsp class's `bArr[N]` is FULL-frame
+     * byte `N+1`. `supportBlePair` = rsp `bArr[1] & 0x08` → full-frame `[2]`;
+     * `supportIntervalTemp` = rsp `bArr[8] & 0x80` → full-frame `[9]`. The original port read
+     * the bond bit from full-frame `[1]` — a byte QRing never parses.
+     *
+     * Returns null for any frame that isn't a device-support reply — callers treat null as
+     * "no capability signal", so a wrong guess degrades to no-bond/legacy-path behaviour.
      */
-    fun decodeDeviceSupport(data: ByteArray): Boolean? {
+    fun decodeDeviceSupport(data: ByteArray): ColmiDeviceSupport? {
         val packet = ColmiPacket.validating(data) ?: return null
         val v = packet.bytes.map { it.toUByte() }
         if (v[0] != ColmiCommandID.DEVICE_SUPPORT) return null
-        return (v[1].toInt() and 0x08) != 0
+        return ColmiDeviceSupport(
+            supportsBlePair = (v[2].toInt() and 0x08) != 0,
+            supportsIntervalTemp = (v[9].toInt() and 0x80) != 0,
+        )
     }
 
     // MARK: Big-data (V2)
@@ -252,34 +276,77 @@ object ColmiDecoder {
         return when (v[1]) {
             ColmiCommandID.BIG_DATA_SPO2 -> decodeSpo2(data, zone)
             ColmiCommandID.BIG_DATA_SLEEP -> decodeSleep(data, zone)
+            // Nap/lunch sleep (action 62): emitted spontaneously alongside the action-39 reply on
+            // rings with nap support. Same day-record layout as action 39 (QRing's
+            // parseDaySleepLunch reads the identical [daysAgo][len][start u16][end u16][pairs…]
+            // structure), so the regular sleep decoder handles it.
+            ColmiCommandID.BIG_DATA_SLEEP_LUNCH -> decodeSleep(data, zone)
             ColmiCommandID.BIG_DATA_TEMPERATURE -> decodeTemperature(data, zone)
-            ColmiCommandID.BIG_DATA_BLOOD_SUGAR -> decodeBloodSugar(data, zone)
+            // Blood sugar (0x47): Colmi rings don't support it and nothing requests it; the old
+            // parser here was a wrong-format guess (QRing uses SpO2-style 49-byte blocks), so a
+            // re-emitted frame would have decoded into garbage measurements. Ignore instead.
+            ColmiCommandID.BIG_DATA_BLOOD_SUGAR -> emptyList()
             else -> listOf(RingDecodedEvent.Unknown(commandId = v[1], raw = data))
         }
+    }
+
+    /**
+     * Interval temperature (action 119) — one packet of a day's series. Header (full frame):
+     * `[6]`=dayIndex, `[7]`=interval minutes, `[8]`=packetCount, `[9]`=packetIndex, then u16 LE
+     * samples in centi-°C (QRing `LargeDataHandler.getIntervalTemperature`). [sampleOffset] is
+     * the count of samples already decoded from this day's earlier packets — the caller
+     * (ColmiDriver) accumulates it, since slot position is cumulative across packets.
+     */
+    fun decodeIntervalTemperature(
+        data: ByteArray, sampleOffset: Int, zone: ZoneId = ZoneId.systemDefault()
+    ): List<RingDecodedEvent> {
+        if (data.size < 10) return emptyList()
+        val v = data.map { it.toUByte() }
+        val dayIndex = v[6].toInt()
+        val interval = v[7].toInt().takeIf { it > 0 } ?: 30
+        val dayStart = LocalDate.now(zone).minusDays(dayIndex.toLong()).atStartOfDay(zone)
+        val events = mutableListOf<RingDecodedEvent>()
+        var index = 10
+        var slot = sampleOffset
+        while (index + 1 < data.size) {
+            val raw = ColmiBytes.u16(v[index], v[index + 1])
+            index += 2
+            if (raw > 0) {
+                events.add(RingDecodedEvent.TemperatureSample(
+                    celsius = raw.toDouble() / 100.0,
+                    _timestamp = dayStart.plusMinutes((slot * interval).toLong()).toInstant()
+                ))
+            }
+            slot++
+        }
+        return events
     }
 
     private fun decodeSpo2(data: ByteArray, zone: ZoneId): List<RingDecodedEvent> {
         val v = data.map { it.toUByte() }
         val length = ColmiBytes.u16(v[2], v[3])
-        var index = 6
-        val events = mutableListOf<RingDecodedEvent>()
-        var daysAgo = -1
+        // QRing (BloodOxygenRepository): payload = length/49 blocks of [daysAgo][24 hourly
+        // (min,max) byte pairs], every block processed regardless of day order. The old loop
+        // stopped at the first daysAgo==0 block, dropping older days whenever today's block
+        // wasn't last. The (min+max)/2 collapse below is an intentional app simplification.
+        val blocks = length / 49
         val today = LocalDate.now(zone)
-        while (daysAgo != 0 && index - 6 < length && index < v.size) {
-            daysAgo = v[index].toInt(); index++
+        val events = mutableListOf<RingDecodedEvent>()
+        for (b in 0 until blocks) {
+            val base = 6 + b * 49
+            if (base + 49 > v.size) break
+            val daysAgo = v[base].toInt()
             val dayStart = today.minusDays(daysAgo.toLong())
             for (hour in 0..23) {
-                if (index + 1 >= v.size) break
-                val lo = v[index].toInt(); index++
-                val hi = v[index].toInt(); index++
+                val lo = v[base + 1 + hour * 2].toInt()
+                val hi = v[base + 2 + hour * 2].toInt()
                 if (lo > 0 && hi > 0) {
-                    val value = ((lo + hi).toDouble() / 2.0)
                     val ts = dayStart.atTime(hour, 0).atZone(zone).toInstant()
                     events.add(RingDecodedEvent.HistoryMeasurement(
-                        kind_field = MeasurementKind.SPO2, value = value, _timestamp = ts
+                        kind_field = MeasurementKind.SPO2,
+                        value = (lo + hi).toDouble() / 2.0, _timestamp = ts
                     ))
                 }
-                if (index - 6 >= length) break
             }
         }
         return events
@@ -288,32 +355,28 @@ object ColmiDecoder {
     private fun decodeTemperature(data: ByteArray, zone: ZoneId): List<RingDecodedEvent> {
         val v = data.map { it.toUByte() }
         val length = ColmiBytes.u16(v[2], v[3])
-        if (length < 50) return emptyList()
+        if (length < 2) return emptyList()
+        // QRing (DataHelper.parseTemperature): each day-block is [daysAgo][timeSpan][values…]
+        // with 1440/timeSpan single-byte samples at raw/10 + 20 °C. The old decoder skipped
+        // timeSpan as "one unknown byte" and hardcoded the 30-minute :00/:30 grid, compressing
+        // any day whose firmware cadence differs; it also stopped at the first daysAgo==0 block.
         var index = 6
         val events = mutableListOf<RingDecodedEvent>()
-        var daysAgo = -1
         val today = LocalDate.now(zone)
-        while (daysAgo != 0 && index - 6 < length && index < v.size) {
-            daysAgo = v[index].toInt(); index++
-            index++ // skip one unknown byte
-            val dayStart = today.minusDays(daysAgo.toLong())
-            for (hour in 0..23) {
-                if (index + 1 >= v.size) break
-                val t00 = v[index].toInt(); index++
-                val t30 = v[index].toInt(); index++
-                if (t00 > 0) {
+        while (index - 6 < length && index + 1 < v.size) {
+            val daysAgo = v[index].toInt(); index++
+            val timeSpan = v[index].toInt().takeIf { it in 1..1440 } ?: 30; index++
+            val samples = 1440 / timeSpan
+            val dayStart = today.minusDays(daysAgo.toLong()).atStartOfDay(zone)
+            for (s in 0 until samples) {
+                if (index >= v.size || index - 6 >= length) break
+                val raw = v[index].toInt(); index++
+                if (raw > 0) {
                     events.add(RingDecodedEvent.TemperatureSample(
-                        celsius = t00.toDouble() / 10.0 + 20.0,
-                        _timestamp = dayStart.atTime(hour, 0).atZone(zone).toInstant()
+                        celsius = raw.toDouble() / 10.0 + 20.0,
+                        _timestamp = dayStart.plusMinutes((s * timeSpan).toLong()).toInstant()
                     ))
                 }
-                if (t30 > 0) {
-                    events.add(RingDecodedEvent.TemperatureSample(
-                        celsius = t30.toDouble() / 10.0 + 20.0,
-                        _timestamp = dayStart.atTime(hour, 30).atZone(zone).toInstant()
-                    ))
-                }
-                if (index - 6 >= length) break
             }
         }
         return events
@@ -364,38 +427,4 @@ object ColmiDecoder {
         else -> SleepStage.UNKNOWN
     }
 
-    /**
-     * Decode blood sugar big-data response.
-     * Format (best-guess, validate with real ring): same structure as temperature —
-     * per-day entries with day index + hourly readings. Each reading is mg/dL × 10.
-     */
-    private fun decodeBloodSugar(data: ByteArray, zone: ZoneId): List<RingDecodedEvent> {
-        val v = data.map { it.toUByte() }
-        val length = ColmiBytes.u16(v[2], v[3])
-        if (length < 2) return emptyList()
-        var index = 6
-        val events = mutableListOf<RingDecodedEvent>()
-        var daysAgo = -1
-        val today = LocalDate.now(zone)
-        while (daysAgo != 0 && index - 6 < length && index < v.size) {
-            daysAgo = v[index].toInt(); index++
-            index++ // skip unknown byte
-            val dayStart = today.minusDays(daysAgo.toLong())
-            for (hour in 0..23) {
-                if (index + 1 >= v.size) break
-                val hi = v[index].toInt(); index++
-                val lo = v[index].toInt(); index++
-                val raw = ((hi shl 8) or lo)
-                if (raw > 0) {
-                    events.add(RingDecodedEvent.HistoryMeasurement(
-                        kind_field = MeasurementKind.BLOOD_SUGAR,
-                        value = raw.toDouble() / 10.0,
-                        _timestamp = dayStart.atTime(hour, 0).atZone(zone).toInstant()
-                    ))
-                }
-                if (index - 6 >= length) break
-            }
-        }
-        return events
-    }
 }

@@ -203,16 +203,23 @@ class ColmiDecoderTest {
     }
 
     @Test
-    fun `interleaved big data does not corrupt`() {
+    fun `sequential big data transfers each decode and reset the buffer`() {
+        // Real rings stream one big-data reply at a time (QRing can't handle interleaving, so
+        // firmware doesn't produce it). Verify the reassembly buffer resets cleanly between
+        // transfers: a split SpO2 transfer completes, then a whole sleep frame decodes without
+        // being contaminated by the previous transfer.
         val driver = ColmiDriver(NullWriter())
         val notifyV2 = ColmiUUIDs.NOTIFY_V2
 
-        // SpO2 frame: one day, min=96,max=98 at hour 0
         var spo2Payload = byteArrayOf(0x00, 96, 98)
         spo2Payload += ByteArray(46)
         val spo2Full = bigData(ColmiCommandID.BIG_DATA_SPO2, spo2Payload)
+        driver.ingest(spo2Full.copyOfRange(0, 12), notifyV2)
+        val spo2Events = driver.ingest(spo2Full.copyOfRange(12, spo2Full.size), notifyV2)
+        val spo2Values = spo2Events.filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+            .filter { it.kind_field == MeasurementKind.SPO2 }
+        assertEquals(97.0, spo2Values.first().value, 0.01)
 
-        // Sleep frame: complete in one notification
         val start = 480; val end = 540
         val sleepPayload = byteArrayOf(
             0x01, 0x00, 0x08,
@@ -221,25 +228,9 @@ class ColmiDecoderTest {
             ColmiCommandID.SLEEP_DEEP.toByte(), 30,
             ColmiCommandID.SLEEP_REM.toByte(), 30,
         )
-        val len = sleepPayload.size
-        val sleepFull = byteArrayOf(
-            0xBC.toByte(), ColmiCommandID.BIG_DATA_SLEEP.toByte(),
-            (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(),
-            0, 0
-        ) + sleepPayload
-
-        // Interleave: SpO2 header → complete sleep → SpO2 continuation
-        val spo2First = spo2Full.copyOfRange(0, 12)
-        val spo2Rest = spo2Full.copyOfRange(12, spo2Full.size)
-
-        driver.ingest(spo2First, notifyV2)
+        val sleepFull = bigData(ColmiCommandID.BIG_DATA_SLEEP, sleepPayload)
         val sleepEvents = driver.ingest(sleepFull, notifyV2)
-        val spo2Events = driver.ingest(spo2Rest, notifyV2)
-
         assertTrue(sleepEvents.any { it is RingDecodedEvent.SleepTimeline })
-        val spo2Values = spo2Events.filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
-            .filter { it.kind_field == MeasurementKind.SPO2 }
-        assertEquals(97.0, spo2Values.first().value, 0.01)
     }
 
     // MARK: Real R11 captures
@@ -411,17 +402,35 @@ class ColmiDecoderTest {
         assertArrayEquals(byteArrayOf(0x16, 0x02, 0x02, 0x05, 0x00, 0x00, 0x00, 0x00), cmd)
     }
 
-    // Device-support (0x3C): supportBlePair is bit 3 (0x08) of the first feature byte (frame[1]).
+    // Device-support (0x3C): QRing's QCDataParser strips the opcode before the rsp class runs,
+    // so supportBlePair (rsp bArr[1] & 0x08) is FULL-frame byte 2, and supportIntervalTemp
+    // (rsp bArr[8] & 0x80) is full-frame byte 9. The original port read frame[1] — a byte QRing
+    // never parses — which silently broke the R09 bond gate.
     @Test
-    fun `device support decodes supportBlePair bit`() {
-        // frame[1] = 0x08 → bond wanted
-        assertEquals(true, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x08))))
-        // frame[1] = 0x0F (bit set among others) → still true
-        assertEquals(true, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x0F))))
-        // frame[1] = 0x07 (bit clear) → false
-        assertEquals(false, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x07))))
+    fun `device support decodes supportBlePair from full-frame byte 2`() {
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x08)))?.supportsBlePair)
+        // Bit set among others → still true
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x0F)))?.supportsBlePair)
+        // Bit clear → false
+        assertEquals(false, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x07)))?.supportsBlePair)
+        // The OLD (wrong) offset must not trigger a bond: bit in frame[1], frame[2] clear.
+        assertEquals(false, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x08, 0x00)))?.supportsBlePair)
         // Not a device-support frame → null
         assertNull(ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30))))
+    }
+
+    @Test
+    fun `device support decodes supportIntervalTemp from full-frame byte 9`() {
+        val withBit = ColmiPacket.frame(
+            byteArrayOf(0x3C, 0, 0, 0, 0, 0, 0, 0, 0, 0x80.toByte()))
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(withBit)?.supportsIntervalTemp)
+        val withoutBit = ColmiPacket.frame(
+            byteArrayOf(0x3C, 0, 0, 0, 0, 0, 0, 0, 0, 0x7F))
+        assertEquals(false, ColmiDecoder.decodeDeviceSupport(withoutBit)?.supportsIntervalTemp)
     }
 
     @Test

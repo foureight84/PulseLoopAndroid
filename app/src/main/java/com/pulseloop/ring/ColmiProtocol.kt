@@ -70,6 +70,12 @@ object ColmiCommandID {
     const val BIG_DATA_TEMPERATURE: UByte = 0x25u
     const val BIG_DATA_SLEEP: UByte = 0x27u
     const val BIG_DATA_SPO2: UByte = 0x2Au
+    /** Nap/lunch sleep (QRing action 62). Never requested — rings with nap support emit it
+     *  spontaneously alongside the action-39 reply to [ColmiEncoder.bigDataSleep]. */
+    const val BIG_DATA_SLEEP_LUNCH: UByte = 0x3Eu
+    /** Interval temperature history (QRing action 119) — the modern per-day, packet-indexed
+     *  path used instead of [BIG_DATA_TEMPERATURE] when the 0x3C reply sets supportIntervalTemp. */
+    const val BIG_DATA_INTERVAL_TEMPERATURE: UByte = 0x77u
 
     // Sleep stage types
     const val SLEEP_LIGHT: UByte = 0x02u
