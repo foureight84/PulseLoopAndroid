@@ -191,6 +191,82 @@ class GeminiClientTest {
         assertEquals(61, fr["response"]!!.jsonObject["result"]!!.jsonObject["avg"]!!.jsonPrimitive.int)
     }
 
+    @Test
+    fun testThoughtSignatureIsPreservedWhenReplayingModelParts() {
+        // Gemini 3.x attaches an encrypted thoughtSignature to functionCall/text parts; the API
+        // rejects (HTTP 400) any replayed model turn that drops it. The replay must echo it back
+        // verbatim on every part (issue #22).
+        val client = GeminiClient("key")
+        client.buildRequestBody(request(listOf(msg("user", "hi"))))
+
+        val response = client.ingestResponse(JsonObject(mapOf(
+            "candidates" to JsonArray(listOf(JsonObject(mapOf(
+                "content" to JsonObject(mapOf(
+                    "parts" to JsonArray(listOf(
+                        JsonObject(mapOf(
+                            "text" to JsonPrimitive("let me check"),
+                            "thoughtSignature" to JsonPrimitive("SIG_TEXT"),
+                        )),
+                        JsonObject(mapOf(
+                            "functionCall" to JsonObject(mapOf(
+                                "name" to JsonPrimitive("get_hr"),
+                                "args" to JsonObject(mapOf("days" to JsonPrimitive(7))),
+                            )),
+                            "thoughtSignature" to JsonPrimitive("SIG_FC"),
+                        )),
+                    )),
+                )),
+            )))),
+        )))
+        val call = response.output.filterIsInstance<FunctionCallOutput>().single()
+
+        val toolResult = JsonObject(mapOf(
+            "type" to JsonPrimitive("function_call_output"),
+            "call_id" to JsonPrimitive(call.callId),
+            "output" to JsonPrimitive("""{"avg":61}"""),
+        ))
+        val body = client.buildRequestBody(request(
+            listOf(toolResult), previousResponseId = response.id,
+        ))
+
+        // Replayed model turn keeps the signature on both the text part and the functionCall part.
+        val modelParts = body["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray.map { it.jsonObject }
+        val textPart = modelParts.single { it.containsKey("text") }
+        assertEquals("SIG_TEXT", textPart["thoughtSignature"]!!.jsonPrimitive.content)
+        val fcPart = modelParts.single { it.containsKey("functionCall") }
+        assertEquals("SIG_FC", fcPart["thoughtSignature"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun testMissingThoughtSignatureOmitsTheKey() {
+        // Gemini 2.5 responses carry no signature — the replayed part must not invent one.
+        val client = GeminiClient("key")
+        client.buildRequestBody(request(listOf(msg("user", "hi"))))
+        val response = client.ingestResponse(JsonObject(mapOf(
+            "candidates" to JsonArray(listOf(JsonObject(mapOf(
+                "content" to JsonObject(mapOf(
+                    "parts" to JsonArray(listOf(JsonObject(mapOf(
+                        "functionCall" to JsonObject(mapOf(
+                            "name" to JsonPrimitive("get_hr"),
+                            "args" to JsonObject(emptyMap()),
+                        )),
+                    )))),
+                )),
+            )))),
+        )))
+        val call = response.output.filterIsInstance<FunctionCallOutput>().single()
+        val body = client.buildRequestBody(request(
+            listOf(JsonObject(mapOf(
+                "type" to JsonPrimitive("function_call_output"),
+                "call_id" to JsonPrimitive(call.callId),
+                "output" to JsonPrimitive("{}"),
+            ))),
+            previousResponseId = response.id,
+        ))
+        val fcPart = body["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray[0].jsonObject
+        assertFalse(fcPart.containsKey("thoughtSignature"))
+    }
+
     // ── Web search grounding ────────────────────────────────────────────
 
     @Test
