@@ -109,6 +109,7 @@ object MetricsService {
             MeasurementKind.TEMPERATURE -> caps.contains(WearableCapability.TEMPERATURE)
             MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> caps.contains(WearableCapability.BLOOD_PRESSURE)
             MeasurementKind.BLOOD_SUGAR -> caps.contains(WearableCapability.BLOOD_SUGAR)
+            MeasurementKind.STEPS -> false  // internal motion signal, not a displayed metric
         }
     }
 
@@ -116,6 +117,7 @@ object MetricsService {
 
     suspend fun insertMockMeasurement(kind: MeasurementKind, db: PulseLoopDatabase) {
         val value = when (kind) {
+            MeasurementKind.STEPS -> 0.0
             MeasurementKind.HEART_RATE -> (62..86).random().toDouble()
             MeasurementKind.SPO2 -> (96..99).random().toDouble()
             MeasurementKind.STRESS -> (20..70).random().toDouble()

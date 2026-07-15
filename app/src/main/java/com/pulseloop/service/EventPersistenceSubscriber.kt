@@ -213,6 +213,14 @@ class EventPersistenceSubscriber(
                 // a minute-bucket with a brisk cadence counts as active.
                 if (event.steps >= ACTIVE_MINUTE_STEPS) sums.activeMin += 1
                 upsertActivityDaily(ts, sums.steps, 0.0, sums.distanceM, sums.activeMin)
+                // Keep the per-minute step count as a time series (non-zero only, to
+                // avoid bloat) — a motion signal so sleep staging can tell an
+                // out-of-bed walk (steps) from an in-bed HR spike (no steps).
+                // Deterministic id → history re-syncs are idempotent.
+                if (event.steps > 0) db.measurementDao().insert(MeasurementEntity(
+                    id = "step-$ts", kindRaw = MeasurementKind.STEPS.name,
+                    value = event.steps.toDouble(), unit = "", timestamp = ts, sourceRaw = "history",
+                ))
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)

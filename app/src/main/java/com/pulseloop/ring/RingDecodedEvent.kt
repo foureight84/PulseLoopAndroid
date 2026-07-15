@@ -14,7 +14,8 @@ enum class MeasurementKind(val key: String, val unit: String) {
     TEMPERATURE("temp", "°C"),
     BLOOD_PRESSURE_SYSTOLIC("bp_sys", "mmHg"),
     BLOOD_PRESSURE_DIASTOLIC("bp_dia", "mmHg"),
-    BLOOD_SUGAR("glucose", "mg/dL");
+    BLOOD_SUGAR("glucose", "mg/dL"),
+    STEPS("steps", "");   // per-minute step count — motion signal for sleep staging
 }
 
 /**

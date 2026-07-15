@@ -149,13 +149,29 @@ class DerivedMetricsEngine(
         val nightLow = buckets.values.filterNotNull().percentileOrNull(0.05) ?: return
         val thresh = nightLow * SLEEP_HR_MARGIN
         val maxB = (endMs - startMs) / BUCKET_MS
-        val asleep = { i: Long -> buckets[i]?.let { it <= thresh } == true }
+        val motion = stepMotionSet(startMs, endMs, startMs)  // buckets you were up and walking
+        val asleep = { i: Long -> buckets[i]?.let { it <= thresh } == true && i !in motion }
         val has = { i: Long -> buckets[i] != null }
         val total = (0..maxB).count { asleep(it) } * 10
         if (total < MIN_SLEEP_MINUTES) return
         val awake = (0..maxB).count { !asleep(it) && has(it) } * 10
         val eff = (100 * total / (total + awake).coerceAtLeast(1)).coerceIn(0, 100)
         writeSleep("derived-$dayStart", dayStart, startMs, endMs, total, eff, startMs, nightLow, buckets, 0..maxB, asleep, has)
+    }
+
+    /** 10-min bucket indices (relative to baseMs) where the step count shows the user
+     *  was up and walking — a bathroom trip is real out-of-bed wake, distinct from an
+     *  in-bed HR spike (restless but still lying down). Overrides HR: a step bucket is
+     *  never scored asleep. */
+    private suspend fun stepMotionSet(startMs: Long, endMs: Long, baseMs: Long): Set<Long> {
+        val steps = db.measurementDao().range(MeasurementKind.STEPS.name, startMs, endMs)
+        if (steps.isEmpty()) return emptySet()
+        val perBucket = HashMap<Long, Int>()
+        for (s in steps) {
+            val b = (s.timestamp - baseMs) / BUCKET_MS
+            perBucket[b] = (perBucket[b] ?: 0) + s.value.toInt()
+        }
+        return perBucket.filterValues { it >= STEP_WAKE_THRESHOLD }.keys
     }
 
     /** Estimate last night's sleep from sustained low overnight HR (automatic path). */
@@ -183,7 +199,8 @@ class DerivedMetricsEngine(
         // (2026-07-14: a perfectly-tracked 8h night was producing no session at all.)
         val asleepThresh = nightLow * SLEEP_HR_MARGIN
         val maxBucket = (windowEnd - windowStart) / BUCKET_MS
-        val asleep = { i: Long -> buckets[i]?.let { it <= asleepThresh } == true }
+        val motion = stepMotionSet(windowStart, windowEnd, windowStart)  // out-of-bed buckets
+        val asleep = { i: Long -> buckets[i]?.let { it <= asleepThresh } == true && i !in motion }
         val hasData = { i: Long -> buckets[i] != null }
 
         // Find the SLEEP WINDOW as the longest run bounded by sleep, tolerating up to
@@ -340,6 +357,8 @@ class DerivedMetricsEngine(
         /** Mid-sleep wake tolerated before the window ends (120min: bridges a long
          *  restless middle / biphasic gap; a real morning wake+activity exceeds it). */
         private const val WAKE_TOLERANCE_BUCKETS = 12
+        /** Steps in a 10-min bucket that mean out-of-bed walking (vs a hand twitch). */
+        private const val STEP_WAKE_THRESHOLD = 15
         private const val MIN_SLEEP_MINUTES = 180
         private const val MIN_NIGHT_SAMPLES = 500
     }

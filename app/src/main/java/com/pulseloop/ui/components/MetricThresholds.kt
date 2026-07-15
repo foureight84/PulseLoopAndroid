@@ -35,6 +35,7 @@ data class MetricThresholds(
 object MetricThresholdTable {
 
     fun forKind(kind: MeasurementKind): MetricThresholds? = when (kind) {
+        MeasurementKind.STEPS -> null
         MeasurementKind.HEART_RATE -> heartRate
         MeasurementKind.SPO2 -> spo2
         MeasurementKind.STRESS -> stress
