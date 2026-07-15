@@ -265,9 +265,14 @@ class ColmiSyncEngine(
                 stage = Stage.HRV; daysAgo = 0; requestHRV(); armWatchdog()
             }
             ColmiCommandID.BIG_DATA_TEMPERATURE -> {
-                stage = Stage.BLOOD_SUGAR; requestBloodSugar(); armWatchdog()
+                // Temperature is the final history stage: Colmi rings support neither blood pressure
+                // nor blood sugar (see ColmiCoordinator.capabilities and this class's stage-order doc).
+                // Finishing here — instead of querying blood sugar (0x47) — avoids an unsupported
+                // request the ring answers by re-emitting its temperature frame, which re-entered this
+                // branch and looped into a GATT write storm that starved the sleep sync. The stage
+                // guard also makes a repeated temperature frame idempotent (finish once, then ignore).
+                if (stage == Stage.TEMPERATURE) finishSync()
             }
-            ColmiCommandID.BIG_DATA_BLOOD_SUGAR -> finishSync()
         }
     }
 
@@ -302,12 +307,9 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.syncHRV(daysAgo))
     }
 
-    private fun requestBp() { writer?.enqueue(encoder.syncBp()) }
-
     private fun requestSpo2() { writer?.enqueue(encoder.bigDataSpo2()) }
     private fun requestSleep() { writer?.enqueue(encoder.bigDataSleep()) }
     private fun requestTemperature() { writer?.enqueue(encoder.bigDataTemperature()) }
-    private fun requestBloodSugar() { writer?.enqueue(encoder.bigDataBloodSugar()) }
 
     private fun dayStart(daysAgo: Int): LocalDate = LocalDate.now(zone).minusDays(daysAgo.toLong())
 
@@ -330,12 +332,9 @@ class ColmiSyncEngine(
             }
             Stage.STRESS -> { stage = Stage.SPO2; requestSpo2() }
             Stage.HRV -> {
+                // Skip BP: Colmi rings don't support it (see ColmiCoordinator.capabilities).
                 if (daysAgo < 6) { daysAgo++; requestHRV() }
-                else { stage = Stage.BP; requestBp() }
-            }
-            Stage.BP -> {
-                // BP is a single bulk response, not paged
-                stage = Stage.TEMPERATURE; requestTemperature()
+                else { stage = Stage.TEMPERATURE; requestTemperature() }
             }
             else -> {}
         }
@@ -370,10 +369,8 @@ class ColmiSyncEngine(
             Stage.STRESS -> { stage = Stage.SPO2; requestSpo2() }
             Stage.SPO2 -> { stage = Stage.SLEEP; requestSleep() }
             Stage.SLEEP -> { daysAgo = 0; stage = Stage.HRV; requestHRV() }
-            Stage.HRV -> { stage = Stage.BP; requestBp() }
-            Stage.BP -> { stage = Stage.TEMPERATURE; requestTemperature() }
-            Stage.TEMPERATURE -> { stage = Stage.BLOOD_SUGAR; requestBloodSugar() }
-            Stage.BLOOD_SUGAR -> finishSync()
+            Stage.HRV -> { stage = Stage.TEMPERATURE; requestTemperature() }  // BP unsupported — skip
+            Stage.TEMPERATURE -> finishSync()  // blood sugar unsupported — temperature is terminal
             else -> {}
         }
         if (stage != Stage.DONE) armWatchdog()

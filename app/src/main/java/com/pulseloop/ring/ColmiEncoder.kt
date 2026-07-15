@@ -183,7 +183,12 @@ object ColmiEncoder {
 
     fun bigDataSleep(): ByteArray = byteArrayOf(
         ColmiCommandID.BIG_DATA_V2.toByte(), ColmiCommandID.BIG_DATA_SLEEP.toByte(),
-        0x01, 0x00, 0xFF.toByte(), 0x00, 0xFF.toByte(),
+        // New_Sleep_Protocol (big-data action 39) requires a 2-byte payload [0xFF, 0x01] —
+        // 0xFF = "all history", 0x01 = protocol version — framed with its real CRC16/MODBUS.
+        // The old 1-byte [0xFF] payload (bc 27 01 00 ff 00 ff) is silently ignored by the ring,
+        // so sleep never synced. Frame: len=2 (LE), CRC16([0xFF,0x01])=0x8081 (LE 81 80), FF 01.
+        // Verified against QRing's LargeDataHandler.addHeader(39, {0xFF, 0x01}) + CRC16.
+        0x02, 0x00, 0x81.toByte(), 0x80.toByte(), 0xFF.toByte(), 0x01,
     )
 
     fun bigDataTemperature(): ByteArray = byteArrayOf(
