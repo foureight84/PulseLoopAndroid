@@ -367,7 +367,15 @@ class GeminiClient(
             val fc = part["functionCall"] as? JsonObject
             if (text != null) {
                 textParts.add(TextContent(text))
-                modelParts.add(JsonObject(mapOf("text" to JsonPrimitive(text))))
+                // Gemini 3.x thinking models attach an encrypted thoughtSignature to response
+                // parts (functionCall AND final output); the API rejects (HTTP 400 "missing a
+                // thought_signature in functionCall parts") any replayed model turn that drops it.
+                // Carry it through verbatim on every reconstructed part so appendContinuation's
+                // replay stays valid (issue #22).
+                modelParts.add(JsonObject(buildMap {
+                    put("text", JsonPrimitive(text))
+                    part["thoughtSignature"]?.let { put("thoughtSignature", it) }
+                }))
             } else if (fc != null) {
                 val name = (fc["name"] as? JsonPrimitive)?.contentOrNull ?: continue
                 val args = fc["args"] as? JsonObject ?: JsonObject(emptyMap())
@@ -375,12 +383,13 @@ class GeminiClient(
                 val callId = "gemini_call_" + UUID.randomUUID().toString().replace("-", "").take(12)
                 callIdToName[callId] = name
                 outputItems.add(FunctionCallOutput(id = callId, callId = callId, name = name, arguments = argsStr))
-                modelParts.add(JsonObject(mapOf(
-                    "functionCall" to JsonObject(mapOf(
+                modelParts.add(JsonObject(buildMap {
+                    put("functionCall", JsonObject(mapOf(
                         "name" to JsonPrimitive(name),
                         "args" to args,
-                    )),
-                )))
+                    )))
+                    part["thoughtSignature"]?.let { put("thoughtSignature", it) }
+                }))
             }
         }
         // One MessageOutput carrying every text part — OpenAIResponse.outputText

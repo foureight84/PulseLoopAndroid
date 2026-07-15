@@ -17,6 +17,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -108,23 +110,32 @@ fun ActivityTile(
                 strokeWidth = 9.dp,
                 ringSpacing = 4.dp,
             )
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
+            // Three metrics (steps/distance/calories) share the fixed-height tile. At 22.sp the
+            // third value overflowed and clipped the calories row (issue #24). Keep each pair
+            // compact — 16.sp value, tight line heights, and no font padding (Compose's default
+            // includeFontPadding adds several dp per line) — so all three fit with margin.
+            val compact = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.weight(1f)) {
                 values.forEach { value ->
                     Column {
                         Text(
                             value.label.uppercase(),
                             fontSize = 10.sp,
+                            lineHeight = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 0.8.sp,
                             color = value.color,
+                            style = compact,
                         )
                         Text(
                             value.text,
-                            fontSize = 22.sp,
+                            fontSize = 16.sp,
+                            lineHeight = 18.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = PulseColors.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            style = compact,
                         )
                     }
                 }
