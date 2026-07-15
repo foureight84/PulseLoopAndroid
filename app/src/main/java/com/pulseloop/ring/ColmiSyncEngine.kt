@@ -43,7 +43,7 @@ class ColmiSyncEngine(
     private var userProfile: UserProfileValues? = null
 
     // History state machine
-    private enum class Stage { IDLE, ACTIVITY, HEART_RATE, STRESS, SPO2, SLEEP, HRV, BP, TEMPERATURE, BLOOD_SUGAR, DONE }
+    private enum class Stage { IDLE, ACTIVITY, HEART_RATE, STRESS, SPO2, SLEEP, HRV, TEMPERATURE, DONE }
 
     private var stage = Stage.IDLE
     private var daysAgo = 0
@@ -72,8 +72,7 @@ class ColmiSyncEngine(
             op == ColmiCommandID.SYNC_ACTIVITY ||
             op == ColmiCommandID.SYNC_HEART_RATE ||
             op == ColmiCommandID.SYNC_STRESS ||
-            op == ColmiCommandID.SYNC_HRV ||
-            op == ColmiCommandID.BP_READ
+            op == ColmiCommandID.SYNC_HRV
     }
 
     override fun runStartup() {
@@ -246,6 +245,10 @@ class ColmiSyncEngine(
     fun handleBigDataComplete(type: UByte) {
         when (type) {
             ColmiCommandID.BIG_DATA_SPO2 -> {
+                // Same stray-frame guard as SLEEP/TEMPERATURE below: rings can re-emit a big-data
+                // frame outside its stage, and an unguarded advance would jump the pipeline back
+                // to SLEEP and re-request it.
+                if (stage != Stage.SPO2) return
                 stage = Stage.SLEEP; requestSleep(); armWatchdog()
             }
             ColmiCommandID.BIG_DATA_SLEEP -> {

@@ -196,26 +196,10 @@ object ColmiEncoder {
         0x01, 0x00, 0x3E, 0x81.toByte(), 0x02,
     )
 
-    fun bigDataBloodSugar(): ByteArray = byteArrayOf(
-        ColmiCommandID.BIG_DATA_V2.toByte(), ColmiCommandID.BIG_DATA_BLOOD_SUGAR.toByte(),
-        0x01, 0x00, 0xFF.toByte(), 0x00, 0xFF.toByte(),
-    )
-
-    /** Request BP history from the ring. [fromUnix] = starting epoch (0 = all available). */
-    fun syncBp(fromUnix: Int = 0): ByteArray {
-        val ts = fromUnix.toUInt()
-        return byteArrayOf(
-            ColmiCommandID.BP_READ.toByte(),
-            (ts and 0xFFu).toByte(),
-            ((ts shr 8) and 0xFFu).toByte(),
-            ((ts shr 16) and 0xFFu).toByte(),
-            ((ts shr 24) and 0xFFu).toByte(),
-            0x00, 0x32,  // count = 50
-        )
-    }
-
-    fun confirmBp(success: Boolean = true): ByteArray =
-        byteArrayOf(ColmiCommandID.BP_CONFIRM.toByte(), if (success) 0x00 else 0xFF.toByte())
+    // No BP / blood-sugar request builders: Colmi rings support neither (see
+    // ColmiCoordinator.capabilities). The decoder keeps its defensive parsers for
+    // stray 0x14 / big-data 0x47 frames, but nothing must ever request them —
+    // unsupported requests trigger frame re-emission storms (PR #26).
 }
 
 /**
