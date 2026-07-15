@@ -157,57 +157,72 @@ class DerivedMetricsEngine(
         // above nightLow*1.15, so it's excluded without needing an explicit ceiling.
         // (2026-07-14: a perfectly-tracked 8h night was producing no session at all.)
         val asleepThresh = nightLow * SLEEP_HR_MARGIN
-        val asleep = { i: Long -> (buckets[i] ?: Double.MAX_VALUE) <= asleepThresh }
-
-        // Longest run, tolerating up to 2 consecutive non-sleep buckets (brief wakes).
-        var bestStart = -1L; var bestLen = 0L
-        var runStart = -1L; var gap = 0
         val maxBucket = (windowEnd - windowStart) / BUCKET_MS
+        val asleep = { i: Long -> buckets[i]?.let { it <= asleepThresh } == true }
+        val hasData = { i: Long -> buckets[i] != null }
+
+        // Find the SLEEP WINDOW as the longest run bounded by sleep, tolerating up to
+        // WAKE_TOLERANCE_BUCKETS consecutive awake buckets (mid-sleep wakes) — so a
+        // fragmented night (e.g. restless 1-3am between two blocks) merges into ONE
+        // window instead of reporting only the longest unbroken stretch. A wake longer
+        // than that ends the window (you got up). Total sleep is then the actual
+        // asleep buckets INSIDE the window, not the window length — the standard
+        // "time in bed" vs "total sleep time" distinction. (2026-07-15: a 6-7h
+        // fragmented night was reported as 3h10m — its single longest run.)
+        var winStart = -1L; var winEnd = -1L; var bestSleep = 0L
+        var runStart = -1L; var runLastSleep = -1L; var gap = 0; var runSleep = 0L
         for (i in 0..maxBucket) {
-            if (asleep(i)) {
-                if (runStart < 0) runStart = i
-                gap = 0
-            } else if (runStart >= 0 && ++gap > 2) {
-                val len = i - gap - runStart + 1
-                if (len > bestLen) { bestLen = len; bestStart = runStart }
-                runStart = -1; gap = 0
+            when {
+                asleep(i) -> {
+                    if (runStart < 0) runStart = i
+                    runLastSleep = i; runSleep++; gap = 0
+                }
+                hasData(i) && runStart >= 0 -> {
+                    if (++gap > WAKE_TOLERANCE_BUCKETS) {
+                        if (runSleep > bestSleep) { bestSleep = runSleep; winStart = runStart; winEnd = runLastSleep }
+                        runStart = -1; runSleep = 0; gap = 0
+                    }
+                }
+                // data gap (ring off): don't count as wake, just don't extend sleep
             }
         }
-        if (runStart >= 0) {
-            val len = maxBucket - runStart + 1
-            if (len > bestLen) { bestLen = len; bestStart = runStart }
-        }
+        if (runStart >= 0 && runSleep > bestSleep) { bestSleep = runSleep; winStart = runStart; winEnd = runLastSleep }
+        if (winStart < 0) return
 
-        val minutes = bestLen * BUCKET_MS / 60_000
-        if (minutes < MIN_SLEEP_MINUTES) return
-        val startAt = windowStart + bestStart * BUCKET_MS
+        val startAt = windowStart + winStart * BUCKET_MS
+        val endAt = windowStart + (winEnd + 1) * BUCKET_MS
+        val totalSleepMin = (bestSleep * BUCKET_MS / 60_000).toInt()
+        if (totalSleepMin < MIN_SLEEP_MINUTES) return
+        // Efficiency = actual sleep / time in the sleep window (0-100). A restless
+        // night with many awakenings scores low even at decent total sleep — this is
+        // the fragmentation/restlessness number surfaced on the Sleep screen's score.
+        val windowMin = ((winEnd - winStart + 1) * BUCKET_MS / 60_000).toInt().coerceAtLeast(1)
+        val efficiency = (100 * totalSleepMin / windowMin).coerceIn(0, 100)
+
         val sessionId = "derived-$dayStart"
         db.sleepSessionDao().upsert(SleepSessionEntity(
-            id = sessionId,
-            date = dayStart,
-            startAt = startAt,
-            endAt = startAt + bestLen * BUCKET_MS,
-            totalMinutes = minutes.toInt(),
-            score = null,                      // estimates don't get a score
-            syncedAt = System.currentTimeMillis(),  // non-null: survives demo clears
+            id = sessionId, date = dayStart, startAt = startAt, endAt = endAt,
+            totalMinutes = totalSleepMin,      // ACTUAL sleep, not window length
+            score = efficiency,                // sleep efficiency % = restlessness proxy
+            syncedAt = System.currentTimeMillis(),
         ))
-        // Coarse derived stages: deep = HR well below daytime baseline, else light.
-        // Not polysomnography — but it gives the Sleep screen structure and is
-        // honest about what an HR-only estimate can see.
+
+        // Stage blocks across the whole window: DEEP / LIGHT for sleep, AWAKE for the
+        // mid-sleep wakes — so the hypnogram SHOWS the fragmentation.
         db.sleepStageBlockDao().deleteBySession(sessionId)
-        var blockStart = bestStart; var blockStage: String? = null
-        fun stageOf(i: Long): String {
-            val v = buckets[i] ?: return "LIGHT"
-            return if (v <= nightLow * 1.05) "DEEP" else "LIGHT"
+        fun stageOf(i: Long): String = when {
+            !asleep(i) && hasData(i) -> "AWAKE"
+            buckets[i]?.let { it <= nightLow * 1.05 } == true -> "DEEP"
+            else -> "LIGHT"
         }
-        for (i in bestStart..(bestStart + bestLen)) {
-            val stg = if (i < bestStart + bestLen) stageOf(i) else null
+        var blockStart = winStart; var blockStage: String? = null
+        for (i in winStart..(winEnd + 1)) {
+            val stg = if (i <= winEnd) stageOf(i) else null
             if (stg != blockStage) {
                 if (blockStage != null) {
                     val bs = windowStart + blockStart * BUCKET_MS
                     db.sleepStageBlockDao().insert(com.pulseloop.data.entity.SleepStageBlockEntity(
-                        sessionId = sessionId,
-                        startAt = bs,
+                        sessionId = sessionId, startAt = bs,
                         startMinute = ((bs - startAt) / 60_000).toInt(),
                         durationMinutes = ((i - blockStart) * BUCKET_MS / 60_000).toInt(),
                         stageRaw = blockStage!!,
@@ -291,6 +306,8 @@ class DerivedMetricsEngine(
         private const val BUCKET_MS = 10 * 60_000L
         /** Asleep = bucket HR within this factor of the night's 5th-pct floor. */
         private const val SLEEP_HR_MARGIN = 1.15
+        /** Mid-sleep wake buckets tolerated before the sleep window ends (60min). */
+        private const val WAKE_TOLERANCE_BUCKETS = 6
         private const val MIN_SLEEP_MINUTES = 180
         private const val MIN_NIGHT_SAMPLES = 500
     }
