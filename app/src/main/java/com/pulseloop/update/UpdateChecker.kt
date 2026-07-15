@@ -70,7 +70,16 @@ object UpdateChecker {
     private const val KEY_ETAG = "etag"
     private const val KEY_CACHED_RELEASE = "cachedReleaseJson"
     private const val KEY_LAST_CHECK = "lastCheckAt"
-    private const val AUTO_CHECK_INTERVAL_MS = 24 * 3600_000L
+
+    /**
+     * Minimum gap between automatic checks. Auto-checks fire on every background→foreground
+     * transition (plus cold start), so this is what actually bounds GitHub traffic: at most
+     * 4 requests/hour, and repeat checks send If-None-Match, whose 304 replies don't count
+     * against GitHub's rate limit at all. 15 min keeps a long-running app noticing a new
+     * release quickly without the old force-close-and-relaunch (previously this was 24 h,
+     * which made foreground checks pointless).
+     */
+    private const val AUTO_CHECK_INTERVAL_MS = 15 * 60_000L
 
     fun isSupported(): Boolean =
         !BuildConfig.DEBUG && BuildConfig.APPLICATION_ID == "com.pulseloop"
@@ -80,12 +89,13 @@ object UpdateChecker {
 
     /**
      * Checks the GitHub latest release against the installed build. [force] bypasses the
-     * once-a-day throttle and the ETag cache (used by the Settings "Check for updates" button).
+     * auto-check throttle and the ETag cache (used by the Settings "Check for updates" button).
      *
      * A 304 Not Modified still re-evaluates the release cached alongside the ETag — the
      * throttle is the only thing that limits how often the result surfaces. Otherwise a
      * pending update the user dismissed once would never be offered again while that
-     * release's ETag stays current.
+     * release's ETag stays current. (Nag control for the frequent foreground checks lives
+     * at the call site, which remembers the dismissed versionCode for the session.)
      */
     suspend fun check(context: Context, force: Boolean = false): UpdateCheckResult = withContext(Dispatchers.IO) {
         if (!isSupported()) return@withContext UpdateCheckResult.Skipped

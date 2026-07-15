@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -208,12 +209,30 @@ fun PulseLoopApp() {
             Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
 
-        // ── Self-update: release-only, throttled to once/day. Surfaces a dialog when a
-        // newer GitHub release is published; Settings also has a manual "Check for updates".
+        // ── Self-update: release-only. Checked on every return to foreground (ON_START also
+        // fires on cold start — lifecycle observers replay up to the current state), so a
+        // long-running app notices a new release without a force-close. UpdateChecker's
+        // 15-min throttle + ETag caching bound the GitHub traffic; remembering the dismissed
+        // versionCode keeps the frequent checks from re-nagging about the same release within
+        // a session. Settings also has a manual "Check for updates".
         var pendingUpdate by remember { mutableStateOf<com.pulseloop.update.UpdateInfo?>(null) }
-        LaunchedEffect(Unit) {
-            pendingUpdate = (com.pulseloop.update.UpdateChecker.check(context)
-                as? com.pulseloop.update.UpdateCheckResult.UpdateAvailable)?.info
+        var dismissedUpdateCode by remember { mutableStateOf<Int?>(null) }
+        val updateScope = rememberCoroutineScope()
+        val updateLifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(updateLifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_START) {
+                    updateScope.launch {
+                        val info = (com.pulseloop.update.UpdateChecker.check(context)
+                            as? com.pulseloop.update.UpdateCheckResult.UpdateAvailable)?.info
+                        if (info != null && info.versionCode != dismissedUpdateCode) {
+                            pendingUpdate = info
+                        }
+                    }
+                }
+            }
+            updateLifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { updateLifecycleOwner.lifecycle.removeObserver(observer) }
         }
 
         val isLandscape =
@@ -515,7 +534,12 @@ fun PulseLoopApp() {
         }
 
         pendingUpdate?.let { info ->
-            com.pulseloop.update.UpdateDialog(info) { pendingUpdate = null }
+            com.pulseloop.update.UpdateDialog(info) {
+                // Remember what was dismissed: foreground checks now run every ON_START, and
+                // without this the same release would re-prompt on every app switch.
+                dismissedUpdateCode = info.versionCode
+                pendingUpdate = null
+            }
         }
     }
 }
