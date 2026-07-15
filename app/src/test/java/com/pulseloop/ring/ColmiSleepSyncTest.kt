@@ -30,11 +30,11 @@ class ColmiSleepSyncTest {
     private fun emptyDayFrame(op: UByte): ByteArray = byteArrayOf(op.toByte(), 0xFF.toByte())
 
     /** Drive a just-started engine (stage ACTIVITY) to the SPO2 big-data stage by completing
-     *  every paged history day as empty: activity days 0..7, HR days 0..7, then stress. */
+     *  every paged history day as empty: activity days 0..7, HR days 0..7, stress days 0..6. */
     private fun driveToSpo2(engine: ColmiSyncEngine) {
         repeat(8) { engine.handleHistoryFrame(emptyDayFrame(ColmiCommandID.SYNC_ACTIVITY)) }
         repeat(8) { engine.handleHistoryFrame(emptyDayFrame(ColmiCommandID.SYNC_HEART_RATE)) }
-        engine.handleHistoryFrame(emptyDayFrame(ColmiCommandID.SYNC_STRESS))
+        repeat(7) { engine.handleHistoryFrame(emptyDayFrame(ColmiCommandID.SYNC_STRESS)) }
     }
 
     /** Continue from SPO2 to the terminal TEMPERATURE stage: spo2 → sleep → HRV days 0..6. */

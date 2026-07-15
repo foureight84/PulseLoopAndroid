@@ -8,9 +8,16 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
     private val decoder = ColmiDecoder
     private val engine: ColmiSyncEngine = ColmiSyncEngine(writer, decoder)
 
-    // Big-data reassembly state
-    private val bigDataBuffers = mutableMapOf<UByte, ByteArray>()
-    private var activeBigDataType: UByte? = null
+    // Big-data reassembly state: one in-flight transfer, QRing LargeDataParser semantics.
+    // While a transfer is incomplete EVERY notify chunk is appended — including one that
+    // happens to start with 0xBC, since ATT chunk boundaries are arbitrary and a payload
+    // byte can collide with the header magic. A new header is only accepted when idle.
+    // (Rings stream one big-data reply at a time; QRing has never handled interleaving.)
+    private var bigDataBuffer: ByteArray? = null
+
+    /** Samples already decoded from earlier packets of the current interval-temperature day —
+     *  slot position is cumulative across a day's packets (see decodeIntervalTemperature). */
+    private var intervalTempSampleOffset = 0
 
     // BLE topology
     override val serviceUUIDs = listOf(ColmiUUIDs.SERVICE_V1, ColmiUUIDs.SERVICE_V2)
@@ -41,42 +48,55 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
         if (ColmiSyncEngine.isHistoryOpcode(op)) {
             return engine.handleHistoryFrame(data)
         }
-        val events = decoder.decodeNormal(data)
-        if (data.isNotEmpty() && data[0].toUByte() == ColmiCommandID.REALTIME_HEART_RATE) {
-            engine.observedRealtimeHeartRate()
-        }
-        return events
+        return decoder.decodeNormal(data)
     }
 
     private fun ingestBigData(data: ByteArray): List<RingDecodedEvent> {
-        val type: UByte
-        if (data.isNotEmpty() && data[0].toUByte() == ColmiCommandID.BIG_DATA_V2) {
-            val v = data.map { it.toUByte() }
-            if (v.size < 4) return emptyList()
-            type = v[1]
-            bigDataBuffers[type] = data
-        } else if (activeBigDataType != null && bigDataBuffers.containsKey(activeBigDataType)) {
-            type = activeBigDataType!!
-            bigDataBuffers[type] = bigDataBuffers[type]!! + data
-        } else {
-            return listOf(RingDecodedEvent.Unknown(
-                commandId = if (data.isNotEmpty()) data[0].toUByte() else 0u, raw = data
-            ))
+        val pending = bigDataBuffer
+        if (pending == null) {
+            if (data.size < 6 || data[0].toUByte() != ColmiCommandID.BIG_DATA_V2) {
+                return listOf(RingDecodedEvent.Unknown(
+                    commandId = if (data.isNotEmpty()) data[0].toUByte() else 0u, raw = data
+                ))
+            }
+            return accumulate(data)
         }
+        // Mid-transfer: a chunk that is itself an exactly-complete 0xBC frame is a distinct
+        // message (e.g. a whole sleep frame arriving while an SpO2 transfer streams) — process
+        // it standalone without touching the pending buffer. Anything else, INCLUDING a chunk
+        // that merely starts with 0xBC, is a continuation: ATT chunk boundaries are arbitrary,
+        // so a payload byte can collide with the header magic, and restarting on it corrupted
+        // the transfer (QRing's LargeDataParser appends unconditionally while `intact` is false).
+        if (isSelfCompleteBigDataFrame(data)) return completeAndDecode(data)
+        return accumulate(pending + data)
+    }
 
-        val buffer = bigDataBuffers[type] ?: return emptyList()
-        val bytes = buffer.map { it.toUByte() }
-        if (bytes.size < 4) return emptyList()
-        val expectedLength = ColmiBytes.u16(bytes[2], bytes[3])
+    private fun isSelfCompleteBigDataFrame(data: ByteArray): Boolean =
+        data.size >= 6 && data[0].toUByte() == ColmiCommandID.BIG_DATA_V2 &&
+            data.size == ColmiBytes.u16(data[2].toUByte(), data[3].toUByte()) + 6
+
+    private fun accumulate(buffer: ByteArray): List<RingDecodedEvent> {
+        val expectedLength = ColmiBytes.u16(buffer[2].toUByte(), buffer[3].toUByte())
         if (buffer.size < expectedLength + 6) {
-            activeBigDataType = type
+            bigDataBuffer = buffer
             return emptyList()
         }
+        bigDataBuffer = null
+        return completeAndDecode(buffer)
+    }
 
-        bigDataBuffers.remove(type)
-        activeBigDataType = bigDataBuffers.keys.firstOrNull()
-        val events = decoder.decodeBigData(buffer)
-        engine.handleBigDataComplete(type = type)
+    private fun completeAndDecode(buffer: ByteArray): List<RingDecodedEvent> {
+        val type = buffer[1].toUByte()
+        val events = if (type == ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE) {
+            val packetIndex = if (buffer.size > 9) buffer[9].toInt() and 0xFF else 0
+            if (packetIndex == 0) intervalTempSampleOffset = 0
+            val decoded = decoder.decodeIntervalTemperature(buffer, sampleOffset = intervalTempSampleOffset)
+            intervalTempSampleOffset += ((buffer.size - 10).coerceAtLeast(0)) / 2
+            decoded
+        } else {
+            decoder.decodeBigData(buffer)
+        }
+        engine.handleBigDataComplete(type = type, data = buffer)
         return events
     }
 

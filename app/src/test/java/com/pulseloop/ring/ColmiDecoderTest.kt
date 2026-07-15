@@ -411,17 +411,35 @@ class ColmiDecoderTest {
         assertArrayEquals(byteArrayOf(0x16, 0x02, 0x02, 0x05, 0x00, 0x00, 0x00, 0x00), cmd)
     }
 
-    // Device-support (0x3C): supportBlePair is bit 3 (0x08) of the first feature byte (frame[1]).
+    // Device-support (0x3C): QRing's QCDataParser strips the opcode before the rsp class runs,
+    // so supportBlePair (rsp bArr[1] & 0x08) is FULL-frame byte 2, and supportIntervalTemp
+    // (rsp bArr[8] & 0x80) is full-frame byte 9. The original port read frame[1] — a byte QRing
+    // never parses — which silently broke the R09 bond gate.
     @Test
-    fun `device support decodes supportBlePair bit`() {
-        // frame[1] = 0x08 → bond wanted
-        assertEquals(true, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x08))))
-        // frame[1] = 0x0F (bit set among others) → still true
-        assertEquals(true, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x0F))))
-        // frame[1] = 0x07 (bit clear) → false
-        assertEquals(false, ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x3C, 0x07))))
+    fun `device support decodes supportBlePair from full-frame byte 2`() {
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x08)))?.supportsBlePair)
+        // Bit set among others → still true
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x0F)))?.supportsBlePair)
+        // Bit clear → false
+        assertEquals(false, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x00, 0x07)))?.supportsBlePair)
+        // The OLD (wrong) offset must not trigger a bond: bit in frame[1], frame[2] clear.
+        assertEquals(false, ColmiDecoder.decodeDeviceSupport(
+            ColmiPacket.frame(byteArrayOf(0x3C, 0x08, 0x00)))?.supportsBlePair)
         // Not a device-support frame → null
         assertNull(ColmiDecoder.decodeDeviceSupport(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30))))
+    }
+
+    @Test
+    fun `device support decodes supportIntervalTemp from full-frame byte 9`() {
+        val withBit = ColmiPacket.frame(
+            byteArrayOf(0x3C, 0, 0, 0, 0, 0, 0, 0, 0, 0x80.toByte()))
+        assertEquals(true, ColmiDecoder.decodeDeviceSupport(withBit)?.supportsIntervalTemp)
+        val withoutBit = ColmiPacket.frame(
+            byteArrayOf(0x3C, 0, 0, 0, 0, 0, 0, 0, 0, 0x7F))
+        assertEquals(false, ColmiDecoder.decodeDeviceSupport(withoutBit)?.supportsIntervalTemp)
     }
 
     @Test
