@@ -61,6 +61,12 @@ class ColmiSyncEngine(
      *  (action 119) instead of the legacy action 37 that such firmware may not answer. */
     private var supportsIntervalTemp = false
 
+    /** Highest interval-temperature packet index seen for the current day, or -1 at the start of
+     *  a day. Guards the action-119 continuation against firmware that never advances the index
+     *  (see [handleBigDataComplete]) — a re-request loop would otherwise re-arm the watchdog
+     *  forever, the same unbounded-write failure this PR fixes elsewhere. */
+    private var lastIntervalTempPacket = -1
+
     /** A standalone sleep-only request is outstanding (see [syncSleepNow]). Set true when we fire
      *  `bigDataSleep()` outside the staged history sync; its big-data completion clears it and
      *  must NOT advance the pipeline into HRV. Volatile: set on Main, read on the notify thread. */
@@ -292,7 +298,15 @@ class ColmiSyncEngine(
                     val echo = v[2].toLong() or (v[3].toLong() shl 8) or
                         (v[4].toLong() shl 16) or (v[5].toLong() shl 24)
                     if (echo > 0) {
-                        syncDay = Instant.ofEpochSecond(echo).atZone(ZoneOffset.UTC).toLocalDate()
+                        val candidate = Instant.ofEpochSecond(echo).atZone(ZoneOffset.UTC).toLocalDate()
+                        // Trust the echo only within ±2 days of the requested day: it corrects the
+                        // ≤1-day tz mis-attribution it was added for, but a garbage ring clock
+                        // (e.g. an all-0xFF echo → year 2106) would otherwise stamp HR samples far
+                        // in the future — decodeHRHistory has no time clamp of its own.
+                        if (!candidate.isBefore(syncDay.minusDays(2)) &&
+                            !candidate.isAfter(syncDay.plusDays(2))) {
+                            syncDay = candidate
+                        }
                     }
                 }
                 else -> {
@@ -346,13 +360,21 @@ class ColmiSyncEngine(
                 // day (0..6) and finish after the oldest.
                 val packetCount = data?.getOrNull(8)?.toInt()?.and(0xFF) ?: 0
                 val packetIndex = data?.getOrNull(9)?.toInt()?.and(0xFF) ?: 0
+                // Progress guard: only continue paging a day while the index strictly advances.
+                // A reply that repeats/regresses the index (misbehaving firmware) would otherwise
+                // make us re-request the same packet forever, each reply re-arming the watchdog so
+                // it never breaks the loop — the request-storm class this PR exists to kill. On a
+                // stalled index we drop to the next day instead.
+                val advanced = packetIndex > lastIntervalTempPacket
+                lastIntervalTempPacket = packetIndex
                 when {
-                    packetCount > 0 && packetIndex < packetCount - 1 -> {
+                    advanced && packetCount > 0 && packetIndex < packetCount - 1 -> {
                         writer?.enqueue(encoder.bigDataIntervalTemperature(daysAgo, packetIndex + 1))
                         armWatchdog()
                     }
                     daysAgo < 6 -> {
                         daysAgo++
+                        lastIntervalTempPacket = -1
                         writer?.enqueue(encoder.bigDataIntervalTemperature(daysAgo, 0))
                         armWatchdog()
                     }
@@ -408,6 +430,7 @@ class ColmiSyncEngine(
         if (supportsIntervalTemp) {
             // Modern path (QRing gates on the same 0x3C bit): per-day interval series, starting
             // at today packet 0; handleBigDataComplete drives packet/day continuation.
+            lastIntervalTempPacket = -1
             writer?.enqueue(encoder.bigDataIntervalTemperature(daysAgo, 0))
         } else {
             writer?.enqueue(encoder.bigDataTemperature())

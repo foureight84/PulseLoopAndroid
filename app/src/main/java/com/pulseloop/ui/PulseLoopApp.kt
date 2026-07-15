@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -216,7 +217,10 @@ fun PulseLoopApp() {
         // versionCode keeps the frequent checks from re-nagging about the same release within
         // a session. Settings also has a manual "Check for updates".
         var pendingUpdate by remember { mutableStateOf<com.pulseloop.update.UpdateInfo?>(null) }
-        var dismissedUpdateCode by remember { mutableStateOf<Int?>(null) }
+        // rememberSaveable so a dismissed release stays dismissed across config changes
+        // (rotation) — plain remember would reset and let the throttle-expired foreground
+        // check re-nag about the same version.
+        var dismissedUpdateCode by rememberSaveable { mutableStateOf<Int?>(null) }
         val updateScope = rememberCoroutineScope()
         val updateLifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(updateLifecycleOwner) {

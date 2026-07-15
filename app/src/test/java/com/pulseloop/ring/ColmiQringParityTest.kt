@@ -128,6 +128,27 @@ class ColmiQringParityTest {
         engine.destroy()
     }
 
+    @Test
+    fun `a garbage HR echo does not future-date samples`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.runStartup()
+        repeat(8) { engine.handleHistoryFrame(emptyDayFrame(ColmiCommandID.SYNC_ACTIVITY)) }
+        // Stage = HEART_RATE, day 0. Packet 0 announces the size.
+        engine.handleHistoryFrame(ColmiPacket.frame(byteArrayOf(0x15, 0x00, 0x03, 0x05)))
+        // Packet 1 with an all-0xFF time echo (≈ year 2106) and one HR sample. The echo is
+        // out of the ±2-day window, so it must be rejected and the sample stays on today.
+        val events = engine.handleHistoryFrame(ColmiPacket.frame(
+            byteArrayOf(0x15, 0x01, 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 70)))
+        val hr = events.filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+            .first { it.kind_field == MeasurementKind.HEART_RATE }
+        val sysZone = ZoneId.systemDefault()
+        val cutoff = LocalDate.now(sysZone).plusDays(2).atStartOfDay(sysZone).toInstant()
+        assertTrue("garbage echo must not push HR samples into the future",
+            hr._timestamp.isBefore(cutoff))
+        engine.destroy()
+    }
+
     // MARK: Stress 7-day paging
 
     @Test
@@ -151,9 +172,9 @@ class ColmiQringParityTest {
 
     // MARK: Interval temperature (action 119)
 
-    @Test
-    fun `interval-temp ring pages temperature per day with packet continuation`() {
-        val writer = RecordingWriter()
+    /** Drive an interval-temp-capable engine to the TEMPERATURE stage: the first action-119
+     *  request (day 0, packet 0) is now the last enqueued command. */
+    private fun driveToIntervalTemperature(writer: RecordingWriter): ColmiSyncEngine {
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
         // 0x3C reply with supportIntervalTemp (full-frame byte 9, bit 0x80).
         engine.handleRawNotify(ColmiPacket.frame(
@@ -165,6 +186,13 @@ class ColmiQringParityTest {
         engine.handleBigDataComplete(ColmiCommandID.BIG_DATA_SPO2)
         engine.handleBigDataComplete(ColmiCommandID.BIG_DATA_SLEEP)
         repeat(7) { engine.handleHistoryFrame(emptyDayFrame(ColmiCommandID.SYNC_HRV)) }
+        return engine
+    }
+
+    @Test
+    fun `interval-temp ring pages temperature per day with packet continuation`() {
+        val writer = RecordingWriter()
+        val engine = driveToIntervalTemperature(writer)
 
         // Stage = TEMPERATURE: the request must be action 119 for (day 0, packet 0).
         var request = writer.commands.last()
@@ -202,6 +230,28 @@ class ColmiQringParityTest {
             ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE,
             bigData(ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE, byteArrayOf(0x06, 30, 0x01, 0x00)))
         assertEquals(countAtEnd, writer.commands.size)
+        engine.destroy()
+    }
+
+    @Test
+    fun `interval-temp continuation does not loop when firmware stalls the packet index`() {
+        val writer = RecordingWriter()
+        val engine = driveToIntervalTemperature(writer)
+        // day 0 packet 0 requested. Ring: count 3, index 0 → legitimately request (day0, packet1).
+        engine.handleBigDataComplete(
+            ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE,
+            bigData(ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE, byteArrayOf(0x00, 30, 0x03, 0x00)))
+        assertArrayEquals("first reply advances within day 0",
+            byteArrayOf(0x00, 0x01), writer.commands.last().copyOfRange(6, 8))
+
+        // Ring stalls: replies packetIndex 0 again instead of 1. Must NOT re-request the same
+        // (day0, packet1) — that reply would re-arm the watchdog and loop forever. Drop to the
+        // next day (day1, packet0) instead.
+        engine.handleBigDataComplete(
+            ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE,
+            bigData(ColmiCommandID.BIG_DATA_INTERVAL_TEMPERATURE, byteArrayOf(0x00, 30, 0x03, 0x00)))
+        assertArrayEquals("a stalled index drops to the next day, not a re-request",
+            byteArrayOf(0x01, 0x00), writer.commands.last().copyOfRange(6, 8))
         engine.destroy()
     }
 

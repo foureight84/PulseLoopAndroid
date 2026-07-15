@@ -61,19 +61,14 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
             }
             return accumulate(data)
         }
-        // Mid-transfer: a chunk that is itself an exactly-complete 0xBC frame is a distinct
-        // message (e.g. a whole sleep frame arriving while an SpO2 transfer streams) — process
-        // it standalone without touching the pending buffer. Anything else, INCLUDING a chunk
-        // that merely starts with 0xBC, is a continuation: ATT chunk boundaries are arbitrary,
-        // so a payload byte can collide with the header magic, and restarting on it corrupted
-        // the transfer (QRing's LargeDataParser appends unconditionally while `intact` is false).
-        if (isSelfCompleteBigDataFrame(data)) return completeAndDecode(data)
+        // Mid-transfer: append EVERY chunk, including one that starts with 0xBC. ATT chunk
+        // boundaries are arbitrary, so a payload byte can collide with the header magic;
+        // treating such a chunk as a new frame corrupted the transfer. This matches QRing's
+        // LargeDataParser, which appends unconditionally while `intact` is false. Rings stream
+        // one big-data reply at a time (QRing can't handle interleaving either), so there is no
+        // interleaved-frame case to special-case.
         return accumulate(pending + data)
     }
-
-    private fun isSelfCompleteBigDataFrame(data: ByteArray): Boolean =
-        data.size >= 6 && data[0].toUByte() == ColmiCommandID.BIG_DATA_V2 &&
-            data.size == ColmiBytes.u16(data[2].toUByte(), data[3].toUByte()) + 6
 
     private fun accumulate(buffer: ByteArray): List<RingDecodedEvent> {
         val expectedLength = ColmiBytes.u16(buffer[2].toUByte(), buffer[3].toUByte())
