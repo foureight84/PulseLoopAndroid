@@ -53,7 +53,13 @@ fun PulseLoopApp() {
         val derivedMetrics = remember { com.pulseloop.service.DerivedMetricsEngine(db, coordinator) }
         val sleepStream = remember {
             SleepStreamController(coordinator, liveWorkout, context,
-                onNightEnded = { start, end -> derivedMetrics.runApneaScreen(start, end) })
+                onNightEnded = { start, end ->
+                    // Button-bounded (or unplug-bounded) window: derive the sleep
+                    // session over exactly [start, end] and screen it. Written before
+                    // the morning auto-derive, so the button bounds win.
+                    derivedMetrics.deriveSleepForWindow(start, end)
+                    derivedMetrics.runApneaScreen(start, end)
+                })
         }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore) }
 

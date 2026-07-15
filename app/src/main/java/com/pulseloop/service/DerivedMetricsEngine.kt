@@ -133,7 +133,32 @@ class DerivedMetricsEngine(
         }
     }
 
-    /** Estimate last night's sleep from sustained low overnight HR. */
+    /**
+     * Button-bounded sleep: the user tapped Start when getting in bed and Stop on
+     * waking, so [startMs, endMs] IS the sleep window — no HR-guessing of the bounds
+     * (which counted lying-quietly-awake before button press). Total sleep and
+     * efficiency are still computed from HR within it. Attributed to the wake day.
+     */
+    suspend fun deriveSleepForWindow(startMs: Long, endMs: Long) {
+        if (endMs - startMs < MIN_SLEEP_MINUTES * 60_000L) return
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(endMs)
+        val hr = db.measurementDao().range(MeasurementKind.HEART_RATE.name, startMs, endMs)
+        if (hr.size < MIN_NIGHT_SAMPLES) return
+        val buckets = hr.groupBy { (it.timestamp - startMs) / BUCKET_MS }
+            .mapValues { (_, rows) -> rows.map { it.value }.medianOrNull() }
+        val nightLow = buckets.values.filterNotNull().percentileOrNull(0.05) ?: return
+        val thresh = nightLow * SLEEP_HR_MARGIN
+        val maxB = (endMs - startMs) / BUCKET_MS
+        val asleep = { i: Long -> buckets[i]?.let { it <= thresh } == true }
+        val has = { i: Long -> buckets[i] != null }
+        val total = (0..maxB).count { asleep(it) } * 10
+        if (total < MIN_SLEEP_MINUTES) return
+        val awake = (0..maxB).count { !asleep(it) && has(it) } * 10
+        val eff = (100 * total / (total + awake).coerceAtLeast(1)).coerceIn(0, 100)
+        writeSleep("derived-$dayStart", dayStart, startMs, endMs, total, eff, startMs, nightLow, buckets, 0..maxB, asleep, has)
+    }
+
+    /** Estimate last night's sleep from sustained low overnight HR (automatic path). */
     private suspend fun deriveSleepIfMissing(dayStart: Long) {
         if (db.sleepSessionDao().byDay(dayStart) != null) return  // ring or prior estimate won
 
@@ -193,39 +218,40 @@ class DerivedMetricsEngine(
         val endAt = windowStart + (winEnd + 1) * BUCKET_MS
         val totalSleepMin = (bestSleep * BUCKET_MS / 60_000).toInt()
         if (totalSleepMin < MIN_SLEEP_MINUTES) return
-        // Efficiency = sleep / (sleep + CONFIRMED-awake), excluding data gaps (ring
-        // off). Counting gaps as "in bed" unfairly tanked efficiency; a gap is
-        // unknown, not wakefulness. This is the fragmentation/restlessness number on
-        // the Sleep screen's score — low means broken sleep even at decent hours.
-        val awakeInWindow = (winStart..winEnd).count { !asleep(it) && hasData(it) }
-        val awakeMin = awakeInWindow * (BUCKET_MS / 60_000).toInt()
+        val awakeMin = (winStart..winEnd).count { !asleep(it) && hasData(it) } * (BUCKET_MS / 60_000).toInt()
         val efficiency = (100 * totalSleepMin / (totalSleepMin + awakeMin).coerceAtLeast(1)).coerceIn(0, 100)
+        writeSleep("derived-$dayStart", dayStart, startAt, endAt, totalSleepMin, efficiency,
+            windowStart, nightLow, buckets, winStart..winEnd,
+            { asleep(it) }, { hasData(it) })
+    }
 
-        val sessionId = "derived-$dayStart"
+    /** Shared session + stage-block writer for both the auto and button-bounded paths.
+     *  Efficiency is sleep/(sleep+confirmed-awake); gap buckets emit no block so the
+     *  hypnogram shows real gaps rather than fake LIGHT sleep. */
+    private suspend fun writeSleep(
+        sessionId: String, dayStart: Long, startAt: Long, endAt: Long,
+        totalMin: Int, efficiency: Int, bucketBaseMs: Long, nightLow: Double,
+        buckets: Map<Long, Double?>, range: LongRange,
+        asleep: (Long) -> Boolean, has: (Long) -> Boolean,
+    ) {
         db.sleepSessionDao().upsert(SleepSessionEntity(
             id = sessionId, date = dayStart, startAt = startAt, endAt = endAt,
-            totalMinutes = totalSleepMin,      // ACTUAL sleep, not window length
-            score = efficiency,                // sleep efficiency % = restlessness proxy
+            totalMinutes = totalMin, score = efficiency,
             syncedAt = System.currentTimeMillis(),
         ))
-
-        // Stage blocks across the whole window: DEEP / LIGHT for sleep, AWAKE for the
-        // mid-sleep wakes — so the hypnogram SHOWS the fragmentation.
         db.sleepStageBlockDao().deleteBySession(sessionId)
-        // null for data-gap buckets → no block emitted, so the hypnogram shows a
-        // real gap instead of fake LIGHT sleep (which over-counted before).
         fun stageOf(i: Long): String? = when {
-            !hasData(i) -> null
+            !has(i) -> null
             !asleep(i) -> "AWAKE"
             buckets[i]?.let { it <= nightLow * 1.05 } == true -> "DEEP"
             else -> "LIGHT"
         }
-        var blockStart = winStart; var blockStage: String? = null
-        for (i in winStart..(winEnd + 1)) {
-            val stg = if (i <= winEnd) stageOf(i) else null
+        var blockStart = range.first; var blockStage: String? = null
+        for (i in range.first..(range.last + 1)) {
+            val stg = if (i <= range.last) stageOf(i) else null
             if (stg != blockStage) {
                 if (blockStage != null) {
-                    val bs = windowStart + blockStart * BUCKET_MS
+                    val bs = bucketBaseMs + blockStart * BUCKET_MS
                     db.sleepStageBlockDao().insert(com.pulseloop.data.entity.SleepStageBlockEntity(
                         sessionId = sessionId, startAt = bs,
                         startMinute = ((bs - startAt) / 60_000).toInt(),
