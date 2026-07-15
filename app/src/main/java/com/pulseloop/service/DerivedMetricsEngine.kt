@@ -193,11 +193,13 @@ class DerivedMetricsEngine(
         val endAt = windowStart + (winEnd + 1) * BUCKET_MS
         val totalSleepMin = (bestSleep * BUCKET_MS / 60_000).toInt()
         if (totalSleepMin < MIN_SLEEP_MINUTES) return
-        // Efficiency = actual sleep / time in the sleep window (0-100). A restless
-        // night with many awakenings scores low even at decent total sleep — this is
-        // the fragmentation/restlessness number surfaced on the Sleep screen's score.
-        val windowMin = ((winEnd - winStart + 1) * BUCKET_MS / 60_000).toInt().coerceAtLeast(1)
-        val efficiency = (100 * totalSleepMin / windowMin).coerceIn(0, 100)
+        // Efficiency = sleep / (sleep + CONFIRMED-awake), excluding data gaps (ring
+        // off). Counting gaps as "in bed" unfairly tanked efficiency; a gap is
+        // unknown, not wakefulness. This is the fragmentation/restlessness number on
+        // the Sleep screen's score — low means broken sleep even at decent hours.
+        val awakeInWindow = (winStart..winEnd).count { !asleep(it) && hasData(it) }
+        val awakeMin = awakeInWindow * (BUCKET_MS / 60_000).toInt()
+        val efficiency = (100 * totalSleepMin / (totalSleepMin + awakeMin).coerceAtLeast(1)).coerceIn(0, 100)
 
         val sessionId = "derived-$dayStart"
         db.sleepSessionDao().upsert(SleepSessionEntity(
@@ -210,8 +212,11 @@ class DerivedMetricsEngine(
         // Stage blocks across the whole window: DEEP / LIGHT for sleep, AWAKE for the
         // mid-sleep wakes — so the hypnogram SHOWS the fragmentation.
         db.sleepStageBlockDao().deleteBySession(sessionId)
-        fun stageOf(i: Long): String = when {
-            !asleep(i) && hasData(i) -> "AWAKE"
+        // null for data-gap buckets → no block emitted, so the hypnogram shows a
+        // real gap instead of fake LIGHT sleep (which over-counted before).
+        fun stageOf(i: Long): String? = when {
+            !hasData(i) -> null
+            !asleep(i) -> "AWAKE"
             buckets[i]?.let { it <= nightLow * 1.05 } == true -> "DEEP"
             else -> "LIGHT"
         }
