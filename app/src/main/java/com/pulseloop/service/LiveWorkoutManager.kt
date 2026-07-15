@@ -30,7 +30,16 @@ class LiveWorkoutManager(
         val calories: Double = 0.0,
         val workoutSteps: Int = 0,
         val hrvMs: Double? = null,
+        /** Elapsed-second marks at each Lap tap; splits = successive differences. */
+        val splits: List<Int> = emptyList(),
     )
+
+    /** Record a lap: capture the current elapsed time. */
+    fun lap() {
+        val s = _state.value
+        if (!s.isRecording) return
+        _state.value = s.copy(splits = s.splits + s.elapsedSeconds)
+    }
 
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(WorkoutState())
     val state = _state.asStateFlow()
@@ -166,7 +175,8 @@ class LiveWorkoutManager(
             statusRaw = "finished", endedAt = now,
             distanceMeters = gps.state.value.totalDistance,
             calories = kcalAccum,
-            notes = "steps=$workoutSteps",
+            notes = "steps=$workoutSteps" +
+                (_state.value.splits.takeIf { it.isNotEmpty() }?.let { ";splits=" + it.joinToString(",") } ?: ""),
             updatedAt = now,
         ))
         coordinator.stopWorkoutHeartRate()
@@ -202,7 +212,16 @@ class LiveWorkoutManager(
                 val distance = gps.state.value.totalDistance
                 val hr = coordinator.latestHRValue
                 val zone = hr?.let { HeartRateZones.zoneFor(it) } ?: HeartRateZones.Zone.REST
-                hr?.let { kcalAccum += kcalPerMinute(it) / 60.0 }  // 1s tick
+                // Calories: HR-based when we have HR, else a MET floor from duration
+                // so a ring-disconnected ride still estimates (a lost-connection
+                // Cycling workout was logging 0 kcal — 2026-07-14).
+                if (hr != null) kcalAccum += kcalPerMinute(hr) / 60.0
+                else kcalAccum += metFloorKcalPerMinute(activeType, profileWeightKg) / 60.0
+
+                // Not connected mid-workout? Actively pull the ring back so HR
+                // recovers — a workout is exactly when the phone goes in a pocket
+                // and Doze drops the link.
+                if (!coordinator.isConnected) coordinator.reconnectIfNeeded()
 
                 // Live HRV proxy over the last ~5 min of stream samples.
                 hr?.let { hrBuffer.add(it); if (hrBuffer.size > 300) hrBuffer.removeAt(0) }
@@ -284,7 +303,8 @@ class LiveWorkoutManager(
 internal fun metFloorKcalPerMinute(type: String, weightKg: Double): Double {
     val met = when (type) {
         "Weights" -> 4.0  // resistance training, moderate effort (Compendium 02052)
-        else -> 0.0
+        "Cycling" -> 7.5  // ~14-16 mph, moderate (Compendium 01040)
+        else -> 3.5       // generic moderate activity floor
     }
     return met * 3.5 * weightKg / 200.0
 }

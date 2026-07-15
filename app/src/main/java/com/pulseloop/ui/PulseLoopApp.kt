@@ -300,6 +300,8 @@ fun PulseLoopApp() {
                         hrvMs = workoutState.hrvMs,
                         isPaused = workoutState.isPaused,
                         hrZone = workoutState.hrZone,
+                        splits = workoutState.splits,
+                        onLap = { liveWorkout.lap() },
                         onPause = {
                             workoutState.activeSession?.let { kotlinx.coroutines.runBlocking { liveWorkout.pause(it) } }
                         },

@@ -31,6 +31,8 @@ fun RecordScreen(
     hrvMs: Double? = null,
     isPaused: Boolean = false,
     hrZone: HeartRateZones.Zone = HeartRateZones.Zone.REST,
+    splits: List<Int> = emptyList(),
+    onLap: () -> Unit = {},
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
     onFinish: () -> Unit = {},
@@ -81,7 +83,29 @@ fun RecordScreen(
             item { StatTile("HRV est.", hrvMs?.let { "%.0f ms".format(it) } ?: "--") }
         }
 
+        // Splits — successive differences between lap marks, newest first.
+        if (splits.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text("Splits", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            val laps = splits.mapIndexed { i, mark -> mark - (if (i == 0) 0 else splits[i - 1]) }
+            laps.forEachIndexed { i, dur ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Lap ${i + 1}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(formatElapsed(dur), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+
         Spacer(Modifier.weight(1f))
+
+        // Lap button (only while running, not paused)
+        if (!isPaused) {
+            OutlinedButton(onClick = onLap, Modifier.fillMaxWidth().height(48.dp).padding(bottom = 8.dp)) {
+                Icon(Icons.Filled.Flag, "Lap")
+                Spacer(Modifier.width(8.dp))
+                Text("Lap")
+            }
+        }
 
         // Action buttons
         Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
