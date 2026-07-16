@@ -108,10 +108,11 @@ class YCBTDecoder {
     }
 
     private fun decodeDeviceInfo(p: ByteArray): List<RingDecodedEvent> {
-        val events = mutableListOf<RingDecodedEvent>(RingDecodedEvent.Status(address = null))
-        if (p.size >= 4) {
-            val major = p[3].toInt() and 0xFF
-            val minor = p[2].toInt() and 0xFF
+        val major = p.getOrNull(3)?.toInt()?.and(0xFF)
+        val minor = p.getOrNull(2)?.toInt()?.and(0xFF)
+        val firmware = if (major != null && minor != null) String.format("%d.%02d", major, minor) else null
+        val events = mutableListOf<RingDecodedEvent>(RingDecodedEvent.Status(address = null, firmware = firmware))
+        if (major != null && minor != null) {
             events.add(RingDecodedEvent.FirmwareVersion(version = major * 100 + minor))
         }
         if (p.size >= 6) {

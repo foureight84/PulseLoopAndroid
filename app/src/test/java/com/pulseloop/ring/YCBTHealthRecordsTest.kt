@@ -111,9 +111,9 @@ class YCBTHealthRecordsTest {
         val deep = event.stages.count { it == SleepStage.DEEP }
         val light = event.stages.count { it == SleepStage.LIGHT }
         val rem = event.stages.count { it == SleepStage.REM }
-        assertEquals(93, deep, 3)
-        assertEquals(249, light, 3)
-        assertEquals(130, rem, 3)
+        assertTrue(kotlin.math.abs(93 - deep) <= 3)
+        assertTrue(kotlin.math.abs(249 - light) <= 3)
+        assertTrue(kotlin.math.abs(130 - rem) <= 3)
         assertFalse(event.stages.contains(SleepStage.AWAKE))
     }
 

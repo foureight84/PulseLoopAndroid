@@ -110,8 +110,8 @@ class YCBTEncoderTest {
         assertArrayEquals(byteArrayOf(0x05, 0x06), encoder.healthHistoryRequest(YCBTHistoryType.HEART))
         assertArrayEquals(byteArrayOf(0x05, 0x09), encoder.healthHistoryRequest(YCBTHistoryType.ALL))
         assertArrayEquals(byteArrayOf(0x05, 0x04), encoder.healthHistoryRequest(YCBTHistoryType.SLEEP))
-        assertArrayEquals(byteArrayOf(0x05, 0x80, 0x00), encoder.historyBlockAck(status = 0x00))
-        assertArrayEquals(byteArrayOf(0x05, 0x80, 0x04), encoder.historyBlockAck(status = 0x04))
+        assertArrayEquals(byteArrayOf(0x05, 0x80.toByte(), 0x00), encoder.historyBlockAck(status = 0x00))
+        assertArrayEquals(byteArrayOf(0x05, 0x80.toByte(), 0x04), encoder.historyBlockAck(status = 0x04))
     }
 
     @Test

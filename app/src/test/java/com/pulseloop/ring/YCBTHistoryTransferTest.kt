@@ -14,8 +14,8 @@ class YCBTHistoryTransferTest {
 
     private val heartQuery = byteArrayOf(0x05, 0x06)
     private val allQuery = byteArrayOf(0x05, 0x09)
-    private val ackAccepted = byteArrayOf(0x05, 0x80, 0x00)
-    private val ackCrcFailure = byteArrayOf(0x05, 0x80, 0x04)
+    private val ackAccepted = byteArrayOf(0x05, 0x80.toByte(), 0x00)
+    private val ackCrcFailure = byteArrayOf(0x05, 0x80.toByte(), 0x04)
 
     private fun header(records: Int, packets: Int, bytes: Int): ByteArray {
         return byteArrayOf(
@@ -35,8 +35,8 @@ class YCBTHistoryTransferTest {
     }
 
     private val heartBuffer = byteArrayOf(
-        0x1c, 0xf0, 0xde, 0x31, 0x00, 0x47,
-        0x1a, 0xfe, 0xde, 0x31, 0x00, 0x42,
+        0x1c, 0xf0.toByte(), 0xde.toByte(), 0x31, 0x00, 0x47,
+        0x1a, 0xfe.toByte(), 0xde.toByte(), 0x31, 0x00, 0x42,
     )
 
     private fun heartRates(events: List<RingDecodedEvent>): List<Double> {
