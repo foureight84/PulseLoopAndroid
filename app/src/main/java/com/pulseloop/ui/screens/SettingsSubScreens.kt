@@ -1117,7 +1117,7 @@ fun WearableSettingsScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
-                        onClick = { bleClient?.disconnect() },
+                        onClick = { bleClient?.userDisconnect() },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(Icons.Filled.Close, null, Modifier.size(16.dp))
@@ -1129,7 +1129,7 @@ fun WearableSettingsScreen(
                 ) {
                     Spacer(Modifier.height(12.dp))
                     OutlinedButton(
-                        onClick = { bleClient.connectLastKnown() },
+                        onClick = { bleClient.userConnect() },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(Icons.Filled.Refresh, null, Modifier.size(16.dp))

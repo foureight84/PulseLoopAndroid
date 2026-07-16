@@ -240,6 +240,9 @@ class RingBLEClient(private val context: Context) {
         }
         val discoveredRing = _state.value.discovered.firstOrNull { it.id == id }
         connectingName = discoveredRing?.name ?: target.name
+        // Pairing/connecting a ring is an explicit user intent — clear any stay-off flag from a
+        // prior Disconnect so [connectLastKnown] isn't suppressed for this or the next session.
+        prefs.edit().remove(USER_DISCONNECTED_KEY).apply()
         resetReconnectBackoff()
         // Discovery's name-derived model wins over the carousel choice (iOS connect(to:selectedModelID:)).
         beginConnect(
@@ -259,6 +262,11 @@ class RingBLEClient(private val context: Context) {
      */
     fun connectLastKnown() {
         if (!bluetoothAdapter.isEnabled) return
+        // Honor a user-initiated Disconnect: stay off until the user reconnects ([userConnect])
+        // or pairs a new ring ([connectTo]). Every auto-reconnect path — foreground
+        // reconnectIfNeeded, the watchdog, and the background RingSyncWorker — funnels through
+        // here, so this one guard makes "Disconnect" actually stick.
+        if (prefs.getBoolean(USER_DISCONNECTED_KEY, false)) return
         val lastId = lastKnownIdentifier ?: return
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
         // A still-pending reconnect scan means the last attempt never sighted the ring.
@@ -461,6 +469,41 @@ class RingBLEClient(private val context: Context) {
         updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
     }
 
+    /**
+     * User-initiated Disconnect (the Settings button). Unlike the transient [disconnect] used by
+     * the background worker and lifecycle, this makes the disconnect STICK: it sets a persisted
+     * flag that suppresses every auto-reconnect path until the user reconnects ([userConnect]) or
+     * pairs a new ring. For a model we OS-bond (the R09) it also removes the bond, since a bonded
+     * link can otherwise be held connected by the OS — the ring re-bonds (with the OS prompt) on
+     * the next user reconnect. Non-bonded models (R10 and the rest) just drop the link, matching
+     * the iOS "Disconnect" experience. The stored ring identity is kept either way, so the ring
+     * stays listed and one tap reconnects it; use [forget] to remove it entirely.
+     */
+    fun userDisconnect() {
+        prefs.edit().putBoolean(USER_DISCONNECTED_KEY, true).apply()
+        if (activeModelRequiresBond() && hasPermissions()) {
+            try {
+                bluetoothGatt?.device?.let { dev ->
+                    if (dev.bondState != BluetoothDevice.BOND_NONE) {
+                        Log.i("RingBLEClient", "User disconnect on a bonded ring — removing OS bond")
+                        dev::class.java.getMethod("removeBond").invoke(dev)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("RingBLEClient", "removeBond on user disconnect failed: ${e.message}")
+            }
+        }
+        disconnect()
+    }
+
+    /** User-initiated reconnect (the "Reconnect last ring" button): clear the stay-off flag set
+     *  by [userDisconnect] and reconnect the stored ring. */
+    fun userConnect() {
+        prefs.edit().remove(USER_DISCONNECTED_KEY).apply()
+        resetReconnectBackoff()
+        connectLastKnown()
+    }
+
     /** Cache-refresh + close, swallowing the reflection/stack exceptions. */
     private fun closeGattQuietly(gatt: BluetoothGatt) {
         try { gatt::class.java.getMethod("refresh").invoke(gatt) } catch (_: Exception) {}
@@ -480,6 +523,7 @@ class RingBLEClient(private val context: Context) {
             .remove(LAST_PERIPHERAL_KEY)
             .remove(LAST_DEVICE_TYPE_KEY)
             .remove(LAST_WEARABLE_MODEL_KEY)
+            .remove(USER_DISCONNECTED_KEY)
             .apply()
 
         val gatt = bluetoothGatt
@@ -519,6 +563,7 @@ class RingBLEClient(private val context: Context) {
             .remove(LAST_PERIPHERAL_KEY)
             .remove(LAST_DEVICE_TYPE_KEY)
             .remove(LAST_WEARABLE_MODEL_KEY)
+            .remove(USER_DISCONNECTED_KEY)
             .apply()
         activeAdvertisedName = null
         updateState {
@@ -613,6 +658,12 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
+    /** True only when the connected model is one we deliberately OS-bond (currently the R09).
+     *  See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
+    private fun activeModelRequiresBond(): Boolean =
+        com.pulseloop.wearables.WearableModel.model(_state.value.activeWearableModelID)
+            ?.requiresOsBond == true
+
     /**
      * Create an OS-level bond with the connected ring — invoked by the sync engine only when
      * the ring's device-support reply advertises `supportBlePair` (Colmi R09 and newer). The
@@ -634,6 +685,14 @@ class RingBLEClient(private val context: Context) {
      */
     private fun bondActiveDevice() {
         if (!hasPermissions()) return
+        // Only bond the models that actually need it on Android (the R09). Every other ring
+        // works GATT-only like iOS; bonding them just adds a pairing prompt and leaves the
+        // in-app Disconnect unable to release the link. QRing bonds every supportBlePair ring —
+        // we deliberately don't. A supportBlePair reply from any other model is a no-op here.
+        if (!activeModelRequiresBond()) {
+            Log.i("RingBLEClient", "Ring reports supportBlePair but this model works GATT-only — skipping bond")
+            return
+        }
         scope.launch {
             awaitOpsFlushed()
             // The link may have dropped while we waited for the queue to settle.
@@ -1294,6 +1353,9 @@ class RingBLEClient(private val context: Context) {
         private const val LAST_PERIPHERAL_KEY = "ring.lastPeripheralIdentifier"
         private const val LAST_DEVICE_TYPE_KEY = "ring.lastDeviceType"
         private const val LAST_WEARABLE_MODEL_KEY = "ring.lastWearableModel"
+        /** Set when the user taps Disconnect; suppresses every auto-reconnect path
+         *  (foreground, watchdog, background worker) until the user reconnects or re-pairs. */
+        private const val USER_DISCONNECTED_KEY = "ring.userDisconnected"
         /** How often the liveness watchdog runs. */
         private const val WATCHDOG_INTERVAL_MS = 15_000L
         /** No GATT activity for this long while CONNECTED ⇒ zombie link ⇒ reconnect.
