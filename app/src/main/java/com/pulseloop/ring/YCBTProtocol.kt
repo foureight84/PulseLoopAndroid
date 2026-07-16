@@ -314,7 +314,7 @@ object YCBTSupportFunction {
 /** The 02 1b chipScheme reply — diagnostic only. */
 object YCBTChipScheme {
     fun value(payload: ByteArray): Int {
-        val first = payload.firstOrNull()?.toInt() and 0xFF ?: return 0
+        val first = (payload.firstOrNull()?.toInt() ?: return 0) and 0xFF
         return if (first >= 240) 0 else first
     }
 

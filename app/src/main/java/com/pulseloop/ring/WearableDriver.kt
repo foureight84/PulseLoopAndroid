@@ -187,6 +187,8 @@ data class AdvertisementInfo(
 interface WearableCoordinator {
     val deviceType: RingDeviceType
     val capabilities: Set<WearableCapability>
+    /** Capabilities that are advertised statically but must be confirmed from a device bitmap. */
+    val bitmapGatedCapabilities: Set<WearableCapability> get() = emptySet()
     val iconSystemName: String
     val displayName: String get() = deviceType.displayName
 

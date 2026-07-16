@@ -259,6 +259,8 @@ private fun labelFor(event: PulseEvent): String = when (event) {
         com.pulseloop.ring.MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> "BP Sys"
         com.pulseloop.ring.MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> "BP Dia"
         com.pulseloop.ring.MeasurementKind.BLOOD_SUGAR -> "Glucose"
+        com.pulseloop.ring.MeasurementKind.RESPIRATORY_RATE -> "Resp Rate"
+        com.pulseloop.ring.MeasurementKind.VO2MAX -> "VO₂ max"
     }
     is PulseEvent.BatteryLevel -> "Battery"
     is PulseEvent.ActivityUpdate -> "Activity"
@@ -315,6 +317,8 @@ private fun colorFor(event: PulseEvent): Color = when (event) {
         com.pulseloop.ring.MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> Color(0xFFE91E63)
         com.pulseloop.ring.MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> Color(0xFFF06292)
         com.pulseloop.ring.MeasurementKind.BLOOD_SUGAR -> Color(0xFF00BCD4)
+        com.pulseloop.ring.MeasurementKind.RESPIRATORY_RATE -> Color(0xFF26A69A)
+        com.pulseloop.ring.MeasurementKind.VO2MAX -> Color(0xFF5C6BC0)
     }
     is PulseEvent.BatteryLevel -> Color(0xFF66BB6A)
     is PulseEvent.ActivityUpdate, is PulseEvent.ActivityBucket -> Color(0xFFFF9800)

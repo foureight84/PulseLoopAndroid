@@ -58,7 +58,8 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
     override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> {
         val events = mutableListOf<RingDecodedEvent>()
         for (logical in assembler.append(data, from)) {
-            val frame = YCBTFrame.validating(logical) ?: run {
+            val frame = YCBTFrame.validating(logical)
+            if (frame == null) {
                 events.add(RingDecodedEvent.Unknown(commandId = logical.firstOrNull()?.toUByte() ?: 0u, raw = logical))
                 continue
             }

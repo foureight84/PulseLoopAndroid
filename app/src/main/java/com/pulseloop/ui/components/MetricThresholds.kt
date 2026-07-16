@@ -44,6 +44,7 @@ object MetricThresholdTable {
         MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> bloodPressure
         MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> bloodPressure
         MeasurementKind.BLOOD_SUGAR -> bloodSugar
+        MeasurementKind.RESPIRATORY_RATE, MeasurementKind.VO2MAX -> null
     }
 
     /** Returns a synthetic thresholds entry for the combined "bp" detail screen. */

@@ -49,11 +49,11 @@ class YCBTDecoder {
                 ))
             }
             YCBTCommand.LIVE_HEART_RATE -> {
-                val bpm = p.firstOrNull()?.toInt() and 0xFF ?: return listOf(RingDecodedEvent.CommandAck(commandId = frame.cmd.toUByte()))
+                val bpm = (p.firstOrNull()?.toInt() ?: return listOf(RingDecodedEvent.CommandAck(commandId = frame.cmd.toUByte()))) and 0xFF
                 return listOf(RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
             }
             YCBTCommand.LIVE_SPO2 -> {
-                val spo2 = p.firstOrNull()?.toInt() and 0xFF ?: return listOf(RingDecodedEvent.CommandAck(commandId = frame.cmd.toUByte()))
+                val spo2 = (p.firstOrNull()?.toInt() ?: return listOf(RingDecodedEvent.CommandAck(commandId = frame.cmd.toUByte()))) and 0xFF
                 if (spo2 in RingEventBridge.spo2Range) {
                     return listOf(RingDecodedEvent.Spo2Result(value = spo2, _timestamp = now))
                 }
@@ -110,7 +110,9 @@ class YCBTDecoder {
     private fun decodeDeviceInfo(p: ByteArray): List<RingDecodedEvent> {
         val events = mutableListOf<RingDecodedEvent>(RingDecodedEvent.Status(address = null))
         if (p.size >= 4) {
-            events.add(RingDecodedEvent.FirmwareVersion(version = String.format("%d.%02d", p[3].toInt() and 0xFF, p[2].toInt() and 0xFF)))
+            val major = p[3].toInt() and 0xFF
+            val minor = p[2].toInt() and 0xFF
+            events.add(RingDecodedEvent.FirmwareVersion(version = major * 100 + minor))
         }
         if (p.size >= 6) {
             events.add(RingDecodedEvent.Battery(percent = p[5].toInt() and 0xFF))

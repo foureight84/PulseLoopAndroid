@@ -64,11 +64,11 @@ class YCBTSyncEngine(
         writer?.enqueue(encoder.userInfo(profile))
     }
 
-    override fun resyncTime() {
+    fun resyncTime() {
         writer?.enqueue(encoder.setTime())
     }
 
-    override fun requestBattery() {
+    fun requestBattery() {
         writer?.enqueue(encoder.deviceInfoRequest())
     }
 

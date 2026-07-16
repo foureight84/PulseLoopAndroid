@@ -183,5 +183,6 @@ fun DeviceHeroCard(
  */
 private fun fallbackRingImage(type: RingDeviceType?): Int? = when (type) {
     RingDeviceType.JRING -> R.drawable.ring_jring
+    RingDeviceType.YCBT -> R.drawable.ring_colmi_r10
     RingDeviceType.COLMI_R02, null -> null
 }
