@@ -658,6 +658,12 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
+    /** True only when the connected model is one we deliberately OS-bond (currently the R09).
+     *  See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
+    private fun activeModelRequiresBond(): Boolean =
+        com.pulseloop.wearables.WearableModel.model(_state.value.activeWearableModelID)
+            ?.requiresOsBond == true
+
     /**
      * Create an OS-level bond with the connected ring — invoked by the sync engine only when
      * the ring's device-support reply advertises `supportBlePair` (Colmi R09 and newer). The
@@ -677,12 +683,6 @@ class RingBLEClient(private val context: Context) {
      * (no op in flight) avoids interrupting an active transfer; the wait is bounded, so a
      * long-running sync still bonds after [awaitOpsFlushed]'s timeout rather than never.
      */
-    /** True only when the connected model is one we deliberately OS-bond (currently the R09).
-     *  See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
-    private fun activeModelRequiresBond(): Boolean =
-        com.pulseloop.wearables.WearableModel.model(_state.value.activeWearableModelID)
-            ?.requiresOsBond == true
-
     private fun bondActiveDevice() {
         if (!hasPermissions()) return
         // Only bond the models that actually need it on Android (the R09). Every other ring
