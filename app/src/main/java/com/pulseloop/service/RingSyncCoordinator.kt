@@ -29,6 +29,10 @@ class RingSyncCoordinator(
         private set
     var spo2State: MeasureState = MeasureState.IDLE
         private set
+    var hrvState: MeasureState = MeasureState.IDLE
+        private set
+    var bloodPressureState: MeasureState = MeasureState.IDLE
+        private set
     var combinedState: MeasureState = MeasureState.IDLE
         private set
     var lastSyncAt: Long? = null
@@ -57,11 +61,19 @@ class RingSyncCoordinator(
     /** Latest live SpO2 %, mirrored for UI without a query. */
     var latestSpO2Value: Int? = null
         private set
+    var latestHrvValue: Int? = null
+        private set
+    var latestBloodPressure: Pair<Int, Int>? = null
+        private set
 
     var workoutHRActive = false
         private set
     private var hrNoReadingReported = false
     private var spo2NoReadingReported = false
+    private var hrvNoReadingReported = false
+    private var bloodPressureNoReadingReported = false
+    private var pendingSystolic: Int? = null
+    private var pendingDiastolic: Int? = null
     private var measurementReceivedReading = false
 
     val connectionState: RingConnectionState get() = client.state.value.connectionState
@@ -81,10 +93,12 @@ class RingSyncCoordinator(
         const val HR_SETTLE_SECONDS = 4
         /** Window for the live-SpO₂ leg of a spot measurement. */
         const val SPO2_MEASURE_SECONDS = 40
+        const val BP_MEASURE_SECONDS = 40
+        const val HRV_MEASURE_SECONDS = 40
         /** Upper-bound for a sequential HR+SpO₂ spot measurement; drives the UI countdown.
          *  Derived from the legs so the countdown can't desync when one is tuned. Each leg
          *  returns early once it gets a reading, so it usually finishes well sooner. */
-        const val SPOT_MEASURE_SECONDS = HR_MEASURE_SECONDS + HR_SETTLE_SECONDS + SPO2_MEASURE_SECONDS + 1
+        const val SPOT_MEASURE_SECONDS = HR_MEASURE_SECONDS + HR_SETTLE_SECONDS + SPO2_MEASURE_SECONDS + BP_MEASURE_SECONDS + HRV_MEASURE_SECONDS + 3
         /** Max time to wait for the pre-factory-reset history sync before resetting anyway. */
         const val SYNC_BEFORE_RESET_TIMEOUT_MS = 30_000L
     }
@@ -205,7 +219,9 @@ class RingSyncCoordinator(
 
     fun syncNow() {
         if (!isConnected) return
-        runStartupSequence()
+        beginSyncProgress()
+        engine?.syncHistory()
+        lastSyncAt = System.currentTimeMillis()
     }
 
     /**
@@ -223,7 +239,7 @@ class RingSyncCoordinator(
     /** Pull-to-refresh entry point. */
     suspend fun pullToRefresh() {
         if (isConnected) {
-            runStartupSequence()
+            syncNow()
         } else if (client.state.value.activeDeviceType != null) {
             client.connectLastKnown()
         } else {
@@ -244,11 +260,12 @@ class RingSyncCoordinator(
         if (!workoutHRActive) return
         engine?.stopHeartRate()
         workoutHRActive = false
+        engine?.syncVitalsHistory()
     }
 
     fun querySleep() {
         if (!isConnected) return
-        engine?.runStartup()
+        engine?.syncSleepNow()
     }
 
     fun findRing() {
@@ -334,6 +351,8 @@ class RingSyncCoordinator(
         val caps = client.state.value.activeCapabilities
         if (caps.contains(WearableCapability.MANUAL_HEART_RATE)) measureHR()
         if (caps.contains(WearableCapability.MANUAL_SPO2)) measureSpO2()
+        if (caps.contains(WearableCapability.MANUAL_BLOOD_PRESSURE)) measureBloodPressure()
+        if (caps.contains(WearableCapability.MANUAL_HRV)) measureHRV()
     }
 
     suspend fun measureHR(): Int? {
@@ -378,6 +397,46 @@ class RingSyncCoordinator(
         } finally {
             engine?.stopSpO2()   // stop the sensor even on cancellation (see measureHR)
             spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
+        }
+        return result
+    }
+
+    suspend fun measureBloodPressure(): Pair<Int, Int>? {
+        if (bloodPressureState == MeasureState.MEASURING) return null
+        if (!isConnected) { bloodPressureState = MeasureState.FAILED; return null }
+        bloodPressureState = MeasureState.MEASURING
+        latestBloodPressure = null
+        pendingSystolic = null
+        pendingDiastolic = null
+        bloodPressureNoReadingReported = false
+        engine?.startBloodPressure()
+        var result: Pair<Int, Int>? = null
+        try {
+            for (step in 0 until BP_MEASURE_SECONDS * 2) {
+                result = latestBloodPressure
+                if (result != null || bloodPressureNoReadingReported) break
+                delay(500)
+            }
+        } finally {
+            engine?.stopBloodPressure()
+            bloodPressureState = if (result != null) MeasureState.DONE else MeasureState.FAILED
+        }
+        return result
+    }
+
+    suspend fun measureHRV(): Int? {
+        if (hrvState == MeasureState.MEASURING) return null
+        if (!isConnected) { hrvState = MeasureState.FAILED; return null }
+        hrvState = MeasureState.MEASURING
+        latestHrvValue = null
+        hrvNoReadingReported = false
+        engine?.startHRV()
+        var result: Int? = null
+        try {
+            result = pollForValue(HRV_MEASURE_SECONDS.toLong(), { latestHrvValue }, { hrvNoReadingReported })
+        } finally {
+            engine?.stopHRV()
+            hrvState = if (result != null) MeasureState.DONE else MeasureState.FAILED
         }
         return result
     }
@@ -431,9 +490,18 @@ class RingSyncCoordinator(
             is PulseEvent.Spo2Result -> {
                 latestSpO2Value = event.value
             }
+            is PulseEvent.HrvSample -> latestHrvValue = event.value
             is PulseEvent.Spo2Complete -> {
                 if (spo2State == MeasureState.MEASURING && latestSpO2Value == null) {
                     spo2NoReadingReported = true
+                }
+            }
+            is PulseEvent.MeasurementRejected -> {
+                when (event.mode) {
+                    YCBTMeasurementMode.HEART_RATE -> hrNoReadingReported = true
+                    YCBTMeasurementMode.SPO2 -> spo2NoReadingReported = true
+                    YCBTMeasurementMode.BLOOD_PRESSURE -> bloodPressureNoReadingReported = true
+                    YCBTMeasurementMode.HRV -> hrvNoReadingReported = true
                 }
             }
             is PulseEvent.DeviceStateChanged -> {
@@ -450,7 +518,22 @@ class RingSyncCoordinator(
             is PulseEvent.ActivityBucket -> advanceSyncProgress(event.timestamp.toEpochMilli())
             is PulseEvent.ActivityUpdate -> advanceSyncProgress(event.timestamp.toEpochMilli())
             is PulseEvent.SleepTimeline -> advanceSyncProgress(event.timestamp.toEpochMilli())
-            is PulseEvent.HistoryMeasurement -> advanceSyncProgress(event.timestamp.toEpochMilli())
+            is PulseEvent.HistoryMeasurement -> {
+                when (event.kind) {
+                    MeasurementKind.HRV -> latestHrvValue = event.value.toInt()
+                    MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> pendingSystolic = event.value.toInt()
+                    MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> pendingDiastolic = event.value.toInt()
+                    else -> {}
+                }
+                val systolic = pendingSystolic
+                val diastolic = pendingDiastolic
+                if (systolic != null && diastolic != null) {
+                    latestBloodPressure = systolic to diastolic
+                    pendingSystolic = null
+                    pendingDiastolic = null
+                }
+                advanceSyncProgress(event.timestamp.toEpochMilli())
+            }
             is PulseEvent.SyncProgress -> if (event.stage == "done") finishSyncProgressSoon()
             else -> {}
         }

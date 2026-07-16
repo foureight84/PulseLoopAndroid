@@ -40,8 +40,12 @@ class YCBTSyncEngine(
         transfer.start(types = HISTORY_TYPES)
     }
 
-    fun syncVitalsHistory() {
+    override fun syncVitalsHistory() {
         transfer.start(types = VITALS_TYPES)
+    }
+
+    override fun syncSleepNow() {
+        transfer.start(types = listOf(YCBTHistoryType.SLEEP))
     }
 
     override fun setMeasurementSettings(settings: MeasurementSettings?) {
@@ -121,6 +125,6 @@ class YCBTSyncEngine(
     override fun setAppId(appId: String) {}
     override fun setOnMeasurementConfigSeeded(callback: (MeasurementSettings) -> Unit) {}
     override fun setOnBondRequested(callback: () -> Unit) {}
-    override fun syncSleepNow() {}
+
     override fun handleRawNotify(data: ByteArray) {}
 }

@@ -257,4 +257,12 @@ class RingEventBridgeTest {
         val ts = RingDecodedEvent.TimeSyncAck(_timestamp = now)
         assertTrue(RingEventBridge.eventsFor(ts, now).isEmpty())
     }
+
+    @Test
+    fun `measurement rejection reaches product orchestration`() {
+        val events = RingEventBridge.eventsFor(
+            RingDecodedEvent.MeasurementRejected(YCBTMeasurementMode.SPO2), now
+        )
+        assertEquals(listOf(PulseEvent.MeasurementRejected(YCBTMeasurementMode.SPO2)), events)
+    }
 }

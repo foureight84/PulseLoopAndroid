@@ -103,6 +103,9 @@ interface RingSyncEngine {
      *  that don't support staged history sync. */
     fun syncHistory() {}
 
+    /** Refresh the recent vital series after a live workout without replaying all history. */
+    fun syncVitalsHistory() {}
+
     /** On-demand, standalone sleep fetch — request just the sleep record without running the
      *  whole history pipeline (which buries sleep behind activity/HR/stress/SpO₂ and can lose it
      *  to a watchdog stage-skip). Mirrors the official QRing app, which fires a dedicated sleep

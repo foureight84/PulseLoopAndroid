@@ -90,7 +90,9 @@ object RingEventBridge {
         is RingDecodedEvent.BindNotify ->
             emptyList() // Bind/unbind handshake is driven in the sync engine / BLE client
 
-        is RingDecodedEvent.MeasurementRejected,
+        is RingDecodedEvent.MeasurementRejected ->
+            listOf(PulseEvent.MeasurementRejected(decoded.mode))
+
         is RingDecodedEvent.WearingStatus,
         is RingDecodedEvent.SupportFunctions,
         is RingDecodedEvent.ChipScheme ->
