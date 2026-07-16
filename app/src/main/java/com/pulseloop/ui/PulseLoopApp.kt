@@ -8,6 +8,9 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +44,10 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
 import dev.chrisbanes.haze.rememberHazeState
+
+/** Grace period after the app is backgrounded before the live ring link is dropped for battery.
+ *  Long enough that a quick app-switch (glance at a notification) doesn't thrash the connection. */
+private const val BACKGROUND_DISCONNECT_GRACE_MS = 45_000L
 
 /**
  * Root composable — ported from PulseLoopApp.swift + RootViews.swift.
@@ -161,25 +168,46 @@ fun PulseLoopApp() {
             // confirmation-gated "Reseed Demo Data" button in Settings.
         }
 
-        // ── Auto-reconnect on return to foreground ───────────────────────
-        // When the phone wakes from idle, the OS may have silently torn down the GATT
-        // (Doze) without autoConnect recovering it. Re-attempt the link on every
-        // foreground transition so the user never has to force-close the app to reconnect.
-        // The first ON_START is handled by the LaunchedEffect above, so skip it here.
+        // ── Connection lifecycle on foreground/background ────────────────
+        // ON_START: re-attempt the link. The OS may have torn the GATT down during Doze
+        // (autoConnect=false won't recover it), so reconnect on every foreground so the user
+        // never has to force-close to reconnect. The first ON_START is handled by the
+        // LaunchedEffect above, so skip it here.
+        // ON_STOP: drop the live link a short grace period after backgrounding so the ring can
+        // sleep (a held-open link keeps the ~17mAh ring awake and blocks its advertising). This
+        // is a TRANSIENT disconnect — it does NOT set the user stay-off flag, so ON_START silently
+        // reconnects; the 30-min RingSyncWorker covers data while backgrounded. Skipped entirely
+        // while a workout is in progress, since that needs the live stream. The grace period is
+        // cancelled if the app returns to the foreground first, so quick app-switches don't thrash.
         val lifecycleOwner = LocalLifecycleOwner.current
+        val bgDisconnectScope = rememberCoroutineScope()
         DisposableEffect(lifecycleOwner) {
             var isFirstStart = true
+            var bgDisconnectJob: Job? = null
             val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_START) {
-                    if (isFirstStart) {
-                        isFirstStart = false
-                    } else {
-                        bleClient.reconnectIfNeeded()
+                when (event) {
+                    Lifecycle.Event.ON_START -> {
+                        bgDisconnectJob?.cancel(); bgDisconnectJob = null
+                        if (isFirstStart) isFirstStart = false else bleClient.reconnectIfNeeded()
                     }
+                    Lifecycle.Event.ON_STOP -> {
+                        if (liveWorkout.state.value.activeSession != null) return@LifecycleEventObserver
+                        bgDisconnectJob?.cancel()
+                        // Default dispatcher so the timer fires while backgrounded (a UI-frame
+                        // clock would stall until the next foreground frame).
+                        bgDisconnectJob = bgDisconnectScope.launch(Dispatchers.Default) {
+                            delay(BACKGROUND_DISCONNECT_GRACE_MS)
+                            if (liveWorkout.state.value.activeSession == null) bleClient.disconnect()
+                        }
+                    }
+                    else -> {}
                 }
             }
             lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+            onDispose {
+                bgDisconnectJob?.cancel()
+                lifecycleOwner.lifecycle.removeObserver(observer)
+            }
         }
 
         // ── Navigation ───────────────────────────────────────────────────
