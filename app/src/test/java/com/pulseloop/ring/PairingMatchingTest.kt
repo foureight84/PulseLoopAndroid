@@ -22,12 +22,14 @@ class PairingMatchingTest {
         val types = RingDeviceType.entries.map { it.name }
         assertTrue(types.contains("JRING"))
         assertTrue(types.contains("COLMI_R02"))
+        assertTrue(types.contains("YCBT"))
     }
 
     @Test
     fun `device type display names are meaningful`() {
         assertEquals("SMART_RING", RingDeviceType.JRING.displayName)
         assertEquals("Colmi / Yawell ring", RingDeviceType.COLMI_R02.displayName)
+        assertEquals("YCBT / SmartHealth ring", RingDeviceType.YCBT.displayName)
     }
 
     // ── Coordinator name matching (delegated to the WearableModel catalog, iOS #49) ────
@@ -46,7 +48,7 @@ class PairingMatchingTest {
 
     @Test
     fun `non-colmi names do not match`() {
-        for (name in listOf("SMART_RING", "Mi Band 5", "Galaxy Watch", "R0X_NOPE", "Random")) {
+        for (name in listOf("SMART_RING", "R10M FCF4", "Mi Band 5", "Galaxy Watch", "R0X_NOPE", "Random")) {
             assertFalse("did not expect Colmi match for $name", colmiMatches(name))
         }
     }
@@ -64,8 +66,24 @@ class PairingMatchingTest {
     }
 
     @Test
+    fun `R10M is claimed only by YCBT`() {
+        for (name in listOf("R10M FCF4", "R10M_FCF4")) {
+            assertTrue(YCBTCoordinator.matches(name, noAdv))
+            assertFalse(ColmiCoordinator.matches(name, noAdv))
+            assertFalse(JringCoordinator.matches(name, noAdv))
+        }
+    }
+
+    @Test
+    fun `YCBT manufacturer marker does not override QRing service`() {
+        val manufacturer = byteArrayOf(0x10, 0x78)
+        assertTrue(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(emptyList(), manufacturer)))
+        assertFalse(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V2), manufacturer)))
+    }
+
+    @Test
     fun `catalog families all have a registered coordinator`() {
-        val registeredTypes = setOf(JringCoordinator.deviceType, ColmiCoordinator.deviceType)
+        val registeredTypes = setOf(JringCoordinator.deviceType, ColmiCoordinator.deviceType, YCBTCoordinator.deviceType)
         for (model in WearableModel.CATALOG) {
             assertTrue("no coordinator for ${model.displayName}", registeredTypes.contains(model.family))
         }
@@ -89,6 +107,8 @@ class PairingMatchingTest {
             "R10_DEAD" to "yawell-r10",
             "R11_BEEF" to "yawell-r11",
             "H59_anything" to "h59",
+            "R10M FCF4" to "r10m",
+            "R10M_FCF4" to "r10m",
         )
         for ((name, modelID) in expected) {
             assertEquals(name, modelID, WearableModel.modelForAdvertisedName(name)?.id)

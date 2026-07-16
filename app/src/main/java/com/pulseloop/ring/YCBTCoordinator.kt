@@ -14,10 +14,7 @@ object YCBTCoordinator : WearableCoordinator {
 
     override fun matches(name: String?, advertisement: AdvertisementInfo): Boolean {
         // Disqualify QRing service outright — those belong to ColmiDriver.
-        val qringServices = listOf(
-            "6e40fff0-b5a3-f393-e0a9-e50e24dcca9e",
-            "de5bf728-d711-4ed6-8383-f4b9c014c20c",
-        )
+        val qringServices = listOf(ColmiUUIDs.SERVICE_V1, ColmiUUIDs.SERVICE_V2)
         if (advertisement.serviceUUIDs.any { it in qringServices }) return false
 
         val model = WearableModel.modelForAdvertisedName(name)

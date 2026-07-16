@@ -620,6 +620,7 @@ class RingBLEClient(private val context: Context) {
         // can collide with the orphaned handle. A fresh GATT mirrors the proven
         // force-close-and-reopen recovery path.
         bluetoothGatt?.let { old ->
+            activeDriver?.connectionDidEnd()
             try { old.disconnect() } catch (_: Exception) {}
             closeGattQuietly(old)  // refresh + close, official-app teardown discipline
         }
@@ -741,6 +742,7 @@ class RingBLEClient(private val context: Context) {
         val driver = coordinator.makeDriver { enqueueWrite(it) }
         activeCoordinator = coordinator
         activeDriver = driver
+        driver.connectionDidStart()
         activeSyncEngine = driver.makeSyncEngine()
         // Capability-gated bonding: the engine fires this only when the ring's device-support
         // reply advertises supportBlePair (Colmi R09 and newer). See docs/qring-ble-adoption.md.
@@ -1201,6 +1203,21 @@ class RingBLEClient(private val context: Context) {
                     }
                     continue
                 }
+                if (decoded is RingDecodedEvent.SupportFunctions) {
+                    activeCoordinator?.let { coordinator ->
+                        val dynamic = decoded.capabilities.intersect(coordinator.bitmapGatedCapabilities)
+                        val merged = coordinator.capabilities + dynamic
+                        updateState { copy(activeCapabilities = merged) }
+                        PulseEventBus.publishBlocking(
+                            PulseEvent.DeviceIdentified(
+                                deviceType = coordinator.deviceType,
+                                wearableModelID = _state.value.activeWearableModelID,
+                                advertisedName = activeAdvertisedName ?: connectingName,
+                                capabilities = merged,
+                            )
+                        )
+                    }
+                }
                 PulseEventBus.publishBlocking(
                     PulseEvent.RawPacket(PacketDirection.INCOMING, value, decoded)
                 )
@@ -1318,6 +1335,7 @@ class RingBLEClient(private val context: Context) {
         }
         resetOpQueue()
         stopKeepalive()
+        activeDriver?.connectionDidEnd()
 
         // Release the dead client immediately (the link is already down, so no
         // disconnect/delay needed): refresh the GATT cache and close, matching the
@@ -1342,6 +1360,7 @@ class RingBLEClient(private val context: Context) {
         // The scope is about to die, so the graceful delayed close in disconnect()
         // would never run — tear the GATT down synchronously instead.
         bluetoothGatt?.let { gatt ->
+            activeDriver?.connectionDidEnd()
             try { gatt.disconnect() } catch (_: Exception) {}
             closeGattQuietly(gatt)
         }

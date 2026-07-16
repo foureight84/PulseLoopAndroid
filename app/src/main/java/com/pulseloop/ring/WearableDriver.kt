@@ -31,6 +31,10 @@ interface WearableDriver {
 
     /** Build the per-device sync engine. */
     fun makeSyncEngine(): RingSyncEngine
+
+    /** Reset connection-scoped protocol state. */
+    fun connectionDidStart() {}
+    fun connectionDidEnd() {}
 }
 
 /**

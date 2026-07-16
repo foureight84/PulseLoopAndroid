@@ -60,5 +60,5 @@ enum class RingDeviceType(val displayName: String) {
     // WearableModel (iOS #49), so the family label stays honest about the ambiguity.
     COLMI_R02("Colmi / Yawell ring"),
     // Yucheng YCBT protocol family (SmartHealth app): TK5, R10M, and other SmartHealth-branded rings.
-    YCBT("YCBT ring");
+    YCBT("YCBT / SmartHealth ring");
 }

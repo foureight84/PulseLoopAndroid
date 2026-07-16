@@ -43,13 +43,13 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
         }
     }
 
-    fun connectionDidStart() {
+    override fun connectionDidStart() {
         assembler.reset()
         transfer.cancel()
         pendingMeasurementReplies.clear()
     }
 
-    fun connectionDidEnd() {
+    override fun connectionDidEnd() {
         assembler.reset()
         transfer.cancel()
         pendingMeasurementReplies.clear()
