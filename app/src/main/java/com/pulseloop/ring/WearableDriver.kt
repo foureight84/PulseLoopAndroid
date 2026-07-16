@@ -95,6 +95,10 @@ interface RingSyncEngine {
     fun runStartup()
     fun handle(event: RingDecodedEvent)
 
+    /** Re-run the full history sync without re-sending the connect handshake. No-op on devices
+     *  that don't support staged history sync. */
+    fun syncHistory() {}
+
     /** On-demand, standalone sleep fetch — request just the sleep record without running the
      *  whole history pipeline (which buries sleep behind activity/HR/stress/SpO₂ and can lose it
      *  to a watchdog stage-skip). Mirrors the official QRing app, which fires a dedicated sleep
@@ -106,6 +110,10 @@ interface RingSyncEngine {
     fun measureHeartRateSpot() { startHeartRate() }
     fun startSpO2()
     fun stopSpO2()
+    fun startHRV() {}
+    fun stopHRV() {}
+    fun startBloodPressure() {}
+    fun stopBloodPressure() {}
     /** Combined measurement: HR + systolic + diastolic + SpO₂ + fatigue + stress + blood sugar + HRV. No-op if unsupported. */
     fun startCombinedMeasurement() {}
     fun stopCombinedMeasurement() {}

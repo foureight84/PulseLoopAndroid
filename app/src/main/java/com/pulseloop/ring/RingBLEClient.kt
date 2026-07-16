@@ -34,6 +34,7 @@ class RingBLEClient(private val context: Context) {
     /** Registry of supported wearables. Adding a wearable = append one entry. */
     private val coordinators: List<WearableCoordinator> = listOf(
         JringCoordinator,
+        YCBTCoordinator,
         ColmiCoordinator,
     )
 

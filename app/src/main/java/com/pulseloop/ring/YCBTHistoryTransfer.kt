@@ -1,0 +1,156 @@
+package com.pulseloop.ring
+
+import kotlinx.coroutines.*
+import java.time.Instant
+
+/**
+ * Ported from YCBTHistoryTransfer.swift.
+ * The YCBT history state machine — protocol-driven, not timer-driven.
+ */
+
+class YCBTHistoryTransfer(
+    private val writer: RingCommandWriter?,
+    private val inactivitySeconds: Double = 10.0,
+    private val absoluteCapSeconds: Double = 30.0,
+) {
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    private enum class State {
+        IDLE, REQUEST_SENT, RECEIVING
+    }
+
+    private var state = State.IDLE
+    private var currentType: YCBTHistoryType? = null
+    private var queue: MutableList<YCBTHistoryType> = mutableListOf()
+    private var buffer: ByteArray = ByteArray(0)
+    private var retriedCurrentType = false
+    private var unsupported: MutableSet<Int> = mutableSetOf()
+    private var bufferCap = DEFAULT_BUFFER_CAP
+    private var watchdogJob: Job? = null
+    private var typeDeadline: Long? = null
+
+    companion object {
+        private const val DEFAULT_BUFFER_CAP = 64 * 1024
+    }
+
+    val isActive: Boolean get() = state != State.IDLE
+
+    fun start(types: List<YCBTHistoryType>) {
+        if (isActive) return
+        queue = types.filter { !unsupported.contains(it.queryKey) }.toMutableList()
+        advance()
+    }
+
+    fun cancel() {
+        cancelWatchdog()
+        state = State.IDLE
+        queue.clear()
+        buffer = ByteArray(0)
+    }
+
+    private fun advance(): List<RingDecodedEvent> {
+        cancelWatchdog()
+        buffer = ByteArray(0)
+        bufferCap = DEFAULT_BUFFER_CAP
+        retriedCurrentType = false
+        if (queue.isEmpty()) {
+            state = State.IDLE
+            return listOf(RingDecodedEvent.HistorySyncFinished)
+        }
+        val next = queue.removeAt(0)
+        sendQuery(next)
+        return emptyList()
+    }
+
+    private fun sendQuery(type: YCBTHistoryType) {
+        state = State.REQUEST_SENT
+        currentType = type
+        typeDeadline = System.currentTimeMillis() + (absoluteCapSeconds * 1000).toLong()
+        writer?.enqueue(YCBTHealthCommand.historyRequest(type))
+        armWatchdog(type)
+    }
+
+    /** Feed every validated Health-group (type == 0x05) frame here. */
+    fun handle(cmd: Int, payload: ByteArray): List<RingDecodedEvent> {
+        val type = currentType ?: return emptyList()
+
+        YCBTFrameError.detect(payload)?.let { error ->
+            if (error.isPermanent) unsupported.add(type.queryKey)
+            return advance()
+        }
+
+        return when (cmd) {
+            type.queryKey -> handleHeader(type, payload)
+            type.ackKey -> {
+                appendData(payload)
+                armWatchdog(type)
+                emptyList()
+            }
+            YCBTHealth.TERMINAL_BLOCK -> handleTerminal(type, payload)
+            else -> emptyList()
+        }
+    }
+
+    private fun handleHeader(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
+        if (payload.size < YCBTHealth.HEADER_PAYLOAD_LENGTH) return advance()
+        val totalBytes = YCBTBytes.u32(payload, 6)
+        buffer = ByteArray(0)
+        bufferCap = maxOf(totalBytes, DEFAULT_BUFFER_CAP)
+        state = State.RECEIVING
+        armWatchdog(type)
+        return listOf(RingDecodedEvent.HistorySyncProgress(stage = "Syncing ${type.label}…"))
+    }
+
+    private fun appendData(payload: ByteArray) {
+        if (buffer.size + payload.size <= bufferCap) {
+            buffer += payload
+        }
+    }
+
+    private fun handleTerminal(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
+        if (state == State.REQUEST_SENT && buffer.isEmpty()) return emptyList()
+        if (payload.size < YCBTHealth.TERMINAL_PAYLOAD_LENGTH) return advance()
+        val expected = YCBTBytes.u16(payload, 4)
+        val matches = YCBTFrame.crc16(buffer) == expected
+
+        writer?.enqueue(YCBTHealthCommand.historyBlockAck(status = if (matches) YCBTHealth.ACK_ACCEPTED else YCBTHealth.ACK_CRC_FAILURE))
+
+        if (!matches) return retryOrSkip(type)
+        return YCBTHealthRecords.decode(buffer, type) + advance()
+    }
+
+    private fun retryOrSkip(type: YCBTHistoryType): List<RingDecodedEvent> {
+        if (retriedCurrentType) return advance()
+        retriedCurrentType = true
+        buffer = ByteArray(0)
+        sendQuery(type)
+        return emptyList()
+    }
+
+    // MARK: Stall watchdog (safety net)
+
+    private fun armWatchdog(type: YCBTHistoryType) {
+        watchdogJob?.cancel()
+        val deadline = typeDeadline ?: (System.currentTimeMillis() + (absoluteCapSeconds * 1000).toLong())
+        val fireAt = minOf(System.currentTimeMillis() + (inactivitySeconds * 1000).toLong(), deadline)
+        val delayMs = maxOf(0, fireAt - System.currentTimeMillis())
+        watchdogJob = scope.launch {
+            delay(delayMs)
+            if (!isActive) return@launch
+            if (currentType != type) return@launch
+            publishOutOfBand(advance())
+        }
+    }
+
+    private fun cancelWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = null
+        typeDeadline = null
+    }
+
+    private fun publishOutOfBand(events: List<RingDecodedEvent>) {
+        if (events.any { it is RingDecodedEvent.HistorySyncFinished }) {
+            PulseEventBus.publishBlocking(PulseEvent.SyncProgress("done"))
+        }
+    }
+}

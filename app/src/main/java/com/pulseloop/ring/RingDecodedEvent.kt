@@ -14,7 +14,9 @@ enum class MeasurementKind(val key: String, val unit: String) {
     TEMPERATURE("temp", "°C"),
     BLOOD_PRESSURE_SYSTOLIC("bp_sys", "mmHg"),
     BLOOD_PRESSURE_DIASTOLIC("bp_dia", "mmHg"),
-    BLOOD_SUGAR("glucose", "mg/dL");
+    BLOOD_SUGAR("glucose", "mg/dL"),
+    RESPIRATORY_RATE("respiratoryRate", "brpm"),
+    VO2MAX("vo2max", "mL/kg/min");
 }
 
 /**
@@ -81,6 +83,12 @@ sealed class RingDecodedEvent {
         is CommandAck -> Instant.EPOCH
         is FirmwareVersion -> Instant.EPOCH
         is BindNotify -> Instant.EPOCH
+        is MeasurementRejected -> Instant.EPOCH
+        is WearingStatus -> this._timestamp
+        is SupportFunctions -> Instant.EPOCH
+        is ChipScheme -> Instant.EPOCH
+        is BloodPressureSample -> this._timestamp
+        is BloodSugarSample -> this._timestamp
         is Unknown -> Instant.EPOCH
     }
 
@@ -265,6 +273,58 @@ sealed class RingDecodedEvent {
         override val kind = "command_ack"
         override val confidence = DecodeConfidence.PARTIAL
         override val debugJSON = "{}"
+    }
+
+    data class MeasurementRejected(
+        val mode: Int,
+    ) : RingDecodedEvent() {
+        override val kind = "measurement_rejected"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"rejected_mode":$mode}"""
+    }
+
+    data class WearingStatus(
+        val worn: Boolean,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "wearing_status"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = "{}"
+    }
+
+    data class SupportFunctions(
+        val capabilities: Set<WearableCapability>,
+    ) : RingDecodedEvent() {
+        override val kind = "support_functions"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = "{}"
+    }
+
+    data class ChipScheme(
+        val value: Int,
+    ) : RingDecodedEvent() {
+        override val kind = "chip_scheme"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"scheme":$value}"""
+    }
+
+    data class BloodPressureSample(
+        val systolic: Int,
+        val diastolic: Int,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "blood_pressure_sample"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"sys":$systolic,"dia":$diastolic}"""
+    }
+
+    data class BloodSugarSample(
+        val mgdl: Double,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "blood_sugar_sample"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"mgdl":$mgdl}"""
     }
 
     data class Unknown(

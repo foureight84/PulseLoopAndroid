@@ -27,11 +27,14 @@ enum class WearableCapability(val key: String) {
     // Interaction capabilities
     MANUAL_HEART_RATE("manualHeartRate"),
     MANUAL_SPO2("manualSpo2"),
+    MANUAL_BLOOD_PRESSURE("manualBloodPressure"),
+    MANUAL_HRV("manualHrv"),
     REALTIME_HEART_RATE("realtimeHeartRate"),
     REALTIME_STEPS("realtimeSteps"),
     FIND_DEVICE("findDevice"),
     POWER_OFF("powerOff"),
     FACTORY_RESET("factoryReset"),
+    SPO2_HISTORY("spo2History"),
 
     // Configurable all-day measurement: the device exposes a settable HR sampling interval and
     // per-vital monitoring toggles (Colmi `0x16` + prefs). The generic jring has no such control,
@@ -55,5 +58,7 @@ enum class RingDeviceType(val displayName: String) {
     JRING("SMART_RING"),
     // One protocol family covering the whole Colmi/Yawell line — the exact model comes from
     // WearableModel (iOS #49), so the family label stays honest about the ambiguity.
-    COLMI_R02("Colmi / Yawell ring");
+    COLMI_R02("Colmi / Yawell ring"),
+    // Yucheng YCBT protocol family (SmartHealth app): TK5, R10M, and other SmartHealth-branded rings.
+    YCBT("YCBT ring");
 }

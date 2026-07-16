@@ -9,6 +9,7 @@ import java.time.temporal.ChronoUnit
  */
 object RingEventBridge {
     private val hrRange = 30..220
+    val spo2Range = 70..100
     private val stressRange = 1..100
     private val hrvRange = 1..300
     private val temperatureRange = 30.0..45.0
@@ -88,6 +89,25 @@ object RingEventBridge {
 
         is RingDecodedEvent.BindNotify ->
             emptyList() // Bind/unbind handshake is driven in the sync engine / BLE client
+
+        is RingDecodedEvent.MeasurementRejected,
+        is RingDecodedEvent.WearingStatus,
+        is RingDecodedEvent.SupportFunctions,
+        is RingDecodedEvent.ChipScheme ->
+            emptyList() // Debug-feed only; no product surface yet
+
+        is RingDecodedEvent.BloodPressureSample -> {
+            // Live BP has no dedicated PulseEvent; surface as upserting history rows so the reading lands.
+            val events = mutableListOf<PulseEvent>()
+            if (decoded.systolic > 0) events.add(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, decoded.systolic.toDouble(), decoded._timestamp))
+            if (decoded.diastolic > 0) events.add(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, decoded.diastolic.toDouble(), decoded._timestamp))
+            events
+        }
+
+        is RingDecodedEvent.BloodSugarSample -> {
+            if (decoded.mgdl > 0) listOf(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_SUGAR, decoded.mgdl, decoded._timestamp))
+            else emptyList()
+        }
     }
 
     private fun isPlausibleSleepStart(start: Instant, now: Instant): Boolean {
