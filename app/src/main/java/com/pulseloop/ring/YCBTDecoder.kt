@@ -40,7 +40,7 @@ class YCBTDecoder {
         val p = frame.payload
         return when (frame.cmd) {
             YCBTCommand.LIVE_STATUS -> {
-                if (p.size < 2) return listOf(RingDecodedEvent.CommandAck(commandId = frame.cmd.toUByte()))
+                if (p.size < 6) return listOf(RingDecodedEvent.CommandAck(commandId = frame.cmd.toUByte()))
                 listOf(RingDecodedEvent.ActivityUpdate(
                     _timestamp = now,
                     steps = YCBTBytes.u16(p, 0),

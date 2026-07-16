@@ -99,7 +99,9 @@ object YCBTBytes {
     /** Convert ring seconds (2000-epoch) to an Instant. The ring clock is local wall-clock; decoding
      * must un-apply the device's UTC offset to recover the true absolute instant. */
     fun date(ringSeconds: Int, timeZone: TimeZone = TimeZone.getDefault()): Instant {
-        val offset = timeZone.rawOffset / 1000
+        // The ring stores local wall-clock seconds. Match Foundation's
+        // secondsFromGMT() approximation and include the currently active DST offset.
+        val offset = timeZone.getOffset(System.currentTimeMillis()) / 1000
         return Instant.ofEpochSecond(ringSeconds.toLong() + EPOCH_OFFSET - offset)
     }
 

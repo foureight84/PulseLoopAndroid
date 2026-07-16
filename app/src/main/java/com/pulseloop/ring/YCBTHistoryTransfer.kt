@@ -31,16 +31,20 @@ class YCBTHistoryTransfer(
 
     companion object {
         private const val DEFAULT_BUFFER_CAP = 64 * 1024
+        private const val MAX_BUFFER_CAP = 512 * 1024
     }
 
+    @get:Synchronized
     val isActive: Boolean get() = state != State.IDLE
 
+    @Synchronized
     fun start(types: List<YCBTHistoryType>) {
         if (isActive) return
         queue = types.filter { !unsupported.contains(it.queryKey) }.toMutableList()
         advance()
     }
 
+    @Synchronized
     fun cancel() {
         cancelWatchdog()
         state = State.IDLE
@@ -71,6 +75,7 @@ class YCBTHistoryTransfer(
     }
 
     /** Feed every validated Health-group (type == 0x05) frame here. */
+    @Synchronized
     fun handle(cmd: Int, payload: ByteArray): List<RingDecodedEvent> {
         val type = currentType ?: return emptyList()
 
@@ -95,7 +100,7 @@ class YCBTHistoryTransfer(
         if (payload.size < YCBTHealth.HEADER_PAYLOAD_LENGTH) return advance()
         val totalBytes = YCBTBytes.u32(payload, 6)
         buffer = ByteArray(0)
-        bufferCap = maxOf(totalBytes, DEFAULT_BUFFER_CAP)
+        bufferCap = totalBytes.coerceIn(0, MAX_BUFFER_CAP)
         state = State.RECEIVING
         armWatchdog(type)
         return listOf(RingDecodedEvent.HistorySyncProgress(stage = "Syncing ${type.label}…"))
@@ -136,10 +141,14 @@ class YCBTHistoryTransfer(
         val delayMs = maxOf(0, fireAt - System.currentTimeMillis())
         watchdogJob = scope.launch {
             delay(delayMs)
-            if (!isActive) return@launch
-            if (currentType != type) return@launch
-            publishOutOfBand(advance())
+            watchdogFired(type)
         }
+    }
+
+    @Synchronized
+    private fun watchdogFired(type: YCBTHistoryType) {
+        if (state == State.IDLE || currentType != type) return
+        publishOutOfBand(advance())
     }
 
     private fun cancelWatchdog() {

@@ -10,7 +10,6 @@ import com.pulseloop.wearables.WearableModel
 object YCBTCoordinator : WearableCoordinator {
     override val deviceType = RingDeviceType.YCBT
 
-    private val manufacturerHexMarker = "1078"
 
     override fun matches(name: String?, advertisement: AdvertisementInfo): Boolean {
         // Disqualify QRing service outright — those belong to ColmiDriver.
@@ -22,17 +21,17 @@ object YCBTCoordinator : WearableCoordinator {
             return model.family == deviceType && isSmartHealthName(name)
         }
 
-        val manufacturer = advertisement.manufacturerData
-        if (manufacturer != null && manufacturer.toHexString().startsWith(manufacturerHexMarker)) {
-            // Manufacturer marker is corroborating evidence only; do not override a name match.
-            return true
-        }
-        return false
+        val hasYcbtService = advertisement.serviceUUIDs.contains(YCBTUUIDs.SERVICE)
+        val hasKnownName = isSmartHealthName(name)
+        // The 0x7810 manufacturer marker is common enough that it is corroborating
+        // evidence only, never sufficient to route an unknown peripheral.
+        return hasYcbtService || hasKnownName
     }
 
     private fun isSmartHealthName(name: String?): Boolean {
         if (name == null) return false
-        return Regex("^[A-Za-z0-9]+( [A-Za-z0-9]+)* [0-9A-Fa-f]{4}$").matches(name)
+        val normalized = name.trim().uppercase()
+        return Regex("^(?:R10M|TK5|T50|SR09|SR08|R08|R09)(?:[ _-][0-9A-Z]+)?$").matches(normalized)
     }
 
     override val capabilities = setOf(

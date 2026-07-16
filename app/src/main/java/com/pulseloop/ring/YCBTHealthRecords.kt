@@ -187,7 +187,7 @@ object YCBTHealthRecords {
                 if (!seenStarts.add(segmentStart)) continue
                 val segmentSeconds = YCBTBytes.u24(buffer, offset + 5)
                 if (sessionStart == null) sessionStart = YCBTBytes.date(segmentStart)
-                val minutes = maxOf(1, (segmentSeconds / 60.0).toInt())
+                val minutes = maxOf(1, kotlin.math.round(segmentSeconds / 60.0).toInt())
                 repeat(minutes) { stages.add(stage) }
             }
             if (sessionStart != null && stages.isNotEmpty()) {

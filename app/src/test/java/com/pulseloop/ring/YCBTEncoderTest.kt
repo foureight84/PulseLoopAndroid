@@ -83,16 +83,17 @@ class YCBTEncoderTest {
         val sequence = encoder.startupSequence().map { it.copyOfRange(0, 2) }
         assertArrayEquals(byteArrayOf(0x01, 0x00), sequence.first())
         assertArrayEquals(byteArrayOf(0x03, 0x09), sequence.last())
-        assertEquals(listOf(
+        val expectedGets = listOf(
             byteArrayOf(0x02, 0x00),
             byteArrayOf(0x02, 0x01),
             byteArrayOf(0x02, 0x1b),
             byteArrayOf(0x02, 0x03),
             byteArrayOf(0x02, 0x07),
-        ), sequence.subList(1, 6))
+        )
+        assertEquals(expectedGets.map { it.toList() }, sequence.subList(1, 6).map { it.toList() })
         assertEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02).toList(), encoder.startupSequence().last().toList())
         val settings = sequence.subList(6, sequence.size)
-        assertEquals(listOf(
+        val expectedSettings = listOf(
             byteArrayOf(0x01, 0x12),
             byteArrayOf(0x01, 0x04),
             byteArrayOf(0x01, 0x0c),
@@ -102,7 +103,8 @@ class YCBTEncoderTest {
             byteArrayOf(0x01, 0x45),
             byteArrayOf(0x01, 0x03),
             byteArrayOf(0x03, 0x09),
-        ), settings)
+        )
+        assertEquals(expectedSettings.map { it.toList() }, settings.map { it.toList() })
     }
 
     @Test

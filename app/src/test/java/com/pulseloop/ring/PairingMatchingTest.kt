@@ -77,7 +77,7 @@ class PairingMatchingTest {
     @Test
     fun `YCBT manufacturer marker does not override QRing service`() {
         val manufacturer = byteArrayOf(0x10, 0x78)
-        assertTrue(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(emptyList(), manufacturer)))
+        assertFalse(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(emptyList(), manufacturer)))
         assertFalse(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V2), manufacturer)))
     }
 
