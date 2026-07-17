@@ -110,12 +110,16 @@ fun SettingsScreen(
             },
         )
 
-        // GENERAL
+        // GENERAL — Physiology sits under User Profile (iOS SettingsView General group), feeding the
+        // optional inputs that tune the vitals reference ranges.
         SettingsSection(
             title = "General",
             rows = listOf(
                 SettingsRowItem(Icons.Filled.AccountCircle, PulseColors.accent, "User Profile") {
                     navigate("settings/profile")
+                },
+                SettingsRowItem(Icons.Filled.MonitorHeart, PulseColors.hrv, "Physiology") {
+                    navigate("settings/physiology")
                 },
             ),
         )

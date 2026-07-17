@@ -44,12 +44,15 @@ import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.ring.RingConnectionState
+import com.pulseloop.service.GlucoseUnit
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.service.RingSyncWorker
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.DeviceHeroStatus
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.wearables.WearableModel
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -721,6 +724,152 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
             ) { Text("Save profile") }
             savedMsg?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+// MARK: - Physiology
+
+/**
+ * Physiology detail screen (iOS #35 PhysiologySettingsView): optional inputs that tune the vitals
+ * reference ranges (VitalsThresholdEngine). Everything is optional — the engine uses sensible
+ * defaults when unset. Persisted to [ApiKeyStore] alongside units/calibration (Android keeps these
+ * app-side prefs off the Room UserProfile). Saving republishes the widget snapshot so its zones
+ * re-interpret without a new measurement (the values feed [com.pulseloop.service.UserPhysiologyProfile]).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PhysiologySettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val keyStore = remember { ApiKeyStore(context) }
+    val imperial = keyStore.resolvedUnitSystem == UnitSystem.IMPERIAL
+
+    var athleteMode by remember { mutableStateOf(false) }
+    var altitudeText by remember { mutableStateOf("") }
+    var betaBlockers by remember { mutableStateOf<Boolean?>(null) }
+    var lungCondition by remember { mutableStateOf<Boolean?>(null) }
+    var glucoseUnit by remember { mutableStateOf(GlucoseUnit.MGDL) }
+    var savedMsg by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        athleteMode = keyStore.athleteMode
+        betaBlockers = keyStore.usesBetaBlockers
+        lungCondition = keyStore.hasKnownLungCondition
+        glucoseUnit = keyStore.preferredGlucoseUnit
+        keyStore.altitudeMeters?.let { m ->
+            // Stored canonical metres; show in the display unit (iOS enters ft, stores m).
+            altitudeText = (if (imperial) (m / 0.3048).roundToInt() else m.roundToInt()).toString()
+        }
+    }
+
+    SettingsSubScreen(title = "Physiology", onBack = onBack) {
+        Text(
+            "Optional refinements to how your vitals are interpreted. Leave anything unset and " +
+                "PulseLoop uses sensible defaults.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        PhysiologyCard(
+            title = "Fitness",
+            footer = "Treats a low resting heart rate as a sign of fitness rather than a concern, and relaxes the low-HR threshold.",
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Athlete mode", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Switch(checked = athleteMode, onCheckedChange = { athleteMode = it; savedMsg = null })
+            }
+        }
+
+        PhysiologyCard(
+            title = "Environment",
+            footer = "Above ~2000 m, normal blood-oxygen readings run lower. We use this to avoid false low-oxygen warnings.",
+        ) {
+            OutlinedTextField(
+                value = altitudeText,
+                onValueChange = { altitudeText = it.filter(Char::isDigit).take(5); savedMsg = null },
+                label = { Text(if (imperial) "Typical altitude (ft)" else "Typical altitude (m)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        PhysiologyCard(
+            title = "Health context",
+            footer = "Optional. Both can change what's expected for your heart rate or oxygen, so we adjust labels instead of alarming.",
+        ) {
+            TriStateRow("Beta-blockers", betaBlockers) { betaBlockers = it; savedMsg = null }
+            Spacer(Modifier.height(12.dp))
+            TriStateRow("Known lung condition", lungCondition) { lungCondition = it; savedMsg = null }
+        }
+
+        PhysiologyCard(title = "Units", footer = null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Glucose unit", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                SingleChoiceSegmentedButtonRow {
+                    GlucoseUnit.entries.forEachIndexed { i, u ->
+                        SegmentedButton(
+                            selected = glucoseUnit == u,
+                            onClick = { glucoseUnit = u; savedMsg = null },
+                            shape = SegmentedButtonDefaults.itemShape(i, GlucoseUnit.entries.size),
+                        ) { Text(u.label) }
+                    }
+                }
+            }
+        }
+
+        Button(
+            onClick = {
+                keyStore.athleteMode = athleteMode
+                keyStore.usesBetaBlockers = betaBlockers
+                keyStore.hasKnownLungCondition = lungCondition
+                keyStore.preferredGlucoseUnit = glucoseUnit
+                val entered = altitudeText.trim().toDoubleOrNull()
+                keyStore.altitudeMeters =
+                    if (entered != null && entered > 0) (if (imperial) entered * 0.3048 else entered) else null
+                // Physiology shifts the vitals reference zones the widgets render — republish.
+                com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
+                savedMsg = "Saved ✓"
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Save") }
+        savedMsg?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+/** A titled card with optional explanatory footer, matching iOS `SettingsGroup`. */
+@Composable
+private fun PhysiologyCard(title: String, footer: String?, content: @Composable ColumnScope.() -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            content()
+            if (footer != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(footer, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/** Not set / No / Yes segmented control over a nullable Boolean, mirroring iOS `TriState`. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TriStateRow(title: String, value: Boolean?, onChange: (Boolean?) -> Unit) {
+    val options = listOf<Pair<String, Boolean?>>("Not set" to null, "No" to false, "Yes" to true)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        SingleChoiceSegmentedButtonRow {
+            options.forEachIndexed { i, (label, v) ->
+                SegmentedButton(
+                    selected = value == v,
+                    onClick = { onChange(v) },
+                    shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                ) { Text(label) }
             }
         }
     }

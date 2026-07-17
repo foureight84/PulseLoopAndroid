@@ -75,6 +75,34 @@ class VitalsZoneModelTest {
         assertEquals(BiologicalSex.UNSPECIFIED, BiologicalSex.fromProfileSex(null))
     }
 
+    @Test
+    fun fromProfileDefaultsPhysiologyToNoAdjustment() {
+        // Existing callers pass only age/sex — the physiology refinements (iOS #35) must default off.
+        val p = UserPhysiologyProfile.fromProfile(age = 30, sex = "male")
+        assertFalse(p.athleteMode)
+        assertNull(p.altitudeMeters)
+        assertFalse(p.usesBetaBlockers)
+        assertFalse(p.hasKnownLungCondition)
+        assertEquals(GlucoseUnit.MGDL, p.preferredGlucoseUnit)
+    }
+
+    @Test
+    fun fromProfilePassesThroughPhysiologyInputs() {
+        val p = UserPhysiologyProfile.fromProfile(
+            age = 40, sex = "female",
+            athleteMode = true,
+            altitudeMeters = 2500.0,
+            usesBetaBlockers = true,
+            hasKnownLungCondition = true,
+            preferredGlucoseUnit = GlucoseUnit.MMOL,
+        )
+        assertTrue(p.athleteMode)
+        assertEquals(2500.0, p.altitudeMeters!!, 1e-9)
+        assertTrue(p.usesBetaBlockers)
+        assertTrue(p.hasKnownLungCondition)
+        assertEquals(GlucoseUnit.MMOL, p.preferredGlucoseUnit)
+    }
+
     // ── BaselineStats ────────────────────────────────────────────────────
 
     private fun samples(values: List<Double>, stepMs: Long = 3_600_000L): List<VitalSample> =

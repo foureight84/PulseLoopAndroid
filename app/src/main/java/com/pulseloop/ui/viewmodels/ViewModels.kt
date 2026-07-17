@@ -594,7 +594,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             bpDiaSeries = bpDia.map { VitalSample(it.timestamp, it.value) },
             glucoseSeries = gluc.map { VitalSample(it.timestamp, it.value + glucoseOffset) },
             peakHr = hr.maxOfOrNull { it.value },
-            profile = UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex),
+            profile = apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex),
             // "Reference entered" ⇔ a non-zero calibration offset in Settings (0 = not set).
             hasBPReference = (apiKeyStore?.bpAdjustSystolic ?: 0) != 0 || (apiKeyStore?.bpAdjustDiastolic ?: 0) != 0,
             isGlucoseCalibrated = glucoseOffset != 0.0 || (apiKeyStore?.glucoseRefMgdl ?: 0.0) != 0.0,
@@ -611,6 +611,22 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
 
     }
 }
+
+/**
+ * Build the [UserPhysiologyProfile] from the stored age/sex plus the app-side physiology prefs
+ * (iOS #35). Nullable receiver so the (rare) no-store path still yields a sensible default profile.
+ * The tri-state Settings values (`Boolean?`) collapse to the engine's non-null flags: null/false
+ * both mean "no adjustment", only true tightens/relaxes a range.
+ */
+private fun ApiKeyStore?.physiologyProfile(age: Int?, sex: String?): UserPhysiologyProfile =
+    UserPhysiologyProfile.fromProfile(
+        age, sex,
+        athleteMode = this?.athleteMode ?: false,
+        altitudeMeters = this?.altitudeMeters,
+        usesBetaBlockers = this?.usesBetaBlockers == true,
+        hasKnownLungCondition = this?.hasKnownLungCondition == true,
+        preferredGlucoseUnit = this?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL,
+    )
 
 /**
  * The one [VitalsCardFactory.Inputs] construction from a [VitalsViewModel.VitalsState], shared by
@@ -789,7 +805,7 @@ class VitalDetailViewModel(
         viewModelScope.launch {
             try {
                 val userProfile = db.userProfileDao().get()
-                val physiology = UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex)
+                val physiology = apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex)
                 engineThresholds(metric, physiology)?.let { engine ->
                     _state.update { it.copy(thresholds = engine) }
                 }
@@ -947,7 +963,7 @@ class VitalDetailViewModel(
         // baseline-relative zones from the window's samples further below.
         val physiology = try {
             val userProfile = db.userProfileDao().get()
-            UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex)
+            apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex)
         } catch (_: Exception) { UserPhysiologyProfile.UNKNOWN }
 
         if (metric == "bp") {

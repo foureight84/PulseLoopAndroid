@@ -489,6 +489,9 @@ fun PulseLoopApp() {
                 paddedComposable("settings/profile") {
                     ProfileSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }
+                paddedComposable("settings/physiology") {
+                    PhysiologySettingsScreen(onBack = { navController.popBackStack() })
+                }
                 paddedComposable("settings/calibration") {
                     CalibrationSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }

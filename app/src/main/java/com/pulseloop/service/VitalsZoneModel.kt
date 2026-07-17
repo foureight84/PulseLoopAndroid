@@ -207,9 +207,27 @@ data class UserPhysiologyProfile(
         /** A neutral default used when no profile exists yet (onboarding not done). */
         val UNKNOWN = UserPhysiologyProfile()
 
-        /** Build from the stored profile's plain fields (age + sex string). */
-        fun fromProfile(age: Int?, sex: String?): UserPhysiologyProfile =
-            UserPhysiologyProfile(age = age, sex = BiologicalSex.fromProfileSex(sex))
+        /** Build from the stored profile's plain fields (age + sex string) plus the optional
+         *  physiology refinements from Settings (iOS #35). All extras default to "no adjustment"
+         *  so existing callers are unaffected — pass plain values, never Room reads. */
+        fun fromProfile(
+            age: Int?,
+            sex: String?,
+            athleteMode: Boolean = false,
+            altitudeMeters: Double? = null,
+            usesBetaBlockers: Boolean = false,
+            hasKnownLungCondition: Boolean = false,
+            preferredGlucoseUnit: GlucoseUnit = GlucoseUnit.MGDL,
+        ): UserPhysiologyProfile =
+            UserPhysiologyProfile(
+                age = age,
+                sex = BiologicalSex.fromProfileSex(sex),
+                athleteMode = athleteMode,
+                altitudeMeters = altitudeMeters,
+                usesBetaBlockers = usesBetaBlockers,
+                hasKnownLungCondition = hasKnownLungCondition,
+                preferredGlucoseUnit = preferredGlucoseUnit,
+            )
     }
 }
 
