@@ -422,6 +422,9 @@ fun VitalDetailScreen(
 ) {
     val context = LocalContext.current
     val units = apiKeyStore?.resolvedUnitSystem ?: com.pulseloop.settings.UnitSystem.METRIC
+    // Glucose display unit for the detail chart's zones/axis/stats (iOS #43 §3); the VM already
+    // converts the plotted readings, this converts the reference layer the screen owns.
+    val gUnit = apiKeyStore?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL
     val vm = remember { VitalDetailViewModel(db, metric, apiKeyStore, units) }
     val state by vm.state.collectAsState()
 
@@ -529,7 +532,10 @@ fun VitalDetailScreen(
                                 colorSecondary = ZonePalette.accent(MetricKind.BLOOD_PRESSURE).copy(alpha = 0.5f),
                                 legendPrimary = if (state.isBP) "Systolic" else null,
                                 legendSecondary = if (state.isBP) "Diastolic" else null,
-                                thresholds = state.thresholds,
+                                // Points arrive in display units from the VM; convert the zone/axis
+                                // reference to match so temp bands (°F) and glucose bands (mmol/L)
+                                // line up with the plotted line (iOS #43 §2/§3).
+                                thresholds = displayThresholds(state.thresholds, metric, units, gUnit),
                                 timestamps = state.timestamps,
                                 tooltipTimeFormatter = { ts -> tooltipTime(ts, state.period) },
                             )
@@ -549,13 +555,13 @@ fun VitalDetailScreen(
                             .padding(horizontal = 10.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        DetailStat("Latest", state.latest?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Latest", state.latest?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                         DetailStatDivider()
-                        DetailStat("Average", state.avg?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Average", state.avg?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                         DetailStatDivider()
-                        DetailStat("Min", state.min?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Min", state.min?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                         DetailStatDivider()
-                        DetailStat("Max", state.max?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Max", state.max?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                     }
                 }
 
@@ -597,7 +603,7 @@ fun VitalDetailScreen(
                                     )
                                     Spacer(Modifier.weight(1f))
                                     Text(
-                                        zoneRangeText(zone, metric, units),
+                                        zoneRangeText(zone, metric, units, gUnit),
                                         fontSize = 12.sp,
                                         color = PulseColors.textMuted,
                                     )
@@ -740,10 +746,18 @@ private fun zoneRangeText(
     zone: com.pulseloop.service.MetricZone,
     metric: String,
     units: UnitSystem,
+    gUnit: com.pulseloop.service.GlucoseUnit,
 ): String {
-    fun display(v: Double): Double = if (metric == "temp") UnitConverter.temperature(v, units) else v
-    fun fmt(v: Double): String =
-        if (metric == "temp") "%.1f".format(display(v)) else "${display(v).toInt()}"
+    fun display(v: Double): Double = when (metric) {
+        "temp" -> UnitConverter.temperature(v, units)
+        "glucose" -> gUnit.fromMgdl(v)
+        else -> v
+    }
+    fun fmt(v: Double): String = when {
+        metric == "temp" -> "%.1f".format(display(v))
+        metric == "glucose" && gUnit == com.pulseloop.service.GlucoseUnit.MMOL -> "%.1f".format(display(v))
+        else -> "${display(v).toInt()}"
+    }
     val lo = zone.lower
     val hi = zone.upper
     return when {
@@ -822,10 +836,32 @@ private fun tooltipTime(ts: Long, period: Period): String {
     }
 }
 
-private fun formatStat(value: Double, metric: String): String = when (metric) {
+private fun formatStat(value: Double, metric: String, gUnit: com.pulseloop.service.GlucoseUnit): String = when (metric) {
     "temp" -> "%.1f".format(value)
-    "glucose" -> "%.1f".format(value)
+    // Values arrive already in the display unit; mmol/L wants a decimal, mg/dL is whole.
+    "glucose" -> if (gUnit == com.pulseloop.service.GlucoseUnit.MMOL) "%.1f".format(value) else "%.0f".format(value)
     "hrv" -> "%.0f".format(value)
     else -> "%.0f".format(value)
+}
+
+/**
+ * Convert an engine [MetricThresholds] (canonical units) into the chart's display units so the
+ * zone bands and y-axis match the VM's already-converted points — temperature to °F, glucose to
+ * mmol/L (iOS #43 §2/§3). Other metrics (and null) pass through unchanged.
+ */
+private fun displayThresholds(
+    t: com.pulseloop.ui.components.MetricThresholds?,
+    metric: String,
+    units: UnitSystem,
+    gUnit: com.pulseloop.service.GlucoseUnit,
+): com.pulseloop.ui.components.MetricThresholds? {
+    if (t == null || (metric != "temp" && metric != "glucose")) return t
+    fun d(v: Double): Double =
+        if (metric == "temp") UnitConverter.temperature(v, units) else gUnit.fromMgdl(v)
+    return t.copy(
+        displayMin = d(t.displayMin),
+        displayMax = d(t.displayMax),
+        zones = t.zones.map { it.copy(start = d(it.start), end = d(it.end)) },
+    )
 }
 

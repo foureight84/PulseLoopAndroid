@@ -999,9 +999,13 @@ class VitalDetailViewModel(
             val kind = primaryKind ?: return
             val kindName = kind.name
             val glucoseOffset = apiKeyStore?.glucoseOffsetMgdl ?: 0.0
+            val glucoseUnit = apiKeyStore?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL
 
+            // Convert each reading to its display unit so the chart, stats, and trend all agree:
+            // glucose gets the calibration offset then the mg/dL→mmol/L unit (iOS #43 §3); temp
+            // gets °C→°F. Reference zones/axis are converted at the display layer (Screens.kt).
             fun convert(v: Double): Double = when (kind) {
-                MeasurementKind.BLOOD_SUGAR -> v + glucoseOffset
+                MeasurementKind.BLOOD_SUGAR -> glucoseUnit.fromMgdl(v + glucoseOffset)
                 MeasurementKind.TEMPERATURE -> UnitConverter.temperature(v, unitSystem)
                 else -> v
             }

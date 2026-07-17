@@ -103,6 +103,13 @@ class VitalsZoneModelTest {
         assertEquals(GlucoseUnit.MMOL, p.preferredGlucoseUnit)
     }
 
+    @Test
+    fun glucoseUnitConvertsFromMgdl() {
+        // mg/dL is identity; mmol/L = mg/dL ÷ 18.0182 (iOS #43 §3).
+        assertEquals(99.0, GlucoseUnit.MGDL.fromMgdl(99.0), 1e-9)
+        assertEquals(5.494, GlucoseUnit.MMOL.fromMgdl(99.0), 1e-3)
+    }
+
     // ── BaselineStats ────────────────────────────────────────────────────
 
     private fun samples(values: List<Double>, stepMs: Long = 3_600_000L): List<VitalSample> =
