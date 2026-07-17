@@ -146,6 +146,9 @@ class YCBTEncoder {
     fun deviceInfoRequest(): ByteArray =
         logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, byteArrayOf(0x47, 0x43))
 
+    fun deviceNameRequest(): ByteArray =
+        logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_NAME, byteArrayOf(0x47, 0x50))
+
     fun enableLiveStatus(): ByteArray =
         logical(YCBTGroup.APP_CONTROL, YCBTCommand.LIVE_STATUS_PUSH, byteArrayOf(0x01, 0x00, 0x02))
 

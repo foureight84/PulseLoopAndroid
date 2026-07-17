@@ -72,6 +72,12 @@ class YCBTSyncEngine(
         writer?.enqueue(encoder.setTime())
     }
 
+    /** Exact current SmartHealth/YCBT post-CCCD sequence: identify device, then set time. */
+    fun beginVendorHandshake() {
+        writer?.enqueue(encoder.deviceNameRequest())
+        writer?.enqueue(encoder.setTime())
+    }
+
     fun requestBattery() {
         writer?.enqueue(encoder.deviceInfoRequest())
     }

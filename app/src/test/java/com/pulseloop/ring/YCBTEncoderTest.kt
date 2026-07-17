@@ -20,6 +20,14 @@ class YCBTEncoderTest {
     }
 
     @Test
+    fun `device name request matches current SmartHealth handshake vector`() {
+        assertArrayEquals(
+            byteArrayOf(0x02, 0x03, 0x08, 0x00, 0x47, 0x50, 0xef.toByte(), 0x20),
+            YCBTProtocol.frame(encoder.deviceNameRequest()),
+        )
+    }
+
+    @Test
     fun `setTime matches captured frame`() {
         val calendar = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC"))
         calendar.set(2026, java.util.Calendar.JULY, 6, 12, 34, 14)

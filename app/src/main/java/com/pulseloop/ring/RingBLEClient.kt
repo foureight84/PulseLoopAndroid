@@ -1328,10 +1328,10 @@ class RingBLEClient(private val context: Context) {
                 // R10M has a very short post-subscription watchdog. The normal startup callback
                 // loads Room/DataStore settings before its first write, which can leave the ring
                 // idle long enough to terminate an otherwise healthy link with HCI 0x13. Issue a
-                // mandatory time-sync command synchronously; the official Yucheng Android SDK
-                // does the same immediately after notifications become active.
-                recordDiagnostic("YCBT immediate time sync")
-                (activeSyncEngine as? YCBTSyncEngine)?.resyncTime()
+                // Current SmartHealth calls GetDeviceName (02 03, payload 47 50) first and then
+                // queues SettingTime. This ordering differs from older public YCBT SDKs.
+                recordDiagnostic("YCBT vendor handshake")
+                (activeSyncEngine as? YCBTSyncEngine)?.beginVendorHandshake()
             } else {
                 readBattery()
             }
