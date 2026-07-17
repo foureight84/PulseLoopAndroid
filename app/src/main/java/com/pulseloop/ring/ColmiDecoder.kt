@@ -179,7 +179,11 @@ object ColmiDecoder {
             val hrv = v[i].toInt()
             if (hrv == 0) return@mapNotNull null
             val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * slotMin).toLong()).toInstant()
-            RingDecodedEvent.HrvSample(value = hrv, _timestamp = ts)
+            RingDecodedEvent.HistoryMeasurement(
+                kind_field = MeasurementKind.HRV,
+                value = hrv.toDouble(),
+                _timestamp = ts,
+            )
         }
     }
 

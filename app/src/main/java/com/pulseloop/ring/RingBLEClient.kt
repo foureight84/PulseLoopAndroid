@@ -901,6 +901,14 @@ class RingBLEClient(private val context: Context) {
                     delay(OP_TIMEOUT_MS)
                     if (inFlightOp === op) {
                         Log.w("RingBLEClient", "GATT op ACK timed out — unblocking queue: ${opLabel(op)}")
+                        // Android does not identify a write callback beyond its characteristic.
+                        // Two successive protocol writes use the same characteristic, so a late
+                        // callback for a timed-out write could otherwise retire its successor.
+                        // Reset the link instead of issuing another ambiguous command write.
+                        if (op is GattOp.CommandWrite) {
+                            recoverWedgedLink()
+                            return@launch
+                        }
                         // A lost completion callback leaves the framework slot busy: don't just
                         // free our slot and pump the next op into a still-busy stack (that is the
                         // spin-and-drop loop). Escalate to a reconnect once enough pile up.
@@ -927,6 +935,12 @@ class RingBLEClient(private val context: Context) {
                 return
             }
             Log.w("RingBLEClient", "GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${opLabel(op)}")
+            if (op is GattOp.DescriptorWrite &&
+                subscriptionGate?.isRequired(op.descriptor.characteristic.uuid.toString()) == true
+            ) {
+                failConnectAttempt("Could not enable required ring indication")
+                return
+            }
             // The slot may be wedged — escalate to a reconnect rather than pump the next op into
             // the same busy stack (the tear-down aborts the loop).
             if (noteOpFailureAndMaybeRecover()) return
@@ -1076,9 +1090,10 @@ class RingBLEClient(private val context: Context) {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (gatt !== bluetoothGatt) return  // stale callback from a superseded connection
             recordDiagnostic("services status=$status count=${gatt.services.size}")
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                updateState { copy(lastError = "Service discovery failed (GATT $status)") }
+                failConnectAttempt("Service discovery failed (GATT $status)")
                 return
             }
 
@@ -1228,6 +1243,13 @@ class RingBLEClient(private val context: Context) {
             recordDiagnostic("write ${characteristic.uuid.toString().take(8)} status=$status")
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                updateState { copy(lastError = "Ring command write failed (GATT $status)") }
+                // Do not advance into the next command: the failed operation may be one of the
+                // required post-subscription handshake writes, and callbacks share a channel.
+                recoverWedgedLink()
+                return
+            }
             resetOpFailures()  // a real completion — the stack is responsive again
             completeOp { it is GattOp.CommandWrite }
         }
@@ -1245,8 +1267,13 @@ class RingBLEClient(private val context: Context) {
                 if (value.size >= 7) {
                     val systolic = decodeSFLOAT(value[1], value[2])
                     val diastolic = decodeSFLOAT(value[3], value[4])
-                    PulseEventBus.publishBlocking(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, systolic, java.time.Instant.now()))
-                    PulseEventBus.publishBlocking(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, diastolic, java.time.Instant.now()))
+                    PulseEventBus.publishBlocking(
+                        PulseEvent.BloodPressureSample(
+                            systolic = systolic.toInt(),
+                            diastolic = diastolic.toInt(),
+                            timestamp = java.time.Instant.now(),
+                        )
+                    )
                 }
                 return
             }

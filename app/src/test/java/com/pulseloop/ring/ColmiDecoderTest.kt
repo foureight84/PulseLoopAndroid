@@ -15,6 +15,23 @@ import java.time.ZoneOffset
 class ColmiDecoderTest {
     private val zone = ZoneOffset.UTC
 
+    @Test
+    fun `HRV history remains distinct from a live HRV sample`() {
+        val frame = ColmiPacket.frame(byteArrayOf(
+            ColmiCommandID.SYNC_HRV.toByte(), 0x01, 0x1e, 42,
+        ))
+
+        val events = ColmiDecoder.decodeHistory(
+            frame,
+            day = LocalDate.of(2026, 7, 17),
+            zone = zone,
+        )
+
+        val sample = events.single() as RingDecodedEvent.HistoryMeasurement
+        assertEquals(MeasurementKind.HRV, sample.kind_field)
+        assertEquals(42.0, sample.value, 0.0)
+    }
+
     // MARK: Framing / checksum
 
     @Test

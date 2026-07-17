@@ -103,6 +103,9 @@ object YCBTBytes {
         val localDateTime = Instant.ofEpochSecond(ringSeconds.toLong() + EPOCH_OFFSET)
             .atOffset(ZoneOffset.UTC)
             .toLocalDateTime()
+        // A fall-back overlap is inherently ambiguous because the ring stores no UTC offset.
+        // java.time deliberately chooses the earlier valid offset, giving us a deterministic
+        // policy that matches normal LocalDateTime.atZone behavior rather than today's offset.
         return localDateTime.atZone(timeZone.toZoneId()).toInstant()
     }
 

@@ -187,6 +187,18 @@ class YCBTDecoderTest {
     }
 
     @Test
+    fun `fall DST overlap deterministically chooses the earlier offset`() {
+        val tz = TimeZone.getTimeZone("America/New_York")
+        val firstOccurrence = Instant.parse("2026-11-01T05:30:00Z")
+        val secondOccurrence = Instant.parse("2026-11-01T06:30:00Z")
+        val encoded = YCBTBytes.ringSeconds(firstOccurrence, tz)
+
+        // The ring cannot represent which 01:30 occurrence it meant: both encode identically.
+        assertEquals(encoded, YCBTBytes.ringSeconds(secondOccurrence, tz))
+        assertEquals(firstOccurrence, YCBTBytes.date(encoded, tz))
+    }
+
+    @Test
     fun `u24 reads three bytes little endian`() {
         assertEquals(72000, YCBTBytes.u24(byteArrayOf(0x40, 0x19, 0x01), 0))
         assertEquals(0, YCBTBytes.u24(byteArrayOf(0x00, 0x00), 0))
