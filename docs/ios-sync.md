@@ -62,8 +62,8 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | Android has none |
 | ☐ | #61b | 07-08 | **Battery history + drainage graph** (persist battery samples + chart in Wearable settings) | **PORT** | M | Android has none; needs a Room table |
 | ☐ | #61c | 07-08 | **Coach notification improvements** (`CoachNotificationService` +73, `NotificationsSettingsView` +39, prompt/orchestrator/settings) | **ADAPT** | M | diff vs Android `CoachNotifications` — verify what changed |
-| ☐ | #61d | 07-08 | **Workout-history day grouping** (TODAY/YESTERDAY/date headers in the history sheet) + activity card style polish | **PORT** | S | Android history not day-grouped yet |
-| ☐ | #61e | 07-08 | **Sleep-page coach card → bottom** | **ADAPT** | S | Android `SleepScreen` already has the coach card — position check, likely trivial/already-have |
+| ☑ | #61d | 07-08 | **Workout-history day grouping** (TODAY/YESTERDAY/date headers in the history sheet) | **PORT** | S | `9c7fecb` — grouped `WorkoutHistoryDialog` by `LocalDate`. (Card style polish is iOS-specific `activityValueStyle`; N/A) |
+| ☑ | #61e | 07-08 | **Sleep-page coach card → bottom** | **ALREADY-HAVE** | S | Android `SleepScreen` already renders the coach card at the bottom of both Day and aggregate views (hero opens, coach closes) — no change needed |
 | ☐ | #61f | 07-08 | **Sync-event plumbing + misc bugfixes** (`PulseEventBus`/`RingEventBridge`/`RingSyncCoordinator`/`ActivityMigrations` + `SleepInsights`/`TodayTiles`/`ActivityRings`/`RingProtocol` fixes) | **ADAPT** | M | the actual "sync alerts" + a grab-bag "fixed multiple bugs" commit — assess each vs Android (Room Flows may already cover some) |
 | ☑ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | `be74a19` |
 | ☑ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | `3e14fef` |
@@ -94,8 +94,8 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 3. **#75 Onboarding copy + finale** (PARTIAL) — copy polish + celebratory finale; fit-to-viewport
    half is N/A (Compose sizes responsively). Real portable core is moderate (~3 iOS files, ~500 ins,
    much of it the N/A layout mechanics).
-4. **#61d Workout-history day grouping** (PORT, S) + **#61e sleep coach-card position** (ADAPT, S) —
-   the two small slices salvaged from the re-triaged #61.
+4. ~~**#61d Workout-history day grouping**~~ ✅ **DONE** `9c7fecb`. ~~**#61e sleep coach-card
+   position**~~ ✅ **ALREADY-HAVE** (Android renders it at the bottom already).
 
 **~~#61~~ RE-TRIAGED** (was a mis-scoped "S"): split into #61a–f (see port-queue rows). Battery
 alerts (#61a) + battery graph (#61b) + coach-notif (#61c) + sync-event/bugfix bundle (#61f) are each
