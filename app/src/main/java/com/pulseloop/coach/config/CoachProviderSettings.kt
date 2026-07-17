@@ -12,6 +12,7 @@ enum class CoachProviderMode(val rawValue: String, val label: String) {
     USER_OPENAI_KEY("userOpenAIKey", "OpenAI (your key)"),
     USER_GEMINI_KEY("userGeminiKey", "Gemini (your key)"),
     USER_OPENROUTER_KEY("userOpenRouterKey", "OpenRouter (your key)"),
+    USER_MINIMAX_KEY("userMiniMaxKey", "MiniMax (your key)"),
     BACKEND_PROXY("backendProxy", "Backend proxy");
 
     companion object {
@@ -34,6 +35,8 @@ data class CoachProviderSettings(
     val geminiModel: String = GeminiModel.DEFAULT.slug,
     /** OpenRouter `vendor/model` slug. Free-form — the user may type any slug. */
     val openRouterModel: String = OpenRouterModel.DEFAULT.slug,
+    /** MiniMax model slug (see [MiniMaxModel] presets). */
+    val minimaxModel: String = MiniMaxModel.DEFAULT.slug,
     /** OpenRouter-only: route only through providers that don't log/train on
      *  prompts (sends `provider.data_collection = "deny"`). */
     val orPrivacyRouting: Boolean = false,
@@ -50,4 +53,9 @@ data class CoachProviderSettings(
      *  when the stored slug is blank. */
     val resolvedOpenRouterModel: String
         get() = openRouterModel.trim().ifEmpty { OpenRouterModel.DEFAULT.slug }
+
+    /** The MiniMax model slug to use; falls back to the default preset only when
+     *  the stored slug is blank. */
+    val resolvedMinimaxModel: String
+        get() = minimaxModel.trim().ifEmpty { MiniMaxModel.DEFAULT.slug }
 }

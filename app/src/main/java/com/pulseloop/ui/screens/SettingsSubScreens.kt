@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import com.pulseloop.coach.config.CoachProviderMode
 import com.pulseloop.coach.config.CoachProviderSettingsStore
 import com.pulseloop.coach.config.GeminiModel
+import com.pulseloop.coach.config.MiniMaxModel
 import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
@@ -203,8 +204,11 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     var geminiKeyVisible by remember { mutableStateOf(false) }
                     var orKey by remember { mutableStateOf(providerStore.openRouterApiKey) }
                     var orKeyVisible by remember { mutableStateOf(false) }
+                    var minimaxKey by remember { mutableStateOf(providerStore.minimaxApiKey) }
+                    var minimaxKeyVisible by remember { mutableStateOf(false) }
                     var geminiModel by remember { mutableStateOf(providerStore.geminiModel) }
                     var orModel by remember { mutableStateOf(providerStore.openRouterModel) }
+                    var minimaxModel by remember { mutableStateOf(providerStore.minimaxModel) }
                     var orPrivacy by remember { mutableStateOf(providerStore.orPrivacyRouting) }
                     var orSort by remember { mutableStateOf(providerStore.orProviderSort) }
                     var reasoningEffort by remember { mutableStateOf(providerStore.reasoningEffort) }
@@ -214,6 +218,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         CoachProviderMode.USER_OPENAI_KEY to "OpenAI",
                         CoachProviderMode.USER_GEMINI_KEY to "Google Gemini",
                         CoachProviderMode.USER_OPENROUTER_KEY to "OpenRouter (100+ models)",
+                        CoachProviderMode.USER_MINIMAX_KEY to "MiniMax",
                     )
                     val providerLabel = providerOptions.firstOrNull { it.first == providerMode }?.second ?: "OpenAI"
 
@@ -357,6 +362,18 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 listOf("auto" to "Balanced (default)", "price" to "Cheapest first", "throughput" to "Fastest first", "latency" to "Lowest latency first"),
                             ) { providerStore.orProviderSort = it.takeIf { s -> s != "auto" }; orSort = providerStore.orProviderSort }
                         }
+                        CoachProviderMode.USER_MINIMAX_KEY -> {
+                            ModelDropdown("Model", minimaxModel, MiniMaxModel.entries.map { it.slug to it.blurb }) {
+                                minimaxModel = it; providerStore.minimaxModel = it
+                            }
+                            KeyField(
+                                label = "MiniMax API Key", value = minimaxKey, visible = minimaxKeyVisible,
+                                saved = providerStore.hasMinimaxKey,
+                                onValue = { minimaxKey = it }, onVisibility = { minimaxKeyVisible = !minimaxKeyVisible },
+                                onSave = { providerStore.minimaxApiKey = minimaxKey },
+                                onRemove = { minimaxKey = ""; providerStore.minimaxApiKey = "" },
+                            )
+                        }
                         else -> {
                             // OpenAI (and legacy modes): the original model picker + key field.
                             ModelDropdown("Model", selectedModel, models.map { it to "" }) {
@@ -395,15 +412,18 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
 
                     HorizontalDivider()
 
-                    // Tool toggles
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Web Search")
-                            Text("Uses additional tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // Tool toggles. MiniMax's compat endpoint has no hosted web search, so hide
+                    // the toggle for it (the client drops the tool anyway — this is the UI half).
+                    if (providerMode != CoachProviderMode.USER_MINIMAX_KEY) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Web Search")
+                                Text("Uses additional tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = webSearch, onCheckedChange = {
+                                webSearch = it; keyStore.webSearchEnabled = it
+                            })
                         }
-                        Switch(checked = webSearch, onCheckedChange = {
-                            webSearch = it; keyStore.webSearchEnabled = it
-                        })
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
