@@ -23,7 +23,7 @@ class YCBTEncoderTest {
     fun `device name request matches current SmartHealth handshake vector`() {
         assertArrayEquals(
             byteArrayOf(0x02, 0x03, 0x08, 0x00, 0x47, 0x50, 0xef.toByte(), 0x20),
-            YCBTProtocol.frame(encoder.deviceNameRequest()),
+            YCBTFrame.frame(encoder.deviceNameRequest()),
         )
     }
 
