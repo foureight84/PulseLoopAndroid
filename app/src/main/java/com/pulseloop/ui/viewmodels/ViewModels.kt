@@ -182,11 +182,21 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
 class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
-        // Day view (also feeds the Today sleep tile)
+        // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
         val lastNight: SleepSessionEntity? = null,
         val lastNightBlocks: List<SleepStageBlockEntity> = emptyList(),
         val score: SleepScoreResult? = null,
+        // Sleep Day view — the currently *shown* day (may be a past day when navigating). A day can
+        // hold several sessions (main night + naps), rendered as a carousel.
+        val daySessions: List<SleepSessionEntity> = emptyList(),
+        val dayBlocks: Map<String, List<SleepStageBlockEntity>> = emptyMap(),
         val coach: SleepCoach? = null,
+        /** Day-view navigation: 0 = today's reference night, N = N days earlier. */
+        val dayOffset: Int = 0,
+        /** How far back the stepper may page (0 locks to today when there's no history). */
+        val maxDayOffset: Int = 0,
+        /** Local-midnight key of the shown day, for the nav header label. */
+        val shownDayMillis: Long = 0L,
         val recentSessions: List<SleepSessionEntity> = emptyList(),
         // Aggregate view (week/month/year)
         val rangeSessions: List<SleepSessionEntity> = emptyList(),
@@ -207,7 +217,8 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     val state: StateFlow<SleepState> = _state.asStateFlow()
 
     fun setRange(range: SleepRangeKey) {
-        _state.update { it.copy(range = range) }
+        // Returning to Day from an aggregate range always lands on today, not a stale offset.
+        _state.update { it.copy(range = range, dayOffset = if (range == SleepRangeKey.DAY) 0 else it.dayOffset) }
         viewModelScope.launch { try { rebuild(range) } catch (_: Exception) {} }
     }
 
@@ -227,15 +238,30 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             blocksCache.getOrPut(id) { db.sleepStageBlockDao().forSession(id) }
         // aggregateCoach/averageScore take a synchronous lookup; pre-warm the cache first.
         val goal = try { db.userGoalDao().get()?.sleepMinutes } catch (_: Exception) { null }
+        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
 
-        // ── Day view ──
-        val reference = dayReferenceNight()
-        val night = db.sleepSessionDao().byDay(reference)?.takeIf { it.totalMinutes > 0 }
+        // ── Today tile (never moves with Day-view navigation) ──
+        val todayReference = TimeUtil.referenceNightLocal()
+        val night = db.sleepSessionDao().byDay(todayReference)?.takeIf { it.totalMinutes > 0 }
         val nightBlocks = night?.let { blocksFor(it.id) } ?: emptyList()
         val scoreResult = night?.let { SleepScore.calculate(it, nightBlocks) }
-        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
-        val dayCoach = if (night != null) SleepInsights.dayCoach(night, nightBlocks, steps)
-            else SleepInsights.dayNoDataCoach
+
+        // ── Day view (the currently shown day; may be a past day when navigating) ──
+        val offset = _state.value.dayOffset
+        val shownNow = System.currentTimeMillis() - offset * 86_400_000L
+        val shownReference = TimeUtil.referenceNightLocal(shownNow)
+        // A day is either all-ring or all-demo (the seeder skips days with ring data); prefer ring.
+        val shownAll = db.sleepSessionDao().allByDay(shownReference).filter { it.totalMinutes > 0 }
+        val shownRing = shownAll.filter { it.sourceRaw != "demo" }
+        val daySessions = (if (shownRing.isNotEmpty()) shownRing else shownAll).sortedBy { it.startAt }
+        val dayBlocks = daySessions.associate { it.id to blocksFor(it.id) }
+        // The primary (longest) session drives the scripted day-level coach fallback.
+        val primary = daySessions.maxByOrNull { it.totalMinutes }
+        val dayCoach = if (primary != null)
+            SleepInsights.dayCoach(primary, dayBlocks[primary.id] ?: emptyList(), steps)
+        else SleepInsights.dayNoDataCoach
+        val earliest = try { db.sleepSessionDao().earliestDay() } catch (_: Exception) { null }
+        val maxOffset = maxDayOffset(earliest)
 
         // ── Aggregate ──
         val expected = when (range) {
@@ -244,27 +270,37 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             SleepRangeKey.MONTH -> 30
             SleepRangeKey.YEAR -> 365
         }
-        val anchor = if (range == SleepRangeKey.DAY) reference
+        val anchor = if (range == SleepRangeKey.DAY) shownReference
             else db.sleepSessionDao().recent(1).firstOrNull()?.let { TimeUtil.startOfDayLocal(it.date) }
                 ?: TimeUtil.startOfTodayLocal()
         val start = anchor - (expected - 1) * 86_400_000L
         val end = anchor + 86_400_000L - 1
         val sessions = db.sleepSessionDao().inRange(start, end)
-        val valid = SleepInsights.validSessions(sessions)
-        valid.forEach { blocksFor(it.id) }  // warm cache for the sync lambdas below
-        val lookup: (String) -> List<SleepStageBlockEntity> = { blocksCache[it] ?: emptyList() }
+        sessions.forEach { blocksFor(it.id) }  // warm cache for the collapse lookup below
+        val realLookup: (String) -> List<SleepStageBlockEntity> = { blocksCache[it] ?: emptyList() }
+        // Collapse each waking day (main night + naps) into one combined summary so a night plus
+        // naps counts as ONE tracked night, consistent with the "N of M nights" hero and averages.
+        val collapsed = SleepInsights.collapseByDay(sessions, realLookup)
+        val collapsedSessions = collapsed.map { it.session }
+        val collapsedBlocks = collapsed.associate { it.session.id to it.blocks }
+        val lookup: (String) -> List<SleepStageBlockEntity> = { collapsedBlocks[it] ?: emptyList() }
+        val valid = SleepInsights.validSessions(collapsedSessions)
         val stageAvg = if (valid.isEmpty()) null else Triple(
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / valid.size,
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / valid.size,
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "AWAKE" }.sumOf { b -> b.durationMinutes } } / valid.size,
         )
         val bars = when (range) {
-            SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, sessions, lookup)
-            else -> SleepInsights.buildNightAxis(start, end, sessions, lookup, range)
+            SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, collapsedSessions, lookup)
+            else -> SleepInsights.buildNightAxis(start, end, collapsedSessions, lookup, range)
         }
 
-        // LLM summaries (kind sleep_day / sleep_range_*), newest wins.
-        val daySummary = try { db.coachSummaryDao().latest(CoachSummaryKind.SLEEP_DAY.rawValue) } catch (_: Exception) { null }
+        // LLM summaries (kind sleep_day / sleep_range_*), newest wins. The day summary describes
+        // last night only, so surface it only while viewing today; a past day falls back to the
+        // scripted coach computed from that day's own primary session.
+        val daySummary = if (offset != 0) null else try {
+            db.coachSummaryDao().latest(CoachSummaryKind.SLEEP_DAY.rawValue)
+        } catch (_: Exception) { null }
         val rangeSummary = if (range == SleepRangeKey.DAY) null else try {
             db.coachSummaryDao().latest(CoachSummaryKind.sleepRange(range).rawValue)
         } catch (_: Exception) { null }
@@ -274,14 +310,18 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
                 lastNight = night,
                 lastNightBlocks = nightBlocks,
                 score = scoreResult,
+                daySessions = daySessions,
+                dayBlocks = dayBlocks,
                 coach = dayCoach,
-                rangeSessions = sessions,
+                maxDayOffset = maxOffset,
+                shownDayMillis = shownReference,
+                rangeSessions = collapsedSessions,
                 expectedNights = expected,
                 avgMinutes = SleepInsights.averageDuration(valid),
                 avgScore = SleepInsights.averageScore(valid, lookup),
                 stageAvg = stageAvg,
                 bars = bars,
-                aggregateCoach = SleepInsights.aggregateCoach(range, sessions, expected, goal, lookup),
+                aggregateCoach = SleepInsights.aggregateCoach(range, collapsedSessions, expected, goal, lookup),
                 goalMinutes = goal,
                 daySummary = daySummary,
                 rangeSummary = rangeSummary,
@@ -289,9 +329,38 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         }
     }
 
-    /** The night to show on the Day view: before 4 AM local, still last night (PulseServices).
-     *  Shared with the widget snapshot publisher via [TimeUtil.referenceNightLocal]. */
-    private fun dayReferenceNight(): Long = TimeUtil.referenceNightLocal()
+    /**
+     * How many days back the Day-view stepper may page: up to one week before the earliest recorded
+     * night, clamped to a 1-year floor. 0 (locked to today) when there's no data. Mirrors iOS
+     * SleepView.maxDayOffset.
+     */
+    private fun maxDayOffset(earliestDay: Long?): Int {
+        if (earliestDay == null) return 0
+        val today = TimeUtil.startOfTodayLocal()
+        val floor = maxOf(earliestDay - 7 * 86_400_000L, today - 365 * 86_400_000L)
+        return ((today - floor) / 86_400_000L).toInt().coerceAtLeast(0)
+    }
+
+    // ── Day navigation (iOS #84) ──
+
+    /** Step to an older (older = true) or newer day, clamped to [0, maxDayOffset]. */
+    fun stepDay(older: Boolean) = jumpToOffset(_state.value.dayOffset + if (older) 1 else -1)
+
+    /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
+    fun jumpToDay(dayMillis: Long) {
+        val today = TimeUtil.startOfTodayLocal()
+        jumpToOffset(((today - TimeUtil.startOfDayLocal(dayMillis)) / 86_400_000L).toInt())
+    }
+
+    /** Return the Day view to today (called when re-entering Day from an aggregate range). */
+    fun resetToToday() = jumpToOffset(0)
+
+    private fun jumpToOffset(target: Int) {
+        val clamped = target.coerceIn(0, _state.value.maxDayOffset)
+        if (clamped == _state.value.dayOffset) return
+        _state.update { it.copy(dayOffset = clamped) }
+        viewModelScope.launch { try { rebuild(_state.value.range) } catch (_: Exception) {} }
+    }
 }
 
 /**

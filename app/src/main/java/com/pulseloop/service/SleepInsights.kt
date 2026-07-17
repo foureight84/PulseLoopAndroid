@@ -154,6 +154,53 @@ object SleepInsights {
     fun validSessions(sessions: List<SleepSessionEntity>) =
         sessions.filter { it.totalMinutes > 0 }
 
+    /** One waking day's sleep collapsed to a single combined session + its concatenated blocks. */
+    data class DaySleep(val session: SleepSessionEntity, val blocks: List<SleepStageBlockEntity>)
+
+    /**
+     * Collapse each waking day's sessions (main night + daytime naps) into ONE combined [DaySleep]
+     * so a night plus naps counts as a single tracked day for aggregate math (averages, "N of M
+     * nights", histograms). Ported from iOS `SleepInsights.collapseByDay` (PR #83).
+     *
+     * Deterministic. Days with exactly one session pass through unchanged. For multi-session days,
+     * blocks are concatenated (sorted by startAt), totalMinutes are SUMMED (total time asleep across
+     * the day, not the wall-clock span), bounds are the earliest start / latest end, and the score
+     * is a duration-weighted average of the present per-session scores. The combined row carries a
+     * synthetic `collapsed-<day>` id; callers resolve its blocks from the returned [DaySleep.blocks].
+     * Result is sorted by day.
+     */
+    fun collapseByDay(
+        sessions: List<SleepSessionEntity>,
+        blocksBySession: (String) -> List<SleepStageBlockEntity>,
+    ): List<DaySleep> =
+        sessions.groupBy { it.date }.map { (day, daySessions) ->
+            if (daySessions.size == 1) {
+                val only = daySessions.first()
+                return@map DaySleep(only, blocksBySession(only.id))
+            }
+            val blocks = daySessions.flatMap { blocksBySession(it.id) }.sortedBy { it.startAt }
+            val totalMinutes = daySessions.sumOf { it.totalMinutes }
+            val startAt = daySessions.minOf { it.startAt }
+            val endAt = daySessions.maxOf { it.endAt }
+
+            val scored = daySessions.mapNotNull { s -> s.score?.let { it to maxOf(0, s.totalMinutes) } }
+            val totalWeight = scored.sumOf { it.second }
+            val combinedScore: Int? = when {
+                scored.isEmpty() -> null
+                totalWeight > 0 -> (scored.sumOf { it.first.toDouble() * it.second } / totalWeight).roundToInt()
+                else -> (scored.sumOf { it.first }.toDouble() / scored.size).roundToInt()
+            }
+
+            DaySleep(
+                session = SleepSessionEntity(
+                    id = "collapsed-$day", date = day, startAt = startAt, endAt = endAt,
+                    totalMinutes = totalMinutes, score = combinedScore,
+                    sourceRaw = daySessions.first().sourceRaw,
+                ),
+                blocks = blocks,
+            )
+        }.sortedBy { it.session.date }
+
     fun averageDuration(valid: List<SleepSessionEntity>): Int? {
         if (valid.isEmpty()) return null
         return valid.sumOf { it.totalMinutes } / valid.size

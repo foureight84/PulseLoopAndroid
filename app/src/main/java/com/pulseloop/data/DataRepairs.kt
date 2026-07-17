@@ -27,7 +27,10 @@ object DataRepairs {
      * rebuilt from the ring on every connect (see EventPersistenceSubscriber's CONNECTED
      * handling), so rows keyed by the old start-of-day grouping — sessions split across
      * midnight and stage blocks filed under what is now a different night's id — disappear
-     * on the first sync after this update.
+     * on the first sync after this update. The same reasoning retires iOS's one-time
+     * `migrateSleepSessionSegmentsIfNeeded` (PR #83): a waking day whose nap was merged into that
+     * morning's night re-splits into distinct sessions on the next sync via
+     * EventPersistenceSubscriber.reconcileWakingDay, and demo days re-split on the next reseed.
      */
     suspend fun runIfNeeded(context: Context, db: PulseLoopDatabase = PulseLoopDatabase.getInstance(context)) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

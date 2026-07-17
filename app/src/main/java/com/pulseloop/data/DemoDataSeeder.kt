@@ -290,5 +290,67 @@ object DemoDataSeeder {
         db.sleepStageBlockDao().deleteBySession(sessionId)
         db.sleepSessionDao().upsert(session.copy(score = SleepScore.calculate(session, blocks).score))
         blocks.forEach { db.sleepStageBlockDao().insert(it) }
+
+        // A few recent days also get daytime nap(s): separate demo sessions sharing this waking
+        // day, so the Day-view carousel (iOS #85 / issue #59) has multiple sessions to page through.
+        for (nap in napsForDay(dayOffset)) {
+            val napStart = wakeDayStart + (nap.hour * 60 + nap.minute) * 60_000L
+            val napEnd = napStart + nap.minutes * 60_000L
+            val napId = "demo-sleep-$wakeDayStart-$napStart"
+            val napBlocks = napStageBlocks(napId, nap.minutes, napStart)
+            val napSession = SleepSessionEntity(
+                id = napId, date = wakeDayStart,
+                startAt = napStart, endAt = napEnd,
+                totalMinutes = nap.minutes,
+                sourceRaw = "demo",
+            )
+            db.sleepStageBlockDao().deleteBySession(napId)
+            db.sleepSessionDao().upsert(napSession.copy(score = SleepScore.calculate(napSession, napBlocks).score))
+            napBlocks.forEach { db.sleepStageBlockDao().insert(it) }
+        }
+    }
+
+    /** A seeded daytime nap: local hour/minute it starts and how long it runs. */
+    private data class SeedNap(val hour: Int, val minute: Int, val minutes: Int)
+
+    /**
+     * Naps to seed for the night [dayOffset] days ago. Kept sparse and varied so the carousel shows
+     * a mix of single-session days, a two-session day, and a three-session day. All start before
+     * 7 PM so they stay on the same waking day as that morning's night. Mirrors iOS `napsForDay`.
+     */
+    private fun napsForDay(dayOffset: Int): List<SeedNap> = when (dayOffset) {
+        // Today is the richest day so the multi-session carousel is testable on the Day view:
+        // night + 2 naps = 3 pages.
+        0 -> listOf(SeedNap(11, 0, 45), SeedNap(15, 30, 52))
+        1 -> listOf(SeedNap(10, 30, 40), SeedNap(16, 0, 35))
+        2 -> listOf(SeedNap(13, 0, 66))
+        5 -> listOf(SeedNap(15, 15, 24))
+        else -> emptyList()
+    }
+
+    /**
+     * A short, nap-shaped stage architecture (mostly light with a little deep, no REM/awake),
+     * scaled to [total] minutes. Mirrors iOS `napStageBlocks`.
+     */
+    private fun napStageBlocks(sessionId: String, total: Int, start: Long): List<SleepStageBlockEntity> {
+        val pattern = listOf(SleepStage.LIGHT to 14, SleepStage.DEEP to 18, SleepStage.LIGHT to 13)
+        val referenceTotal = pattern.sumOf { it.second }
+        val scale = total.toDouble() / referenceTotal
+        var minute = 0
+        return pattern.mapIndexed { index, (stage, refMinutes) ->
+            val duration = if (index == pattern.lastIndex)
+                max(1, total - minute)
+            else
+                max(1, swiftRounded(refMinutes * scale).toInt())
+            val block = SleepStageBlockEntity(
+                sessionId = sessionId,
+                startAt = start + minute * 60_000L,
+                startMinute = minute,
+                durationMinutes = duration,
+                stageRaw = stage.name,
+            )
+            minute += duration
+            block
+        }
     }
 }
