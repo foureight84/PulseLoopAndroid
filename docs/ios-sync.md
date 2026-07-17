@@ -80,10 +80,21 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PORT** (fit-to-viewport N/A) | S | `ad2cc5b` — finale medallion + "Setup complete" eyebrow + refreshed copy (You're all set / Today·First sync·Days 3–7 / Start using PulseLoop) + welcome subtitle. Fit-to-viewport N/A (Compose sizes natively) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `78ca593` | 07-01 | **Physiology settings screen** (athlete mode, altitude, beta-blockers, lung condition, glucose unit → tune `VitalsThresholdEngine`) — sub-surface of #35 that the XL dashboard port dropped | **PORT** | S–M | `d760c24` |
 
-## Port priority — open items (as of 2026-07-16)
+## Port priority — open items (as of 2026-07-17)
 
 Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
 wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
+
+> **▶ RESUME HERE (next session):** Tier 1 clear; **#61a battery alerts DONE** (`e5b68f6`, runtime-verified).
+> Next up is **Tier 2 item #61b — battery history + drainage graph** (M, PORT), on its **own branch** (it
+> carries a Room v7→v8 migration; keep it isolated from #61a). Plan is in the #61b port-queue row + the
+> 2026-07-17 recon note below: `BatterySampleEntity`+DAO+`MIGRATION_7_8`, a throttled write (30-min floor /
+> on-change) in `EventPersistenceSubscriber`'s `BatteryLevel` branch, and a 24h/7d `ZoneLineChart` in
+> `WearableSettingsScreen` (adapt iOS `colorForValue` ≤20 danger/≤50 warning to the `zones`/`accent` API).
+> After #61b: **#61c** coach freshness (ADAPT; folds in the only worthwhile #61f bits — `lastFullSyncAt` +
+> `awaitSyncCompletion`; ⚠ background-BLE-sync degrades on Android). **#61f** has no standalone work.
+> **#65** re-scoped to **L→XL** (in-memory chat vs SwiftData; no WeatherKit) — needs a scope decision first.
+> All Tier-2 work continues on branch `iOS_sync_2026-07-16`.
 
 **Tier 1 — small, high-value (land on the current sync branch):**
 
