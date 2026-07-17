@@ -55,7 +55,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** | L | |
 | ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
 | ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
-| ◐ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1: prefs store + pure logic + tests). Remaining: stage 2 wire into Today/Vitals, stage 3 edit-mode UI |
+| ☑ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1) + `1075586` (stages 2–3). Android uses a discrete edit-mode (Customize button → hide badge + move up/down + Hidden tray) instead of free-form drag |
 | ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
 | ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
 | ☐ | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | Activity UI sync-alerts bugfix | **ADAPT** | S | |
@@ -64,7 +64,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | deferred — cosmetic; doesn't map (Android has no Physiology route; row already Device-gated, empty section already hidden) |
 | ☐ | [#82](https://github.com/saksham2001/PulseLoopiOS/pull/82) `902c449` | 07-11 | YCBT (Yucheng) protocol rebuild: TK5 + **SmartHealth-app Colmi rings** + pairing app-variant picker (**supersedes #56**) | **PORT** | XL | |
 | ☐ | [#79](https://github.com/saksham2001/PulseLoopiOS/pull/79) `952cf4f` | 07-12 | Activity Year trends: divide in-progress current month by elapsed days, not full 30/31 | **PORT-when-built** | S | |
-| ☐ | [#70](https://github.com/saksham2001/PulseLoopiOS/pull/70) `ac2b81a` | 07-12 | Today/Vitals apply Settings visibility + chart-detail changes immediately | **BLOCKED (behind #64)** | S | |
+| ☑ | [#70](https://github.com/saksham2001/PulseLoopiOS/pull/70) `ac2b81a` | 07-12 | Today/Vitals apply Settings visibility + chart-detail changes immediately | **BLOCKED (behind #64)** | S | subsumed by #64 — Today/Vitals read the prefs StateFlow directly, so a visibility/order change recomposes immediately (no signature needed). Chart-detail resolution N/A on Android |
 | ☑ | [#66](https://github.com/saksham2001/PulseLoopiOS/pull/66) `4dae095` | 07-16 | Measure HR/SpO₂ countdown redesign + **robust measurement** (warm-up echo discard, contact-gap, median/majority gate) | **PORT** | L | `36da8f2` (robustness; modal chrome deferred) |
 | ☐ | [#83](https://github.com/saksham2001/PulseLoopiOS/pull/83) `2367d23` | 07-15 | Split same-day sleep into sessions (night + naps, 60-min gap) + Day carousel | **ADAPT** | L | |
 | ☐ | [#84](https://github.com/saksham2001/PulseLoopiOS/pull/84) `8b86e5c` | 07-15 | Sleep › Day navigation (page between days) | **PORT** | M | |
@@ -174,21 +174,24 @@ suite green (402 tests, 0 failures).
 - **#41** status pill, **#24** coach scheduler, **#88** reactivity → verified **no-op / already-have**
   (see rows). **#74** deferred (cosmetic, doesn't map to Android's settings structure).
 
-Then a value-first second pass began (`◐` = partially done):
-- **#64** (highest value — user-facing + unblocks #70): **stage 1 shipped** `8f51349` (prefs
-  store + pure reorder/visibility logic + 24 tests). Stages 2 (wire into Today/Vitals card
-  construction) + 3 (edit-mode UI: long-press, hide badges, Hidden tray, move controls) remain
-  — stage 3 is the hard part; recommend a discrete edit-mode (move up/down + hide) over free-form
-  grid drag (Compose has no reorderable grid + no drag lib in the project). #70 falls out of
-  stage 2 for free (screens read the prefs StateFlow).
-- **#43**: live record pace/distance shipped `4075752`; **§2** temp detail-chart zone/axis
-  conversion + **§3** glucose mmol/L end-to-end remain (mostly-already-done per this triage).
+Value-first second pass:
+- **#64 complete** (highest value): `8f51349` (stage 1 — prefs store + pure logic + 24 tests) +
+  `1075586` (stages 2–3 — reactive wiring into Today/Vitals + discrete edit-mode UI: a Customize
+  button enters edit mode, cards get a hide badge + up/down move controls over a tap-scrim, a
+  Hidden tray restores, a Done bar exits). Chose discrete move/hide over free-form drag (Compose
+  has no reorderable grid + no drag lib). **#70 subsumed** — the screens read the prefs StateFlow,
+  so a visibility/order change recomposes immediately with no summary-signature machinery.
+- **#43 partial**: live record pace/distance shipped `4075752`; **§2** temp detail-chart zone/axis
+  conversion + **§3** glucose mmol/L end-to-end remain (both narrow; mostly-already-done per triage).
 
-Still open, ranked by value: finish **#64** (stages 2–3), **#43 §2/§3**, **#65** coach
-transparency/context, **#83/#84/#85** multi-session sleep, **#57** activity-recording redesign,
-**#77** jring protocol-parity, **#61** activity sync-alerts, **#75** onboarding polish. XL ring
-rebuilds **#82** (YCBT) and **#90** (LuckRing) each warrant their own dedicated branch. Blocked:
-**#79** (no Activity-trends screen yet). **#70** is now unblocked once #64 stage 2 lands.
+Still open, ranked by value: **#43 §2/§3**, **#65** coach transparency/context, **#83/#84/#85**
+multi-session sleep, **#57** activity-recording redesign, **#77** jring protocol-parity, **#61**
+activity sync-alerts, **#75** onboarding polish. XL ring rebuilds **#82** (YCBT) and **#90**
+(LuckRing) each warrant their own dedicated branch. Blocked: **#79** (no Activity-trends screen yet).
+
+Note: #64's edit-mode UI compiles + assembles + the pure logic is unit-tested, but was **not
+runtime-verified** (no emulator in this session) — worth a manual smoke test of enter/hide/reorder/
+restore/done on both tabs before release.
 
 ### 2026-07-14 triage (since `e00c24b` → `b3697c0`, 29 commits / 9 first-parent)
 
