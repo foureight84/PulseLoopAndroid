@@ -539,6 +539,7 @@ fun PulseLoopApp() {
                         spO2 = workoutState.latestSpO2,
                         isPaused = workoutState.isPaused,
                         hrZone = workoutState.hrZone,
+                        units = apiKeyStore.resolvedUnitSystem,
                         onPause = {
                             workoutState.activeSession?.let { kotlinx.coroutines.runBlocking { liveWorkout.pause(it) } }
                         },
