@@ -35,7 +35,7 @@ class PairingMatchingTest {
     @Test
     fun `colmi family names match`() {
         val names = listOf(
-            "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R09_00AA",
+            "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
             "COLMI R10_xyz", "COLMI R12_x", "R05_1A2B", "R10_DEAD", "R11_BEEF",
             "R11C_BEEF", "H59_anything",
         )
@@ -81,6 +81,7 @@ class PairingMatchingTest {
             "R03_1234" to "colmi-r03",
             "R06_FFFF" to "colmi-r06",
             "COLMI R07_9" to "colmi-r07",
+            "R08_1234" to "colmi-r08",
             "R09_00AA" to "colmi-r09",
             "COLMI R10_xyz" to "colmi-r10",
             "R11C_BEEF" to "colmi-r11",

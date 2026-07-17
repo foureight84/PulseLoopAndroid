@@ -42,7 +42,7 @@ data class WearableModel(
         // "jring" is intentionally lowercase — that's how the brand styles its name.
         val JRING = WearableModel(
             id = "jring", displayName = "jring", brand = "jring", family = RingDeviceType.JRING,
-            tint = PulseColors.accent, blurb = "Heart rate · SpO₂ · Sleep",
+            tint = PulseColors.accent, blurb = "HR · SpO₂ · Sleep",
             advertisedNamePatterns = listOf("^SMART_RING$"),
             imageRes = R.drawable.ring_jring,
         )
@@ -52,6 +52,7 @@ data class WearableModel(
         val COLMI_R03 = colmi("colmi-r03", "Colmi R03", "Colmi", "^R03_.*", R.drawable.ring_colmi_r03)
         val COLMI_R06 = colmi("colmi-r06", "Colmi R06", "Colmi", "^R06_.*", R.drawable.ring_colmi_r06)
         val COLMI_R07 = colmi("colmi-r07", "Colmi R07", "Colmi", "^COLMI R07_.*", R.drawable.ring_colmi_r07)
+        val COLMI_R08 = colmi("colmi-r08", "Colmi R08", "Colmi", "^R08_.*", R.drawable.ring_colmi_r08)
         // R09 is the one model that needs an OS bond to hold a stable Android link (see
         // WearableModel.requiresOsBond).
         val COLMI_R09 = colmi("colmi-r09", "Colmi R09", "Colmi", "^R09_.*", R.drawable.ring_colmi_r09,
@@ -85,7 +86,7 @@ data class WearableModel(
         /** Every supported model. The pairing screen groups by brand and sorts each tab alphabetically. */
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
-            COLMI_R03, COLMI_R07, COLMI_R09, COLMI_R11, COLMI_R12,
+            COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
             YAWELL_R05, YAWELL_R10, H59,
         )
 
