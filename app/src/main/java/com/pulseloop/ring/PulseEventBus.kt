@@ -39,6 +39,7 @@ sealed class PulseEvent {
     data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()
     /** A live measurement command was refused (not worn, sensor busy, unsupported). */
     data class MeasurementRejected(val mode: Int) : PulseEvent()
+    data class BloodPressureSample(val systolic: Int, val diastolic: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class HistoryMeasurement(val kind: MeasurementKind, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class StressSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()

@@ -1,7 +1,5 @@
 package com.pulseloop.ring
 
-import java.time.Instant
-
 /**
  * Ported from YCBTSyncEngine.swift.
  * YCBT sync engine. Connect is a parameterized handshake, followed by the history sync.
@@ -36,8 +34,12 @@ class YCBTSyncEngine(
         // History is protocol-driven now — nothing here advances it.
     }
 
-    override fun syncHistory() {
+    override fun refresh() {
         transfer.start(types = HISTORY_TYPES)
+    }
+
+    override fun querySleep() {
+        transfer.start(types = listOf(YCBTHistoryType.SLEEP))
     }
 
     override fun syncVitalsHistory() {
@@ -66,20 +68,6 @@ class YCBTSyncEngine(
     override fun applyUserProfile(profile: UserProfileValues) {
         userProfile = profile
         writer?.enqueue(encoder.userInfo(profile))
-    }
-
-    fun resyncTime() {
-        writer?.enqueue(encoder.setTime())
-    }
-
-    /** Exact current SmartHealth/YCBT post-CCCD sequence: identify device, then set time. */
-    fun beginVendorHandshake() {
-        writer?.enqueue(encoder.deviceNameRequest())
-        writer?.enqueue(encoder.setTime())
-    }
-
-    fun requestBattery() {
-        writer?.enqueue(encoder.deviceInfoRequest())
     }
 
     override fun startHeartRate() {

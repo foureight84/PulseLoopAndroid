@@ -72,8 +72,6 @@ class RingSyncCoordinator(
     private var spo2NoReadingReported = false
     private var hrvNoReadingReported = false
     private var bloodPressureNoReadingReported = false
-    private var pendingSystolic: Int? = null
-    private var pendingDiastolic: Int? = null
     private var measurementReceivedReading = false
 
     val connectionState: RingConnectionState get() = client.state.value.connectionState
@@ -109,6 +107,8 @@ class RingSyncCoordinator(
     private val engine: RingSyncEngine? get() = client.syncEngine
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var streamJob: Job? = null
+    private var startupEngine: RingSyncEngine? = null
+    private var startupJob: Job? = null
 
     fun start() {
         streamJob?.cancel()
@@ -121,39 +121,49 @@ class RingSyncCoordinator(
     fun stop() {
         streamJob?.cancel()
         streamJob = null
+        startupJob?.cancel()
+        startupJob = null
+        startupEngine = null
     }
 
     // MARK: - Actions
 
     /** Canonical startup sequence run on connect. */
     fun runStartupSequence() {
+        val targetEngine = engine ?: return
+        if (!isConnected || startupEngine === targetEngine) return
+        startupEngine = targetEngine
         // Begin progress here (a real sync request), NOT on DeviceStateChanged(CONNECTED):
         // the ring re-emits CONNECTED on every 0x0C status packet, which would otherwise
         // keep resetting the bar to 0%.
         beginSyncProgress()
-        scope.launch {
+        startupJob?.cancel()
+        startupJob = scope.launch {
             // Push the persisted measurement config + profile into the engine BEFORE
             // runStartup so the connect handshake reflects them (the engine emits the
             // commands itself, so we don't double-send here). iOS #19 parity.
             // No persisted config (null) ⇒ the engine seeds one from the ring's own
             // reported settings; persist that as the device's initial config.
             val persisted = loadMeasurementSettings()
-            engine?.setMeasurementSettings(persisted)
+            if (!isConnected || engine !== targetEngine) return@launch
+            targetEngine.setMeasurementSettings(persisted)
             if (persisted == null) {
-                engine?.setOnMeasurementConfigSeeded { seeded ->
+                targetEngine.setOnMeasurementConfigSeeded { seeded ->
                     scope.launch { persistSeededMeasurementConfig(db, seeded) }
                 }
             }
-            loadUserProfileValues()?.let { engine?.setUserProfile(it) }
+            val profile = loadUserProfileValues()
+            if (!isConnected || engine !== targetEngine) return@launch
+            profile?.let { targetEngine.setUserProfile(it) }
             // Claim the ring for this app FIRST (0x48). The ring binds to the connecting app's
             // id and otherwise can stay mute after another app (e.g. the official one) claimed it.
-            apiKeyStore?.ringAppId?.let { engine?.setAppId(it) }
-            engine?.runStartup()
+            apiKeyStore?.ringAppId?.let { targetEngine.setAppId(it) }
+            targetEngine.runStartup()
             // Push the user's profile so the ring's blood-sugar (profile-derived) and
             // calorie algorithms run on real inputs. BP is a direct sensor reading and
             // does not depend on user info. Matches the official app, which calls
             // setUserInfo on every connect anyway.
-            pushUserSettingsFromStore()
+            pushUserSettingsFromStore(targetEngine)
             lastSyncAt = System.currentTimeMillis()
         }
     }
@@ -186,10 +196,12 @@ class RingSyncCoordinator(
     }
 
     /** Read the stored profile + BP calibration and push them to the ring. */
-    private fun pushUserSettingsFromStore() {
+    private fun pushUserSettingsFromStore(targetEngine: RingSyncEngine) {
         scope.launch {
             val profile = try { db.userProfileDao().get() } catch (_: Exception) { null }
-            applyUserSettings(
+            if (!isConnected || engine !== targetEngine) return@launch
+            applyUserSettingsToEngine(
+                targetEngine,
                 profile,
                 apiKeyStore?.bpAdjustSystolic ?: 0,
                 apiKeyStore?.bpAdjustDiastolic ?: 0,
@@ -206,24 +218,34 @@ class RingSyncCoordinator(
      */
     fun applyUserSettings(profile: UserProfileEntity?, bpSystolic: Int, bpDiastolic: Int) {
         if (!isConnected) return
+        val targetEngine = engine ?: return
+        applyUserSettingsToEngine(targetEngine, profile, bpSystolic, bpDiastolic)
+    }
+
+    private fun applyUserSettingsToEngine(
+        targetEngine: RingSyncEngine,
+        profile: UserProfileEntity?,
+        bpSystolic: Int,
+        bpDiastolic: Int,
+    ) {
         profile?.let { p ->
             val age = p.age
             val heightCm = p.heightCm?.toInt()
             val weightKg = p.weightKg?.toInt()
             if (age != null && heightCm != null && weightKg != null) {
                 val isMale = p.sex?.equals("male", ignoreCase = true) == true
-                engine?.setUserInfo(age, isMale, heightCm, weightKg)
+                targetEngine.setUserInfo(age, isMale, heightCm, weightKg)
             }
         }
         if (bpSystolic in 1..300 && bpDiastolic in 1..300) {
-            engine?.setBloodPressureAdjust(bpSystolic, bpDiastolic)
+            targetEngine.setBloodPressureAdjust(bpSystolic, bpDiastolic)
         }
     }
 
     fun syncNow() {
         if (!isConnected) return
         beginSyncProgress()
-        engine?.syncHistory()
+        engine?.refresh()
         lastSyncAt = System.currentTimeMillis()
     }
 
@@ -268,7 +290,7 @@ class RingSyncCoordinator(
 
     fun querySleep() {
         if (!isConnected) return
-        engine?.syncSleepNow()
+        engine?.querySleep()
     }
 
     fun findRing() {
@@ -306,7 +328,7 @@ class RingSyncCoordinator(
         scope.launch {
             if (isConnected) {
                 onProgress("Syncing latest data…")
-                runStartupSequence()
+                syncNow()
                 // Wait for the history sync to drain (progress reaches 100 or clears), capped
                 // so a stale link can never hang the reset.
                 kotlinx.coroutines.withTimeoutOrNull(SYNC_BEFORE_RESET_TIMEOUT_MS) {
@@ -409,8 +431,6 @@ class RingSyncCoordinator(
         if (!isConnected) { bloodPressureState = MeasureState.FAILED; return null }
         bloodPressureState = MeasureState.MEASURING
         latestBloodPressure = null
-        pendingSystolic = null
-        pendingDiastolic = null
         bloodPressureNoReadingReported = false
         engine?.startBloodPressure()
         var result: Pair<Int, Int>? = null
@@ -493,7 +513,14 @@ class RingSyncCoordinator(
             is PulseEvent.Spo2Result -> {
                 latestSpO2Value = event.value
             }
-            is PulseEvent.HrvSample -> latestHrvValue = event.value
+            is PulseEvent.HrvSample -> {
+                if (hrvState == MeasureState.MEASURING) latestHrvValue = event.value
+            }
+            is PulseEvent.BloodPressureSample -> {
+                if (bloodPressureState == MeasureState.MEASURING) {
+                    latestBloodPressure = event.systolic to event.diastolic
+                }
+            }
             is PulseEvent.Spo2Complete -> {
                 if (spo2State == MeasureState.MEASURING && latestSpO2Value == null) {
                     spo2NoReadingReported = true
@@ -507,6 +534,7 @@ class RingSyncCoordinator(
                     YCBTMeasurementMode.HRV -> hrvNoReadingReported = true
                 }
             }
+
             is PulseEvent.DeviceStateChanged -> {
                 when (event.state) {
                     RingConnectionState.CONNECTED -> lastSyncAt = System.currentTimeMillis()
@@ -522,19 +550,6 @@ class RingSyncCoordinator(
             is PulseEvent.ActivityUpdate -> advanceSyncProgress(event.timestamp.toEpochMilli())
             is PulseEvent.SleepTimeline -> advanceSyncProgress(event.timestamp.toEpochMilli())
             is PulseEvent.HistoryMeasurement -> {
-                when (event.kind) {
-                    MeasurementKind.HRV -> latestHrvValue = event.value.toInt()
-                    MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> pendingSystolic = event.value.toInt()
-                    MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> pendingDiastolic = event.value.toInt()
-                    else -> {}
-                }
-                val systolic = pendingSystolic
-                val diastolic = pendingDiastolic
-                if (systolic != null && diastolic != null) {
-                    latestBloodPressure = systolic to diastolic
-                    pendingSystolic = null
-                    pendingDiastolic = null
-                }
                 advanceSyncProgress(event.timestamp.toEpochMilli())
             }
             is PulseEvent.SyncProgress -> if (event.stage == "done") finishSyncProgressSoon()

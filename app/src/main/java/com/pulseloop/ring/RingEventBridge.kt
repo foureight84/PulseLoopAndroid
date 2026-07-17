@@ -93,17 +93,16 @@ object RingEventBridge {
         is RingDecodedEvent.MeasurementRejected ->
             listOf(PulseEvent.MeasurementRejected(decoded.mode))
 
+
         is RingDecodedEvent.WearingStatus,
         is RingDecodedEvent.SupportFunctions,
         is RingDecodedEvent.ChipScheme ->
             emptyList() // Debug-feed only; no product surface yet
 
         is RingDecodedEvent.BloodPressureSample -> {
-            // Live BP has no dedicated PulseEvent; surface as upserting history rows so the reading lands.
-            val events = mutableListOf<PulseEvent>()
-            if (decoded.systolic > 0) events.add(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, decoded.systolic.toDouble(), decoded._timestamp))
-            if (decoded.diastolic > 0) events.add(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, decoded.diastolic.toDouble(), decoded._timestamp))
-            events
+            if (decoded.systolic > 0 && decoded.diastolic > 0) {
+                listOf(PulseEvent.BloodPressureSample(decoded.systolic, decoded.diastolic, decoded._timestamp))
+            } else emptyList()
         }
 
         is RingDecodedEvent.BloodSugarSample -> {

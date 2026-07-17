@@ -1,6 +1,6 @@
 package com.pulseloop.ring
 
-import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.*
 import org.junit.Test
 
 class YCBTSyncEngineTest {
@@ -19,7 +19,7 @@ class YCBTSyncEngineTest {
     @Test
     fun `full refresh begins with sport history`() {
         val writer = FakeWriter()
-        engine(writer).syncHistory()
+        engine(writer).refresh()
         assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent.single())
     }
 
@@ -35,5 +35,21 @@ class YCBTSyncEngineTest {
         val writer = FakeWriter()
         engine(writer).syncSleepNow()
         assertArrayEquals(byteArrayOf(0x05, 0x04), writer.sent.single())
+    }
+
+    @Test
+    fun `legacy query sleep action is history only for YCBT`() {
+        val writer = FakeWriter()
+        engine(writer).querySleep()
+        assertArrayEquals(byteArrayOf(0x05, 0x04), writer.sent.single())
+    }
+
+    @Test
+    fun `startup excludes the immediate name and time handshake`() {
+        val writer = FakeWriter()
+        engine(writer).runStartup()
+        val startup = writer.sent.filter { it.size >= 2 && it[0] != YCBTGroup.HEALTH.toByte() }
+        assertFalse(startup.any { it[0] == YCBTGroup.SETTING.toByte() && it[1] == YCBTSettingKey.SET_TIME.toByte() })
+        assertFalse(startup.any { it[0] == YCBTGroup.GET.toByte() && it[1] == YCBTCommand.GET_DEVICE_NAME.toByte() })
     }
 }

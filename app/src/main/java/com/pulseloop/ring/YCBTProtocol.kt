@@ -1,6 +1,7 @@
 package com.pulseloop.ring
 
 import java.time.Instant
+import java.time.ZoneOffset
 import java.util.TimeZone
 import java.util.UUID
 
@@ -76,7 +77,7 @@ class YCBTFrame(
     }
 }
 
-/** Little-endian + epoch helpers. YCBT timestamps are seconds since 2000-01-01 UTC. */
+/** Little-endian + epoch helpers. YCBT timestamps encode local wall-clock seconds since 2000. */
 object YCBTBytes {
     const val EPOCH_OFFSET = 946_684_800L
 
@@ -99,10 +100,10 @@ object YCBTBytes {
     /** Convert ring seconds (2000-epoch) to an Instant. The ring clock is local wall-clock; decoding
      * must un-apply the device's UTC offset to recover the true absolute instant. */
     fun date(ringSeconds: Int, timeZone: TimeZone = TimeZone.getDefault()): Instant {
-        // The ring stores local wall-clock seconds. Match Foundation's
-        // secondsFromGMT() approximation and include the currently active DST offset.
-        val offset = timeZone.getOffset(System.currentTimeMillis()) / 1000
-        return Instant.ofEpochSecond(ringSeconds.toLong() + EPOCH_OFFSET - offset)
+        val localDateTime = Instant.ofEpochSecond(ringSeconds.toLong() + EPOCH_OFFSET)
+            .atOffset(ZoneOffset.UTC)
+            .toLocalDateTime()
+        return localDateTime.atZone(timeZone.toZoneId()).toInstant()
     }
 
     /** Convert an Instant to ring seconds (2000-epoch), the inverse of date(). */

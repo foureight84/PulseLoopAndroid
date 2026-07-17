@@ -7,15 +7,10 @@ package com.pulseloop.ring
 
 class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
     private val decoder = YCBTDecoder()
+    private val encoder = YCBTEncoder()
     private val assembler = YCBTFrameAssembler()
     private val transfer: YCBTHistoryTransfer = YCBTHistoryTransfer(writer = writer)
-
-    /** Queue of pending measurement-reply modes: the mode for a start, null for a stop. */
-    private val pendingMeasurementReplies = ArrayDeque<Int?>(8)
-
-    companion object {
-        private const val MAX_PENDING_MEASUREMENT_REPLIES = 8
-    }
+    private val pendingMeasurementReplies = PendingMeasurementReplies()
 
     override val serviceUUIDs = listOf(YCBTUUIDs.SERVICE)
     override val writeUUID = YCBTUUIDs.COMMAND
@@ -23,6 +18,13 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
     override val commandUUID = YCBTUUIDs.COMMAND
     override val batteryServiceUUID: String? = null
     override val batteryCharUUID: String? = null
+    override val requiredSubscriptionsBeforeConnected = listOf(
+        RequiredSubscription(YCBTUUIDs.COMMAND, SubscriptionMode.INDICATION),
+        RequiredSubscription(YCBTUUIDs.STREAM, SubscriptionMode.INDICATION),
+    )
+
+    override fun immediatePostSubscriptionCommands(): List<ByteArray> =
+        encoder.postSubscriptionHandshake()
 
     override fun frame(command: ByteArray): ByteArray {
         val logical = command
@@ -36,10 +38,9 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
         if (logical.size >= 4 &&
             (logical[0].toInt() and 0xFF) == YCBTGroup.APP_CONTROL &&
             (logical[1].toInt() and 0xFF) == YCBTCommand.LIVE_MEASUREMENT) {
-            pendingMeasurementReplies.add(if (logical[2].toInt() and 0xFF == 1) logical[3].toInt() and 0xFF else null)
-            if (pendingMeasurementReplies.size > MAX_PENDING_MEASUREMENT_REPLIES) {
-                pendingMeasurementReplies.removeFirst()
-            }
+            pendingMeasurementReplies.record(
+                if (logical[2].toInt() and 0xFF == 1) logical[3].toInt() and 0xFF else null
+            )
         }
     }
 
@@ -72,7 +73,7 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
                     events.addAll(decoder.decode(frame))
                 }
                 YCBTGroup.APP_CONTROL -> if (frame.cmd == YCBTCommand.LIVE_MEASUREMENT) {
-                    val startedMode = if (pendingMeasurementReplies.isEmpty()) null else pendingMeasurementReplies.removeFirst()
+                    val startedMode = pendingMeasurementReplies.consume()?.startedMode
                     events.addAll(decoder.decode(frame, startedMode = startedMode))
                 } else {
                     events.addAll(decoder.decode(frame))
@@ -90,5 +91,30 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
 
     override fun makeSyncEngine(): RingSyncEngine {
         return YCBTSyncEngine(writer = writer, transfer = transfer)
+    }
+}
+
+/** GATT writes and replies arrive on different threads; keep FIFO pairing atomic. */
+internal class PendingMeasurementReplies {
+    data class Reply(val startedMode: Int?)
+
+    private val replies = ArrayDeque<Reply>()
+
+    @Synchronized
+    fun record(startedMode: Int?) {
+        replies.addLast(Reply(startedMode))
+        if (replies.size > MAX_PENDING) replies.removeFirst()
+    }
+
+    @Synchronized
+    fun consume(): Reply? = if (replies.isEmpty()) null else replies.removeFirst()
+
+    @Synchronized
+    fun clear() {
+        replies.clear()
+    }
+
+    private companion object {
+        const val MAX_PENDING = 8
     }
 }

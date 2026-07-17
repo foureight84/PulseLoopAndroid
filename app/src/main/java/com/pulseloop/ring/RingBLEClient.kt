@@ -101,7 +101,7 @@ class RingBLEClient(private val context: Context) {
     private var commandChar: BluetoothGattCharacteristic? = null
     private var notifyChars: MutableMap<UUID, BluetoothGattCharacteristic> = mutableMapOf()
     private var batteryChar: BluetoothGattCharacteristic? = null
-    private val pendingRingNotifyDescriptors = java.util.Collections.synchronizedSet(mutableSetOf<UUID>())
+    private var subscriptionGate: SubscriptionSetupGate? = null
 
     // MARK: Active driver/engine
 
@@ -434,6 +434,7 @@ class RingBLEClient(private val context: Context) {
         val gatt = bluetoothGatt
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
+        subscriptionGate = null
         resetOpQueue()
         if (gatt != null) {
             try { gatt.disconnect() } catch (_: Exception) {}
@@ -629,7 +630,7 @@ class RingBLEClient(private val context: Context) {
         }
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
-        pendingRingNotifyDescriptors.clear()
+        subscriptionGate = null
         resetOpQueue()
         serviceDiscoveryStarted.set(false)
         val coordinator = coordinators.firstOrNull { it.deviceType == deviceType } ?: JringCoordinator
@@ -748,6 +749,10 @@ class RingBLEClient(private val context: Context) {
         activeCoordinator = coordinator
         activeDriver = driver
         driver.connectionDidStart()
+        subscriptionGate = SubscriptionSetupGate(
+            notifyUUIDs = driver.notifyUUIDs,
+            requiredSubscriptions = driver.requiredSubscriptionsBeforeConnected,
+        )
         activeSyncEngine = driver.makeSyncEngine()
         // Capability-gated bonding: the engine fires this only when the ring's device-support
         // reply advertises supportBlePair (Colmi R09 and newer). See docs/qring-ble-adoption.md.
@@ -771,13 +776,29 @@ class RingBLEClient(private val context: Context) {
      * op was issued) retiring the WRONG op: only complete when the callback corresponds
      * to what is actually in flight.
      */
-    private fun completeOp(matches: (GattOp) -> Boolean = { true }) {
-        synchronized(opLock) {
-            val current = inFlightOp ?: return
-            if (!matches(current)) return
+    private fun retireOp(matches: (GattOp) -> Boolean = { true }): Boolean {
+        return synchronized(opLock) {
+            val current = inFlightOp ?: return@synchronized false
+            if (!matches(current)) return@synchronized false
             inFlightOp = null
+            true
         }
-        pumpOps()
+    }
+
+    private fun completeOp(matches: (GattOp) -> Boolean = { true }) {
+        if (retireOp(matches)) pumpOps()
+    }
+
+    /** Place a protocol-ready handshake ahead of reads/optional CCCDs already in the queue. */
+    private fun prependCommandWrites(commands: List<ByteArray>) {
+        val driver = activeDriver ?: return
+        val ops = commands.map { command ->
+            val framed = driver.frame(command)
+            GattOp.CommandWrite(framed, driver.usesCommandChannel(framed))
+        }
+        synchronized(opLock) {
+            for (op in ops.asReversed()) opQueue.addFirst(op)
+        }
     }
 
     /** Drop everything queued or in flight (connection reset / teardown). Any pending
@@ -1092,7 +1113,8 @@ class RingBLEClient(private val context: Context) {
             // ring becomes usable as soon as possible instead of waiting behind firmware/
             // battery reads. (This is the R10 fix: its 0x180A DIS firmware read used to be
             // issued ahead of the CCCD write and silently dropped it, so it never connected.)
-            pendingRingNotifyDescriptors.clear()
+            val subscriptionGate = subscriptionGate ?: return
+            val ringDescriptorOps = mutableListOf<Pair<BluetoothGattDescriptor, ByteArray>>()
             for (service in gatt.services) {
                 val svcUuid = service.uuid.toString()
                 val isRingSvc = driver.serviceUUIDs.any { it == svcUuid }
@@ -1108,23 +1130,32 @@ class RingBLEClient(private val context: Context) {
                     if (uuid == driver.commandUUID) commandChar = ch
                     if (driver.notifyUUIDs.any { it == uuid }) {
                         notifyChars[ch.uuid] = ch
-                        gatt.setCharacteristicNotification(ch, true)
-                        ch.getDescriptor(CCCD_UUID)?.let { desc ->
-                            pendingRingNotifyDescriptors.add(ch.uuid)
-                            // Current SmartHealth enables both BE94-0001 and BE94-0003 as
-                            // indications (CCCD 02 00), even though older ports commonly call
-                            // them notifications. Writing 01 00 succeeds locally but leaves the
-                            // R10M without its command-reply path and it closes with HCI 0x13.
-                            val cccdValue = if (activeCoordinator?.deviceType == RingDeviceType.YCBT) {
-                                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-                            } else {
-                                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        val localEnabled = gatt.setCharacteristicNotification(ch, true)
+                        val descriptor = ch.getDescriptor(CCCD_UUID)
+                        subscriptionGate.observeCharacteristic(
+                            uuid = uuid,
+                            localEnabled = localEnabled,
+                            hasCccd = descriptor != null,
+                        )
+                        if (localEnabled && descriptor != null) {
+                            val cccdValue = when (subscriptionGate.modeFor(uuid)) {
+                                SubscriptionMode.NOTIFICATION -> BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                                SubscriptionMode.INDICATION -> BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
                             }
-                            enqueueOp(GattOp.DescriptorWrite(desc, cccdValue))
+                            ringDescriptorOps += descriptor to cccdValue
                         }
                     }
                     if (uuid == driver.batteryCharUUID) batteryChar = ch
                 }
+            }
+
+            subscriptionGate.topologyFailure()?.let { failure ->
+                recordDiagnostic(failure)
+                failConnectAttempt(failure)
+                return
+            }
+            for ((descriptor, value) in ringDescriptorOps) {
+                enqueueOp(GattOp.DescriptorWrite(descriptor, value))
             }
 
             // Standard BLE health services — blood pressure (0x1810) + glucose (0x1808).
@@ -1280,21 +1311,41 @@ class RingBLEClient(private val context: Context) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // descriptor ACK — link is alive
             resetOpFailures()
-            // Retire the in-flight op before any early return, so the queue drains.
-            completeOp { it is GattOp.DescriptorWrite && it.descriptor === descriptor }
+            // Retire without pumping: the final required CCCD may need to prepend an immediate
+            // vendor handshake ahead of reads and optional descriptors already in the queue.
+            if (!retireOp { it is GattOp.DescriptorWrite && it.descriptor === descriptor }) return
+
+            val driver = activeDriver
+            val channelUuid = descriptor.characteristic.uuid.toString()
+            val isRingChannel = driver?.notifyUUIDs?.any { it == channelUuid } == true
+            val gate = subscriptionGate
 
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                updateState { copy(lastError = "Could not enable ring notifications (GATT $status)") }
+                val failure = "Could not enable ring notifications (GATT $status, ${channelUuid.substringBefore('-')})"
+                if (isRingChannel && gate?.isRequired(channelUuid) == true) {
+                    failConnectAttempt(failure)
+                } else {
+                    updateState { copy(lastError = failure) }
+                    pumpOps()
+                }
                 return
             }
 
-            // Notification enabled — fire onConnected once at least one notify is live
-            val driver = activeDriver ?: return
-            val ch = descriptor.characteristic
-            if (!driver.notifyUUIDs.any { it == ch.uuid.toString() }) return
-            pendingRingNotifyDescriptors.remove(ch.uuid)
-            if (pendingRingNotifyDescriptors.isNotEmpty()) return
-            if (_state.value.connectionState == RingConnectionState.CONNECTED) return
+            if (!isRingChannel || driver == null || gate == null) {
+                pumpOps()
+                return
+            }
+            gate.descriptorWritten(channelUuid, successful = true)
+            if (!gate.isReady || _state.value.connectionState == RingConnectionState.CONNECTED) {
+                pumpOps()
+                return
+            }
+
+            val immediateCommands = driver.immediatePostSubscriptionCommands()
+            if (immediateCommands.isNotEmpty()) {
+                recordDiagnostic("vendor handshake queued")
+                prependCommandWrites(immediateCommands)
+            }
 
             updateState { copy(connectionState = RingConnectionState.CONNECTED) }
             lastActivityAt = System.currentTimeMillis()  // fresh link — start the staleness clock
@@ -1333,18 +1384,11 @@ class RingBLEClient(private val context: Context) {
                     )
                 )
             }
-            if (activeCoordinator?.deviceType == RingDeviceType.YCBT) {
-                // R10M has a very short post-subscription watchdog. The normal startup callback
-                // loads Room/DataStore settings before its first write, which can leave the ring
-                // idle long enough to terminate an otherwise healthy link with HCI 0x13. Issue a
-                // Current SmartHealth calls GetDeviceName (02 03, payload 47 50) first and then
-                // queues SettingTime. This ordering differs from older public YCBT SDKs.
-                recordDiagnostic("YCBT vendor handshake")
-                (activeSyncEngine as? YCBTSyncEngine)?.beginVendorHandshake()
-            } else {
+            if (activeCoordinator?.deviceType != RingDeviceType.YCBT) {
                 readBattery()
             }
 
+            pumpOps()
             scope.launch { onConnected?.invoke() }
         }
 
@@ -1407,7 +1451,7 @@ class RingBLEClient(private val context: Context) {
         // and always starts from a fresh connectGatt.
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
-        pendingRingNotifyDescriptors.clear()
+        subscriptionGate = null
         closeGattQuietly(gatt)
 
         PulseEventBus.publishBlocking(

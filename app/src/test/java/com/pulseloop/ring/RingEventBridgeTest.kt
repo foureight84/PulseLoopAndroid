@@ -265,4 +265,30 @@ class RingEventBridgeTest {
         )
         assertEquals(listOf(PulseEvent.MeasurementRejected(YCBTMeasurementMode.SPO2)), events)
     }
+
+    @Test
+    fun `live blood pressure preserves live identity`() {
+        val events = RingEventBridge.eventsFor(
+            RingDecodedEvent.BloodPressureSample(118, 79, now), now
+        )
+
+        assertEquals(listOf(PulseEvent.BloodPressureSample(118, 79, now)), events)
+        assertFalse(events.any { it is PulseEvent.HistoryMeasurement })
+    }
+
+    @Test
+    fun `historical blood pressure and HRV retain history identity`() {
+        val systolic = RingEventBridge.eventsFor(
+            RingDecodedEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, 130.0, now), now
+        ).single()
+        val hrv = RingEventBridge.eventsFor(
+            RingDecodedEvent.HistoryMeasurement(MeasurementKind.HRV, 55.0, now), now
+        ).single()
+
+        assertTrue(systolic is PulseEvent.HistoryMeasurement)
+        assertTrue(hrv is PulseEvent.HistoryMeasurement)
+        assertFalse(systolic is PulseEvent.BloodPressureSample)
+        assertFalse(hrv is PulseEvent.HrvSample)
+    }
+
 }

@@ -176,7 +176,7 @@ class YCBTHistoryTransferTest {
         val writer = FakeWriter()
         val transfer = YCBTHistoryTransfer(writer = writer)
         val engine = YCBTSyncEngine(writer = writer, transfer = transfer)
-        engine.syncHistory()
+        engine.refresh()
 
         assertEquals(1, writer.sent.size)
         assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[0])

@@ -48,6 +48,7 @@ class EventPersistenceSubscriber(
         is PulseEvent.HistoryMeasurement,
         is PulseEvent.StressSample,
         is PulseEvent.HrvSample,
+        is PulseEvent.BloodPressureSample,
         is PulseEvent.TemperatureSample,
         is PulseEvent.ActivityUpdate,
         is PulseEvent.ActivityBucket,
@@ -173,6 +174,20 @@ class EventPersistenceSubscriber(
                     sourceRaw = "colmi",
                 ))
             }
+            is PulseEvent.BloodPressureSample -> {
+                db.measurementDao().insert(MeasurementEntity(
+                    kindRaw = MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name,
+                    value = event.systolic.toDouble(), unit = "mmHg",
+                    timestamp = event.timestamp.toEpochMilli(),
+                    sourceRaw = "live",
+                ))
+                db.measurementDao().insert(MeasurementEntity(
+                    kindRaw = MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name,
+                    value = event.diastolic.toDouble(), unit = "mmHg",
+                    timestamp = event.timestamp.toEpochMilli(),
+                    sourceRaw = "live",
+                ))
+            }
             is PulseEvent.TemperatureSample -> {
                 db.measurementDao().insert(MeasurementEntity(
                     kindRaw = MeasurementKind.TEMPERATURE.name,
@@ -198,6 +213,7 @@ class EventPersistenceSubscriber(
             is PulseEvent.HeartRateComplete -> {}
             is PulseEvent.Spo2Complete -> {}
             is PulseEvent.MeasurementRejected -> {} // Product orchestration only; no persistence.
+
             is PulseEvent.RawPacket -> {
                 db.rawPacketDao().insert(RawPacketEntity(
                     directionRaw = event.direction.name,

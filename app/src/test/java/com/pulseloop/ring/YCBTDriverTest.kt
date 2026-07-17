@@ -68,16 +68,16 @@ class YCBTDriverTest {
         val driver = YCBTDriver(writer)
         val engine = driver.makeSyncEngine()
 
-        engine.syncHistory()
+        engine.refresh()
         assertEquals(1, writer.sent.size)
         assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[0])
 
         writer.sent.clear()
-        engine.syncHistory()
+        engine.refresh()
         assertTrue(writer.sent.isEmpty())
 
         driver.connectionDidEnd()
-        engine.syncHistory()
+        engine.refresh()
         assertEquals(1, writer.sent.size)
         assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[0])
     }
@@ -145,5 +145,35 @@ class YCBTDriverTest {
 
         val events = driver.ingest(YCBTFrame.frame(byteArrayOf(0x03, 0x2f, 0x01)), streamUUID)
         assertTrue(events.first() is RingDecodedEvent.CommandAck)
+    }
+
+    @Test
+    fun `pending measurement replies preserve deterministic FIFO pairing`() {
+        val replies = PendingMeasurementReplies()
+        replies.record(YCBTMeasurementMode.HEART_RATE)
+        replies.record(null)
+        replies.record(YCBTMeasurementMode.HRV)
+
+        assertEquals(YCBTMeasurementMode.HEART_RATE, replies.consume()?.startedMode)
+        assertNull(replies.consume()?.startedMode)
+        assertEquals(YCBTMeasurementMode.HRV, replies.consume()?.startedMode)
+        assertNull(replies.consume())
+    }
+
+    @Test
+    fun `pending measurement replies stay bounded when callbacks are lost`() {
+        val replies = PendingMeasurementReplies()
+        repeat(10) { replies.record(it) }
+
+        assertEquals(2, replies.consume()?.startedMode)
+        repeat(7) { assertNotNull(replies.consume()) }
+        assertNull(replies.consume())
+    }
+
+    @Test
+    fun `YCBT requires both command and stream indications`() {
+        val required = YCBTDriver(RingCommandWriter { }).requiredSubscriptionsBeforeConnected
+        assertEquals(setOf(YCBTUUIDs.COMMAND, YCBTUUIDs.STREAM), required.map { it.uuid }.toSet())
+        assertTrue(required.all { it.mode == SubscriptionMode.INDICATION })
     }
 }

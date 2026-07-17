@@ -138,6 +138,8 @@ class YCBTDecoder {
                 if (events.isEmpty()) listOf(RingDecodedEvent.CommandAck(commandId = cmd.toUByte())) else events
             }
             YCBTDevControl.MEASUREMENT_RESULT -> {
+                // SmartHealth acknowledges this push but its proprietary unpackParseData layout
+                // is not available in the decompile. Do not infer mode/result fields from bytes.
                 listOf(RingDecodedEvent.CommandAck(commandId = cmd.toUByte()))
             }
             else -> listOf(RingDecodedEvent.CommandAck(commandId = cmd.toUByte()))
@@ -161,6 +163,9 @@ class YCBTDecoder {
                 val tenths = value * 10 + fraction
                 if (tenths > 0) listOf(RingDecodedEvent.BloodSugarSample(mgdl = YCBTHealthRecords.bloodSugarMgdl(tenths), _timestamp = now)) else emptyList()
             }
+            // Live HRV values are evidenced on Real 06/03. No captured 04/13 HRV value
+            // layout exists, so keep status payload tails diagnostic-only rather than guessing.
+            YCBTMeasurementMode.HRV -> emptyList()
             else -> emptyList()
         }
     }

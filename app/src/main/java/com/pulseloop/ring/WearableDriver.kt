@@ -8,6 +8,13 @@ fun interface RingCommandWriter {
     fun enqueue(command: ByteArray)
 }
 
+enum class SubscriptionMode { NOTIFICATION, INDICATION }
+
+data class RequiredSubscription(
+    val uuid: String,
+    val mode: SubscriptionMode,
+)
+
 /**
  * Ported from [WearableDriver] in WearableDriver.swift.
  * Connection + protocol handler for one wearable family.
@@ -19,6 +26,13 @@ interface WearableDriver {
     val commandUUID: String? get() = null
     val batteryServiceUUID: String? get() = null
     val batteryCharUUID: String? get() = null
+
+    /** Channels that must be subscribed successfully before this driver is usable. Empty keeps
+     * legacy first-notify readiness for devices whose additional channels are optional. */
+    val requiredSubscriptionsBeforeConnected: List<RequiredSubscription> get() = emptyList()
+
+    /** Commands that must be placed directly after the final required CCCD write. */
+    fun immediatePostSubscriptionCommands(): List<ByteArray> = emptyList()
 
     /** Apply outbound framing. jring: identity. Colmi: pad to 15 + checksum. */
     fun frame(command: ByteArray): ByteArray
@@ -103,14 +117,16 @@ interface RingSyncEngine {
     fun runStartup()
     fun handle(event: RingDecodedEvent)
 
-    /** Re-run the full history sync without re-sending the connect handshake. No-op on devices
-     *  that don't support staged history sync. */
-    fun syncHistory() {}
+    /** User-requested refresh. Existing families historically replay their startup sync. */
+    fun refresh() = runStartup()
+
+    /** Legacy sleep query action. Existing families historically replay their startup sync. */
+    fun querySleep() = runStartup()
 
     /** Refresh the recent vital series after a live workout without replaying all history. */
     fun syncVitalsHistory() {}
 
-    /** On-demand, standalone sleep fetch — request just the sleep record without running the
+    /** On-screen, standalone sleep fetch — request just the sleep record without running the
      *  whole history pipeline (which buries sleep behind activity/HR/stress/SpO₂ and can lose it
      *  to a watchdog stage-skip). Mirrors the official QRing app, which fires a dedicated sleep
      *  request when its sleep screen opens. No-op on devices whose history sync isn't staged this

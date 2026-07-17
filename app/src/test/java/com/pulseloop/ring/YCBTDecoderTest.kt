@@ -3,6 +3,7 @@ package com.pulseloop.ring
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.Instant
+import java.time.LocalDateTime
 import java.util.TimeZone
 
 class YCBTDecoderTest {
@@ -117,11 +118,21 @@ class YCBTDecoderTest {
     }
 
     @Test
-    fun `measurement result push acks`() {
+    fun `measurement result push remains an ack without an evidenced payload layout`() {
         val frame = YCBTFrame.validating(YCBTFrame.frame(byteArrayOf(0x04, 0x0e, 0x01, 0x02)))!!
         val events = decoder.decode(frame)
-        assertTrue(events.first() is RingDecodedEvent.CommandAck)
+        assertTrue(events.single() is RingDecodedEvent.CommandAck)
     }
+
+    @Test
+    fun `HRV status tail remains undecoded without a captured layout`() {
+        val frame = YCBTFrame.validating(YCBTFrame.frame(byteArrayOf(0x04, 0x13, 0x0a, 0x01, 0x2a)))!!
+        val events = decoder.decode(frame)
+
+        assertTrue(events.single() is RingDecodedEvent.CommandAck)
+        assertFalse(events.any { it is RingDecodedEvent.HrvSample })
+    }
+
 
     @Test
     fun `measurement start reply distinguishes acceptance from refusal`() {
@@ -155,15 +166,24 @@ class YCBTDecoderTest {
     }
 
     @Test
-    fun `date decode recovers true instant across time zone`() {
+    fun `date decode uses the record instant DST offset`() {
         val tz = TimeZone.getTimeZone("America/New_York")
-        val trueInstant = Instant.ofEpochSecond((System.currentTimeMillis() / 1000).toLong())
-        val calendar = java.util.Calendar.getInstance(tz).apply { time = java.util.Date(trueInstant.toEpochMilli()) }
-        val utcCalendar = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC"))
-        utcCalendar.set(calendar.get(java.util.Calendar.YEAR), calendar.get(java.util.Calendar.MONTH), calendar.get(java.util.Calendar.DAY_OF_MONTH), calendar.get(java.util.Calendar.HOUR_OF_DAY), calendar.get(java.util.Calendar.MINUTE), calendar.get(java.util.Calendar.SECOND))
-        val ringSeconds = (utcCalendar.timeInMillis / 1000 - YCBTBytes.EPOCH_OFFSET).toInt()
-        val decoded = YCBTBytes.date(ringSeconds, tz)
-        assertTrue(kotlin.math.abs(trueInstant.epochSecond - decoded.epochSecond) <= 1)
+        val winter = LocalDateTime.of(2026, 1, 15, 12, 0).atZone(tz.toZoneId()).toInstant()
+        val summer = LocalDateTime.of(2026, 7, 15, 12, 0).atZone(tz.toZoneId()).toInstant()
+
+        assertEquals(winter, YCBTBytes.date(YCBTBytes.ringSeconds(winter, tz), tz))
+        assertEquals(summer, YCBTBytes.date(YCBTBytes.ringSeconds(summer, tz), tz))
+        assertEquals(3_600L, winter.epochSecond - summer.epochSecond + 181 * 86_400L)
+    }
+
+    @Test
+    fun `date round trips across spring DST boundary`() {
+        val tz = TimeZone.getTimeZone("America/New_York")
+        val before = Instant.parse("2026-03-08T06:30:00Z")
+        val after = Instant.parse("2026-03-08T07:30:00Z")
+
+        assertEquals(before, YCBTBytes.date(YCBTBytes.ringSeconds(before, tz), tz))
+        assertEquals(after, YCBTBytes.date(YCBTBytes.ringSeconds(after, tz), tz))
     }
 
     @Test

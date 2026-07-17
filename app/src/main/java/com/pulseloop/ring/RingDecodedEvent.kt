@@ -84,6 +84,7 @@ sealed class RingDecodedEvent {
         is FirmwareVersion -> Instant.EPOCH
         is BindNotify -> Instant.EPOCH
         is MeasurementRejected -> Instant.EPOCH
+
         is WearingStatus -> this._timestamp
         is SupportFunctions -> Instant.EPOCH
         is ChipScheme -> Instant.EPOCH
@@ -282,6 +283,7 @@ sealed class RingDecodedEvent {
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"rejected_mode":$mode}"""
     }
+
 
     data class WearingStatus(
         val worn: Boolean,

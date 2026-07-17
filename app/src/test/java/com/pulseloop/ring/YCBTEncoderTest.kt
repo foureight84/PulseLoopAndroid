@@ -90,17 +90,16 @@ class YCBTEncoderTest {
     @Test
     fun `startup order mirrors SmartHealth handshake`() {
         val sequence = encoder.startupSequence().map { it.copyOfRange(0, 2) }
-        assertArrayEquals(byteArrayOf(0x01, 0x00), sequence.first())
+        assertArrayEquals(byteArrayOf(0x02, 0x00), sequence.first())
         assertArrayEquals(byteArrayOf(0x03, 0x09), sequence.last())
         val expectedGets = listOf(
             byteArrayOf(0x02, 0x00),
             byteArrayOf(0x02, 0x01),
-            byteArrayOf(0x02, 0x03),
             byteArrayOf(0x02, 0x07),
         )
-        assertEquals(expectedGets.map { it.toList() }, sequence.subList(1, 5).map { it.toList() })
+        assertEquals(expectedGets.map { it.toList() }, sequence.subList(0, 3).map { it.toList() })
         assertEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02).toList(), encoder.startupSequence().last().toList())
-        val settings = sequence.subList(5, sequence.size)
+        val settings = sequence.subList(3, sequence.size)
         val expectedSettings = listOf(
             byteArrayOf(0x01, 0x12),
             byteArrayOf(0x01, 0x04),
@@ -113,6 +112,17 @@ class YCBTEncoderTest {
             byteArrayOf(0x03, 0x09),
         )
         assertEquals(expectedSettings.map { it.toList() }, settings.map { it.toList() })
+    }
+
+    @Test
+    fun `post subscription handshake is exactly device name then time`() {
+        val date = Instant.parse("2026-07-06T12:34:14Z")
+        val sequence = encoder.postSubscriptionHandshake(date)
+
+        assertEquals(2, sequence.size)
+        assertArrayEquals(byteArrayOf(0x02, 0x03, 0x47, 0x50), sequence[0])
+        assertArrayEquals(byteArrayOf(0x01, 0x00), sequence[1].copyOfRange(0, 2))
+        assertFalse(encoder.startupSequence().any { it.contentEquals(sequence[0]) })
     }
 
     @Test

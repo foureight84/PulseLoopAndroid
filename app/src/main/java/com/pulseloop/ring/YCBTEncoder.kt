@@ -115,20 +115,17 @@ class YCBTEncoder {
     fun setTime(date: Instant = Instant.now()): ByteArray = settings.setTime(date)
 
     fun startupSequence(
-        date: Instant = Instant.now(),
         measurement: MeasurementSettings = MeasurementSettings.ALL_ON_DEFAULT,
         profile: UserProfileValues = UserProfileValues(metric = true, gender = 0x02u, age = 25u, heightCm = 175u, weightKg = 70u),
         languageCode: Int = 0,
         is24Hour: Boolean = true,
     ): List<ByteArray> {
         val seq = mutableListOf<ByteArray>()
-        seq.add(setTime(date))
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, byteArrayOf(0x47, 0x43)))
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_SUPPORT_FUNCTION, byteArrayOf(0x47, 0x46)))
         // Do not query GetChipScheme (02 1B) during startup. The TK5 accepts it, but the
         // R10M closes an otherwise healthy connection with HCI 0x13 immediately on receipt.
         // Chip-scheme metadata is informational and no Android feature depends on it.
-        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_NAME, byteArrayOf(0x47, 0x50)))
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_USER_CONFIG, byteArrayOf(0x43, 0x46)))
         seq.add(settings.language(languageCode))
         seq.add(settings.units(metric = profile.metric, is24Hour = is24Hour))
@@ -137,6 +134,10 @@ class YCBTEncoder {
         seq.add(enableLiveStatus())
         return seq
     }
+
+    /** Exact current SmartHealth sequence immediately after both indication CCCDs complete. */
+    fun postSubscriptionHandshake(date: Instant = Instant.now()): List<ByteArray> =
+        listOf(deviceNameRequest(), setTime(date))
 
     fun monitorCommands(measurement: MeasurementSettings): List<ByteArray> =
         settings.monitorCommands(measurement)
