@@ -75,6 +75,13 @@ class PairingMatchingTest {
     }
 
     @Test
+    fun `R10M catalog entry uses the discoverable retail name`() {
+        assertTrue(WearableModel.R10M in WearableModel.CATALOG)
+        assertEquals("LittleMeatball", WearableModel.R10M.brand)
+        assertEquals("LittleMeatball R10M", WearableModel.R10M.displayName)
+    }
+
+    @Test
     fun `YCBT manufacturer marker does not override QRing service`() {
         val manufacturer = byteArrayOf(0x10, 0x78)
         assertFalse(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(emptyList(), manufacturer)))

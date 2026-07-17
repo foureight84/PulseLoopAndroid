@@ -62,7 +62,10 @@ data class WearableModel(
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
 
         // YCBT / SmartHealth family (distinct protocol from QRing Colmi)
-        val R10M = ycbt("r10m", "R10M", "Yucheng", "^R10M[ _][0-9A-F]{4}$", R.drawable.ring_colmi_r10)
+        val R10M = ycbt(
+            "r10m", "LittleMeatball R10M", "LittleMeatball",
+            "^R10M[ _][0-9A-F]{4}$", R.drawable.ring_colmi_r10,
+        )
 
         // Yawell-branded variants
         val YAWELL_R05 = colmi("yawell-r05", "Yawell R05", "Yawell", "^R05_[0-9A-F]{4}$", R.drawable.ring_yawell_r05)

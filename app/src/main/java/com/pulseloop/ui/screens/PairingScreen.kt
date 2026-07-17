@@ -7,7 +7,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -282,32 +281,39 @@ private fun BrandTabs(
     selectedBrand: String,
     onSelect: (String) -> Unit,
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        brands.forEach { brand ->
-            val isSelected = brand == selectedBrand
-            Box(
-                Modifier
-                    .heightIn(min = 44.dp)
-                    .clickable { onSelect(brand) },
-                contentAlignment = Alignment.Center,
+        // Never hide a brand behind an undiscoverable horizontal gesture. Three pills per row
+        // fits the supported labels on narrow phones and naturally grows as models are added.
+        brands.chunked(3).forEach { rowBrands ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    brand,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isSelected) Color.White else PulseColors.textSecondary,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(if (isSelected) PulseColors.accent else PulseColors.card)
-                        .border(1.dp, if (isSelected) Color.Transparent else PulseColors.borderSubtle, CircleShape)
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                )
+                rowBrands.forEach { brand ->
+                    val isSelected = brand == selectedBrand
+                    Box(
+                        Modifier
+                            .heightIn(min = 44.dp)
+                            .clickable { onSelect(brand) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            brand,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isSelected) Color.White else PulseColors.textSecondary,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(if (isSelected) PulseColors.accent else PulseColors.card)
+                                .border(1.dp, if (isSelected) Color.Transparent else PulseColors.borderSubtle, CircleShape)
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                        )
+                    }
+                }
             }
         }
     }
