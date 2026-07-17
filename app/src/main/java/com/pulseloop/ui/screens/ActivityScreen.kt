@@ -39,6 +39,10 @@ import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.ActivityViewModel
 import com.pulseloop.util.Formats
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Calendar
 
 private val weekLabels = listOf("M", "T", "W", "T", "F", "S", "S")
@@ -484,7 +488,9 @@ private fun RecordTypePickerDialog(onDismiss: () -> Unit, onStart: (String, Bool
     )
 }
 
-/** All finished workouts (WorkoutHistorySheet). */
+/** All finished workouts (WorkoutHistorySheet), grouped by day with TODAY/YESTERDAY/date headers
+ *  (iOS #61 ActivityView day grouping). Sessions arrive newest-first (recentFlow `startedAt DESC`),
+ *  so `groupBy` keeps each day's rows newest-first and the day keys sort descending. */
 @Composable
 private fun WorkoutHistoryDialog(
     sessions: List<ActivitySessionEntity>,
@@ -492,16 +498,43 @@ private fun WorkoutHistoryDialog(
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit,
 ) {
+    val zone = remember { ZoneId.systemDefault() }
+    val headerFmt = remember { DateTimeFormatter.ofPattern("EEEE, MMM d") }
+    val today = remember { LocalDate.now(zone) }
+    val groups = remember(sessions) {
+        sessions.groupBy { Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate() }
+            .toList().sortedByDescending { it.first }
+    }
+    fun header(day: LocalDate): String = when (day) {
+        today -> "TODAY"
+        today.minusDays(1) -> "YESTERDAY"
+        else -> headerFmt.format(day).uppercase()
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Workout history") },
         text = {
-            if (sessions.isEmpty()) {
+            if (groups.isEmpty()) {
                 Text("No workouts yet — recorded workouts will appear here.")
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.heightIn(max = 420.dp)) {
-                    items(sessions.size) { i ->
-                        ActivityWorkoutRow(sessions[i], units) { onSelect(sessions[i].id) }
+                    groups.forEachIndexed { index, (day, daySessions) ->
+                        item(key = "header-$day") {
+                            Text(
+                                header(day),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                letterSpacing = 1.4.sp,
+                                color = PulseColors.textMuted,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = if (index == 0) 0.dp else 8.dp),
+                            )
+                        }
+                        items(daySessions.size, key = { daySessions[it].id }) { i ->
+                            ActivityWorkoutRow(daySessions[i], units) { onSelect(daySessions[i].id) }
+                        }
                     }
                 }
             }
