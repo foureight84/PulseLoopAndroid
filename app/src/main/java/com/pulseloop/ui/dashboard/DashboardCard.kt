@@ -26,6 +26,21 @@ enum class DashboardCard(val key: String) {
     GLUCOSE("bloodSugar"),
     BLOOD_PRESSURE("bloodPressureSystolic");
 
+    /** Human label for the Hidden tray / edit-mode affordances. */
+    val displayName: String
+        get() = when (this) {
+            ACTIVITY -> "Activity"
+            SLEEP -> "Sleep"
+            HEART_RATE -> "Heart Rate"
+            SPO2 -> "SpO₂"
+            HRV -> "HRV"
+            TEMPERATURE -> "Temperature"
+            STRESS -> "Stress"
+            FATIGUE -> "Fatigue"
+            GLUCOSE -> "Glucose"
+            BLOOD_PRESSURE -> "Blood Pressure"
+        }
+
     companion object {
         /** Default Today order (matches the hardcoded tile order it replaces). */
         val todayDefault = listOf(
