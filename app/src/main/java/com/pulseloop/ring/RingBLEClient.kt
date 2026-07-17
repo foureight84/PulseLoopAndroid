@@ -857,6 +857,10 @@ class RingBLEClient(private val context: Context) {
                                     RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
                             )
                         }
+                        if (op.attempts == 0) {
+                            val prefix = op.data.take(4).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+                            recordDiagnostic("write issue $prefix len=${op.data.size}")
+                        }
                         gatt.writeCharacteristic(target)
                     }
                 }
@@ -1013,8 +1017,17 @@ class RingBLEClient(private val context: Context) {
                         // app (which also bonds post-discovery, gated on supportBlePair). Rings
                         // that don't advertise the bit (jring 56ff, older R02) are never bonded,
                         // preserving prior behaviour. See docs/qring-ble-adoption.md §Pairing.
-                        // Request a high-priority connection interval, matching the official app
-                        // (BluetoothLeService.requestConnectionPriority(1) on connect).
+                        // YCBT firmware is not QRing firmware. Cheap BE94 controllers have been
+                        // observed terminating Android links after aggressive connection-parameter
+                        // and MTU requests. CoreBluetooth's working YCBT path makes neither request,
+                        // and the frame assembler already handles fragmentation, so use the
+                        // conservative default link for this family.
+                        if (activeCoordinator?.deviceType == RingDeviceType.YCBT) {
+                            recordDiagnostic("YCBT default MTU/priority")
+                            startServiceDiscovery(gatt)
+                            return
+                        }
+                        // QRing/Jring path: request the parameters used by their Android clients.
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         // Request a larger MTU (helps history-sync throughput), then discover
                         // services ONLY after the MTU exchange completes — never overlap the two
