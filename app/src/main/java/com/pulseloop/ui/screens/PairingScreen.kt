@@ -75,6 +75,7 @@ fun PairingScreen(
 
     var isLooking by remember { mutableStateOf(false) }
     var didFireConnected by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     // The adapter flag isn't part of BLEState until a scan attempt, so poll it directly.
     var btReady by remember { mutableStateOf(bleClient.isBluetoothEnabled) }
@@ -119,14 +120,9 @@ fun PairingScreen(
                 previous != RingConnectionState.CONNECTED &&
                 !didFireConnected
             ) {
-                // Do not navigate away for a link that only survives a few callbacks. Keeping
-                // this screen visible makes the disconnect trace readable on real hardware.
-                delay(2_000)
-                if (bleClient.state.value.connectionState == RingConnectionState.CONNECTED) {
-                    didFireConnected = true
-                    isLooking = false
-                    onConnected()
-                }
+                didFireConnected = true
+                isLooking = false
+                onConnected()
             }
             previous = s.connectionState
         }
@@ -209,11 +205,20 @@ fun PairingScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+
+            if (!connected && (isLooking || state.diagnostics.isNotEmpty())) {
+                Text(
+                    if (showDiagnostics) "Hide connection details" else "Show connection details",
+                    fontSize = 12.sp,
+                    color = PulseColors.textSecondary,
+                    modifier = Modifier.clickable { showDiagnostics = !showDiagnostics },
+                )
+            }
         }
 
-        // A fixed-height trace avoids the connect/disconnect layout jump and remains visible
-        // while the scrollable pairing content changes underneath it.
-        if (isLooking || state.diagnostics.isNotEmpty()) {
+        // Raw transport detail remains available for device bring-up without occupying the
+        // normal pairing surface or delaying successful navigation.
+        if (showDiagnostics && !connected && (isLooking || state.diagnostics.isNotEmpty())) {
             val trace = buildList {
                 addAll(state.diagnostics.takeLast(4))
                 state.lastError?.let { if (it !in this) add(it) }

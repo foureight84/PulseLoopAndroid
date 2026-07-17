@@ -1462,7 +1462,11 @@ class RingBLEClient(private val context: Context) {
         updateState {
             copy(
                 connectionState = RingConnectionState.DISCONNECTED,
-                lastError = if (requestedByUser) lastError else "Ring disconnected (GATT $status)",
+                lastError = when {
+                    requestedByUser -> lastError
+                    status == BluetoothGatt.GATT_SUCCESS -> null
+                    else -> "Ring disconnected (GATT $status)"
+                },
             )
         }
     }
