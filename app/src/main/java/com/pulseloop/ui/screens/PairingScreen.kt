@@ -119,9 +119,14 @@ fun PairingScreen(
                 previous != RingConnectionState.CONNECTED &&
                 !didFireConnected
             ) {
-                didFireConnected = true
-                isLooking = false
-                onConnected()
+                // Do not navigate away for a link that only survives a few callbacks. Keeping
+                // this screen visible makes the disconnect trace readable on real hardware.
+                delay(2_000)
+                if (bleClient.state.value.connectionState == RingConnectionState.CONNECTED) {
+                    didFireConnected = true
+                    isLooking = false
+                    onConnected()
+                }
             }
             previous = s.connectionState
         }
@@ -202,6 +207,30 @@ fun PairingScreen(
                     color = PulseColors.danger,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        // A fixed-height trace avoids the connect/disconnect layout jump and remains visible
+        // while the scrollable pairing content changes underneath it.
+        if (isLooking || state.diagnostics.isNotEmpty()) {
+            val trace = buildList {
+                addAll(state.diagnostics.takeLast(4))
+                state.lastError?.let { if (it !in this) add(it) }
+            }.joinToString("\n").ifBlank { "Waiting for BLE connection events…" }
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 88.dp)
+                    .background(PulseColors.card)
+                    .border(1.dp, PulseColors.borderSubtle)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    trace,
+                    fontSize = 11.sp,
+                    color = if (state.lastError != null) PulseColors.danger else PulseColors.textMuted,
                 )
             }
         }

@@ -51,6 +51,8 @@ class RingBLEClient(private val context: Context) {
         val activeWearableModelID: String? = null,
         val activeCapabilities: Set<WearableCapability> = emptySet(),
         val firmwareVersion: String? = null,
+        /** Bounded, persistent-for-this-process BLE trace for hardware diagnosis. */
+        val diagnostics: List<String> = emptyList(),
     )
 
     data class DiscoveredRing(
@@ -99,6 +101,7 @@ class RingBLEClient(private val context: Context) {
     private var commandChar: BluetoothGattCharacteristic? = null
     private var notifyChars: MutableMap<UUID, BluetoothGattCharacteristic> = mutableMapOf()
     private var batteryChar: BluetoothGattCharacteristic? = null
+    private val pendingRingNotifyDescriptors = java.util.Collections.synchronizedSet(mutableSetOf<UUID>())
 
     // MARK: Active driver/engine
 
@@ -626,6 +629,7 @@ class RingBLEClient(private val context: Context) {
         }
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
+        pendingRingNotifyDescriptors.clear()
         resetOpQueue()
         serviceDiscoveryStarted.set(false)
         val coordinator = coordinators.firstOrNull { it.deviceType == deviceType } ?: JringCoordinator
@@ -638,7 +642,8 @@ class RingBLEClient(private val context: Context) {
             family = coordinator.deviceType,
         )?.id
         installDriver(coordinator)
-        updateState { copy(activeWearableModelID = resolvedModelID) }
+        updateState { copy(activeWearableModelID = resolvedModelID, diagnostics = emptyList()) }
+        recordDiagnostic("connect ${advertisedName ?: "unknown"}")
         connectingStartedAt = System.currentTimeMillis()
         updateState { copy(connectionState = RingConnectionState.CONNECTING) }
         // Mirror the attempt to the persisted state so the Today/Settings views show
@@ -930,6 +935,13 @@ class RingBLEClient(private val context: Context) {
         _state.value = _state.value.update()
     }
 
+    @Synchronized
+    private fun recordDiagnostic(message: String) {
+        Log.i("RingBLEClient", message)
+        val current = _state.value
+        _state.value = current.copy(diagnostics = (current.diagnostics + message).takeLast(6))
+    }
+
     // MARK: Scan callback
 
     private val scanCallback = object : ScanCallback() {
@@ -986,6 +998,7 @@ class RingBLEClient(private val context: Context) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            recordDiagnostic("state status=$status new=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     if (status == BluetoothGatt.GATT_SUCCESS) {
@@ -1029,7 +1042,11 @@ class RingBLEClient(private val context: Context) {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) return
+            recordDiagnostic("services status=$status count=${gatt.services.size}")
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                updateState { copy(lastError = "Service discovery failed (GATT $status)") }
+                return
+            }
 
             // Log all discovered service UUIDs for diagnostics
             val serviceUuids = gatt.services.map { it.uuid.toString() }
@@ -1062,6 +1079,7 @@ class RingBLEClient(private val context: Context) {
             // ring becomes usable as soon as possible instead of waiting behind firmware/
             // battery reads. (This is the R10 fix: its 0x180A DIS firmware read used to be
             // issued ahead of the CCCD write and silently dropped it, so it never connected.)
+            pendingRingNotifyDescriptors.clear()
             for (service in gatt.services) {
                 val svcUuid = service.uuid.toString()
                 val isRingSvc = driver.serviceUUIDs.any { it == svcUuid }
@@ -1079,6 +1097,7 @@ class RingBLEClient(private val context: Context) {
                         notifyChars[ch.uuid] = ch
                         gatt.setCharacteristicNotification(ch, true)
                         ch.getDescriptor(CCCD_UUID)?.let { desc ->
+                            pendingRingNotifyDescriptors.add(ch.uuid)
                             enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
                         }
                     }
@@ -1153,6 +1172,7 @@ class RingBLEClient(private val context: Context) {
         override fun onCharacteristicWrite(
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
         ) {
+            recordDiagnostic("write ${characteristic.uuid.toString().take(8)} status=$status")
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
             resetOpFailures()  // a real completion — the stack is responsive again
@@ -1232,6 +1252,7 @@ class RingBLEClient(private val context: Context) {
         override fun onDescriptorWrite(
             gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
         ) {
+            recordDiagnostic("notify ${descriptor.characteristic.uuid.toString().take(8)} status=$status")
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // descriptor ACK — link is alive
             resetOpFailures()
@@ -1247,6 +1268,8 @@ class RingBLEClient(private val context: Context) {
             val driver = activeDriver ?: return
             val ch = descriptor.characteristic
             if (!driver.notifyUUIDs.any { it == ch.uuid.toString() }) return
+            pendingRingNotifyDescriptors.remove(ch.uuid)
+            if (pendingRingNotifyDescriptors.isNotEmpty()) return
             if (_state.value.connectionState == RingConnectionState.CONNECTED) return
 
             updateState { copy(connectionState = RingConnectionState.CONNECTED) }
@@ -1350,6 +1373,7 @@ class RingBLEClient(private val context: Context) {
         // and always starts from a fresh connectGatt.
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
+        pendingRingNotifyDescriptors.clear()
         closeGattQuietly(gatt)
 
         PulseEventBus.publishBlocking(
