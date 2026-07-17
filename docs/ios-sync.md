@@ -24,9 +24,9 @@ intentional platform differences listed at the bottom.
 |---|---|
 | **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `e00c24b` — glass-UI fixup, 2026-07-10 |
-| **Last triage date** | 2026-07-10 |
-| **Range covered** | 99 commits / 15 first-parent items since `80195a6` (2026-07-10) |
+| **Last triaged iOS commit** | `4dae095` — Merge PR #66 measure-HR redesign, 2026-07-16 |
+| **Last triage date** | 2026-07-16 |
+| **Range covered** | 48 commits / 9 first-parent items since `b3697c0` (2026-07-12) |
 
 ---
 
@@ -40,28 +40,211 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#15](https://github.com/saksham2001/PulseLoopiOS/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
 | ☑ | [#11](https://github.com/saksham2001/PulseLoopiOS/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | `4aad39a` |
 | ☐ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
-| ☐ | [#41](https://github.com/saksham2001/PulseLoopiOS/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | |
+| ☑ | [#41](https://github.com/saksham2001/PulseLoopiOS/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | already-have (`AppChrome.ConnectionStatusPill`) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
 | ☑ | [#19](https://github.com/saksham2001/PulseLoopiOS/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | `f4bcd47` |
 | ☑ | [#9](https://github.com/saksham2001/PulseLoopiOS/pull/9) `cd62903` | 06-26 | Coach: multi-provider (Gemini) | **PORT** | L | `049058d`+`4d81a07` |
 | ☑ | [#22](https://github.com/saksham2001/PulseLoopiOS/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | `049058d`+`4d81a07` |
 | ☑ | [#31](https://github.com/saksham2001/PulseLoopiOS/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
-| ☐ | [#24](https://github.com/saksham2001/PulseLoopiOS/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
+| ☑ | [#24](https://github.com/saksham2001/PulseLoopiOS/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | no-op (no analogous bug — `CoachNotificationWorker` is a CoroutineWorker, no MainActor assert) |
 | ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | `4aad39a` |
 | ☑ | [#48](https://github.com/saksham2001/PulseLoopiOS/pull/48) `aff8574` | 07-05 | Pairing redesign: brand tabs, ring product images, onboarding flow, shared profile/goal editors | **PORT** | L | `a38ddf5` |
 | ☑ | [#49](https://github.com/saksham2001/PulseLoopiOS/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | `de60096` |
 | ☑ | [#44](https://github.com/saksham2001/PulseLoopiOS/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | `c8efccd` |
-| ☐ | [#71](https://github.com/saksham2001/PulseLoopiOS/pull/71) `4fd008a` | 07-10 | Colmi R08 ring support (catalog entry) | **PORT** | S | |
+| ☑ | [#71](https://github.com/saksham2001/PulseLoopiOS/pull/71) `4fd008a` | 07-10 | Colmi R08 ring support (catalog entry) | **PORT** | S | `be74a19` |
 | ☐ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** | L | |
 | ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
-| ☐ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | |
+| ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
 | ☐ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | |
 | ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
-| ☐ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **PORT** | L | |
+| ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
 | ☐ | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | Activity UI sync-alerts bugfix | **ADAPT** | S | |
-| ☐ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | |
-| ☐ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | |
-| ☐ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | |
+| ☑ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | `be74a19` |
+| ☑ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | `3e14fef` |
+| ☐ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | deferred — cosmetic; doesn't map (Android has no Physiology route; row already Device-gated, empty section already hidden) |
+| ☐ | [#82](https://github.com/saksham2001/PulseLoopiOS/pull/82) `902c449` | 07-11 | YCBT (Yucheng) protocol rebuild: TK5 + **SmartHealth-app Colmi rings** + pairing app-variant picker (**supersedes #56**) | **PORT** | XL | |
+| ☐ | [#79](https://github.com/saksham2001/PulseLoopiOS/pull/79) `952cf4f` | 07-12 | Activity Year trends: divide in-progress current month by elapsed days, not full 30/31 | **PORT-when-built** | S | |
+| ☐ | [#70](https://github.com/saksham2001/PulseLoopiOS/pull/70) `ac2b81a` | 07-12 | Today/Vitals apply Settings visibility + chart-detail changes immediately | **BLOCKED (behind #64)** | S | |
+| ☑ | [#66](https://github.com/saksham2001/PulseLoopiOS/pull/66) `4dae095` | 07-16 | Measure HR/SpO₂ countdown redesign + **robust measurement** (warm-up echo discard, contact-gap, median/majority gate) | **PORT** | L | `36da8f2` (robustness; modal chrome deferred) |
+| ☐ | [#83](https://github.com/saksham2001/PulseLoopiOS/pull/83) `2367d23` | 07-15 | Split same-day sleep into sessions (night + naps, 60-min gap) + Day carousel | **ADAPT** | L | |
+| ☐ | [#84](https://github.com/saksham2001/PulseLoopiOS/pull/84) `8b86e5c` | 07-15 | Sleep › Day navigation (page between days) | **PORT** | M | |
+| ☐ | [#85](https://github.com/saksham2001/PulseLoopiOS/pull/85) `9093e9b` | 07-15 | Multi-session sleep days in demo seed | **PORT-with-#83** | S | |
+| ☐ | [#90](https://github.com/saksham2001/PulseLoopiOS/pull/90) `9d05481` | 07-15 | LuckRing/TK18 ring support (Coolwear "K6" / 0xFF64 `f618` protocol) | **PORT** | XL | |
+| ☑ | [#88](https://github.com/saksham2001/PulseLoopiOS/pull/88) `e937a39` | 07-15 | Refresh stale screens after data changes (coach edit → aggregates, goal-edit rings, metric-detail on-sync) | **ADAPT** | S | already-have (Room Flows cover b/c/d; a is an architecture-specific non-gap) |
+| ☐ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PARTIAL** | S | |
+
+### 2026-07-16 triage (since `b3697c0` → `4dae095`, 48 commits / 9 first-parent)
+
+Nine PR merges. One new ring family (#90, XL), two sleep features (#83/#84 + #85 seed), a
+measurement robustness rework (#66), a reactivity bundle (#88), an onboarding polish (#75),
+plus iOS-26 glass (#89, skip) and one fix Android already shipped (#87). None depend on the
+sleep-sync reliability work; sequence them behind it as before.
+
+**Relevant → port:**
+
+- **#66 Measure HR/SpO₂ robust measurement** (`4dae095`, L) — the headline behavioral fix. iOS added
+  `HRSampleWindow`, which owns two rules a spot HR reading must pass: **(1) warm-up echo discard** —
+  the ring replies with its *last stored* bpm the instant the manual-HR command is sent, so everything
+  in the first **5 s** is dropped (else a measurement "succeeds" in two seconds on an hours-old number);
+  **(2) a consistency gate** — need ≥6 samples, and ≥60% must sit within ±8 bpm of the median, else it
+  reports **nothing** and asks for a retry (a plausible-but-untrustworthy HR is worse than an honest
+  retry). Plus a **contact-gap** abort (>3 s between samples = ring slipped) and `measurementReceivedReading`
+  distinguishing a fresh reading from the stale on-screen value. Android's "Measure Vitals" sweep
+  (recent `56ff` single-sweep work) almost certainly accepts the cached echo and doesn't gate on scatter
+  — **check `RingSyncCoordinator`/measurement path in the android/ repo and port these rules as Kotlin.**
+  The countdown-modal UI redesign (`MeasurementModal`/`MeasurementRingView`/`VitalsResultsView`) is the
+  ADAPT half — port the robustness first, the modal chrome can follow.
+- **#83 Multi-session sleep + Day carousel** (`2367d23`, L, ADAPT) — iOS now splits a *waking day's*
+  sleep into distinct sessions (main night vs. daytime naps) wherever there's a **≥60-min gap** between
+  stage blocks, then reconciles SwiftData rows with **stable identity** (match each segment to the
+  existing row whose prior range overlaps, so a nap syncing before its night doesn't reshuffle ids),
+  and pages them in a **Day carousel**. Pure logic lives in `SleepSegmentation.segment()`; the
+  SwiftData reconcile (`SleepService.reconcileWakingDay`, idempotent, no-op on unchanged days) is the
+  adapt target. **This changes Android's one-session-per-waking-day model** (the #15 port keys a single
+  session per waking day) — ADAPT the segmentation as a pure Kotlin function + a Room reconcile that
+  preserves session ids, and add the carousel to `SleepScreen` Day view.
+- **#84 Sleep Day navigation** (`8b86e5c`, M) — page between days on the Sleep › Day view (prev/next
+  day arrows). Android's Day view anchors on the 4 AM reference night but (verify) has no day paging.
+  Straightforward once #83's per-day session model is in place; can land independently for the single-
+  session case too.
+- **#85 Multi-session sleep seed** (`9093e9b`, S) — adds multi-session (night + nap) days to the demo
+  seed so the #83 carousel has something to show. Android's `DemoDataSeeder` is 1:1 with `SeedData.swift`,
+  so mirror it — but **only after #83** lands the segmentation/reconcile (the seeded blocks must split
+  the same way). Watch the demo-id hazard from the 2026-07-06 review (demo nights use `demo-sleep-<day>`
+  ids, must not collide with real synced sessions).
+- **#90 LuckRing/TK18 ring support** (`9d05481`, XL) — a whole new ring family on the **Coolwear "K6"
+  protocol** (company ID `0xFF64`, GATT service `f618`, notify `b001`/write `b002`, fixed **20-byte**
+  packets, CRC disabled, no crypto; binding via a MixInfo TLV bundle, dataType 110). New Swift surface:
+  `LuckRingProtocol/Decoder/Encoder/Driver/SyncEngine/HistorySync/Coordinator` + `WearableModel`
+  `luckring-tk18` (advertises `^TK18([ _-].*)?$`, family `.luckRing`, HR·SpO₂·HRV·Temp·BP·Sleep·Steps)
+  + product image + a big test suite. **Only TK18 is hardware-tested** in the whole `0xFF64` family, so
+  iOS marks it `.limited` (untested siblings still pair via strong-signal match with generic art) —
+  carry that caveat. PORT into Android's `WearableModel` catalog + a new sync engine if we want LuckRing
+  on Android; large, lower priority than the sleep/measure work. **Side note relevant to queued #82:**
+  this PR also promotes `colmiSmartHealth` from `.limited` → **`.full`** (the YCBT SmartHealth-Colmi is
+  now proven on real hardware), so #82's "unconfirmed on hardware" caveat is partly retired.
+- **#88 Data reactivity** (`e937a39`, S, ADAPT) — a bundle of "stale screen" fixes: **(a)** coach
+  activity edits (`ActionTools.applyUpdatesNow`) now route type/time changes through
+  `ActivityService.applyEdit` so duration/distance/calories aggregates + the sample window stay
+  consistent instead of the view keeping old values (was setting fields directly); **(b)** `TodayStore`
+  folds the **goal targets** into its summary signature so a goal edit refills the rings immediately;
+  **(c)** `MetricDetailView` observes `PulseDataChange` to re-fetch when a background sync lands while
+  open; **(d)** `GoalsSettingsView` fires `PulseDataChange.notify()` on save. **Verify each against the
+  android/ Kotlin** — Android's reactive `TodayViewModel`/Flow model may already cover some (e.g. Room
+  Flows auto-refresh the detail screen); the coach-edit-aggregates one (a) is the most likely real gap
+  (check Android's `PendingActionExecutor`/coach edit path recomputes aggregates).
+- **#75 Onboarding polish** (`5390a95`, S, PARTIAL) — **fit-to-viewport** (`OnboardingFittedBand`
+  measures height, scales content 0.80–1.06 so steps 1/2/5 never scroll or clip on SE/mini, falls back
+  to a ScrollView at accessibility Dynamic Type sizes) + **copy polish** + a **celebratory finale**.
+  The fit-to-viewport is iOS `GeometryReader` layout mechanics — Compose handles responsive sizing
+  natively, so that part is largely N/A. Port the **copy tweaks + the finale animation** into Android's
+  `OnboardingFlow` (from #48) if we want the polish; low priority.
+
+**Already have / no Android bug (verified):**
+
+- **#87 Colmi quarter-hour activity buckets** (`cfa8109`) — iOS bug: `ColmiDecoder` mapped the
+  quarter-of-day slot to `hour = q/4, minute = 0`, collapsing all four quarters of an hour onto `HH:00`
+  so three of every four buckets overwrote each other (up to ~75% step undercount). **Android already
+  fixed exactly this** — it's the "Activity history slices collapsed to hour granularity" entry in the
+  Android-originated fixes below (`hour = idx/4, minute = (idx%4)*15`). iOS has now caught up; nothing to
+  port. Validation that Android led here.
+
+**Skip (iOS-only / already-covered):**
+
+- **#89 iOS-26 Liquid Glass rendering** (`0a8ab4e`, +227) — Liquid Glass correctness (glass containers,
+  tile-flash-on-re-render fixes) + Dynamic Type accessibility. **SKIP as a visual language** (standing
+  policy — Android keeps its own surfaces). Two portable ideas already covered elsewhere: caching heavy
+  `buildTodaySummary` off the render path is an iOS SwiftUI `@Query` re-render problem (N/A to Compose,
+  which doesn't re-run the whole body on data change), and `ActivityView` now observing `PulseDataChange`
+  is the same reactivity theme as **#88** — fold any Activity-refresh gap into the #88 ADAPT.
+- **Local `0d1b965`** "seed: month of demo workouts + 30-day vitals series" — an *Android-side* / local
+  demo commit sitting on top of the pulled `4dae095`, not an upstream item. Not triaged.
+
+### 2026-07-16 port session (branch `iOS_sync_2026-07-16`)
+
+Worked the queue high-value-first, small/verified units. All commits build; full unit
+suite green (402 tests, 0 failures).
+
+- **#66** measure robustness → `36da8f2` (HRSampleWindow: warm-up echo discard, contact-gap
+  abort, median/majority gate; pure class + unit tests). Modal chrome redesign deferred.
+- **#54** MiniMax coach provider → `22d1ecc` (full provider: client, presets, store, resolver,
+  Settings row + tests).
+- **#42** Today coach-card dedup → `3e14fef`.
+- **#71** Colmi R08 + **#63** jring "HR" label → `be74a19`.
+- **#41** status pill, **#24** coach scheduler, **#88** reactivity → verified **no-op / already-have**
+  (see rows). **#74** deferred (cosmetic, doesn't map to Android's settings structure).
+
+Still open, ranked by value for the next pass (highest first): **#64** long-press reorder/hide
+(unblocks #70), **#65** coach transparency/context, **#43** units consistency, **#83/#84/#85**
+multi-session sleep, **#57** activity-recording redesign, **#77** jring protocol-parity, **#61**
+activity sync-alerts, **#75** onboarding polish. XL ring rebuilds **#82** (YCBT) and **#90**
+(LuckRing) each warrant their own dedicated branch, not this sweep. Blocked/not-yet: **#70**
+(behind #64), **#79** (no Activity-trends screen yet).
+
+### 2026-07-14 triage (since `e00c24b` → `b3697c0`, 29 commits / 9 first-parent)
+
+Nine first-parent items: 7 PR merges + 2 direct doc commits. Two are substantial
+(#82 YCBT rings, #80 Apple Health); the rest are small fixes, docs, or CI.
+
+**Relevant → port:**
+
+- **#82 YCBT protocol rebuild** (`902c449`, XL) — the headline item. iOS rebuilt TK5 on the
+  **Yucheng YCBT** protocol (`be940` GATT service) and, on the same driver, added
+  **SmartHealth-app Colmi rings** (new model `colmi-r99`, advertises `R99 <4hex>`,
+  family `.colmiSmartHealth`). The design insight to port: **a Colmi ring ships with *either*
+  the QRing firmware (the Yawell/GadgetBridge protocol Android already speaks) or the
+  SmartHealth firmware (YCBT) — and the BLE name doesn't reliably say which.** So pairing now
+  asks the user which app the ring came with (`RingAppVariant` .qring/.smartHealth picker on
+  the model card), and a wrong pick surfaces a one-tap "try the other app" retry
+  (`RingAppVariant.other` + a targeted error message). New Swift surface: `YCBTProtocol`,
+  `YCBTDecoder/Encoder/Driver`, `YCBTHealthRecords`, `YCBTHistoryTransfer`, `YCBTSyncEngine`,
+  `YCBTSettingsEncoder`, plus `RingSyncCoordinator` (+244) and `WearableModel` (+213) app-variant
+  wiring, and a big test suite (YCBT*Tests replace the deleted `TK5DecoderTests`). **This
+  obsoletes queued #56** (the old SmartHealth-only TK5 approach) — port #82's YCBT architecture
+  instead of #56. ADAPT to Android's `WearableModel` catalog + `RingSyncCoordinator`; the
+  app-variant picker maps to the pairing carousel. Gauge value scales are still unconfirmed on
+  real TK5 hardware (iOS labels it "Limited support") — carry that caveat over.
+- **#79 Activity Year trends avg** (`952cf4f`, S) — for the in-progress current month, divide the
+  month's total by *elapsed* days (`day-of-month`), not the full 30/31, else the current month's
+  per-day bar + the headline average read low. Android has **no `ActivityTrends`/Year activity
+  view yet** (only Sleep has Day/Week/Month/Year), so there's nothing to fix today — **apply this
+  rule when the activity trends screen is built.** Its sibling, `dailyAverage`, is the same
+  elapsed-days idea.
+- **#70 Settings visibility reactivity** (`ac2b81a`, S) — Today/Vitals refresh signatures must
+  fold in the per-metric visibility + chart-resolution prefs so a Settings toggle rebuilds the
+  tab immediately instead of waiting for an unrelated sync to bump the signature. **BLOCKED:**
+  Android has no `hiddenMetrics`/`MetricPrefs`/per-metric visibility at all (confirmed — the
+  symbols don't exist), so this is a no-op until **#64 (long-press reorder/hide)** lands the
+  visibility store. Port #70's signature change *as part of* #64.
+
+**Already have / no Android bug (verified against the Kotlin source):**
+
+- **#68 coach weekly avg steps** (`8353227`) — iOS bug: `steps7d` is a zero-filled 7-slot
+  scaffold, so averaging over `.count` (always 7) understates; fix divides by `daysAvailable`.
+  Android's `CoachContextBuilder.build()` uses `activityDailyDao().recent(7)` — **only real rows,
+  not zero-filled** — and passes the raw `steps7d` list plus `daysAvailable` (days with steps>0)
+  to the packet rather than pre-averaging. The specific bug is absent. Nit to keep in mind: if a
+  downstream consumer ever averages `steps7d`, divide by `daysAvailable`, not `size`.
+- **#69 coach history recency** (`8837f8a`) — iOS bug: a `fetchLimit=40` ascending SwiftData
+  query capped replayed context at the *oldest* 40 messages, freezing the coach past message 40;
+  fix fetches newest-40 descending then re-sorts. Android's live `CoachViewModel.sendMessage`
+  builds `prior` from the **in-memory** `_state.value.messages` (full thread, no limit, already
+  chronological), so the bug can't occur on the send path. Note: Android *has since added*
+  persisted `coach_conversations`/`coach_messages` tables (`CoachMessageDao`, memory
+  "threads in-memory only" is now stale) — **if** a persisted-history browser ever replays via
+  `forConversation` with a `LIMIT`, sort **DESC then reverse**, per #69.
+
+**Skip (iOS-only / docs / CI):**
+
+- **#80 Apple Health sync** (`c1275ad`, +1,887) — HealthKit read/write with per-type toggles,
+  workout export, and profile import. **Intentional iOS-only divergence** (HealthKit-adjacent).
+  The Android analogue would be **Health Connect** — not queued, but if Android ever wants
+  wearable→platform sync, this PR is the reference design (per-type prefs store, workout
+  exporter, profile importer, sync publisher). SKIP for now.
+- **#81 contributors automation** (`32dfbe3`) — GitHub Action + `update_contributors.py` +
+  README/docs. Repo governance; the Android repo has its own. SKIP.
+- **`b3697c0`** (move YCBT spec out of docs site, add Discord to About) and **`0f500fc`**
+  (jring firmware URLs, drop stale TK5 protocol notes) — docs. SKIP.
 
 ### 2026-07-10 triage (since #44 / `80195a6` → `e00c24b`, 99 commits / 15 first-parent)
 
@@ -350,6 +533,7 @@ main-thread access from a background worker, and Room calls on the right dispatc
 |--------|-------|------|
 | [#20](https://github.com/saksham2001/PulseLoopiOS/pull/20) `6fe428f` | Perf re-architecture (event bus, decoupled persistence, memoized today-summary) | Android already built this way: `PulseEventBus` (SharedFlow), `EventPersistenceSubscriber`, `RingSyncCoordinator`, reactive `TodayViewModel` |
 | [#32](https://github.com/saksham2001/PulseLoopiOS/pull/32) `3e855ac` | 56ff low-level protocol (user profile, BP calibration, bind handshake, combined measurement, keepalive/watchdog) | This was iOS porting **Android's** work upstream — Android is the origin |
+| [#87](https://github.com/saksham2001/PulseLoopiOS/pull/87) `cfa8109` | Colmi quarter-hour activity-bucket offset (up to ~75% step undercount) | iOS adopting **Android's** fix — Android decoded true 15-min slice starts first (see Android-originated fixes) |
 
 ## Skipped (iOS-only / docs / CI / release)
 
@@ -360,7 +544,10 @@ main-thread access from a background worker, and Room calls on the right dispatc
 | [#47](https://github.com/saksham2001/PulseLoopiOS/pull/47) [#46](https://github.com/saksham2001/PulseLoopiOS/pull/46) [#39](https://github.com/saksham2001/PulseLoopiOS/pull/39) | Release-IPA CI workflow + fixes | iOS CI |
 | [#45](https://github.com/saksham2001/PulseLoopiOS/pull/45) [#37](https://github.com/saksham2001/PulseLoopiOS/pull/37) [#28](https://github.com/saksham2001/PulseLoopiOS/pull/28) [#23](https://github.com/saksham2001/PulseLoopiOS/pull/23) | Sideloading guide, iOS-vs-Android refresh, MkDocs site, README updates | Docs |
 | [#7](https://github.com/saksham2001/PulseLoopiOS/pull/7) `c9897c9` | OSS setup (templates, SwiftLint, CI) | Repo governance; Android repo has its own |
-| `25e49fd` `577c5f3` `35d1aa7` `ee42b10` | Direct commits: docs/screenshots/tagline | Docs |
+| [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | Apple Health sync (per-type toggles, workout export, profile import) | HealthKit — intentional iOS-only divergence. Android analogue is **Health Connect**; use this as the reference design if ever wanted |
+| [#81](https://github.com/saksham2001/PulseLoopiOS/pull/81) `32dfbe3` | Automated contributor recognition (Action + script + README) | Repo governance; Android repo has its own |
+| [#89](https://github.com/saksham2001/PulseLoopiOS/pull/89) `0a8ab4e` | iOS-26 Liquid Glass rendering correctness + Dynamic Type a11y | Glass is an iOS visual language (standing SKIP); portable reactivity bit folds into #88 |
+| `25e49fd` `577c5f3` `35d1aa7` `ee42b10` `b3697c0` `0f500fc` | Direct commits: docs/screenshots/tagline/YCBT-spec/Discord/jring-URLs | Docs |
 
 ---
 
