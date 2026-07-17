@@ -75,6 +75,7 @@ class YCBTEncoderTest {
             assertFalse("05 ${String.format("%02x", cmd)} is a Health-DELETE opcode", group == 0x05 && cmd in 0x40..0x4e)
             assertFalse("handshake must not touch Health group", group == 0x05)
             assertFalse("02 ${String.format("%02x", cmd)} is retired Get opcode", group == 0x02 && cmd in listOf(0x24, 0x26, 0x28))
+            assertFalse("R10M disconnects on GetChipScheme", group == 0x02 && cmd == 0x1b)
         }
     }
 
@@ -86,13 +87,12 @@ class YCBTEncoderTest {
         val expectedGets = listOf(
             byteArrayOf(0x02, 0x00),
             byteArrayOf(0x02, 0x01),
-            byteArrayOf(0x02, 0x1b),
             byteArrayOf(0x02, 0x03),
             byteArrayOf(0x02, 0x07),
         )
-        assertEquals(expectedGets.map { it.toList() }, sequence.subList(1, 6).map { it.toList() })
+        assertEquals(expectedGets.map { it.toList() }, sequence.subList(1, 5).map { it.toList() })
         assertEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02).toList(), encoder.startupSequence().last().toList())
-        val settings = sequence.subList(6, sequence.size)
+        val settings = sequence.subList(5, sequence.size)
         val expectedSettings = listOf(
             byteArrayOf(0x01, 0x12),
             byteArrayOf(0x01, 0x04),

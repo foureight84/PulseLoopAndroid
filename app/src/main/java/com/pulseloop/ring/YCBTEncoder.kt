@@ -125,7 +125,9 @@ class YCBTEncoder {
         seq.add(setTime(date))
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, byteArrayOf(0x47, 0x43)))
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_SUPPORT_FUNCTION, byteArrayOf(0x47, 0x46)))
-        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_CHIP_SCHEME, byteArrayOf()))
+        // Do not query GetChipScheme (02 1B) during startup. The TK5 accepts it, but the
+        // R10M closes an otherwise healthy connection with HCI 0x13 immediately on receipt.
+        // Chip-scheme metadata is informational and no Android feature depends on it.
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_NAME, byteArrayOf(0x47, 0x50)))
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_USER_CONFIG, byteArrayOf(0x43, 0x46)))
         seq.add(settings.language(languageCode))
