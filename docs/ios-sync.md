@@ -39,7 +39,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#17](https://github.com/saksham2001/PulseLoopiOS/pull/17) `26a6075` | 06-24 | Colmi HR enable + activity sample idempotency | **PORT** | M | `1a4f007` |
 | ☑ | [#15](https://github.com/saksham2001/PulseLoopiOS/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
 | ☑ | [#11](https://github.com/saksham2001/PulseLoopiOS/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | `4aad39a` |
-| ◐ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | `4075752` (live record pace/distance). Remaining: §2 temp detail-chart zone/axis conversion, §3 glucose mmol/L end-to-end |
+| ☑ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PORT** | M | `4075752` (pace/distance) + `d760c24` (§3 glucose dashboard, via #35) + `09e9122` (§2 temp + §3 glucose detail chart) |
 | ☑ | [#41](https://github.com/saksham2001/PulseLoopiOS/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | already-have (`AppChrome.ConnectionStatusPill`) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
 | ☑ | [#19](https://github.com/saksham2001/PulseLoopiOS/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | `f4bcd47` |
@@ -72,6 +72,77 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | [#90](https://github.com/saksham2001/PulseLoopiOS/pull/90) `9d05481` | 07-15 | LuckRing/TK18 ring support (Coolwear "K6" / 0xFF64 `f618` protocol) | **PORT** | XL | |
 | ☑ | [#88](https://github.com/saksham2001/PulseLoopiOS/pull/88) `e937a39` | 07-15 | Refresh stale screens after data changes (coach edit → aggregates, goal-edit rings, metric-detail on-sync) | **ADAPT** | S | already-have (Room Flows cover b/c/d; a is an architecture-specific non-gap) |
 | ☐ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PARTIAL** | S | |
+| ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `78ca593` | 07-01 | **Physiology settings screen** (athlete mode, altitude, beta-blockers, lung condition, glucose unit → tune `VitalsThresholdEngine`) — sub-surface of #35 that the XL dashboard port dropped | **PORT** | S–M | `d760c24` |
+
+## Port priority — open items (as of 2026-07-16)
+
+Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
+wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
+
+**Tier 1 — small, high-value (land on the current sync branch):**
+
+1. ~~**#35 Physiology settings screen**~~ ✅ **DONE** (2026-07-17, uncommitted). Screen + ApiKeyStore
+   persistence + `fromProfile` wiring + widget refresh. Glucose-unit picker also lands **#43 §3**.
+2. ~~**#43 §2 temp detail-chart unit conversion**~~ ✅ **DONE** (2026-07-17, uncommitted). Plus §3
+   glucose end-to-end on both dashboard card and detail chart.
+3. **#61 "Activity UI sync-alerts bugfix"** (ADAPT) — ⚠️ **MIS-SCOPED in triage.** The PR
+   (`39b611f`, ~1188 insertions / 34 files) is a grab-bag: a whole **BatteryAlertMonitor** feature +
+   tests, a **battery-drainage history/graph**, **sleep-page coach-card reposition**, coach
+   notification changes, *and* the activity sync-alert bug — NOT a small single fix. Needs re-triage
+   into separate items before porting; do not treat as "S". See 2026-07-17 note.
+4. **#75 Onboarding copy + finale** (PARTIAL) — copy polish + celebratory finale; fit-to-viewport
+   half is N/A (Compose sizes responsively). Real portable core is moderate (~3 iOS files, ~500 ins,
+   much of it the N/A layout mechanics).
+
+**Tier 2 — medium feature:**
+
+5. **#65 Coach transparency/context rehaul** (M, ADAPT).
+
+**Tier 3 — large, focused work (own commits):**
+
+6. **#57 Activity-recording redesign** + post-workout vitals backfill + realtime-HR keepalive rework (L, ADAPT).
+7. **#77 jring protocol-parity** (RingBLEClient + JringSyncEngine + JringClock) (L, ADAPT).
+
+**Tier 4 — XL, dedicated branch each:**
+
+8. **#82 YCBT (Yucheng) protocol rebuild** — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT).
+9. **#90 LuckRing/TK18** — Coolwear "K6" / `0xFF64` protocol (XL, PORT).
+
+**Blocked / deferred:**
+
+- **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
+- **#74 Measurement-Frequency relocation** — deferred, but **revisit after #35**: it was deferred for "no Physiology route," and #35 creates exactly that route, giving the "move Measurement Frequency under Physiology" idea a home.
+
+### 2026-07-17 port session (branch `iOS_sync_2026-07-16`)
+
+Worked Tier 1 high-value-first. Both landed items build clean (`:app:compileDebugKotlin`) and the
+full unit suite is green; 3 new tests added. Committed as `d760c24` (#35) and `09e9122` (#43).
+
+- **#35 Physiology settings screen — DONE** (`d760c24`). New `PhysiologySettingsScreen` (Settings → General →
+  Physiology): athlete-mode toggle, unit-aware altitude field, beta-blocker + lung-condition
+  tri-state segmented rows, glucose-unit picker. Persisted to **`ApiKeyStore`** (not Room) — matches
+  where `unitSystem` + calibration already live, so no migration. `UserPhysiologyProfile.fromProfile`
+  extended with the five inputs (defaulted → existing callers unaffected); a private
+  `ApiKeyStore?.physiologyProfile(age, sex)` extension wires the three build sites (Vitals/widget
+  `buildState`, `VitalDetailViewModel` init + refresh). Save republishes the widget snapshot.
+  Files: `ApiKeyStore.kt`, `service/VitalsZoneModel.kt`, `ui/viewmodels/ViewModels.kt`,
+  `ui/screens/SettingsSubScreens.kt`, `ui/screens/SettingsScreen.kt`, `ui/PulseLoopApp.kt`.
+- **#43 §2 + §3 — DONE** (`09e9122`). §3 dashboard glucose card was already unit-aware; #35's glucose-unit
+  wiring makes it live. Detail chart: `VitalDetailViewModel.convert()` now applies the mg/dL→mmol/L
+  unit (was offset-only); new `displayThresholds()` in Screens.kt converts the chart's zone
+  bands + y-axis for **temp (°F) and glucose (mmol/L)** so they match the plotted line (was the §2
+  bug: °F points on a °C axis); `zoneRangeText`/`formatStat` extended to glucose units. Shared
+  `GlucoseUnit.fromMgdl()` added. Tests: `VitalsZoneModelTest` (fromProfile passthrough + defaults,
+  glucose conversion).
+
+**⚠️ Triage correction — #61 is not a small item.** Pulling the diff for the "Activity UI
+sync-alerts bugfix" row revealed the PR (`39b611f`) is ~1188 insertions across 34 files bundling
+several unrelated features: a new **BatteryAlertMonitor** (+172 + 3 test files), a **battery-drainage
+history + graph**, a **sleep-page coach-card reposition**, coach-notification changes, and assorted
+bugfixes — the activity sync-alert fix is one slice. The ledger's "S / activity sync-alerts bugfix"
+under-describes it badly. **Action:** re-triage #61 into discrete items (battery-alerts,
+battery-graph, sleep-card-move, activity-sync-alerts, misc bugfixes) and prioritize each on its own;
+it should leave Tier 1. Not started pending that decision.
 
 ### 2026-07-16 triage (since `b3697c0` → `4dae095`, 48 commits / 9 first-parent)
 
@@ -184,16 +255,38 @@ Value-first second pass:
 - **#43 partial**: live record pace/distance shipped `4075752`; **§2** temp detail-chart zone/axis
   conversion + **§3** glucose mmol/L end-to-end remain (both narrow; mostly-already-done per triage).
 
-Still open, ranked by value: **#43 §2/§3**, **#65** coach transparency/context, **#83/#84/#85**
-multi-session sleep, **#57** activity-recording redesign, **#77** jring protocol-parity, **#61**
-activity sync-alerts, **#75** onboarding polish. XL ring rebuilds **#82** (YCBT) and **#90**
-(LuckRing) each warrant their own dedicated branch. Blocked: **#79** (no Activity-trends screen yet).
+Still open: **#83/#84/#85** sleep now shipped (`0d7212c`). For the current ranked open queue see
+**[Port priority — open items](#port-priority--open-items-as-of-2026-07-16)** above (the single
+source of truth); this paragraph is retained as the historical end-of-session state.
 
 Note: #64's edit-mode UI was **runtime-verified on an API-35 arm64 emulator** (com.pulseloop.debug):
 Today + Vitals render through the new card-dispatch, and the full flow works — Customize enters edit
 mode, the "–" badge hides a card into the Hidden tray, "+" restores it to its saved position,
 up/down reorder (with correct first/last chevron gating), and Done persists the new order. No crashes.
 Also confirmed live: #42 (single top coach card) and #41 ("Disconnected" pill).
+
+### 2026-07-16 gap found: Physiology settings screen (retro-add to #35)
+
+Reviewing the #74 defer, found the **Physiology settings screen was never ported** — it's a
+distinct gap, not the cosmetic #74 relocation. Origin: iOS commit `78ca593`, a sub-surface of
+the **XL #35 vitals-dashboard redesign** (merged `f0a4aee`, 07-01). Android's #35 port took the
+*engine* — `service/VitalsZoneModel.kt#UserPhysiologyProfile` already carries all five inputs
+(`athleteMode`, `altitudeMeters`, `usesBetaBlockers`, `hasKnownLungCondition`, `preferredGlucoseUnit`)
+and `VitalsThresholdEngine` reads athlete-mode + altitude — but **not the Settings screen that
+feeds them**. Result: the fields are wired but permanently defaulted — every construction site is
+`UserPhysiologyProfile.fromProfile(age, sex)` (ViewModels.kt:597/792/950), which fills only age+sex,
+and `UserProfileEntity` has no columns for the rest. So athlete mode / altitude / beta-blockers /
+lung condition are unreachable, and glucose-unit selection is the still-open **#43 §3**.
+
+Why it hid: the ledger triages at PR granularity, and this screen arrived *inside* an XL PR
+rather than as its own row — "#35 dashboard = done" was true, but nothing tracked its Physiology
+sub-screen. #74's note ("Android has no Physiology route") then mistook the missing route for an
+intentional structural difference and deferred, instead of flagging the route itself as unported.
+**To port (S–M):** add the physiology columns to `UserProfileEntity` (+ migration), extend
+`fromProfile` to read them, and build a `PhysiologyScreen` under Settings → General. Folds in
+#43 §3 (glucose unit). Added as its own queue row above. **✅ Resolved 2026-07-17** — the screen
+persists to `ApiKeyStore` rather than Room `UserProfileEntity` (matching Android's existing
+units/calibration convention), so no migration was needed; see the 2026-07-17 port session.
 
 ### 2026-07-14 triage (since `e00c24b` → `b3697c0`, 29 commits / 9 first-parent)
 
