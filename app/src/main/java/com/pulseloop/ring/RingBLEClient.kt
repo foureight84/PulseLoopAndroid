@@ -1328,7 +1328,7 @@ class RingBLEClient(private val context: Context) {
                 // idle long enough to terminate an otherwise healthy link with HCI 0x13. Issue a
                 // known-safe device-info request synchronously; the full startup follows normally.
                 recordDiagnostic("YCBT immediate wakeup")
-                activeSyncEngine?.requestBattery()
+                (activeSyncEngine as? YCBTSyncEngine)?.requestBattery()
             } else {
                 readBattery()
             }
