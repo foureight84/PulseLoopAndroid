@@ -56,7 +56,9 @@ fun TodayScreen(
     val context = LocalContext.current
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
-    val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
+    val keyStore = remember { ApiKeyStore(context) }
+    val units = keyStore.resolvedUnitSystem
+    val coachEnabled = keyStore.coachEnabled
     val pullRefreshState = rememberPullRefreshState(
         refreshing = isRefreshing,
         onRefresh = {
@@ -100,7 +102,27 @@ fun TodayScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item { HeroInsightCard(hero.title, hero.summary, hero.chips) }
+            // Top insight card. When the coach is on it owns this slot (tap → chat);
+            // otherwise the deterministic hero fills it. Only ever one card here, so the coach
+            // summary and the hero can't render the same content twice on one screen (iOS #42).
+            item {
+                val summary = state.coachSummary
+                when {
+                    coachEnabled && summary != null -> CoachMessageCard(
+                        headline = summary.title,
+                        body = summary.body,
+                        chips = parseChips(summary.chipsJSON),
+                        onTap = { navController?.navigate("coach") },
+                    )
+                    coachEnabled -> CoachMessageCard(
+                        headline = "Want a recap?",
+                        body = "Want a summary from the latest ring context? Tap to open the coach.",
+                        chips = emptyList(),
+                        onTap = { navController?.navigate("coach") },
+                    )
+                    else -> HeroInsightCard(hero.title, hero.summary, hero.chips)
+                }
+            }
 
             items(tiles.chunked(2).size) { rowIndex ->
                 val row = tiles.chunked(2)[rowIndex]
@@ -110,17 +132,7 @@ fun TodayScreen(
                 }
             }
 
-            item {
-                val summary = state.coachSummary
-                CoachMessageCard(
-                    headline = summary?.title ?: "Want a recap?",
-                    body = summary?.body
-                        ?: "Want a summary from the latest ring context? Tap to open the coach.",
-                    chips = summary?.let { parseChips(it.chipsJSON) } ?: emptyList(),
-                    onTap = { navController?.navigate("coach") },
-                )
-                Spacer(Modifier.height(64.dp))
-            }
+            item { Spacer(Modifier.height(64.dp)) }
         }
 
         PullRefreshIndicator(
