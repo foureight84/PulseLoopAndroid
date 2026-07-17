@@ -58,7 +58,13 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1) + `1075586` (stages 2–3). Android uses a discrete edit-mode (Customize button → hide badge + move up/down + Hidden tray) instead of free-form drag |
 | ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
 | ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
-| ☐ | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | Activity UI sync-alerts bugfix | **ADAPT** | S | |
+| — | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | ~~Activity UI sync-alerts bugfix~~ **RE-TRIAGED** into #61a–f below (was mis-billed "S"; PR is ~1188 ins/34 files) | — | — | see sub-rows |
+| ☐ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | Android has none |
+| ☐ | #61b | 07-08 | **Battery history + drainage graph** (persist battery samples + chart in Wearable settings) | **PORT** | M | Android has none; needs a Room table |
+| ☐ | #61c | 07-08 | **Coach notification improvements** (`CoachNotificationService` +73, `NotificationsSettingsView` +39, prompt/orchestrator/settings) | **ADAPT** | M | diff vs Android `CoachNotifications` — verify what changed |
+| ☐ | #61d | 07-08 | **Workout-history day grouping** (TODAY/YESTERDAY/date headers in the history sheet) + activity card style polish | **PORT** | S | Android history not day-grouped yet |
+| ☐ | #61e | 07-08 | **Sleep-page coach card → bottom** | **ADAPT** | S | Android `SleepScreen` already has the coach card — position check, likely trivial/already-have |
+| ☐ | #61f | 07-08 | **Sync-event plumbing + misc bugfixes** (`PulseEventBus`/`RingEventBridge`/`RingSyncCoordinator`/`ActivityMigrations` + `SleepInsights`/`TodayTiles`/`ActivityRings`/`RingProtocol` fixes) | **ADAPT** | M | the actual "sync alerts" + a grab-bag "fixed multiple bugs" commit — assess each vs Android (Room Flows may already cover some) |
 | ☑ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | `be74a19` |
 | ☑ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | `3e14fef` |
 | ☐ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | deferred — cosmetic; doesn't map (Android has no Physiology route; row already Device-gated, empty section already hidden) |
@@ -85,28 +91,33 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
    persistence + `fromProfile` wiring + widget refresh. Glucose-unit picker also lands **#43 §3**.
 2. ~~**#43 §2 temp detail-chart unit conversion**~~ ✅ **DONE** (2026-07-17, uncommitted). Plus §3
    glucose end-to-end on both dashboard card and detail chart.
-3. **#61 "Activity UI sync-alerts bugfix"** (ADAPT) — ⚠️ **MIS-SCOPED in triage.** The PR
-   (`39b611f`, ~1188 insertions / 34 files) is a grab-bag: a whole **BatteryAlertMonitor** feature +
-   tests, a **battery-drainage history/graph**, **sleep-page coach-card reposition**, coach
-   notification changes, *and* the activity sync-alert bug — NOT a small single fix. Needs re-triage
-   into separate items before porting; do not treat as "S". See 2026-07-17 note.
-4. **#75 Onboarding copy + finale** (PARTIAL) — copy polish + celebratory finale; fit-to-viewport
+3. **#75 Onboarding copy + finale** (PARTIAL) — copy polish + celebratory finale; fit-to-viewport
    half is N/A (Compose sizes responsively). Real portable core is moderate (~3 iOS files, ~500 ins,
    much of it the N/A layout mechanics).
+4. **#61d Workout-history day grouping** (PORT, S) + **#61e sleep coach-card position** (ADAPT, S) —
+   the two small slices salvaged from the re-triaged #61.
 
-**Tier 2 — medium feature:**
+**~~#61~~ RE-TRIAGED** (was a mis-scoped "S"): split into #61a–f (see port-queue rows). Battery
+alerts (#61a) + battery graph (#61b) + coach-notif (#61c) + sync-event/bugfix bundle (#61f) are each
+their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
+
+**Tier 2 — medium features:**
 
 5. **#65 Coach transparency/context rehaul** (M, ADAPT).
+6. **#61a Battery low/critical alerts** (M, PORT) — self-contained; pure latched engine ports cleanly.
+7. **#61b Battery history + drainage graph** (M, PORT) — needs a Room table + a Wearable-settings chart.
+8. **#61c Coach notification improvements** (M, ADAPT) — diff vs Android `CoachNotifications` first.
+9. **#61f Sync-event plumbing + misc bugfixes** (M, ADAPT) — assess each bug vs Android; some may be already-have/N/A.
 
 **Tier 3 — large, focused work (own commits):**
 
-6. **#57 Activity-recording redesign** + post-workout vitals backfill + realtime-HR keepalive rework (L, ADAPT).
-7. **#77 jring protocol-parity** (RingBLEClient + JringSyncEngine + JringClock) (L, ADAPT).
+10. **#57 Activity-recording redesign** + post-workout vitals backfill + realtime-HR keepalive rework (L, ADAPT).
+11. **#77 jring protocol-parity** (RingBLEClient + JringSyncEngine + JringClock) (L, ADAPT).
 
 **Tier 4 — XL, dedicated branch each:**
 
-8. **#82 YCBT (Yucheng) protocol rebuild** — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT).
-9. **#90 LuckRing/TK18** — Coolwear "K6" / `0xFF64` protocol (XL, PORT).
+12. **#82 YCBT (Yucheng) protocol rebuild** — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT).
+13. **#90 LuckRing/TK18** — Coolwear "K6" / `0xFF64` protocol (XL, PORT).
 
 **Blocked / deferred:**
 
@@ -140,9 +151,12 @@ sync-alerts bugfix" row revealed the PR (`39b611f`) is ~1188 insertions across 3
 several unrelated features: a new **BatteryAlertMonitor** (+172 + 3 test files), a **battery-drainage
 history + graph**, a **sleep-page coach-card reposition**, coach-notification changes, and assorted
 bugfixes — the activity sync-alert fix is one slice. The ledger's "S / activity sync-alerts bugfix"
-under-describes it badly. **Action:** re-triage #61 into discrete items (battery-alerts,
-battery-graph, sleep-card-move, activity-sync-alerts, misc bugfixes) and prioritize each on its own;
-it should leave Tier 1. Not started pending that decision.
+under-describes it badly. **Re-triaged into #61a–f** (see port-queue rows): #61a battery alerts (M),
+#61b battery history + graph (M), #61c coach-notification improvements (M), #61d workout-history day
+grouping (S), #61e sleep coach-card position (S), #61f sync-event plumbing + misc bugfixes (M).
+Android has **no battery alerts/history at all** (#61a/#61b are net-new), its workout history isn't
+day-grouped yet (#61d), and its `SleepScreen` already has a coach card (#61e is a position check).
+Nothing from #61 ported yet — the M-sized pieces moved to Tier 2, the two S slices stay Tier 1.
 
 ### 2026-07-16 triage (since `b3697c0` → `4dae095`, 48 commits / 9 first-parent)
 
