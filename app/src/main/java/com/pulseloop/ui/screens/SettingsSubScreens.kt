@@ -544,6 +544,34 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
         }
     }
 
+    // Ring battery alerts (iOS #61a) — independent of the coach toggle, its own POST_NOTIFICATIONS
+    // gate. Default ON; delivery no-ops until the OS permission is granted.
+    var batteryAlertsEnabled by remember { mutableStateOf(keyStore.batteryAlertsEnabled) }
+    var batteryPermDenied by remember { mutableStateOf(false) }
+
+    val batteryPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        batteryAlertsEnabled = granted
+        keyStore.batteryAlertsEnabled = granted
+        batteryPermDenied = !granted
+    }
+
+    fun setBatteryAlerts(enabled: Boolean) {
+        if (!enabled) {
+            batteryAlertsEnabled = false
+            keyStore.batteryAlertsEnabled = false
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            batteryPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            batteryAlertsEnabled = true
+            keyStore.batteryAlertsEnabled = true
+            batteryPermDenied = false
+        }
+    }
+
     SettingsSubScreen(title = "Coach Check-Ins", onBack = onBack) {
         if (!coachEnabled) {
             Card(Modifier.fillMaxWidth()) {
@@ -639,6 +667,35 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
                     ) {
                         Text("Send Test Check-in Now")
                     }
+                }
+            }
+        }
+
+        // Ring battery alerts — independent of the coach toggle (iOS #61a puts this in its own
+        // NotificationsSettingsView section): a local notification at <20% / <10%, once per day.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Ring battery alerts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Get notified when your ring drops below 20% and 10%, so tracking doesn't stop mid-day.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Low Battery Notifications")
+                    Switch(
+                        checked = batteryAlertsEnabled,
+                        onCheckedChange = { setBatteryAlerts(it) },
+                    )
+                }
+                if (batteryPermDenied) {
+                    Text(
+                        "Notifications are disabled for PulseLoop in Android Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PulseColors.danger,
+                    )
                 }
             }
         }

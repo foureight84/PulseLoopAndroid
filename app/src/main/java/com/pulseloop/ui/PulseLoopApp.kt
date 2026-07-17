@@ -73,6 +73,7 @@ fun PulseLoopApp() {
                 com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
             }
         }
+        val batteryAlerts = remember { com.pulseloop.service.BatteryAlertMonitor(context) }
         val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
 
@@ -143,6 +144,7 @@ fun PulseLoopApp() {
 
             // Start services
             persistence.start()
+            batteryAlerts.start()
             coordinator.start()
             summaryCoordinator.start()
 

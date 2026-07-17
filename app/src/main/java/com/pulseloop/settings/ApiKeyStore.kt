@@ -50,6 +50,12 @@ class ApiKeyStore(context: Context) {
         get() = prefs.getBoolean(KEY_NOTIFICATIONS, false)
         set(value) { prefs.edit().putBoolean(KEY_NOTIFICATIONS, value).apply() }
 
+    /** Fire a local notification when the ring battery crosses 20% / 10% (iOS #61a). Default ON —
+     *  matches iOS, where an absent key means enabled; independent of the coach master toggle. */
+    var batteryAlertsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_BATTERY_ALERTS, true)
+        set(value) { prefs.edit().putBoolean(KEY_BATTERY_ALERTS, value).apply() }
+
     var morningHour: Int
         get() = prefs.getInt(KEY_MORNING_HOUR, 8)
         set(value) { prefs.edit().putInt(KEY_MORNING_HOUR, value).apply() }
@@ -173,6 +179,7 @@ class ApiKeyStore(context: Context) {
         private const val KEY_WRITE_TOOLS = "write_tools_enabled"
         private const val KEY_LIVE_MEASUREMENTS = "live_measurements_enabled"
         private const val KEY_NOTIFICATIONS = "notifications_enabled"
+        private const val KEY_BATTERY_ALERTS = "battery_alerts_enabled"
         private const val KEY_MORNING_HOUR = "morning_hour"
         private const val KEY_EVENING_HOUR = "evening_hour"
         private const val KEY_ONBOARDING = "onboarding_completed"
