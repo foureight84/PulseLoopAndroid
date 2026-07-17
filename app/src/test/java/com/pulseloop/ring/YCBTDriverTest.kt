@@ -5,6 +5,12 @@ import org.junit.Test
 
 class YCBTDriverTest {
 
+    @Test
+    fun `command characteristic is both writable and notifiable`() {
+        val driver = YCBTDriver(RingCommandWriter { })
+        assertTrue(driver.notifyUUIDs.contains(driver.writeUUID))
+    }
+
     private class FakeWriter : RingCommandWriter {
         val sent = mutableListOf<ByteArray>()
         override fun enqueue(command: ByteArray) { sent.add(command.copyOf()) }

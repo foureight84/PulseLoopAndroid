@@ -1019,11 +1019,11 @@ class RingBLEClient(private val context: Context) {
                         }
                     } else {
                         updateState { copy(lastError = "GATT connect failed: $status") }
-                        handleDisconnect(gatt)
+                        handleDisconnect(gatt, status)
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    handleDisconnect(gatt)
+                    handleDisconnect(gatt, status)
                 }
             }
         }
@@ -1070,18 +1070,19 @@ class RingBLEClient(private val context: Context) {
 
                 for (ch in service.characteristics) {
                     val uuid = ch.uuid.toString()
-                    when {
-                        uuid == driver.writeUUID -> writeChar = ch
-                        uuid == driver.commandUUID -> commandChar = ch
-                        driver.notifyUUIDs.any { it == uuid } -> {
-                            notifyChars[ch.uuid] = ch
-                            gatt.setCharacteristicNotification(ch, true)
-                            ch.getDescriptor(CCCD_UUID)?.let { desc ->
-                                enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
-                            }
+                    // A characteristic may be both writable and notifiable. YCBT's BE94-0001
+                    // command channel is exactly that; the old mutually-exclusive `when` stored
+                    // it as writeChar but silently skipped its CCCD, losing every command reply.
+                    if (uuid == driver.writeUUID) writeChar = ch
+                    if (uuid == driver.commandUUID) commandChar = ch
+                    if (driver.notifyUUIDs.any { it == uuid }) {
+                        notifyChars[ch.uuid] = ch
+                        gatt.setCharacteristicNotification(ch, true)
+                        ch.getDescriptor(CCCD_UUID)?.let { desc ->
+                            enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
                         }
-                        uuid == driver.batteryCharUUID -> batteryChar = ch
                     }
+                    if (uuid == driver.batteryCharUUID) batteryChar = ch
                 }
             }
 
@@ -1237,6 +1238,11 @@ class RingBLEClient(private val context: Context) {
             // Retire the in-flight op before any early return, so the queue drains.
             completeOp { it is GattOp.DescriptorWrite && it.descriptor === descriptor }
 
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                updateState { copy(lastError = "Could not enable ring notifications (GATT $status)") }
+                return
+            }
+
             // Notification enabled — fire onConnected once at least one notify is live
             val driver = activeDriver ?: return
             val ch = descriptor.characteristic
@@ -1319,7 +1325,7 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
-    private fun handleDisconnect(gatt: BluetoothGatt) {
+    private fun handleDisconnect(gatt: BluetoothGatt, status: Int = BluetoothGatt.GATT_SUCCESS) {
         // Ignore late callbacks from a GATT we already superseded during a reconnect
         // (we close the old handle in beginConnect). Acting on them would clobber the
         // CONNECTING state of the fresh attempt with a spurious DISCONNECTED.
@@ -1350,7 +1356,13 @@ class RingBLEClient(private val context: Context) {
             PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
         )
 
-        updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
+        val requestedByUser = prefs.getBoolean(USER_DISCONNECTED_KEY, false)
+        updateState {
+            copy(
+                connectionState = RingConnectionState.DISCONNECTED,
+                lastError = if (requestedByUser) lastError else "Ring disconnected (GATT $status)",
+            )
+        }
     }
 
     fun destroy() {
