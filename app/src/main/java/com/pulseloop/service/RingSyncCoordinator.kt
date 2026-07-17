@@ -78,6 +78,9 @@ class RingSyncCoordinator(
 
     val connectionState: RingConnectionState get() = client.state.value.connectionState
     val isConnected: Boolean get() = connectionState == RingConnectionState.CONNECTED
+    /** Selects the single-packet Jring measurement flow. YCBT advertises manual BP/glucose
+     * capabilities but measures each vital with separate AppStartMeasurement modes. */
+    val supportsCombinedMeasurement: Boolean get() = engine?.supportsCombinedMeasurement == true
 
     private val hrMeasureSeconds = HR_MEASURE_SECONDS.toLong()
     private val hrSettleSeconds = HR_SETTLE_SECONDS

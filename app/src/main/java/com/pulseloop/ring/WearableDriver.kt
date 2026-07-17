@@ -96,6 +96,10 @@ data class UserProfileValues(
  * Per-device orchestration of command flows.
  */
 interface RingSyncEngine {
+    /** True only for protocols with one native command that returns a combined vitals packet.
+     * Capability bits such as manual BP/glucose do not imply this transport feature. */
+    val supportsCombinedMeasurement: Boolean get() = false
+
     fun runStartup()
     fun handle(event: RingDecodedEvent)
 

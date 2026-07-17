@@ -71,6 +71,7 @@ class JringDriver(private val writer: RingCommandWriter) : WearableDriver {
  * Fire-and-forget sync engine for jring devices.
  */
 class JringSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
+    override val supportsCombinedMeasurement: Boolean = true
     private val encoder = RingEncoder
 
     override fun runStartup() {
