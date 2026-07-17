@@ -1322,7 +1322,16 @@ class RingBLEClient(private val context: Context) {
                     )
                 )
             }
-            readBattery()
+            if (activeCoordinator?.deviceType == RingDeviceType.YCBT) {
+                // R10M has a very short post-subscription watchdog. The normal startup callback
+                // loads Room/DataStore settings before its first write, which can leave the ring
+                // idle long enough to terminate an otherwise healthy link with HCI 0x13. Issue a
+                // known-safe device-info request synchronously; the full startup follows normally.
+                recordDiagnostic("YCBT immediate wakeup")
+                activeSyncEngine?.requestBattery()
+            } else {
+                readBattery()
+            }
 
             scope.launch { onConnected?.invoke() }
         }
