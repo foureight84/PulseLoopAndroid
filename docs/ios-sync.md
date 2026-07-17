@@ -157,8 +157,11 @@ notification on its own "Ring Battery" channel (id 2002, shared across severitie
 pending low), POST_NOTIFICATIONS-guarded (no-ops silently if ungranted — a background monitor can't
 prompt). Started from `PulseLoopApp` next to `persistence.start()`; channel created in `MainActivity`.
 Settings toggle added to `CheckInsSettingsScreen` as an independent card. `:app:assembleDebug` +
-`:app:testDebugUnitTest` green. **Runtime notification delivery not yet verified** (needs a live
-`BatteryLevel` event / booted emulator). Files: `service/BatteryAlertEngine.kt`,
+`:app:testDebugUnitTest` green. **Runtime-verified on API-35 emulator:** app starts clean with the
+monitor wired (no crash/exception), the `ring_battery` notification channel is registered, and the
+"Ring battery alerts" card renders in Settings → Coach Check-Ins with its toggle **ON by default**
+(independent of the Daily-Check-in toggle, which was Off). Only unverified surface is the actual
+notification *delivery*, which needs a live ring `BatteryLevel` event. Files: `service/BatteryAlertEngine.kt`,
 `service/BatteryAlertMonitor.kt`, `notifications/BatteryNotifications.kt`, `settings/ApiKeyStore.kt`,
 `MainActivity.kt`, `ui/PulseLoopApp.kt`, `ui/screens/SettingsSubScreens.kt`,
 `test/.../service/BatteryAlertEngineTest.kt`.
