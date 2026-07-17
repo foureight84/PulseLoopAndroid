@@ -62,13 +62,17 @@ class RingSyncCoordinator(
         private set
     private var hrNoReadingReported = false
     private var spo2NoReadingReported = false
-    private var measurementReceivedReading = false
+    /** The samples of the HR measurement in flight, and the rule for whether they settled — see
+     *  [HRSampleWindow], which owns the warm-up echo and the consistency gate (iOS #66). */
+    private val hrWindow = HRSampleWindow()
+    /** True once the current measurement has produced a real (post-warm-up) bpm; keeps a stale
+     *  [latestHRValue] from passing for a fresh reading. */
+    val measurementReceivedReading: Boolean get() = hrWindow.receivedReading
 
     val connectionState: RingConnectionState get() = client.state.value.connectionState
     val isConnected: Boolean get() = connectionState == RingConnectionState.CONNECTED
 
     private val hrMeasureSeconds = HR_MEASURE_SECONDS.toLong()
-    private val hrSettleSeconds = HR_SETTLE_SECONDS
     private val spo2MeasureSeconds = SPO2_MEASURE_SECONDS.toLong()
     private val combinedMeasureSeconds = COMBINED_MEASURE_SECONDS.toLong()
 
@@ -340,20 +344,30 @@ class RingSyncCoordinator(
         if (hrState == MeasureState.MEASURING) return null
         if (!isConnected) { hrState = MeasureState.FAILED; return null }
         hrState = MeasureState.MEASURING
+        // Do NOT clear latestHRValue — it's the live value the workout UI shows, so a new
+        // measurement keeps the last reading on screen until a fresh one replaces it.
         hrNoReadingReported = false
-        measurementReceivedReading = false
+        hrWindow.begin()
 
         engine?.measureHeartRateSpot()
         var result: Int? = null
         try {
-            pollForValue(hrMeasureSeconds, { if (measurementReceivedReading) latestHRValue else null }, { hrNoReadingReported })
-            result = if (measurementReceivedReading) latestHRValue else null
-            if (result != null) {
-                repeat(hrSettleSeconds * 2) {   // 0.5s granularity
-                    delay(500)
-                    latestHRValue?.let { result = it }
-                }
+            // Sample the full window in 0.5s steps: handle() drops everything inside the 5s warm-up
+            // (the ring's cached-echo bpm) and collects the rest. We break out early only where
+            // continuing is pointless — and each of those is an abort, not a short-but-usable reading,
+            // so none of them report a value (iOS #66).
+            var aborted = false
+            val steps = (hrMeasureSeconds * 2).toInt()   // 0.5s granularity
+            for (i in 0 until steps) {
+                // The ring reported "worn incorrectly", or refused the measurement outright.
+                if (hrNoReadingReported) { aborted = true; break }
+                // Ring removed / BLE dropped mid-measure → fail rather than settle a truncated window.
+                if (!isConnected) { aborted = true; break }
+                // Contact lost after readings began (ring slipped / hand moved).
+                if (hrWindow.contactLost()) { aborted = true; break }
+                delay(500)
             }
+            result = if (aborted) null else hrWindow.stableValue
         } finally {
             // Always switch the optical sensor off — even if the caller's coroutine is
             // cancelled (e.g. the user navigates away mid-measurement) — or the ring keeps pulsing.
@@ -421,7 +435,7 @@ class RingSyncCoordinator(
         when (event) {
             is PulseEvent.HeartRateSample -> {
                 latestHRValue = event.bpm
-                if (hrState == MeasureState.MEASURING) measurementReceivedReading = true
+                if (hrState == MeasureState.MEASURING) hrWindow.collect(event.bpm)
             }
             is PulseEvent.HeartRateComplete -> {
                 if (hrState == MeasureState.MEASURING && !measurementReceivedReading) {
