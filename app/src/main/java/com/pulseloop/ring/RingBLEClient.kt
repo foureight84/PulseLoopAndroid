@@ -1189,9 +1189,7 @@ class RingBLEClient(private val context: Context) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
             resetOpFailures()  // a real completion — the stack is responsive again
-            if (activeCoordinator?.deviceType != RingDeviceType.YCBT || status != BluetoothGatt.GATT_SUCCESS) {
-                completeOp { it is GattOp.CommandWrite }
-            }
+            completeOp { it is GattOp.CommandWrite }
         }
 
         override fun onCharacteristicChanged(
@@ -1263,13 +1261,7 @@ class RingBLEClient(private val context: Context) {
                 }
                 activeSyncEngine?.handle(decoded)
             }
-            // The Yucheng SDK serializes commands by *protocol reply*, not by Android's local
-            // onCharacteristicWrite callback. Advancing on the latter blasts the whole startup
-            // sequence before the ring has processed the first frame and the R10M drops the link.
-            // A decoded BE94 frame is the remote acknowledgement that releases the next write.
-            if (activeCoordinator?.deviceType == RingDeviceType.YCBT && decodedEvents.isNotEmpty()) {
-                completeOp { it is GattOp.CommandWrite }
-            }
+
         }
 
         override fun onDescriptorWrite(
