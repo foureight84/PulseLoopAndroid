@@ -1189,7 +1189,9 @@ class RingBLEClient(private val context: Context) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
             resetOpFailures()  // a real completion — the stack is responsive again
-            completeOp { it is GattOp.CommandWrite }
+            if (activeCoordinator?.deviceType != RingDeviceType.YCBT || status != BluetoothGatt.GATT_SUCCESS) {
+                completeOp { it is GattOp.CommandWrite }
+            }
         }
 
         override fun onCharacteristicChanged(
@@ -1226,7 +1228,8 @@ class RingBLEClient(private val context: Context) {
             // (e.g. Colmi pref-read replies seeding the measurement config).
             if (!forgetPending) activeSyncEngine?.handleRawNotify(value)
 
-            for (decoded in driver.ingest(value, characteristic.uuid.toString())) {
+            val decodedEvents = driver.ingest(value, characteristic.uuid.toString())
+            for (decoded in decodedEvents) {
                 // A forget is in flight: don't persist any more data or re-publish a
                 // "connected" device state (which would re-create the row we're clearing).
                 // Just watch for the ring's unbind ack (6 = UNBOND_ACK, 3 = ACK_CANCEL).
@@ -1259,6 +1262,13 @@ class RingBLEClient(private val context: Context) {
                     PulseEventBus.publishBlocking(event)
                 }
                 activeSyncEngine?.handle(decoded)
+            }
+            // The Yucheng SDK serializes commands by *protocol reply*, not by Android's local
+            // onCharacteristicWrite callback. Advancing on the latter blasts the whole startup
+            // sequence before the ring has processed the first frame and the R10M drops the link.
+            // A decoded BE94 frame is the remote acknowledgement that releases the next write.
+            if (activeCoordinator?.deviceType == RingDeviceType.YCBT && decodedEvents.isNotEmpty()) {
+                completeOp { it is GattOp.CommandWrite }
             }
         }
 
@@ -1326,9 +1336,10 @@ class RingBLEClient(private val context: Context) {
                 // R10M has a very short post-subscription watchdog. The normal startup callback
                 // loads Room/DataStore settings before its first write, which can leave the ring
                 // idle long enough to terminate an otherwise healthy link with HCI 0x13. Issue a
-                // known-safe device-info request synchronously; the full startup follows normally.
-                recordDiagnostic("YCBT immediate wakeup")
-                (activeSyncEngine as? YCBTSyncEngine)?.requestBattery()
+                // mandatory time-sync command synchronously; the official Yucheng Android SDK
+                // does the same immediately after notifications become active.
+                recordDiagnostic("YCBT immediate time sync")
+                (activeSyncEngine as? YCBTSyncEngine)?.resyncTime()
             } else {
                 readBattery()
             }
