@@ -59,7 +59,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
 | ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
 | — | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | ~~Activity UI sync-alerts bugfix~~ **RE-TRIAGED** into #61a–f below (was mis-billed "S"; PR is ~1188 ins/34 files) | — | — | see sub-rows |
-| ☐ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | Android has none |
+| ☑ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | `e5b68f6` — `BatteryAlertEngine`+`BatteryAlertMonitor`+`BatteryNotifications` (own channel) + `ApiKeyStore.batteryAlertsEnabled` (default ON) + Check-Ins toggle; 8 iOS oracle tests ported green |
 | ☐ | #61b | 07-08 | **Battery history + drainage graph** (persist battery samples + chart in Wearable settings) | **PORT** | M | Android has none; needs a Room table |
 | ☐ | #61c | 07-08 | **Coach notification improvements** (`CoachNotificationService` +73, `NotificationsSettingsView` +39, prompt/orchestrator/settings) | **ADAPT** | M | diff vs Android `CoachNotifications` — verify what changed |
 | ☑ | #61d | 07-08 | **Workout-history day grouping** (TODAY/YESTERDAY/date headers in the history sheet) | **PORT** | S | `9c7fecb` — grouped `WorkoutHistoryDialog` by `LocalDate`. (Card style polish is iOS-specific `activityValueStyle`; N/A) |
@@ -104,11 +104,26 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 **Tier 2 — medium features:**
 
-5. **#65 Coach transparency/context rehaul** (M, ADAPT).
-6. **#61a Battery low/critical alerts** (M, PORT) — self-contained; pure latched engine ports cleanly.
+5. **#65 Coach transparency/context rehaul** (M, ADAPT). **⚠️ recon 2026-07-17: really L→XL** — Android
+   coach chat is in-memory (iOS persists to SwiftData); WeatherKit has no Android SDK. Bigger than "M".
+6. ~~**#61a Battery low/critical alerts**~~ ✅ **DONE** `e5b68f6`. `BatteryAlertEngine`
+   (pure, 8 iOS oracle tests ported green) + `BatteryAlertMonitor` (bus collector, per-day latch in
+   SharedPreferences) + `BatteryNotifications` (own "Ring Battery" channel, one-shot, POST_NOTIFICATIONS
+   guarded) + `ApiKeyStore.batteryAlertsEnabled` (default ON, coach-independent) + a Check-Ins toggle.
 7. **#61b Battery history + drainage graph** (M, PORT) — needs a Room table + a Wearable-settings chart.
-8. **#61c Coach notification improvements** (M, ADAPT) — diff vs Android `CoachNotifications` first.
-9. **#61f Sync-event plumbing + misc bugfixes** (M, ADAPT) — assess each bug vs Android; some may be already-have/N/A.
+8. **#61c Coach notification improvements** (M, ADAPT). **Recon 2026-07-17:** real gap — iOS actively
+   syncs (or awaits an in-flight sync) before notifying + fixes the freshness gate to use a new
+   `lastFullSyncAt` (stamped on `SyncProgress("done")`) instead of `lastSyncAt` (re-stamped on bare
+   CONNECT). **Android has the same latent `lastSyncAt` bug** in `NotificationContextBuilder`'s stale
+   warning. ⚠️ Driving a fresh connect-and-sync from a background WorkManager worker is unreliable on
+   Android (BLE background limits) — the "await in-flight" + "send last-known" paths port cleanly; the
+   "connect from background" path likely degrades to last-known+warning. Folds in the worthwhile #61f bits.
+9. **#61f Sync-event plumbing + misc bugfixes** — **Recon 2026-07-17: mostly ALREADY-HAVE (net S).**
+   Android's Room-Flow + bucket-sum recompute + in-place self-heal already cover 7 of 10 items (done
+   signal, inflated/garbage migrations, formatter caching, tile autosize, future-ts). Only worth-porting
+   pieces are **`lastFullSyncAt`** + an **`awaitSyncCompletion`** primitive on `RingSyncCoordinator` —
+   **both fold into #61c**, so #61f has no standalone work. (Optional nits: source-side activity ceilings
+   for indep. distance/calorie guards; Compose value autosize — not active bugs.)
 
 **Tier 3 — large, focused work (own commits):**
 
@@ -124,6 +139,29 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
 - **#74 Measurement-Frequency relocation** — deferred, but **revisit after #35**: it was deferred for "no Physiology route," and #35 creates exactly that route, giving the "move Measurement Frequency under Physiology" idea a home.
+
+### 2026-07-17 Tier 2 session — recon + #61a (branch `iOS_sync_2026-07-16`)
+
+Recon'd all five Tier 2 items against the real iOS diffs, then ported the cleanest (#61a). Re-scoped
+verdicts recorded in the tier list above: **#61f is mostly already-have** (Room Flows cover it; only
+`lastFullSyncAt`/`awaitSyncCompletion` survive, and both fold into #61c); **#61c** carries a
+background-BLE-sync risk; **#65 is L→XL**, not M (in-memory chat vs SwiftData; no WeatherKit on Android).
+
+**#61a Battery low/critical alerts — DONE `e5b68f6`.** Pure `BatteryAlertEngine` (thresholds 20/10,
+re-arm 25/15, most-severe latch, per-day `yyyy-MM-dd` reset, `1..100` guard) ported 1:1 from the Swift
+engine; all **8 iOS oracle tests** ported to `BatteryAlertEngineTest` and green. `BatteryAlertMonitor`
+collects `PulseEvent.BatteryLevel` off `PulseEventBus`, threads per-day latch state through
+SharedPreferences (`pulseloop.batteryalerts`), gated on `ApiKeyStore.batteryAlertsEnabled` (default ON,
+coach-independent — matches iOS "absent = enabled"). `BatteryNotifications` is a one-shot local
+notification on its own "Ring Battery" channel (id 2002, shared across severities so critical replaces a
+pending low), POST_NOTIFICATIONS-guarded (no-ops silently if ungranted — a background monitor can't
+prompt). Started from `PulseLoopApp` next to `persistence.start()`; channel created in `MainActivity`.
+Settings toggle added to `CheckInsSettingsScreen` as an independent card. `:app:assembleDebug` +
+`:app:testDebugUnitTest` green. **Runtime notification delivery not yet verified** (needs a live
+`BatteryLevel` event / booted emulator). Files: `service/BatteryAlertEngine.kt`,
+`service/BatteryAlertMonitor.kt`, `notifications/BatteryNotifications.kt`, `settings/ApiKeyStore.kt`,
+`MainActivity.kt`, `ui/PulseLoopApp.kt`, `ui/screens/SettingsSubScreens.kt`,
+`test/.../service/BatteryAlertEngineTest.kt`.
 
 ### 2026-07-17 port session (branch `iOS_sync_2026-07-16`)
 
