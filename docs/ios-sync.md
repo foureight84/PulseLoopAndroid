@@ -39,7 +39,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#17](https://github.com/saksham2001/PulseLoopiOS/pull/17) `26a6075` | 06-24 | Colmi HR enable + activity sample idempotency | **PORT** | M | `1a4f007` |
 | ☑ | [#15](https://github.com/saksham2001/PulseLoopiOS/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
 | ☑ | [#11](https://github.com/saksham2001/PulseLoopiOS/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | `4aad39a` |
-| ☐ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
+| ◐ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | `4075752` (live record pace/distance). Remaining: §2 temp detail-chart zone/axis conversion, §3 glucose mmol/L end-to-end |
 | ☑ | [#41](https://github.com/saksham2001/PulseLoopiOS/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | already-have (`AppChrome.ConnectionStatusPill`) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
 | ☑ | [#19](https://github.com/saksham2001/PulseLoopiOS/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | `f4bcd47` |
@@ -55,7 +55,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** | L | |
 | ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
 | ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
-| ☐ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | |
+| ◐ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1: prefs store + pure logic + tests). Remaining: stage 2 wire into Today/Vitals, stage 3 edit-mode UI |
 | ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
 | ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
 | ☐ | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | Activity UI sync-alerts bugfix | **ADAPT** | S | |
@@ -174,12 +174,21 @@ suite green (402 tests, 0 failures).
 - **#41** status pill, **#24** coach scheduler, **#88** reactivity → verified **no-op / already-have**
   (see rows). **#74** deferred (cosmetic, doesn't map to Android's settings structure).
 
-Still open, ranked by value for the next pass (highest first): **#64** long-press reorder/hide
-(unblocks #70), **#65** coach transparency/context, **#43** units consistency, **#83/#84/#85**
-multi-session sleep, **#57** activity-recording redesign, **#77** jring protocol-parity, **#61**
-activity sync-alerts, **#75** onboarding polish. XL ring rebuilds **#82** (YCBT) and **#90**
-(LuckRing) each warrant their own dedicated branch, not this sweep. Blocked/not-yet: **#70**
-(behind #64), **#79** (no Activity-trends screen yet).
+Then a value-first second pass began (`◐` = partially done):
+- **#64** (highest value — user-facing + unblocks #70): **stage 1 shipped** `8f51349` (prefs
+  store + pure reorder/visibility logic + 24 tests). Stages 2 (wire into Today/Vitals card
+  construction) + 3 (edit-mode UI: long-press, hide badges, Hidden tray, move controls) remain
+  — stage 3 is the hard part; recommend a discrete edit-mode (move up/down + hide) over free-form
+  grid drag (Compose has no reorderable grid + no drag lib in the project). #70 falls out of
+  stage 2 for free (screens read the prefs StateFlow).
+- **#43**: live record pace/distance shipped `4075752`; **§2** temp detail-chart zone/axis
+  conversion + **§3** glucose mmol/L end-to-end remain (mostly-already-done per this triage).
+
+Still open, ranked by value: finish **#64** (stages 2–3), **#43 §2/§3**, **#65** coach
+transparency/context, **#83/#84/#85** multi-session sleep, **#57** activity-recording redesign,
+**#77** jring protocol-parity, **#61** activity sync-alerts, **#75** onboarding polish. XL ring
+rebuilds **#82** (YCBT) and **#90** (LuckRing) each warrant their own dedicated branch. Blocked:
+**#79** (no Activity-trends screen yet). **#70** is now unblocked once #64 stage 2 lands.
 
 ### 2026-07-14 triage (since `e00c24b` → `b3697c0`, 29 commits / 9 first-parent)
 
