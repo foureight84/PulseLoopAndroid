@@ -189,9 +189,11 @@ multi-session sleep, **#57** activity-recording redesign, **#77** jring protocol
 activity sync-alerts, **#75** onboarding polish. XL ring rebuilds **#82** (YCBT) and **#90**
 (LuckRing) each warrant their own dedicated branch. Blocked: **#79** (no Activity-trends screen yet).
 
-Note: #64's edit-mode UI compiles + assembles + the pure logic is unit-tested, but was **not
-runtime-verified** (no emulator in this session) — worth a manual smoke test of enter/hide/reorder/
-restore/done on both tabs before release.
+Note: #64's edit-mode UI was **runtime-verified on an API-35 arm64 emulator** (com.pulseloop.debug):
+Today + Vitals render through the new card-dispatch, and the full flow works — Customize enters edit
+mode, the "–" badge hides a card into the Hidden tray, "+" restores it to its saved position,
+up/down reorder (with correct first/last chevron gating), and Done persists the new order. No crashes.
+Also confirmed live: #42 (single top coach card) and #41 ("Disconnected" pill).
 
 ### 2026-07-14 triage (since `e00c24b` → `b3697c0`, 29 commits / 9 first-parent)
 
