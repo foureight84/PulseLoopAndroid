@@ -77,7 +77,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#85](https://github.com/saksham2001/PulseLoopiOS/pull/85) `9093e9b` | 07-15 | Multi-session sleep days in demo seed | **PORT-with-#83** | S | `0d7212c` — `DemoDataSeeder.napsForDay`/`napStageBlocks` — demo nap sessions keyed `demo-sleep-<day>-<napStart>` (sourceRaw demo); days 0/1 get 2 naps, day 2 one, day 5 one |
 | ☐ | [#90](https://github.com/saksham2001/PulseLoopiOS/pull/90) `9d05481` | 07-15 | LuckRing/TK18 ring support (Coolwear "K6" / 0xFF64 `f618` protocol) | **PORT** | XL | |
 | ☑ | [#88](https://github.com/saksham2001/PulseLoopiOS/pull/88) `e937a39` | 07-15 | Refresh stale screens after data changes (coach edit → aggregates, goal-edit rings, metric-detail on-sync) | **ADAPT** | S | already-have (Room Flows cover b/c/d; a is an architecture-specific non-gap) |
-| ☐ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PARTIAL** | S | |
+| ☑ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PORT** (fit-to-viewport N/A) | S | `ad2cc5b` — finale medallion + "Setup complete" eyebrow + refreshed copy (You're all set / Today·First sync·Days 3–7 / Start using PulseLoop) + welcome subtitle. Fit-to-viewport N/A (Compose sizes natively) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `78ca593` | 07-01 | **Physiology settings screen** (athlete mode, altitude, beta-blockers, lung condition, glucose unit → tune `VitalsThresholdEngine`) — sub-surface of #35 that the XL dashboard port dropped | **PORT** | S–M | `d760c24` |
 
 ## Port priority — open items (as of 2026-07-16)
@@ -91,11 +91,12 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
    persistence + `fromProfile` wiring + widget refresh. Glucose-unit picker also lands **#43 §3**.
 2. ~~**#43 §2 temp detail-chart unit conversion**~~ ✅ **DONE** (2026-07-17, uncommitted). Plus §3
    glucose end-to-end on both dashboard card and detail chart.
-3. **#75 Onboarding copy + finale** (PARTIAL) — copy polish + celebratory finale; fit-to-viewport
-   half is N/A (Compose sizes responsively). Real portable core is moderate (~3 iOS files, ~500 ins,
-   much of it the N/A layout mechanics).
+3. ~~**#75 Onboarding copy + finale**~~ ✅ **DONE** `ad2cc5b` — finale medallion + refreshed copy;
+   fit-to-viewport N/A.
 4. ~~**#61d Workout-history day grouping**~~ ✅ **DONE** `9c7fecb`. ~~**#61e sleep coach-card
    position**~~ ✅ **ALREADY-HAVE** (Android renders it at the bottom already).
+
+**Tier 1 is now clear.** Next up is Tier 2 (below).
 
 **~~#61~~ RE-TRIAGED** (was a mis-scoped "S"): split into #61a–f (see port-queue rows). Battery
 alerts (#61a) + battery graph (#61b) + coach-notif (#61c) + sync-event/bugfix bundle (#61f) are each
