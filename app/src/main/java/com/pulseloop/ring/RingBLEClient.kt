@@ -1111,7 +1111,16 @@ class RingBLEClient(private val context: Context) {
                         gatt.setCharacteristicNotification(ch, true)
                         ch.getDescriptor(CCCD_UUID)?.let { desc ->
                             pendingRingNotifyDescriptors.add(ch.uuid)
-                            enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
+                            // Current SmartHealth enables both BE94-0001 and BE94-0003 as
+                            // indications (CCCD 02 00), even though older ports commonly call
+                            // them notifications. Writing 01 00 succeeds locally but leaves the
+                            // R10M without its command-reply path and it closes with HCI 0x13.
+                            val cccdValue = if (activeCoordinator?.deviceType == RingDeviceType.YCBT) {
+                                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                            } else {
+                                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            }
+                            enqueueOp(GattOp.DescriptorWrite(desc, cccdValue))
                         }
                     }
                     if (uuid == driver.batteryCharUUID) batteryChar = ch
