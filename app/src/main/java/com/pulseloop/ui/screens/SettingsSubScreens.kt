@@ -45,11 +45,16 @@ import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.ring.RingConnectionState
 import com.pulseloop.service.GlucoseUnit
+import com.pulseloop.service.MetricZone
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.service.RingSyncWorker
+import com.pulseloop.service.VitalColorToken
+import com.pulseloop.service.VitalSample
+import com.pulseloop.service.ZoneSeverity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.DeviceHeroStatus
+import com.pulseloop.ui.components.ZoneLineChart
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.wearables.WearableModel
 import kotlin.math.roundToInt
@@ -1367,6 +1372,10 @@ fun WearableSettingsScreen(
         }
 
         if (device != null) {
+            BatteryHistorySection(db)
+        }
+
+        if (device != null) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Ring management", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1465,6 +1474,74 @@ fun WearableSettingsScreen(
                 TextButton(onClick = { showFactoryReset = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/** 24h/7d windows for the battery drainage chart (iOS #61b — only these two ranges). */
+private enum class BatteryHistoryRange(val label: String, val spanMs: Long) {
+    DAY("24h", 24 * 3600_000L),
+    WEEK("7d", 7 * 24 * 3600_000L),
+}
+
+/** Fixed 0–100 zone coloring for the battery line — mirrors iOS `colorForValue`
+ *  (≤20 danger, ≤50 warning, else success). Zone boundaries use an exclusive upper bound
+ *  (`ZoneLineChart` matches `lower <= value < upper`), so 21/51 sit just above each cut. */
+private val batteryZones = listOf(
+    MetricZone("critical", "Critical", null, 21.0, ZoneSeverity.CRITICAL, VitalColorToken.Red, "Battery critically low"),
+    MetricZone("low", "Low", 21.0, 51.0, ZoneSeverity.WATCH, VitalColorToken.Amber, "Battery low"),
+    MetricZone("good", "Good", 51.0, null, ZoneSeverity.OPTIMAL, VitalColorToken.Mint, "Battery healthy"),
+)
+
+/**
+ * Battery drainage history (iOS #61b `BatteryHistorySection`): a 24h/7d segmented range picker over
+ * a fixed 0–100 [ZoneLineChart]. Reads [com.pulseloop.data.entity.BatterySampleEntity] rows written by
+ * [com.pulseloop.service.EventPersistenceSubscriber]'s throttled battery log.
+ */
+@Composable
+private fun BatteryHistorySection(db: PulseLoopDatabase) {
+    var range by remember { mutableStateOf(BatteryHistoryRange.DAY) }
+    // Reactive on the device row so a fresh battery reading refetches the window without a manual pull.
+    val device by db.deviceDao().currentFlow().collectAsState(initial = null)
+    var samples by remember { mutableStateOf<List<VitalSample>>(emptyList()) }
+
+    LaunchedEffect(range, device?.batteryPercent, device?.updatedAt) {
+        val end = System.currentTimeMillis()
+        val start = end - range.spanMs
+        samples = db.batterySampleDao().samplesBetween(start, end)
+            .map { VitalSample(timestampMs = it.timestamp, value = it.percent.toDouble()) }
+    }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Battery history", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                SingleChoiceSegmentedButtonRow {
+                    BatteryHistoryRange.entries.forEachIndexed { i, r ->
+                        SegmentedButton(
+                            selected = range == r,
+                            onClick = { range = r },
+                            shape = SegmentedButtonDefaults.itemShape(i, BatteryHistoryRange.entries.size),
+                        ) { Text(r.label) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            if (samples.size < 2) {
+                Text(
+                    "Not enough data yet — battery history builds up as the ring reports its level.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                ZoneLineChart(
+                    samples = samples,
+                    zones = batteryZones,
+                    yDomain = 0.0..100.0,
+                    accent = PulseColors.success,
+                    height = 160.dp,
+                )
+            }
+        }
     }
 }
 

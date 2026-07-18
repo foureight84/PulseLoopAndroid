@@ -127,6 +127,15 @@ interface ActivityBucketDao {
 }
 
 @Dao
+interface BatterySampleDao {
+    @Query("SELECT * FROM battery_samples WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC LIMIT :limit")
+    suspend fun samplesBetween(start: Long, end: Long, limit: Int = 1000): List<BatterySampleEntity>
+
+    @Insert
+    suspend fun insert(sample: BatterySampleEntity)
+}
+
+@Dao
 interface DeviceMeasurementConfigDao {
     @Query("SELECT * FROM device_measurement_configs WHERE deviceId = :deviceId LIMIT 1")
     suspend fun byDevice(deviceId: String): DeviceMeasurementConfigEntity?

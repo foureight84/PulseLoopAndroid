@@ -37,8 +37,9 @@ import com.pulseloop.data.entity.*
         DerivedUpdateEntity::class,
         CoachSummaryEntity::class,
         WearableLogEntity::class,
+        BatterySampleEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -60,6 +61,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun coachSummaryDao(): CoachSummaryDao
     abstract fun wearableLogDao(): WearableLogDao
     abstract fun rawPacketDao(): RawPacketDao
+    abstract fun batterySampleDao(): BatterySampleDao
 
     companion object {
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
@@ -128,6 +130,24 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v7 → v8: battery-level history for the Wearable-settings drainage chart (iOS #61b). */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `battery_samples` (
+                        `id` TEXT NOT NULL,
+                        `percent` INTEGER NOT NULL,
+                        `timestamp` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_battery_samples_timestamp` ON `battery_samples` (`timestamp`)")
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -135,7 +155,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
                     // coach conversation on any future version bump that misses a

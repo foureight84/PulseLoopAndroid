@@ -21,6 +21,13 @@ class EventPersistenceSubscriber(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
+    // Battery-history throttle (iOS #61b) — in-memory, so the first reading after each (re)launch
+    // always records; a change or a 30-min floor logs a fresh row otherwise, keeping the table to a
+    // few dozen rows/day instead of one per BLE battery read.
+    private var lastBatteryPercent: Int? = null
+    private var lastBatteryLogAt: Long? = null
+    private val batteryMinIntervalMs = 30 * 60_000L
+
     fun start() {
         if (job != null) return
         job = scope.launch {
@@ -128,10 +135,12 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.BatteryLevel -> {
                 val device = db.deviceDao().currentReal() ?: DeviceEntity()
+                val now = System.currentTimeMillis()
                 db.deviceDao().upsert(device.copy(
                     batteryPercent = event.percent,
-                    updatedAt = System.currentTimeMillis(),
+                    updatedAt = now,
                 ))
+                recordBatterySample(event.percent, now)
             }
             is PulseEvent.HeartRateSample -> {
                 db.measurementDao().insert(MeasurementEntity(
@@ -217,6 +226,17 @@ class EventPersistenceSubscriber(
                 // 0xF6 is never needed here. Kept as a decoded event purely for diagnostics.
             }
         }
+    }
+
+    /** Throttled battery-history write (iOS #61b): only on change or a 30-min floor. */
+    private suspend fun recordBatterySample(percent: Int, now: Long) {
+        if (percent !in 0..100) return
+        val changed = percent != lastBatteryPercent
+        val elapsed = lastBatteryLogAt?.let { now - it } ?: Long.MAX_VALUE
+        if (!changed && elapsed < batteryMinIntervalMs) return
+        lastBatteryPercent = percent
+        lastBatteryLogAt = now
+        db.batterySampleDao().insert(BatterySampleEntity(percent = percent, timestamp = now))
     }
 
     private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double) {

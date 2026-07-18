@@ -99,6 +99,23 @@ data class ActivityBucketEntity(
 )
 
 /**
+ * Ported from [BatterySample] in PulseModels.swift (iOS #61b). A throttled log of the ring's
+ * battery level over time, feeding the Wearable-settings drainage chart. Written by
+ * [com.pulseloop.service.EventPersistenceSubscriber] on change or a 30-min floor — not every
+ * `BatteryLevel` event, so the table stays a few dozen rows/day.
+ */
+@Entity(
+    tableName = "battery_samples",
+    indices = [Index("timestamp")],
+)
+data class BatterySampleEntity(
+    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
+    val percent: Int,
+    val timestamp: Long,            // epoch millis
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/**
  * Ported from [DeviceMeasurementConfig] in PulseModels.swift (iOS PR #19).
  * Per-device background-measurement preferences pushed to the ring on save and on connect:
  * all-day HR sampling interval plus per-vital enable toggles.
