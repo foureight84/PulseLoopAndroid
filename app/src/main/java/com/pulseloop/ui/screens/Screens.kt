@@ -727,6 +727,20 @@ fun SleepScreen(
 ) {
     val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(SleepViewModel.SleepState()) })
     val tracking by (sleepStream?.tracking?.collectAsState() ?: remember { mutableStateOf(false) })
+
+    // Morning "how do you feel" 1-5 rating, stored per-day in coach_memories so the
+    // coach can correlate it with the night's sleep metrics over time.
+    val feelCtx = LocalContext.current
+    val feelScope = rememberCoroutineScope()
+    val feelKey = "morning_feel_" + java.time.LocalDate.now().toString()
+    var feelRating by remember { mutableStateOf(0) }
+    LaunchedEffect(feelKey) {
+        try {
+            val db = com.pulseloop.data.PulseLoopDatabase.getInstance(feelCtx)
+            feelRating = db.coachMemoryDao().byKey(feelKey)?.value?.toIntOrNull() ?: 0
+        } catch (_: Exception) {}
+    }
+
     val lastNight = state.lastNight
     val totalHr = lastNight?.totalMinutes?.let { it / 60 }
     val totalMin = lastNight?.totalMinutes?.let { it % 60 }
@@ -787,6 +801,51 @@ fun SleepScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+        }
+
+        // ── Morning check-in: how do you feel? 1-5 ─────────────────
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("How do you feel this morning?", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Rate your rested-ness — the coach learns which nights actually leave you refreshed.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        (1..5).forEach { n ->
+                            val selected = feelRating == n
+                            Button(
+                                onClick = {
+                                    feelRating = n
+                                    feelScope.launch {
+                                        try {
+                                            val db = com.pulseloop.data.PulseLoopDatabase.getInstance(feelCtx)
+                                            val existing = db.coachMemoryDao().byKey(feelKey)
+                                            db.coachMemoryDao().upsert(
+                                                (existing ?: com.pulseloop.data.entity.CoachMemoryEntity(key = feelKey, value = ""))
+                                                    .copy(value = n.toString(), memoryType = "note", importance = 3)
+                                            )
+                                        } catch (_: Exception) {}
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                contentPadding = PaddingValues(0.dp),
+                                colors = if (selected) ButtonDefaults.buttonColors()
+                                    else ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+                            ) { Text("$n", style = MaterialTheme.typography.titleMedium) }
+                        }
+                    }
+                    Text(
+                        when (feelRating) { 1 -> "Wrecked"; 2 -> "Rough"; 3 -> "OK"; 4 -> "Good"; 5 -> "Great"; else -> "1 = wrecked · 5 = fully rested" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
                     )
                 }
             }
