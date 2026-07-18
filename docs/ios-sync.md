@@ -90,7 +90,8 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > `44351a4` dead-code cleanup) — all three runtime-verified on API-35 (each install exercised a real
 > schema-version upgrade over existing data, not a fresh create: v7→v8 for #61b, v8→v9 for #61c). All
 > landed as sequential commits on `iOS_sync_2026-07-16` — no separate branches, matching every prior
-> Tier-1 item. **#61f folded into #61c with no separate work** — turned out **Android already had a
+> Tier-1 item — and **pushed to `origin/iOS_sync_2026-07-16`** (9 commits, `32379b1..9f24637`).
+> **#61f folded into #61c with no separate work** — turned out **Android already had a
 > background-BLE-sync worker** (`RingSyncWorker`, shipping since before this session) that #61c's
 > `ensureFreshData` could directly reuse the connect/`runStartup` pattern from, so the "background sync
 > is unreliable on Android" risk flagged during recon didn't fully materialize — it reuses proven,
