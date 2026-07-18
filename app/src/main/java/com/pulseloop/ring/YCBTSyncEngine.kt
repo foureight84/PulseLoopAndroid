@@ -13,6 +13,7 @@ class YCBTSyncEngine(
 
     private var measurementSettings = MeasurementSettings.ALL_ON_DEFAULT
     private var userProfile = UserProfileValues(metric = true, gender = 0x02u, age = 25u, heightCm = 175u, weightKg = 70u)
+    private var requestActivityAfterStartupHistory = false
 
     companion object {
         private val HISTORY_TYPES: List<YCBTHistoryType> = listOf(
@@ -24,6 +25,7 @@ class YCBTSyncEngine(
     }
 
     override fun runStartup() {
+        requestActivityAfterStartupHistory = true
         for (command in encoder.startupSequence(measurement = measurementSettings, profile = userProfile)) {
             writer?.enqueue(command)
         }
@@ -31,7 +33,14 @@ class YCBTSyncEngine(
     }
 
     override fun handle(event: RingDecodedEvent) {
-        // History is protocol-driven now — nothing here advances it.
+        // The early startup command enables live status while the ring is still processing its
+        // connect handshake. Some R10M firmware acknowledges it without immediately publishing
+        // the current cumulative activity. Ask once more after the startup history walk, when the
+        // connection is settled, so reconnect updates steps without requiring pull-to-refresh.
+        if (event is RingDecodedEvent.HistorySyncFinished && requestActivityAfterStartupHistory) {
+            requestActivityAfterStartupHistory = false
+            writer?.enqueue(encoder.enableLiveStatus())
+        }
     }
 
     override fun refresh() {

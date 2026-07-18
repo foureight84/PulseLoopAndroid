@@ -54,4 +54,20 @@ class YCBTSyncEngineTest {
         assertFalse(startup.any { it[0] == YCBTGroup.SETTING.toByte() && it[1] == YCBTSettingKey.SET_TIME.toByte() })
         assertFalse(startup.any { it[0] == YCBTGroup.GET.toByte() && it[1] == YCBTCommand.GET_DEVICE_NAME.toByte() })
     }
+
+    @Test
+    fun `startup requests current activity again when history finishes`() {
+        val writer = FakeWriter()
+        val engine = engine(writer)
+
+        engine.runStartup()
+        writer.sent.clear()
+        engine.handle(RingDecodedEvent.HistorySyncFinished)
+
+        assertArrayEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02), writer.sent.single())
+
+        writer.sent.clear()
+        engine.handle(RingDecodedEvent.HistorySyncFinished)
+        assertTrue(writer.sent.isEmpty())
+    }
 }
