@@ -26,6 +26,10 @@ data class DeviceEntity(
     val lastConnectedAt: Long? = null,
     val lastDisconnectedAt: Long? = null,
     val lastSyncAt: Long? = null,
+    /** Stamped only when a history sync actually completes (`SyncProgress("done")`) — unlike
+     *  [lastSyncAt], which the ring re-stamps on every bare CONNECT before any data streams.
+     *  The coach-notification freshness gate reads this one (iOS #61c). */
+    val lastFullSyncAt: Long? = null,
     val firmwareVersion: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),

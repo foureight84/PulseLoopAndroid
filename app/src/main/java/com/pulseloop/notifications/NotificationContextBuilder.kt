@@ -69,8 +69,10 @@ object NotificationContextBuilder {
         if (!profileComplete) {
             warnings.add("User profile is incomplete — insights may be less personalized.")
         }
-        val lastSync = device?.lastSyncAt
-        if (lastSync != null && (now - lastSync) > 12 * 3600_000L) {
+        // lastFullSyncAt (not lastSyncAt, which the ring re-stamps on every bare CONNECT before
+        // any data streams) — iOS #61c's freshness-gate fix.
+        val lastFullSync = device?.lastFullSyncAt
+        if (lastFullSync != null && (now - lastFullSync) > 12 * 3600_000L) {
             warnings.add("Ring hasn't synced in >12h — today's data may be stale.")
         }
         if (hrRows.size < 10) {

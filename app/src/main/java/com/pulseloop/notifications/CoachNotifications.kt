@@ -15,7 +15,16 @@ import androidx.work.*
 import com.pulseloop.MainActivity
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.ring.PulseEvent
+import com.pulseloop.ring.PulseEventBus
+import com.pulseloop.ring.RingBLEClient
+import com.pulseloop.service.loadPersistedMeasurementSettings
+import com.pulseloop.service.loadPersistedUserProfile
 import com.pulseloop.settings.ApiKeyStore
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
 import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
@@ -110,6 +119,13 @@ class CoachNotificationWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
+    companion object {
+        /** iOS #61c `syncWaitTimeout` — caps ensureFreshData so a stale BLE link can't hang the worker. */
+        private const val SYNC_WAIT_TIMEOUT_MS = 15_000L
+        /** iOS #61c `hasFreshFullSync` — a completed sync within this window skips a new one. */
+        private const val FRESH_SYNC_WINDOW_MS = 10 * 60_000L
+    }
+
     override suspend fun doWork(): Result {
         // Re-check the opt-in at FIRE time, before any notification can be built:
         // periodic work can outlive a toggle-off, so a disabled feature must mean
@@ -140,6 +156,12 @@ class CoachNotificationWorker(
             val slot = CoachNotificationSlot.current(hour, keyStore.morningHour, keyStore.eveningHour)
                 ?: CoachNotificationSlot.forcedSlot(hour)
 
+            // Sync-before-notify (iOS #61c): a bounded, best-effort connect so the check-in
+            // reflects today's data instead of whatever happened to be in Room when the ring
+            // was last opened. Always proceeds to build+send afterward with whatever's now
+            // there — a stale check-in beats a missed one.
+            ensureFreshData(db)
+
             // Build context
             val packet = NotificationContextBuilder.build(slot, db)
 
@@ -160,6 +182,44 @@ class CoachNotificationWorker(
                 "Good morning! Sync your ring and check your vitals to start the day.",
             )
             Result.success()
+        }
+    }
+
+    /**
+     * Ported from CoachNotificationService.ensureFreshData (iOS #61c). This worker always owns a
+     * private [RingBLEClient] (unlike the foreground [com.pulseloop.service.RingSyncCoordinator]),
+     * so there's no "sync already in flight" to await — only connect-and-sync, bounded by
+     * [SYNC_WAIT_TIMEOUT_MS] so a stale link can never hang the worker past its own budget.
+     * Skips outright when no real ring is paired, or the last completed sync is still fresh.
+     */
+    private suspend fun ensureFreshData(db: PulseLoopDatabase) {
+        val device = db.deviceDao().currentReal() ?: return
+        val now = System.currentTimeMillis()
+        val fresh = device.lastFullSyncAt?.let { now - it < FRESH_SYNC_WINDOW_MS } ?: false
+        if (fresh) return
+
+        val bleClient = RingBLEClient(applicationContext)
+        if (!bleClient.hasPermissions()) return
+
+        val measurementSettings = loadPersistedMeasurementSettings(db)
+        val profileValues = loadPersistedUserProfile(db, ApiKeyStore(applicationContext))
+
+        try {
+            withTimeoutOrNull(SYNC_WAIT_TIMEOUT_MS) {
+                val doneSignal = async {
+                    PulseEventBus.events.filterIsInstance<PulseEvent.SyncProgress>().first { it.stage == "done" }
+                }
+                bleClient.onConnected = {
+                    val engine = bleClient.syncEngine
+                    engine?.setMeasurementSettings(measurementSettings)
+                    profileValues?.let { engine?.setUserProfile(it) }
+                    engine?.runStartup()
+                }
+                bleClient.connectLastKnown()
+                doneSignal.await()
+            }
+        } finally {
+            bleClient.disconnect()
         }
     }
 

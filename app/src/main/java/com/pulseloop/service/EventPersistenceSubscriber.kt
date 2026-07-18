@@ -203,7 +203,17 @@ class EventPersistenceSubscriber(
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)
             }
-            is PulseEvent.SyncProgress -> {} // UI feedback, no persistence needed
+            is PulseEvent.SyncProgress -> {
+                // Only "done" (a history sync actually completed) stamps lastFullSyncAt — the
+                // coach-notification freshness gate (iOS #61c). Bare CONNECT already re-stamps
+                // the looser lastSyncAt elsewhere and must not touch this one.
+                if (event.stage == "done") {
+                    val device = db.deviceDao().currentReal()
+                    if (device != null) {
+                        db.deviceDao().upsert(device.copy(lastFullSyncAt = System.currentTimeMillis()))
+                    }
+                }
+            }
             is PulseEvent.HeartRateComplete -> {}
             is PulseEvent.Spo2Complete -> {}
             is PulseEvent.RawPacket -> {
