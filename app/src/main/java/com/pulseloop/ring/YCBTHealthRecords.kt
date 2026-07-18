@@ -78,12 +78,10 @@ object YCBTHealthRecords {
         val events = mutableListOf<RingDecodedEvent>()
         for (r in records(buffer, 20)) {
             val ts = YCBTBytes.date(YCBTBytes.u32(r, 0))
-            events.add(RingDecodedEvent.ActivityUpdate(
-                _timestamp = ts,
-                steps = YCBTBytes.u16(r, 4),
-                distanceMeters = 0,
-                calories = 0,
-            ))
+            // 0x09 is vitals history, not the activity source of truth. Its adjacent step field
+            // can lag/reset differently and arrives late in the refresh pipeline; routing it as
+            // a live cumulative ActivityUpdate made today's steps jump to stale values. Activity
+            // comes from 0x02 sport buckets plus 0x06/00 live status instead.
             events.addAll(bloodPressureEvents(systolic = r[7].toInt() and 0xFF, diastolic = r[8].toInt() and 0xFF, timestamp = ts))
             if (r[9].toInt() and 0xFF > 0) {
                 events.add(RingDecodedEvent.HistoryMeasurement(kind_field = MeasurementKind.SPO2, value = (r[9].toInt() and 0xFF).toDouble(), _timestamp = ts))

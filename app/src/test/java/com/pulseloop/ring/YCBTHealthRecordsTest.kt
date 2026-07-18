@@ -60,16 +60,14 @@ class YCBTHealthRecordsTest {
     }
 
     @Test
-    fun `combined vitals decodes steps BP SpO2 and HRV`() {
+    fun `combined vitals decodes BP SpO2 and HRV without activity`() {
         val events = YCBTHealthRecords.combinedVitals(capturedAllRecords)
         assertEquals(listOf(98.0, 97.0, 97.0, 96.0, 97.0, 96.0, 97.0, 95.0), values(MeasurementKind.SPO2, events))
         assertEquals(listOf(52.0, 43.0, 177.0, 95.0, 33.0, 33.0, 61.0, 128.0), values(MeasurementKind.HRV, events))
         assertEquals(listOf(115.0, 112.0, 112.0, 109.0, 111.0, 111.0, 110.0, 106.0), values(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, events))
         assertEquals(70.0, values(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, events).last(), 0.001)
         assertFalse(events.any { it is RingDecodedEvent.BloodPressureSample })
-
-        val steps = events.mapNotNull { if (it is RingDecodedEvent.ActivityUpdate) it.steps else null }
-        assertEquals(3336, steps.max())
+        assertFalse(events.any { it is RingDecodedEvent.ActivityUpdate })
     }
 
     @Test
@@ -93,10 +91,9 @@ class YCBTHealthRecordsTest {
     }
 
     @Test
-    fun `unworn combined vitals record yields steps only`() {
+    fun `unworn combined vitals record produces no activity`() {
         val events = YCBTHealthRecords.combinedVitals(bytes("1cf0de31080d4700000000000000000000000000"))
-        assertEquals(1, events.size)
-        assertTrue(events.first() is RingDecodedEvent.ActivityUpdate)
+        assertTrue(events.isEmpty())
     }
 
     @Test

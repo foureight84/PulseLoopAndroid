@@ -17,10 +17,12 @@ class YCBTSyncEngineTest {
     }
 
     @Test
-    fun `full refresh begins with sport history`() {
+    fun `full refresh requests live status before sport history`() {
         val writer = FakeWriter()
         engine(writer).refresh()
-        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent.single())
+        assertEquals(2, writer.sent.size)
+        assertArrayEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02), writer.sent[0])
+        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[1])
     }
 
     @Test

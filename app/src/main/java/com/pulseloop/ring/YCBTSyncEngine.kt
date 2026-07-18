@@ -35,6 +35,9 @@ class YCBTSyncEngine(
     }
 
     override fun refresh() {
+        // Ask for current cumulative activity before the slower multi-type history walk. Without
+        // this, pull-to-refresh can leave steps stale until an unsolicited live push arrives.
+        writer?.enqueue(encoder.enableLiveStatus())
         transfer.start(types = HISTORY_TYPES)
     }
 

@@ -73,14 +73,13 @@ class EventPersistenceSubscriber(
                     RingConnectionState.CONNECTED -> {
                         db.measurementDao().clearDemo()
                         db.activityDailyDao().clearDemo()
-                        // Sessions rebuild from the ring on every connect. Blocks must be wiped
-                        // WITH them (no FK cascade at runtime): stale blocks keyed under an id a
-                        // rebuilt session reuses — e.g. rows from the pre-waking-day keying, which
-                        // filed a night's pre-midnight packets under what is now a different
-                        // night's id — would otherwise be merged into that night by
-                        // upsertSleepSession and corrupt its span and score.
-                        db.sleepStageBlockDao().clear()
-                        db.sleepSessionDao().clear()
+                        // Never clear real sleep on CONNECTED. YCBT emits Status/CONNECTED more
+                        // than once during startup, and history arrives asynchronously; clearing
+                        // here made a complete night flash, partially rebuild, then disappear.
+                        // Sleep upserts are timestamp-idempotent, so preserve the last good local
+                        // copy until replacement packets arrive.
+                        db.sleepStageBlockDao().clearDemo()
+                        db.sleepSessionDao().clearDemo()
                         "CONNECTED"
                     }
                     RingConnectionState.DISCONNECTED -> "DISCONNECTED"
@@ -327,11 +326,7 @@ class EventPersistenceSubscriber(
         val score = computeSleepScore(deepMin, totalMin)
 
         // Upsert the parent session BEFORE its stage blocks. sleep_stage_blocks has a foreign key
-        // to sleep_sessions(id), and both tables are cleared on every connect (see
-        // DeviceStateChanged), so the first packet of a night finds no parent row: inserting blocks
-        // first throws FOREIGN KEY constraint failed, persist() swallows it, and the whole night is
-        // silently dropped. Parent-first matches DemoDataSeeder — which is exactly why demo sleep
-        // persists while real ring sleep did not.
+        // to sleep_sessions(id), so a newly discovered night needs its parent first.
         val existing = db.sleepSessionDao().ringByDay(dayStart)
         db.sleepSessionDao().upsert(
             (existing ?: SleepSessionEntity(id = sessionId, date = dayStart, startAt = sessionStart, endAt = sessionEnd, totalMinutes = totalMin, score = score)).copy(
