@@ -178,9 +178,9 @@ class YCBTHistoryTransferTest {
         val engine = YCBTSyncEngine(writer = writer, transfer = transfer)
         engine.refresh()
 
-        assertEquals(1, writer.sent.size)
-        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[0])
-        assertTrue(writer.sent.all { it[0] == 0x05.toByte() })
+        assertEquals(2, writer.sent.size)
+        assertArrayEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02), writer.sent[0])
+        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[1])
     }
 
     @Test

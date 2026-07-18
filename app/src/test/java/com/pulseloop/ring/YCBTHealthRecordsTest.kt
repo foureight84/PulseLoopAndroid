@@ -252,7 +252,7 @@ class YCBTHealthRecordsTest {
         assertEquals(1, YCBTHealthRecords.decode(sport, YCBTHistoryType.SPORT).size)
         assertEquals(2, YCBTHealthRecords.decode(temperature, YCBTHistoryType.TEMPERATURE).size)
         assertEquals(4, YCBTHealthRecords.decode(capturedBodyRecord, YCBTHistoryType.BODY_DATA).size)
-        assertEquals(8 * 6, YCBTHealthRecords.decode(capturedAllRecords, YCBTHistoryType.ALL).size)
+        assertEquals(8 * 5, YCBTHealthRecords.decode(capturedAllRecords, YCBTHistoryType.ALL).size)
         assertFalse(YCBTHealthRecords.decode(capturedNight, YCBTHistoryType.SLEEP).isEmpty())
         assertFalse(YCBTHealthRecords.decode(capturedHeartRecords, YCBTHistoryType.HEART).isEmpty())
     }

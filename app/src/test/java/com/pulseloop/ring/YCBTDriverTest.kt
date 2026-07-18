@@ -69,17 +69,21 @@ class YCBTDriverTest {
         val engine = driver.makeSyncEngine()
 
         engine.refresh()
-        assertEquals(1, writer.sent.size)
-        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[0])
+        assertEquals(2, writer.sent.size)
+        assertArrayEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02), writer.sent[0])
+        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[1])
 
         writer.sent.clear()
         engine.refresh()
-        assertTrue(writer.sent.isEmpty())
+        assertEquals(1, writer.sent.size)
+        assertArrayEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02), writer.sent[0])
 
         driver.connectionDidEnd()
+        writer.sent.clear()
         engine.refresh()
-        assertEquals(1, writer.sent.size)
-        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[0])
+        assertEquals(2, writer.sent.size)
+        assertArrayEquals(byteArrayOf(0x03, 0x09, 0x01, 0x00, 0x02), writer.sent[0])
+        assertArrayEquals(byteArrayOf(0x05, 0x02), writer.sent[1])
     }
 
     @Test
