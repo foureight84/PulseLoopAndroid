@@ -61,7 +61,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | — | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | ~~Activity UI sync-alerts bugfix~~ **RE-TRIAGED** into #61a–f below (was mis-billed "S"; PR is ~1188 ins/34 files) | — | — | see sub-rows |
 | ☑ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | `e5b68f6` — `BatteryAlertEngine`+`BatteryAlertMonitor`+`BatteryNotifications` (own channel) + `ApiKeyStore.batteryAlertsEnabled` (default ON) + Check-Ins toggle; 8 iOS oracle tests ported green |
 | ☑ | #61b | 07-08 | **Battery history + drainage graph** (persist battery samples + chart in Wearable settings) | **PORT** | M | `b5fcbf4` — `BatterySampleEntity`+DAO (`MIGRATION_7_8`, v7→v8) + throttled write in `EventPersistenceSubscriber` + `BatteryHistorySection` (24h/7d `ZoneLineChart`, fixed 0–100, critical/low/good zones) in Wearable settings; migration + chart runtime-verified on a real v7 upgrade |
-| ☐ | #61c | 07-08 | **Coach notification improvements** (`CoachNotificationService` +73, `NotificationsSettingsView` +39, prompt/orchestrator/settings) | **ADAPT** | M | diff vs Android `CoachNotifications` — verify what changed |
+| ☑ | #61c | 07-08 | **Coach notification improvements** (`CoachNotificationService` +73, `NotificationsSettingsView` +39, prompt/orchestrator/settings) | **ADAPT** | M | `ce15582` — `DeviceEntity.lastFullSyncAt` (`MIGRATION_8_9`, v8→v9) stamped on `SyncProgress("done")`; `NotificationContextBuilder` staleness gate switched to it; `CoachNotificationWorker.ensureFreshData` (bounded 15s connect+wait, reuses `RingSyncWorker`'s pattern) before context build. Migration runtime-verified on a real v8→v9 upgrade; BLE path not exercised (no hardware) |
 | ☑ | #61d | 07-08 | **Workout-history day grouping** (TODAY/YESTERDAY/date headers in the history sheet) | **PORT** | S | `9c7fecb` — grouped `WorkoutHistoryDialog` by `LocalDate`. (Card style polish is iOS-specific `activityValueStyle`; N/A) |
 | ☑ | #61e | 07-08 | **Sleep-page coach card → bottom** | **ALREADY-HAVE** | S | Android `SleepScreen` already renders the coach card at the bottom of both Day and aggregate views (hero opens, coach closes) — no change needed |
 | ☐ | #61f | 07-08 | **Sync-event plumbing + misc bugfixes** (`PulseEventBus`/`RingEventBridge`/`RingSyncCoordinator`/`ActivityMigrations` + `SleepInsights`/`TodayTiles`/`ActivityRings`/`RingProtocol` fixes) | **ADAPT** | M | the actual "sync alerts" + a grab-bag "fixed multiple bugs" commit — assess each vs Android (Room Flows may already cover some) |
@@ -85,20 +85,22 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
 wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
 
-> **▶ RESUME HERE (next session):** Tier 1 clear; **#61a battery alerts DONE** (`e5b68f6`) and **#61b
-> battery history + graph DONE** (`b5fcbf4`), both runtime-verified on API-35 (the #61b install exercised
-> a real v7→v8 upgrade over existing data, not just a fresh create). Both landed as sequential commits on
-> `iOS_sync_2026-07-16` — no separate branches, matching how every prior Tier-1 item shipped.
-> Next up is **#61c coach notification freshness** (M, ADAPT): active sync-before-notify + a new
-> `lastFullSyncAt` field (stamped on `SyncProgress("done")`) replacing the freshness gate's `lastSyncAt`
-> (which Android also re-stamps on bare CONNECT — same latent bug as iOS had). This folds in the only
-> worthwhile #61f bits (`lastFullSyncAt` + an `awaitSyncCompletion` primitive on `RingSyncCoordinator`);
-> #61f has no standalone work otherwise. ⚠ **Risk:** driving a fresh connect-and-sync from a background
-> WorkManager worker is unreliable on Android (BLE background limits) — the "await in-flight sync" and
-> "send last-known + warning" paths port cleanly; the "connect from background" path likely must degrade
-> to last-known+warning. Read the #61c/#61f port-queue rows + the 2026-07-17 recon note below before
-> starting. After #61c: **#65** coach transparency, re-scoped **L→XL** (in-memory chat vs SwiftData; no
-> WeatherKit) — needs a scope decision (session-scoped usage/trace vs a Room migration) before starting.
+> **▶ RESUME HERE (next session):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
+> battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
+> `44351a4` dead-code cleanup) — all three runtime-verified on API-35 (each install exercised a real
+> schema-version upgrade over existing data, not a fresh create: v7→v8 for #61b, v8→v9 for #61c). All
+> landed as sequential commits on `iOS_sync_2026-07-16` — no separate branches, matching every prior
+> Tier-1 item. **#61f folded into #61c with no separate work** — turned out **Android already had a
+> background-BLE-sync worker** (`RingSyncWorker`, shipping since before this session) that #61c's
+> `ensureFreshData` could directly reuse the connect/`runStartup` pattern from, so the "background sync
+> is unreliable on Android" risk flagged during recon didn't fully materialize — it reuses proven,
+> already-shipped code. The await primitive also didn't need to live on `RingSyncCoordinator` as
+> originally planned: `CoachNotificationWorker` owns a private `RingBLEClient`, not the foreground
+> coordinator, so it awaits `PulseEvent.SyncProgress("done")` directly off `PulseEventBus` with a bounded
+> `withTimeoutOrNull`. **Only #65 remains in Tier 2** — coach transparency, re-scoped **L→XL** (Android
+> coach chat is in-memory, iOS persists to SwiftData; WeatherKit has no Android SDK) — needs a scope
+> decision (session-scoped usage/trace vs. a Room migration) before starting. Read the 2026-07-17 #61c
+> recon note below first.
 
 **Tier 1 — small, high-value (land on the current sync branch):**
 
@@ -128,19 +130,24 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 7. ~~**#61b Battery history + drainage graph**~~ ✅ **DONE** `b5fcbf4`. `BatterySampleEntity`+DAO
    (`MIGRATION_7_8`), throttled write in `EventPersistenceSubscriber`, 24h/7d `ZoneLineChart` in
    `WearableSettingsScreen`. Migration + chart runtime-verified on a real v7→v8 upgrade.
-8. **#61c Coach notification improvements** (M, ADAPT). ◀ **RESUME HERE.** **Recon 2026-07-17:** real gap — iOS actively
-   syncs (or awaits an in-flight sync) before notifying + fixes the freshness gate to use a new
-   `lastFullSyncAt` (stamped on `SyncProgress("done")`) instead of `lastSyncAt` (re-stamped on bare
-   CONNECT). **Android has the same latent `lastSyncAt` bug** in `NotificationContextBuilder`'s stale
-   warning. ⚠️ Driving a fresh connect-and-sync from a background WorkManager worker is unreliable on
-   Android (BLE background limits) — the "await in-flight" + "send last-known" paths port cleanly; the
-   "connect from background" path likely degrades to last-known+warning. Folds in the worthwhile #61f bits.
-9. **#61f Sync-event plumbing + misc bugfixes** — **Recon 2026-07-17: mostly ALREADY-HAVE (net S).**
+8. ~~**#61c Coach notification improvements**~~ ✅ **DONE** `ce15582` (+`44351a4` dead-code cleanup).
+   `DeviceEntity.lastFullSyncAt` (`MIGRATION_8_9`, v8→v9) stamped only on `SyncProgress("done")` in
+   `EventPersistenceSubscriber`; `NotificationContextBuilder`'s >12h staleness warning switched to it
+   from the looser `lastSyncAt`. `CoachNotificationWorker.ensureFreshData`: skips if the last completed
+   sync is <10 min old, else connects and waits up to 15s for `SyncProgress("done")` before proceeding
+   regardless (stale beats missed) — **reused `RingSyncWorker`'s existing connect/`runStartup` pattern**
+   rather than building new background-BLE infra, since Android already had one. Migration
+   runtime-verified on a real v8→v9 upgrade (schema + all data survived); the worker itself ran clean
+   via forced JobScheduler executions (zero crashes across multiple runs) but the BLE connect attempt
+   has no observable effect on the hardware-less emulator — needs a real ring to verify end-to-end.
+9. ~~**#61f Sync-event plumbing + misc bugfixes**~~ ✅ **RESOLVED, no standalone work.** Recon found
    Android's Room-Flow + bucket-sum recompute + in-place self-heal already cover 7 of 10 items (done
-   signal, inflated/garbage migrations, formatter caching, tile autosize, future-ts). Only worth-porting
-   pieces are **`lastFullSyncAt`** + an **`awaitSyncCompletion`** primitive on `RingSyncCoordinator` —
-   **both fold into #61c**, so #61f has no standalone work. (Optional nits: source-side activity ceilings
-   for indep. distance/calorie guards; Compose value autosize — not active bugs.)
+   signal, inflated/garbage migrations, formatter caching, tile autosize, future-ts). The two
+   worth-porting pieces — `lastFullSyncAt` and an await-completion primitive — both landed as part of
+   #61c above (the primitive lives inline in the worker, not as a `RingSyncCoordinator` method, since
+   the worker owns its own private `RingBLEClient` rather than using the foreground coordinator).
+   (Optional nits never addressed: source-side activity ceilings for indep. distance/calorie guards;
+   Compose value autosize — neither is an active bug.)
 
 **Tier 3 — large, focused work (own commits):**
 
@@ -204,6 +211,54 @@ coloring (mint dots >50, amber 21–50, a connected red segment for the last two
 90-min gap window) and the 24h/7d toggle switched without error. Files: `data/entity/CoreEntities.kt`,
 `data/dao/Daos.kt`, `data/PulseLoopDatabase.kt`, `service/EventPersistenceSubscriber.kt`,
 `ui/screens/SettingsSubScreens.kt`.
+
+**#61c Coach notification freshness — DONE `ce15582` (+`44351a4` dead-code cleanup).** Investigated
+`RingSyncCoordinator.kt` first: it already exposes a `syncProgress: StateFlow<Int?>` and the exact
+"await completion, bounded" pattern (`syncProgress.first { it == null || it >= 100 }` inside
+`withTimeoutOrNull`) is already used by `factoryResetRing`. But `CoachNotificationWorker` runs in a
+background `CoroutineWorker`, which doesn't share the foreground `RingSyncCoordinator` instance (that's
+`remember`-scoped to `PulseLoopApp`/Compose) — so the coordinator's `syncProgress` isn't reachable from
+a worker. Checked whether Android already had a *background* BLE-sync mechanism and found
+**`RingSyncWorker`** (`service/RingSyncWorker.kt`), a pre-existing periodic (30 min) WorkManager job that
+connects to the last-known ring and runs `engine.runStartup()` — exactly the primitive #61c needed,
+already shipped. `ensureFreshData()` in `CoachNotificationWorker` reuses that same connect/`runStartup`
+pattern directly (own private `RingBLEClient`, `bleClient.hasPermissions()` guard, `onConnected` callback
+wiring measurement settings + profile) and awaits `PulseEvent.SyncProgress(stage="done")` off the global
+`PulseEventBus` with `withTimeoutOrNull(15_000)` — 15s matching iOS's `syncWaitTimeout`. Skips the sync
+attempt entirely if `DeviceEntity.lastFullSyncAt` is under 10 min old (iOS `hasFreshFullSync`). Always
+proceeds to build+send afterward regardless of whether the sync completed — iOS's default
+`StaleDataPolicy.sendWithLastKnown`. **Deliberately did not port** iOS's hard "skip entirely if the store
+has zero measurements ever" guard: added a `MeasurementDao.hasAny()` for it, then decided Android's
+existing "always send a friendly fallback" behavior is arguably better UX than suppressing the
+first-run notification outright — removed the now-dead-code query in a follow-up commit rather than
+leave it unwired.
+
+The actual bug fix: `DeviceEntity.lastFullSyncAt` (`MIGRATION_8_9`, v8→v9), stamped **only** on
+`SyncProgress("done")` in `EventPersistenceSubscriber` (previously a no-op branch) — unlike `lastSyncAt`,
+which `RingSyncCoordinator` re-stamps on every bare `CONNECT` before any data streams (confirmed Android
+had the identical latent bug iOS fixed). `NotificationContextBuilder`'s >12h staleness warning switched
+from `lastSyncAt` to `lastFullSyncAt`.
+
+**Runtime-verified on API-35, real v8→v9 upgrade**: installed over the already-running v8 app (not a
+fresh install) — confirmed `PRAGMA user_version`=9, `devices` table has the new `lastFullSyncAt INTEGER`
+column via `.schema`, and every prior table's data survived (`devices`=1, `measurements`=772,
+`battery_samples`=8, including #61b's synthetic seed rows from the prior migration test). Exercised the
+worker itself by enabling the Check-Ins toggle (→ `CoachNotifications.schedule()`) and force-firing the
+underlying JobScheduler job via `adb shell cmd jobscheduler run -f com.pulseloop.debug <jobId>` — first
+with no API key (took the early scripted-fallback branch, posted successfully), then again after saving
+a dummy key via the AI Coach settings screen (routes through `ensureFreshData` + `NotificationContextBuilder`
++ the failed-AI-call → `scripted()` fallback). Zero crashes across 4 total forced executions. Confirmed
+`connectLastKnown()`'s `lastKnownIdentifier ?: return` guard explains the lack of observable BLE log
+output on this hardware-less emulator (safe no-op, not a bug) — the connect/timeout/disconnect sequence
+itself was not independently observed executing; needs a real ring to verify end-to-end. Files:
+`data/entity/CoreEntities.kt`, `data/dao/Daos.kt`, `data/PulseLoopDatabase.kt`,
+`service/EventPersistenceSubscriber.kt`, `notifications/NotificationContextBuilder.kt`,
+`notifications/CoachNotifications.kt`.
+
+**Adb/sqlite3 gotcha confirmed again this session:** `adb shell run-as ... sqlite3 dbfile "SQL"` still
+needs the whole invocation as one string passed to `adb shell "..."` — passing it as separate local
+double-quoted args (even correctly locally-quoted) gets re-split by the remote shell and fails with
+`syntax error: unexpected '('` or `Error: in prepare, incomplete input`.
 
 ### 2026-07-17 port session (branch `iOS_sync_2026-07-16`)
 
