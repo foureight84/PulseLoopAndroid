@@ -40,6 +40,15 @@ class CoachOrchestrator(
         val assistant: CoachResponse,
         val trace: List<CoachToolCallTrace> = emptyList(),
         val pendingActions: List<PendingAction> = emptyList(),
+        /** Summed token usage across every model call in the turn (initial send +
+         *  tool-loop rounds + JSON-repair sends). `null` when no call reported
+         *  usage or the turn never reached the client (e.g. coach disabled). */
+        val usage: com.pulseloop.coach.usage.CoachTokenUsage? = null,
+        /** The model/provider actually used for this turn, for usage/cost
+         *  attribution — set even when [usage] is null (some providers report
+         *  usage inconsistently) so the message can still show what answered. */
+        val modelUsed: String = "",
+        val providerUsed: String = "",
         /** Set when the turn failed; surfaced as a red error bubble instead of
          *  the `assistant` fallback. null on success. */
         val error: CoachTurnError? = null,
@@ -115,7 +124,17 @@ class CoachOrchestrator(
         val userContent = if (userText.isEmpty() && userImages.isNotEmpty()) IMAGE_ONLY_PROMPT else userText
         input.add(OpenAIRequestBuilder.message("user", userContent, userImages))
 
+        // Accumulates usage across every send() below (initial + tool-loop rounds +
+        // JSON-repair), regardless of which path made the call. Stays null until
+        // at least one call reports usage.
+        var tally: com.pulseloop.coach.usage.CoachTokenUsage? = null
+        fun addUsage(u: com.pulseloop.coach.usage.CoachTokenUsage?) {
+            if (u == null) return
+            tally = tally?.add(u) ?: u
+        }
+
         var response = send(client, flags, input, toolSpecs, textFormat, null)
+        addUsage(response.usage)
         val trace = mutableListOf<CoachToolCallTrace>()
         var toolCalls = 0
         var rounds = 0
@@ -152,16 +171,20 @@ class CoachOrchestrator(
 
             rounds++
             response = send(client, flags, outputs, toolSpecs, textFormat, response.id)
+            addUsage(response.usage)
         }
 
         try {
-            val assistant = parseFinal(client, flags, response)
-            TurnResult(assistant = assistant, trace = trace, pendingActions = toolContext.pendingActions.toList())
+            val assistant = parseFinal(client, flags, response, ::addUsage)
+            TurnResult(
+                assistant = assistant, trace = trace, pendingActions = toolContext.pendingActions.toList(),
+                usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue)
         } catch (e: ParseExhausted) {
             // The model never produced valid coach_response JSON. Surface it as an
             // error bubble, but keep the trace from the tools that did run.
             TurnResult(
                 assistant = CoachFallbacks.parseError(), trace = trace,
+                usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
                 error = CoachTurnError(code = "Bad response", reason = e.reason))
         }
     }
@@ -170,6 +193,7 @@ class CoachOrchestrator(
         client: ResponsesClient,
         flags: CoachFeatureFlags,
         response: com.pulseloop.coach.openai.OpenAIResponse,
+        addUsage: (com.pulseloop.coach.usage.CoachTokenUsage?) -> Unit,
     ): CoachResponse {
         var current = response
         var attempts = 1
@@ -185,6 +209,7 @@ class CoachOrchestrator(
             }
             val repair = OpenAIRequestBuilder.message("user", "Your previous output did not match the required coach_response JSON schema. Return only valid JSON for that schema now.")
             current = send(client, flags, listOf(repair), emptyList(), coachResponseTextFormat, current.id)
+            addUsage(current.usage)
         }
     }
 

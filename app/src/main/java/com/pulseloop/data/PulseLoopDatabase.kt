@@ -39,7 +39,7 @@ import com.pulseloop.data.entity.*
         WearableLogEntity::class,
         BatterySampleEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -156,6 +156,22 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v9 → v10: token/cost usage accounting on coach conversations + messages
+         *  (iOS #65b). Running totals on the conversation; per-turn tokens/cost/
+         *  model/provider on the message. */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `coach_conversations` ADD COLUMN `totalInputTokens` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `coach_conversations` ADD COLUMN `totalOutputTokens` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `coach_conversations` ADD COLUMN `totalCostUSD` REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `inputTokens` INTEGER")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `outputTokens` INTEGER")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `costUSD` REAL")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `modelUsed` TEXT")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `providerUsed` TEXT")
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -163,7 +179,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
                     // coach conversation on any future version bump that misses a

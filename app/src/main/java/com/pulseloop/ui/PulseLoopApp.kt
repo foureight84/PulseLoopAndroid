@@ -99,6 +99,7 @@ fun PulseLoopApp() {
                             providerSettings, apiKeyStore.model,
                         ),
                         settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings),
+                        providerMode = providerSettings.providerMode,
                     )
                 },
                 toolContextFactory = { flags ->
@@ -328,7 +329,29 @@ fun PulseLoopApp() {
                             // Coach keeps its bespoke avatar header, rendered here as the same
                             // frosted glass bar the other tabs use so the chat scrolls under it
                             // (owner choice, issue #22).
-                            CoachHeader(onNewChat = { coachVM.newConversation() })
+                            var showCoachUsage by remember { mutableStateOf(false) }
+                            CoachHeader(
+                                onNewChat = { coachVM.newConversation() },
+                                onOpenUsage = { showCoachUsage = true },
+                            )
+                            if (showCoachUsage) {
+                                var usageData by remember {
+                                    mutableStateOf<Pair<com.pulseloop.data.entity.CoachConversationEntity, List<com.pulseloop.data.entity.CoachMessageEntity>>?>(null)
+                                }
+                                LaunchedEffect(Unit) { usageData = coachVM.usageSnapshot() }
+                                usageData?.let { (convo, messages) ->
+                                    val providerSettings = providerStore.snapshot()
+                                    com.pulseloop.ui.screens.CoachUsageSheet(
+                                        conversation = convo,
+                                        messages = messages,
+                                        fallbackModel = com.pulseloop.coach.config.CoachClientResolver.activeModel(
+                                            providerSettings, apiKeyStore.model,
+                                        ),
+                                        fallbackProviderMode = providerSettings.providerMode,
+                                        onDismiss = { showCoachUsage = false },
+                                    )
+                                }
+                            }
                         } else {
                             val ble by bleClient.state.collectAsState()
                             val storedDevice by db.deviceDao().currentFlow()

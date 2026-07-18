@@ -46,6 +46,10 @@ data class CoachFeatureFlags(
     val maxRounds: Int = 15,
     val maxToolCalls: Int = 30,
     val settings: CoachSettings = CoachSettings(),
+    /** The active provider, for usage/cost attribution (iOS #65 `providerUsed`).
+     *  Defaults to the OpenAI-key mode, matching [model]'s default. */
+    val providerMode: com.pulseloop.coach.config.CoachProviderMode =
+        com.pulseloop.coach.config.CoachProviderMode.USER_OPENAI_KEY,
 )
 
 /** `reasoningEffort` is an optional hint ("low"/"medium"/"high"); null = omit

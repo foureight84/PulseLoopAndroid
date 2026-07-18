@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -130,7 +131,7 @@ fun CoachScreen(
  * chat then scrolls under it.
  */
 @Composable
-fun CoachHeader(onNewChat: () -> Unit) {
+fun CoachHeader(onNewChat: () -> Unit, onOpenUsage: (() -> Unit)? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -156,6 +157,19 @@ fun CoachHeader(onNewChat: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Text("PulseLoop Coach", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
             Text("Using your latest ring sync", fontSize = 12.sp, color = PulseColors.textMuted)
+        }
+        if (onOpenUsage != null) {
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(PulseColors.card)
+                    .border(1.dp, PulseColors.borderSubtle, CircleShape)
+                    .clickable(onClick = onOpenUsage),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Info, "Usage & cost", tint = PulseColors.textSecondary, modifier = Modifier.size(16.dp))
+            }
         }
         Box(
             Modifier

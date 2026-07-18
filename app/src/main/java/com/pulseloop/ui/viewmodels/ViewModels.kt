@@ -713,9 +713,21 @@ class CoachViewModel(
         db.coachConversationDao().upsert(currentConversation)
     }
 
+    /** The active thread's id, for the usage sheet — a one-shot fetch when the sheet opens rather
+     *  than a live Flow, since "usage so far" doesn't need to update while the sheet is open. */
+    fun currentConversationId(): String = currentConversation.id
+
+    /** Conversation + message rows for the usage sheet. [currentConversation] is always kept
+     *  fresh by [sendMessage]'s touch, so no extra DAO round-trip is needed for it. */
+    suspend fun usageSnapshot(): Pair<CoachConversationEntity, List<CoachMessageEntity>> =
+        currentConversation to db.coachMessageDao().forConversation(currentConversation.id)
+
     private fun CoachMessageEntity.toChatMessage() = ChatMessage(
-        role = role, text = body,
+        // Persisted role is "error" (not "assistant") for a failed turn (see sendMessage) —
+        // map back to an assistant bubble with isError set, matching the in-memory shape.
+        role = if (role == "error") "assistant" else role, text = body,
         attachments = com.pulseloop.coach.attachments.CoachAttachmentRef.decode(attachmentsJson),
+        isError = role == "error",
     )
 
     /** Reset to a fresh thread (iOS CoachView "+" button). Starts a NEW persisted conversation —
@@ -783,23 +795,37 @@ class CoachViewModel(
                     messages = it.messages + reply,
                     isThinking = false,
                 ) }
-                // Error bubbles are app-generated diagnostics, not real assistant turns (same
-                // reasoning as the context-replay filter above) — skip persisting them; #65b's
-                // usage/status columns are the right place to record a failed turn properly.
-                if (!reply.isError) {
-                    val assistantMessageId = java.util.UUID.randomUUID().toString()
-                    db.coachMessageDao().insert(CoachMessageEntity(
-                        id = assistantMessageId, conversationId = conversationId,
-                        role = "assistant", body = reply.text,
+                // A failed turn still burned tokens, so it's persisted too (role "error", not
+                // "assistant") — the context-replay filter above keys off isError, not the
+                // persisted role, so this doesn't leak into future prompts.
+                val persistedRole = if (reply.isError) "error" else "assistant"
+                val assistantMessageId = java.util.UUID.randomUUID().toString()
+                val usage = result.usage
+                // Cost prefers the provider-reported figure (OpenRouter); else the catalog
+                // estimate. Both are null when the model is unknown/on-device/no usage reported —
+                // the usage sheet shows "cost unavailable" rather than a wrong number.
+                val cost = usage?.reportedCostUSD
+                    ?: usage?.let { com.pulseloop.coach.usage.CoachPricingCatalog.cost(result.modelUsed, it) }
+                db.coachMessageDao().insert(CoachMessageEntity(
+                    id = assistantMessageId, conversationId = conversationId,
+                    role = persistedRole, body = reply.text,
+                    inputTokens = usage?.inputTokens, outputTokens = usage?.outputTokens,
+                    costUSD = cost,
+                    modelUsed = result.modelUsed.ifEmpty { null },
+                    providerUsed = result.providerUsed.ifEmpty { null },
+                ))
+                for (call in result.trace) {
+                    db.coachToolCallDao().insert(CoachToolCallEntity(
+                        conversationId = conversationId, messageId = assistantMessageId,
+                        toolName = call.toolName, outputJSON = call.resultSummary,
                     ))
-                    for (call in result.trace) {
-                        db.coachToolCallDao().insert(CoachToolCallEntity(
-                            conversationId = conversationId, messageId = assistantMessageId,
-                            toolName = call.toolName, outputJSON = call.resultSummary,
-                        ))
-                    }
                 }
-                val touched = conversation.copy(updatedAt = System.currentTimeMillis())
+                val touched = conversation.copy(
+                    updatedAt = System.currentTimeMillis(),
+                    totalInputTokens = conversation.totalInputTokens + (usage?.inputTokens ?: 0),
+                    totalOutputTokens = conversation.totalOutputTokens + (usage?.outputTokens ?: 0),
+                    totalCostUSD = conversation.totalCostUSD + (cost ?: 0.0),
+                )
                 db.coachConversationDao().upsert(touched)
                 // Only refresh the in-memory cache if this is still the active thread — a
                 // "+" tap mid-turn already moved `currentConversation` on to a newer one.

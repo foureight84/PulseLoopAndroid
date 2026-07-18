@@ -282,7 +282,17 @@ class MiniMaxClient(
         if (outputItems.isEmpty()) throw ResponsesError.EmptyOutput
 
         storedAssistantMessage[responseId] = JsonObject(assistantMessage)
-        return OpenAIResponse(id = responseId, output = outputItems)
+        return OpenAIResponse(id = responseId, output = outputItems, usage = usage(root))
+    }
+
+    /** Maps MiniMax's `usage` block. Only the prompt/completion split is used; if
+     *  MiniMax reports just `total_tokens` (no split), usage stays `null` rather
+     *  than mis-attributing the total to either side. */
+    private fun usage(root: JsonObject): com.pulseloop.coach.usage.CoachTokenUsage? {
+        val usage = root["usage"] as? JsonObject ?: return null
+        val input = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: return null
+        val output = usage["completion_tokens"]?.jsonPrimitive?.intOrNull ?: return null
+        return com.pulseloop.coach.usage.CoachTokenUsage(inputTokens = input, outputTokens = output)
     }
 
     /** Removes `<think>…</think>` reasoning blocks (and any leading whitespace they
