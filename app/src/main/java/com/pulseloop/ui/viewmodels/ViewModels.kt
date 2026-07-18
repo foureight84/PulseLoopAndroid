@@ -678,18 +678,52 @@ class CoachViewModel(
         val isError: Boolean = false,
     )
 
-    private val _state = MutableStateFlow(CoachState(
-        messages = listOf(ChatMessage("assistant",
-            "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
-    ))
+    private val greeting = ChatMessage("assistant",
+        "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?")
+
+    private val _state = MutableStateFlow(CoachState(messages = listOf(greeting)))
     val state: StateFlow<CoachState> = _state.asStateFlow()
 
-    /** Reset to a fresh thread (iOS CoachView "+" button). In-memory only, like the thread itself. */
+    /** The thread every persisted message/tool-call is written under. Holds the full row (not just
+     *  the id) so bumping `updatedAt` in [sendMessage] can `.copy(...)` it without clobbering
+     *  `createdAt`/`title` back to their defaults. Populated by [loadOrCreateConversation]. */
+    private var currentConversation: CoachConversationEntity = CoachConversationEntity()
+
+    /** [sendMessage] joins this before writing anything, so a message insert can never race ahead
+     *  of its parent conversation row landing (the `coach_messages.conversationId` foreign key
+     *  would otherwise throw if the row isn't there yet). Reassigned by [newConversation] too. */
+    private var conversationReady: kotlinx.coroutines.Job =
+        viewModelScope.launch { loadOrCreateConversation() }
+
+    /** Resume the most recent conversation's persisted messages (iOS/SwiftData parity — chat
+     *  history now survives process death), or start a fresh persisted thread if there is none
+     *  yet / the most recent one is empty. The canned greeting is never persisted (client-side
+     *  placeholder only, mirrors iOS), so an existing-but-empty conversation still shows it. */
+    private suspend fun loadOrCreateConversation() {
+        val existing = db.coachConversationDao().recent(limit = 1).firstOrNull()
+        if (existing != null) {
+            currentConversation = existing
+            val messages = db.coachMessageDao().forConversation(existing.id)
+            if (messages.isNotEmpty()) {
+                _state.update { it.copy(messages = messages.map { m -> m.toChatMessage() }) }
+            }
+            return
+        }
+        currentConversation = CoachConversationEntity()
+        db.coachConversationDao().upsert(currentConversation)
+    }
+
+    private fun CoachMessageEntity.toChatMessage() = ChatMessage(
+        role = role, text = body,
+        attachments = com.pulseloop.coach.attachments.CoachAttachmentRef.decode(attachmentsJson),
+    )
+
+    /** Reset to a fresh thread (iOS CoachView "+" button). Starts a NEW persisted conversation —
+     *  the old one's rows are left in Room untouched, not deleted. */
     fun newConversation() {
-        _state.value = CoachState(
-            messages = listOf(ChatMessage("assistant",
-                "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
-        )
+        _state.value = CoachState(messages = listOf(greeting))
+        currentConversation = CoachConversationEntity()
+        conversationReady = viewModelScope.launch { db.coachConversationDao().upsert(currentConversation) }
     }
 
     fun sendMessage(
@@ -701,6 +735,16 @@ class CoachViewModel(
             isThinking = true, error = null,
         ) }
         viewModelScope.launch {
+            conversationReady.join()
+            // Captured once here: if the user starts a new thread ("+") while this turn is still
+            // in flight, the reply must still land on the conversation it was asked in, not
+            // whichever one is active by the time the provider responds.
+            val conversation = currentConversation
+            val conversationId = conversation.id
+            db.coachMessageDao().insert(CoachMessageEntity(
+                conversationId = conversationId, role = "user", body = userText,
+                attachmentsJson = com.pulseloop.coach.attachments.CoachAttachmentRef.encode(attachments),
+            ))
             try {
                 val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db)
                 // Drop error bubbles: they're app-generated diagnostics (a provider HTTP error),
@@ -739,6 +783,27 @@ class CoachViewModel(
                     messages = it.messages + reply,
                     isThinking = false,
                 ) }
+                // Error bubbles are app-generated diagnostics, not real assistant turns (same
+                // reasoning as the context-replay filter above) — skip persisting them; #65b's
+                // usage/status columns are the right place to record a failed turn properly.
+                if (!reply.isError) {
+                    val assistantMessageId = java.util.UUID.randomUUID().toString()
+                    db.coachMessageDao().insert(CoachMessageEntity(
+                        id = assistantMessageId, conversationId = conversationId,
+                        role = "assistant", body = reply.text,
+                    ))
+                    for (call in result.trace) {
+                        db.coachToolCallDao().insert(CoachToolCallEntity(
+                            conversationId = conversationId, messageId = assistantMessageId,
+                            toolName = call.toolName, outputJSON = call.resultSummary,
+                        ))
+                    }
+                }
+                val touched = conversation.copy(updatedAt = System.currentTimeMillis())
+                db.coachConversationDao().upsert(touched)
+                // Only refresh the in-memory cache if this is still the active thread — a
+                // "+" tap mid-turn already moved `currentConversation` on to a newer one.
+                if (currentConversation.id == conversationId) currentConversation = touched
             } catch (e: Exception) {
                 _state.update { it.copy(
                     messages = it.messages + ChatMessage("assistant", "Sorry, something went wrong: ${e.message}"),

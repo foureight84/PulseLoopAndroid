@@ -56,7 +56,13 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
 | ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
 | ☑ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1) + `1075586` (stages 2–3). Android uses a discrete edit-mode (Customize button → hide badge + move up/down + Hidden tray) instead of free-form drag |
-| ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
+| — | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | ~~Coach transparency/context rehaul~~ **RE-TRIAGED** into #65a–f below (was mis-billed "M"; PR is 2058 ins/47 files, and unlike iOS — where conversation persistence already existed — Android's coach chat was 100% in-memory, so "port the persisted usage/trace fields" first required wiring real persistence at all) | — | — | see sub-rows |
+| ☑ | #65a | 07-17 | **Wire real chat persistence** (bring the dormant `CoachConversation/Message/ToolCall` Room entities+DAOs to life — they existed, fully defined, since an earlier port session, but nothing wrote to them) | **PORT** | M | `<pending>` — `CoachViewModel` now loads the most recent conversation's messages on init (or starts a fresh persisted thread), persists every user/assistant turn + tool-call trace via the existing DAOs, and "+" starts a new persisted conversation without deleting the old one's rows. No schema change — uses the tables exactly as they already existed. Runtime-verified on `emulator-5554` (API 35): send → force-stop → relaunch reloads the same thread; "+" → force-stop → relaunch loads the new (not old) thread; old conversation's rows confirmed intact via on-device `sqlite3`. Error bubbles (app-generated diagnostics) intentionally not persisted — see #65b |
+| ☐ | #65b | — | **Token/cost usage tracking** (`CoachTokenUsage`/`CoachModelPricing`, `CoachOrchestrator.TurnResult.usage`, provider clients parse real usage, `MIGRATION_9_10` adds token/cost/model/provider columns to `coach_conversations`/`coach_messages`, `CoachUsageSheet`-equivalent screen) | **PORT** | M | next up |
+| ☐ | #65c | — | **Tool-call trace persistence + UI** (`MIGRATION_9_10` adds `label`/`statusRaw`/`sequence` to `coach_tool_calls`; a `CoachToolTraceDisclosure`-equivalent Composable) | **PORT** | S | small once #65a/b land — #65a already writes bare tool-call rows (`toolName`/`outputJSON`), just missing the new columns + UI |
+| ☐ | #65d | — | **Environment/weather context** (Open-Meteo + existing `FusedLocationProviderClient` dep for coarse city/region, cached in SharedPreferences/DataStore; feeds coach context + `NotificationContextBuilder`) | **ADAPT** | L | net-new — no WeatherKit equivalent on Android |
+| ⊘ | #65e | — | Context budget (`.compact` mode) | **SKIP** | — | iOS's compact budget only triggers for the Apple on-device provider, which has no Android equivalent — revisit only if Android gains a constrained/offline provider |
+| ☐ | #65f | — | **Variety hints + notification sleep-gating** (FNV-1a "coaching angle" rotation + recent-check-in anti-repeat + sleep-data-synced gate for morning check-ins, reusing `DeviceEntity.lastFullSyncAt` from #61c) | **ADAPT** | S | small, mechanical |
 | ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
 | — | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | ~~Activity UI sync-alerts bugfix~~ **RE-TRIAGED** into #61a–f below (was mis-billed "S"; PR is ~1188 ins/34 files) | — | — | see sub-rows |
 | ☑ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | `e5b68f6` — `BatteryAlertEngine`+`BatteryAlertMonitor`+`BatteryNotifications` (own channel) + `ApiKeyStore.batteryAlertsEnabled` (default ON) + Check-Ins toggle; 8 iOS oracle tests ported green |
@@ -85,7 +91,17 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
 wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
 
-> **▶ RESUME HERE (next session):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
+> **▶ RESUME HERE (next session):** Tier 1 clear, Tier 2 #61a–f done; **#65 re-triaged into #65a–f**
+> (2026-07-17, 2nd session) — **#65a (wire real chat persistence) DONE**, uncommitted as of this
+> writing. `CoachViewModel` now persists every turn to the already-existing (previously dormant)
+> `CoachConversation/Message/ToolCall` Room tables and reloads the last thread on relaunch; no schema
+> change. Runtime-verified on `emulator-5554`: send→relaunch reloads history, "+"→relaunch loads the
+> new thread, old thread's rows survive. **Next: #65b token/cost usage tracking** (needs a
+> `MIGRATION_9_10`, provider clients parsing real usage, and a usage-sheet screen) — see the #65b row
+> above for exact scope. #65e (context-budget compact mode) has no Android equivalent yet and should
+> stay SKIPped unless a constrained/offline provider is added.
+>
+> **Prior state (still accurate below):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
 > battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
 > `44351a4` dead-code cleanup) — all three runtime-verified on API-35 (each install exercised a real
 > schema-version upgrade over existing data, not a fresh create: v7→v8 for #61b, v8→v9 for #61c). All
