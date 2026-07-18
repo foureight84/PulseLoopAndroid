@@ -55,11 +55,6 @@ interface MeasurementDao {
     @Query("SELECT EXISTS(SELECT 1 FROM measurements WHERE kindRaw = :kind AND sourceRaw = 'demo')")
     suspend fun hasDemo(kind: String): Boolean
 
-    /** Whether the store has ever recorded a single measurement — gates the coach-notification
-     *  stale-data policy (iOS #61c): send with last-known data unless the store is truly empty. */
-    @Query("SELECT EXISTS(SELECT 1 FROM measurements LIMIT 1)")
-    suspend fun hasAny(): Boolean
-
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
