@@ -375,6 +375,7 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
  * Ported from MetricsService.metricRange in PulseServices.swift.
  * Uses reactive polling so data appears as soon as the ring syncs.
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
     data class VitalsState(
         val hrSamples: List<Double> = emptyList(),
@@ -429,6 +430,14 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
     val state: StateFlow<VitalsState> = _state.asStateFlow()
 
     init {
+        // Room is the display source of truth. Rebuild after inserts commit so a manual reading
+        // cannot lose a race between the coordinator seeing its event and the persistence
+        // subscriber writing it. Debounce coalesces large history batches into one rebuild.
+        viewModelScope.launch {
+            db.measurementDao().changeFlow().debounce(250).collect {
+                try { refresh(db) } catch (_: Exception) {}
+            }
+        }
         // Poll every 5 seconds so data appears as the ring syncs history
         viewModelScope.launch {
             while (true) {

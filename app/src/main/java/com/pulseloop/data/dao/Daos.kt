@@ -41,6 +41,10 @@ interface DeviceDao {
 
 @Dao
 interface MeasurementDao {
+    /** Invalidates after committed measurement inserts; consumers can debounce bursty history. */
+    @Query("SELECT COUNT(*) FROM measurements")
+    fun changeFlow(): Flow<Int>
+
     @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
     suspend fun range(kind: String, start: Long, end: Long): List<MeasurementEntity>
 
