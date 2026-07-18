@@ -60,7 +60,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
 | — | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | ~~Activity UI sync-alerts bugfix~~ **RE-TRIAGED** into #61a–f below (was mis-billed "S"; PR is ~1188 ins/34 files) | — | — | see sub-rows |
 | ☑ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | `e5b68f6` — `BatteryAlertEngine`+`BatteryAlertMonitor`+`BatteryNotifications` (own channel) + `ApiKeyStore.batteryAlertsEnabled` (default ON) + Check-Ins toggle; 8 iOS oracle tests ported green |
-| ☐ | #61b | 07-08 | **Battery history + drainage graph** (persist battery samples + chart in Wearable settings) | **PORT** | M | Android has none; needs a Room table |
+| ☑ | #61b | 07-08 | **Battery history + drainage graph** (persist battery samples + chart in Wearable settings) | **PORT** | M | `b5fcbf4` — `BatterySampleEntity`+DAO (`MIGRATION_7_8`, v7→v8) + throttled write in `EventPersistenceSubscriber` + `BatteryHistorySection` (24h/7d `ZoneLineChart`, fixed 0–100, critical/low/good zones) in Wearable settings; migration + chart runtime-verified on a real v7 upgrade |
 | ☐ | #61c | 07-08 | **Coach notification improvements** (`CoachNotificationService` +73, `NotificationsSettingsView` +39, prompt/orchestrator/settings) | **ADAPT** | M | diff vs Android `CoachNotifications` — verify what changed |
 | ☑ | #61d | 07-08 | **Workout-history day grouping** (TODAY/YESTERDAY/date headers in the history sheet) | **PORT** | S | `9c7fecb` — grouped `WorkoutHistoryDialog` by `LocalDate`. (Card style polish is iOS-specific `activityValueStyle`; N/A) |
 | ☑ | #61e | 07-08 | **Sleep-page coach card → bottom** | **ALREADY-HAVE** | S | Android `SleepScreen` already renders the coach card at the bottom of both Day and aggregate views (hero opens, coach closes) — no change needed |
@@ -85,16 +85,20 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
 wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
 
-> **▶ RESUME HERE (next session):** Tier 1 clear; **#61a battery alerts DONE** (`e5b68f6`, runtime-verified).
-> Next up is **Tier 2 item #61b — battery history + drainage graph** (M, PORT), on its **own branch** (it
-> carries a Room v7→v8 migration; keep it isolated from #61a). Plan is in the #61b port-queue row + the
-> 2026-07-17 recon note below: `BatterySampleEntity`+DAO+`MIGRATION_7_8`, a throttled write (30-min floor /
-> on-change) in `EventPersistenceSubscriber`'s `BatteryLevel` branch, and a 24h/7d `ZoneLineChart` in
-> `WearableSettingsScreen` (adapt iOS `colorForValue` ≤20 danger/≤50 warning to the `zones`/`accent` API).
-> After #61b: **#61c** coach freshness (ADAPT; folds in the only worthwhile #61f bits — `lastFullSyncAt` +
-> `awaitSyncCompletion`; ⚠ background-BLE-sync degrades on Android). **#61f** has no standalone work.
-> **#65** re-scoped to **L→XL** (in-memory chat vs SwiftData; no WeatherKit) — needs a scope decision first.
-> All Tier-2 work continues on branch `iOS_sync_2026-07-16`.
+> **▶ RESUME HERE (next session):** Tier 1 clear; **#61a battery alerts DONE** (`e5b68f6`) and **#61b
+> battery history + graph DONE** (`b5fcbf4`), both runtime-verified on API-35 (the #61b install exercised
+> a real v7→v8 upgrade over existing data, not just a fresh create). Both landed as sequential commits on
+> `iOS_sync_2026-07-16` — no separate branches, matching how every prior Tier-1 item shipped.
+> Next up is **#61c coach notification freshness** (M, ADAPT): active sync-before-notify + a new
+> `lastFullSyncAt` field (stamped on `SyncProgress("done")`) replacing the freshness gate's `lastSyncAt`
+> (which Android also re-stamps on bare CONNECT — same latent bug as iOS had). This folds in the only
+> worthwhile #61f bits (`lastFullSyncAt` + an `awaitSyncCompletion` primitive on `RingSyncCoordinator`);
+> #61f has no standalone work otherwise. ⚠ **Risk:** driving a fresh connect-and-sync from a background
+> WorkManager worker is unreliable on Android (BLE background limits) — the "await in-flight sync" and
+> "send last-known + warning" paths port cleanly; the "connect from background" path likely must degrade
+> to last-known+warning. Read the #61c/#61f port-queue rows + the 2026-07-17 recon note below before
+> starting. After #61c: **#65** coach transparency, re-scoped **L→XL** (in-memory chat vs SwiftData; no
+> WeatherKit) — needs a scope decision (session-scoped usage/trace vs a Room migration) before starting.
 
 **Tier 1 — small, high-value (land on the current sync branch):**
 
@@ -121,8 +125,10 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
    (pure, 8 iOS oracle tests ported green) + `BatteryAlertMonitor` (bus collector, per-day latch in
    SharedPreferences) + `BatteryNotifications` (own "Ring Battery" channel, one-shot, POST_NOTIFICATIONS
    guarded) + `ApiKeyStore.batteryAlertsEnabled` (default ON, coach-independent) + a Check-Ins toggle.
-7. **#61b Battery history + drainage graph** (M, PORT) — needs a Room table + a Wearable-settings chart.
-8. **#61c Coach notification improvements** (M, ADAPT). **Recon 2026-07-17:** real gap — iOS actively
+7. ~~**#61b Battery history + drainage graph**~~ ✅ **DONE** `b5fcbf4`. `BatterySampleEntity`+DAO
+   (`MIGRATION_7_8`), throttled write in `EventPersistenceSubscriber`, 24h/7d `ZoneLineChart` in
+   `WearableSettingsScreen`. Migration + chart runtime-verified on a real v7→v8 upgrade.
+8. **#61c Coach notification improvements** (M, ADAPT). ◀ **RESUME HERE.** **Recon 2026-07-17:** real gap — iOS actively
    syncs (or awaits an in-flight sync) before notifying + fixes the freshness gate to use a new
    `lastFullSyncAt` (stamped on `SyncProgress("done")`) instead of `lastSyncAt` (re-stamped on bare
    CONNECT). **Android has the same latent `lastSyncAt` bug** in `NotificationContextBuilder`'s stale
@@ -176,6 +182,28 @@ notification *delivery*, which needs a live ring `BatteryLevel` event. Files: `s
 `service/BatteryAlertMonitor.kt`, `notifications/BatteryNotifications.kt`, `settings/ApiKeyStore.kt`,
 `MainActivity.kt`, `ui/PulseLoopApp.kt`, `ui/screens/SettingsSubScreens.kt`,
 `test/.../service/BatteryAlertEngineTest.kt`.
+
+**#61b Battery history + drainage graph — DONE `b5fcbf4`.** `BatterySampleEntity` (id/percent/timestamp/
+createdAt, indexed on timestamp) + `BatterySampleDao.samplesBetween(start, end, limit)`; Room bumped
+v7→v8 with `MIGRATION_7_8` creating the table + index. `EventPersistenceSubscriber.recordBatterySample`
+throttles off the same `BatteryLevel` event that already updates `DeviceEntity` — in-memory
+`lastBatteryPercent`/`lastBatteryLogAt`, logs on change or a 30-min floor (first reading after each
+launch always logs, matching iOS). `BatteryHistorySection` composable in `WearableSettingsScreen`: a
+`SingleChoiceSegmentedButtonRow` 24h/7d picker over a fixed-`0.0..100.0` `ZoneLineChart`, zone-colored
+≤20 critical (red) / ≤50 low (amber) / else good (mint) — mirrors iOS `colorForValue` via `MetricZone`
+boundaries (`ZoneLineChart` matches `lower <= value < upper`, so cuts sit at 21/51). "Not enough data
+yet" text under 2 samples, matching `ZoneLineChart`'s own <2-sample no-op.
+**Runtime-verified on API-35, exercising the real migration path** (not just a fresh v8 create):
+installed the new build directly over an already-running v7 app/database (no uninstall), confirmed no
+crash and `PRAGMA user_version` = 8 with `battery_samples` present at the exact expected schema, and
+that pre-existing rows survived (`devices`=1, `measurements`=772 both intact). Seeded 8 synthetic
+`battery_samples` rows via on-device `sqlite3` (`run-as` + stdin, since `adb shell` re-parses quoted
+argv on the remote shell — piping the whole `run-as ... sqlite3` invocation as one `adb shell` string
+argument was what worked) spanning 82%→9%; the Wearable-settings chart rendered with correct zone
+coloring (mint dots >50, amber 21–50, a connected red segment for the last two <21 points within the
+90-min gap window) and the 24h/7d toggle switched without error. Files: `data/entity/CoreEntities.kt`,
+`data/dao/Daos.kt`, `data/PulseLoopDatabase.kt`, `service/EventPersistenceSubscriber.kt`,
+`ui/screens/SettingsSubScreens.kt`.
 
 ### 2026-07-17 port session (branch `iOS_sync_2026-07-16`)
 
