@@ -108,7 +108,7 @@ data class CoachMemoryEntity(
 /**
  * Ported from [CoachToolCall] in PulseModels.swift.
  */
-@Entity(tableName = "coach_tool_calls", indices = [Index("conversationId")])
+@Entity(tableName = "coach_tool_calls", indices = [Index("conversationId"), Index("messageId")])
 data class CoachToolCallEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val conversationId: String,
@@ -116,6 +116,9 @@ data class CoachToolCallEntity(
     val toolName: String,
     val inputJSON: String? = null,
     val outputJSON: String? = null,
+    val label: String = "",
+    val statusRaw: String = "success",
+    val sequence: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
 )
 

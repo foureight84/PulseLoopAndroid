@@ -298,6 +298,9 @@ interface CoachToolCallDao {
     @Query("SELECT * FROM coach_tool_calls WHERE conversationId = :convId ORDER BY createdAt ASC")
     suspend fun forConversation(convId: String): List<CoachToolCallEntity>
 
+    @Query("SELECT * FROM coach_tool_calls WHERE messageId = :messageId ORDER BY sequence ASC, createdAt ASC")
+    fun forMessageFlow(messageId: String): Flow<List<CoachToolCallEntity>>
+
     @Insert
     suspend fun insert(call: CoachToolCallEntity)
 }

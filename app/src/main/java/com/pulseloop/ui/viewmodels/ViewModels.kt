@@ -676,6 +676,9 @@ class CoachViewModel(
         /** A failed turn — render as a distinct error bubble showing the real provider error
          *  (code + reason) instead of the generic fallback. See [sendMessage]. */
         val isError: Boolean = false,
+        /** The persisted row's id, null for the client-side-only greeting. Lets
+         *  [CoachToolTraceDisclosure] (iOS #65c) query `coach_tool_calls` by messageId. */
+        val id: String? = null,
     )
 
     private val greeting = ChatMessage("assistant",
@@ -717,6 +720,12 @@ class CoachViewModel(
      *  than a live Flow, since "usage so far" doesn't need to update while the sheet is open. */
     fun currentConversationId(): String = currentConversation.id
 
+    /** Tool-call trace for one assistant/error bubble (iOS #65c CoachToolTraceDisclosure), ordered
+     *  by turn sequence. A live Flow (not one-shot) since the bubble can render before the trace
+     *  insert lands. */
+    fun toolCallsForMessage(messageId: String): Flow<List<CoachToolCallEntity>> =
+        db.coachToolCallDao().forMessageFlow(messageId)
+
     /** Conversation + message rows for the usage sheet. [currentConversation] is always kept
      *  fresh by [sendMessage]'s touch, so no extra DAO round-trip is needed for it. */
     suspend fun usageSnapshot(): Pair<CoachConversationEntity, List<CoachMessageEntity>> =
@@ -728,6 +737,7 @@ class CoachViewModel(
         role = if (role == "error") "assistant" else role, text = body,
         attachments = com.pulseloop.coach.attachments.CoachAttachmentRef.decode(attachmentsJson),
         isError = role == "error",
+        id = id,
     )
 
     /** Reset to a fresh thread (iOS CoachView "+" button). Starts a NEW persisted conversation —
@@ -782,10 +792,11 @@ class CoachViewModel(
                 // field a non-reasoning model rejects). Surface `result.error` instead so the
                 // user sees the actual provider code + reason and can act on it.
                 val turnError = result.error
+                val assistantMessageId = java.util.UUID.randomUUID().toString()
                 val reply = if (turnError != null) {
-                    ChatMessage("assistant", turnError.plainText, isError = true)
+                    ChatMessage("assistant", turnError.plainText, isError = true, id = assistantMessageId)
                 } else {
-                    ChatMessage("assistant", result.assistant.plainText)
+                    ChatMessage("assistant", result.assistant.plainText, id = assistantMessageId)
                 }
                 // The red error bubble (above) already carries the code + reason; don't also set
                 // `error`, or CoachScreen renders a duplicate "Error: <code>" footer for the same
@@ -799,7 +810,6 @@ class CoachViewModel(
                 // "assistant") — the context-replay filter above keys off isError, not the
                 // persisted role, so this doesn't leak into future prompts.
                 val persistedRole = if (reply.isError) "error" else "assistant"
-                val assistantMessageId = java.util.UUID.randomUUID().toString()
                 val usage = result.usage
                 // Cost prefers the provider-reported figure (OpenRouter); else the catalog
                 // estimate. Both are null when the model is unknown/on-device/no usage reported —
@@ -814,10 +824,11 @@ class CoachViewModel(
                     modelUsed = result.modelUsed.ifEmpty { null },
                     providerUsed = result.providerUsed.ifEmpty { null },
                 ))
-                for (call in result.trace) {
+                result.trace.forEachIndexed { index, call ->
                     db.coachToolCallDao().insert(CoachToolCallEntity(
                         conversationId = conversationId, messageId = assistantMessageId,
                         toolName = call.toolName, outputJSON = call.resultSummary,
+                        label = call.label, statusRaw = call.status, sequence = index,
                     ))
                 }
                 val touched = conversation.copy(

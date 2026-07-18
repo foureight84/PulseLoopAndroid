@@ -39,7 +39,7 @@ import com.pulseloop.data.entity.*
         WearableLogEntity::class,
         BatterySampleEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -172,6 +172,18 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v10 → v11: tool-call trace metadata (iOS #65c). Friendly label,
+         *  success/error status, and turn-order sequence per tool call, plus an
+         *  index on messageId for the trace-disclosure UI query. */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `coach_tool_calls` ADD COLUMN `label` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `coach_tool_calls` ADD COLUMN `statusRaw` TEXT NOT NULL DEFAULT 'success'")
+                db.execSQL("ALTER TABLE `coach_tool_calls` ADD COLUMN `sequence` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_coach_tool_calls_messageId` ON `coach_tool_calls` (`messageId`)")
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -179,7 +191,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
                     // coach conversation on any future version bump that misses a

@@ -88,7 +88,7 @@ fun CoachScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(state.messages.size) { idx ->
-                MessageBubble(state.messages[idx])
+                MessageBubble(state.messages[idx], viewModel)
             }
             if (state.isThinking) {
                 item {
@@ -188,7 +188,7 @@ fun CoachHeader(onNewChat: () -> Unit, onOpenUsage: (() -> Unit)? = null) {
 // ─────────────────────────── Bubbles ───────────────────────────
 
 @Composable
-private fun MessageBubble(msg: CoachViewModel.ChatMessage) {
+private fun MessageBubble(msg: CoachViewModel.ChatMessage, viewModel: CoachViewModel?) {
     val isUser = msg.role == "user"
     val ctx = LocalContext.current
     Column(
@@ -232,6 +232,11 @@ private fun MessageBubble(msg: CoachViewModel.ChatMessage) {
                     msg.isError -> Text(msg.text, fontSize = 14.sp, lineHeight = 20.sp, color = errorColor)
                     else -> MarkdownLite(msg.text)
                 }
+            }
+        }
+        if (!isUser && msg.id != null) {
+            Box(Modifier.widthIn(max = 360.dp).padding(top = 4.dp, start = 4.dp, end = 4.dp)) {
+                com.pulseloop.coach.schema.CoachToolTraceDisclosure(msg.id, viewModel)
             }
         }
     }
