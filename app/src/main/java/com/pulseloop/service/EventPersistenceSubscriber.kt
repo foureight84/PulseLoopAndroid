@@ -1,5 +1,6 @@
 package com.pulseloop.service
 
+import androidx.room.withTransaction
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
@@ -303,6 +304,10 @@ class EventPersistenceSubscriber(
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>) {
         if (stages.isEmpty()) return
+        db.withTransaction { upsertSleepSessionAtomic(ts, stages) }
+    }
+
+    private suspend fun upsertSleepSessionAtomic(ts: Long, stages: List<SleepStage>) {
         // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
         // a night that starts before midnight lands under the morning of waking instead of being
         // split into two sessions at midnight. Matches the iOS reference
