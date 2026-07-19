@@ -80,7 +80,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☐ | #61f | 07-08 | **Sync-event plumbing + misc bugfixes** (`PulseEventBus`/`RingEventBridge`/`RingSyncCoordinator`/`ActivityMigrations` + `SleepInsights`/`TodayTiles`/`ActivityRings`/`RingProtocol` fixes) | **ADAPT** | M | the actual "sync alerts" + a grab-bag "fixed multiple bugs" commit — assess each vs Android (Room Flows may already cover some) |
 | ☑ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | `be74a19` |
 | ☑ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | `3e14fef` |
-| ☐ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | deferred — cosmetic; doesn't map (Android has no Physiology route; row already Device-gated, empty section already hidden) |
+| ☑ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | `368a3f2` |
 | ☐ | [#82](https://github.com/saksham2001/PulseLoopiOS/pull/82) `902c449` | 07-11 | YCBT (Yucheng) protocol rebuild: TK5 + **SmartHealth-app Colmi rings** + pairing app-variant picker (**supersedes #56**) | **PORT** | XL | |
 | ☐ | [#79](https://github.com/saksham2001/PulseLoopiOS/pull/79) `952cf4f` | 07-12 | Activity Year trends: divide in-progress current month by elapsed days, not full 30/31 | **PORT-when-built** | S | |
 | ☑ | [#70](https://github.com/saksham2001/PulseLoopiOS/pull/70) `ac2b81a` | 07-12 | Today/Vitals apply Settings visibility + chart-detail changes immediately | **BLOCKED (behind #64)** | S | subsumed by #64 — Today/Vitals read the prefs StateFlow directly, so a visibility/order change recomposes immediately (no signature needed). Chart-detail resolution N/A on Android |
@@ -172,6 +172,25 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > #90 LuckRing/TK18, both XL — pick one via AskUserQuestion, matching the #77-vs-#57 precedent) or
 > the smaller blocked/deferred items (#79 blocked on no Activity-trends screen, #74 revisit-after-#35
 > is now unblocked since #35 shipped, #61f has no standalone work left).
+>
+> **▶ RESUME HERE (2026-07-19 session, cont'd again):** **#74 Measurement-Frequency relocation
+> DONE** `368a3f2`. User picked this (via AskUserQuestion) over jumping straight into Tier 4's XL
+> items. Straightforward cosmetic ADAPT once unblocked by #35's Physiology screen: in
+> `SettingsScreen.kt`, folded the ring-only "Device" section (which held only the capability-gated
+> Measurement Frequency row) into "General", positioned right after "Physiology" — same
+> `WearableCapability.MEASUREMENT_INTERVAL` gate and route, just relocated, so `generalRows` went
+> from a fixed `listOf` to a `buildList`. The old "Device" section is deleted outright (it had no
+> other members once the row moved, matching what iOS's own diff did). Android's "AI Coach" section
+> stays a separate top-level section before "General" (pre-existing structural divergence from iOS,
+> where AI Coach nests inside General — out of scope for #74, which only ever moved Measurement
+> Frequency upstream too). `:app:assembleDebug` + `:app:testDebugUnitTest` green. **Runtime-verified
+> on `emulator-5554`**: confirmed the "Device" section is gone and General shows only User
+> Profile/Physiology when the seeded demo device's capabilities lack `measurementInterval`; then
+> temporarily patched `devices.capabilitiesRaw` via on-device `sqlite3` to add it, relaunched, and
+> confirmed the row renders correctly between Physiology and Metrics, tapped into General fine, then
+> reverted the DB patch before finishing (device never actually has this capability in the seed
+> data). Next: **Tier 4** (#82 YCBT/TK5+SmartHealth ring rebuild or #90 LuckRing/TK18, both XL — pick
+> via AskUserQuestion) or #79 (still blocked on no Activity-trends screen).
 >
 > **Prior (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
 > the port-queue row for full detail (new `ManualActivityService.create` shared by the screen and
@@ -271,7 +290,7 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 **Blocked / deferred:**
 
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
-- **#74 Measurement-Frequency relocation** — deferred, but **revisit after #35**: it was deferred for "no Physiology route," and #35 creates exactly that route, giving the "move Measurement Frequency under Physiology" idea a home.
+- ~~**#74 Measurement-Frequency relocation**~~ ✅ **DONE** `368a3f2` (2026-07-19) — see the session note below.
 
 ### 2026-07-18 Tier 3 session — #57 re-triage + #57a/#57f (branch `iOS_sync_2026-07-16`)
 
