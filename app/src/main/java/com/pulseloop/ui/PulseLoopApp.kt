@@ -117,10 +117,15 @@ fun PulseLoopApp() {
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
         val sleepVM = remember { SleepViewModel(db) }
         val activityVM = remember { ActivityViewModel(db) }
+        val weatherContextService = remember { com.pulseloop.coach.context.WeatherContextService(context) }
         val coachVM = remember {
-            CoachViewModel(db, coachOrchestrator, attachmentPayloads = { refs ->
-                com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
-            })
+            CoachViewModel(
+                db, coachOrchestrator,
+                attachmentPayloads = { refs ->
+                    com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
+                },
+                environmentSnapshot = { weatherContextService.snapshot() },
+            )
         }
 
         // ── Start services (one-shot on composition) ─────────────────────

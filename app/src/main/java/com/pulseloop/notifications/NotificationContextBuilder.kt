@@ -1,5 +1,6 @@
 package com.pulseloop.notifications
 
+import com.pulseloop.coach.context.EnvironmentContext
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.*
@@ -21,6 +22,7 @@ object NotificationContextBuilder {
         slot: CoachNotificationSlot,
         db: PulseLoopDatabase,
         now: Long = System.currentTimeMillis(),
+        environment: EnvironmentContext? = null,
     ): NotificationContextPacket {
         val cutoff = now - 12 * 3600_000L
 
@@ -135,6 +137,7 @@ object NotificationContextBuilder {
                 )
             },
             dataQualityWarnings = warnings,
+            environment = environment,
         )
     }
 

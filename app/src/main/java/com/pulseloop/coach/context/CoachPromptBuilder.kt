@@ -22,6 +22,7 @@ Core behavior:
 - Use web search only for external/general knowledge questions, never to interpret the user's own readings. When web search is used, cite sources.
 - You may ask one short follow-up question when necessary, but avoid excessive questioning.
 - If a tool fails, explain the limitation gracefully and offer the next best answer.
+- When the context packet includes an `environment` block (the user's city + current weather), use it to ground practical suggestions — outdoor vs indoor workouts, hydration on hot days, planning around rain. Never reference the user's location more precisely than the city.
 
 Data limitations:
 - The app may currently have only a few days of real data.
@@ -61,6 +62,8 @@ data class CoachContextPacket(
     val trends: TrendsContext = TrendsContext(),
     val conversationSummary: String? = null,
     val dataQualityWarnings: List<String> = emptyList(),
+    /** Opt-in city + weather (iOS #65d), null when the toggle is off/denied/failed. */
+    val environment: EnvironmentContext? = null,
 ) {
     @kotlinx.serialization.Serializable
     data class ProfileContext(

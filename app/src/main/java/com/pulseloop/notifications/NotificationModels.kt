@@ -1,5 +1,7 @@
 package com.pulseloop.notifications
 
+import com.pulseloop.coach.context.EnvironmentContext
+
 /**
  * Ported from NotificationContextPacket, CoachNotificationSlot, CoachNotification
  * and CoachNotificationSchema in the iOS notification system.
@@ -46,6 +48,8 @@ data class NotificationContextPacket(
     val recentWorkouts: List<WorkoutContext>,
     val memories: List<MemoryContext>,
     val dataQualityWarnings: List<String>,
+    /** Opt-in city + weather (iOS #65d), null when the toggle is off/denied/failed. */
+    val environment: EnvironmentContext? = null,
 ) {
     data class GoalContext(
         val stepsDaily: Int,
@@ -123,6 +127,7 @@ data class NotificationContextPacket(
             SerializablePacket.SerializableMemoryContext(it.key, it.value, it.memoryType)
         },
         dataQualityWarnings = dataQualityWarnings,
+        environment = environment,
     )
 
     fun toJsonString(): String {
@@ -147,6 +152,7 @@ data class NotificationContextPacket(
             val recentWorkouts: List<SerializableWorkoutContext> = emptyList(),
             val memories: List<SerializableMemoryContext> = emptyList(),
             val dataQualityWarnings: List<String> = emptyList(),
+            val environment: EnvironmentContext? = null,
         ) {
             @kotlinx.serialization.Serializable
             data class SerializableGoalContext(val stepsDaily: Int, val activeMinutesDaily: Int, val sleepHours: Int, val exerciseDaysWeekly: Int)

@@ -128,7 +128,22 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
     var webSearch by remember { mutableStateOf(keyStore.webSearchEnabled) }
     var writeTools by remember { mutableStateOf(keyStore.writeToolsEnabled) }
     var liveMeasurements by remember { mutableStateOf(keyStore.liveMeasurementsEnabled) }
+    var environmentContext by remember { mutableStateOf(keyStore.enableEnvironmentContext) }
     var showMemory by remember { mutableStateOf(false) }
+
+    // Location & weather (iOS #65d) — opt-in, requests ACCESS_COARSE_LOCATION only when
+    // the user turns it on, mirroring CoachEnvironmentContextService.requestPermissionIfNeeded().
+    val environmentPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        // Granted or not, the toggle stays on — WeatherContextService degrades to city-only
+        // (or nothing) without a location fix rather than needing a second opt-out step.
+    }
+    fun setEnvironmentContext(enabled: Boolean) {
+        environmentContext = enabled
+        keyStore.enableEnvironmentContext = enabled
+        if (enabled) environmentPermLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+    }
 
     // "Enable Coach Check-Ins?" prompt state (iOS #49 CoachSettingsSection).
     var askEnableCheckIns by remember { mutableStateOf(false) }
@@ -450,6 +465,13 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         Switch(checked = liveMeasurements, onCheckedChange = {
                             liveMeasurements = it; keyStore.liveMeasurementsEnabled = it
                         })
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Use location & weather")
+                            Text("Grounds suggestions in your city's current weather", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = environmentContext, onCheckedChange = { setEnvironmentContext(it) })
                     }
                 }
             }

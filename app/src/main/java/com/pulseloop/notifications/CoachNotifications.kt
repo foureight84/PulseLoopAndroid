@@ -162,8 +162,11 @@ class CoachNotificationWorker(
             // there — a stale check-in beats a missed one.
             ensureFreshData(db)
 
-            // Build context
-            val packet = NotificationContextBuilder.build(slot, db)
+            // Build context. The weather service degrades to a cached (or null) reading on
+            // its own when the app isn't foregrounded — see WeatherContextService — so it's
+            // always safe to call from this background worker.
+            val environment = com.pulseloop.coach.context.WeatherContextService(applicationContext).snapshot()
+            val packet = NotificationContextBuilder.build(slot, db, environment = environment)
 
             // Generate via AI or fallback
             val notification = try {

@@ -46,6 +46,12 @@ class ApiKeyStore(context: Context) {
         get() = prefs.getBoolean(KEY_LIVE_MEASUREMENTS, false)
         set(value) { prefs.edit().putBoolean(KEY_LIVE_MEASUREMENTS, value).apply() }
 
+    /** Opt-in city-level location + weather context for the coach (iOS #65d). Off by default —
+     *  turning it on triggers a location-permission request from the Settings toggle. */
+    var enableEnvironmentContext: Boolean
+        get() = prefs.getBoolean(KEY_ENVIRONMENT_CONTEXT, false)
+        set(value) { prefs.edit().putBoolean(KEY_ENVIRONMENT_CONTEXT, value).apply() }
+
     var notificationsEnabled: Boolean
         get() = prefs.getBoolean(KEY_NOTIFICATIONS, false)
         set(value) { prefs.edit().putBoolean(KEY_NOTIFICATIONS, value).apply() }
@@ -178,6 +184,7 @@ class ApiKeyStore(context: Context) {
         private const val KEY_WEB_SEARCH = "web_search_enabled"
         private const val KEY_WRITE_TOOLS = "write_tools_enabled"
         private const val KEY_LIVE_MEASUREMENTS = "live_measurements_enabled"
+        private const val KEY_ENVIRONMENT_CONTEXT = "environment_context_enabled"
         private const val KEY_NOTIFICATIONS = "notifications_enabled"
         private const val KEY_BATTERY_ALERTS = "battery_alerts_enabled"
         private const val KEY_MORNING_HOUR = "morning_hour"

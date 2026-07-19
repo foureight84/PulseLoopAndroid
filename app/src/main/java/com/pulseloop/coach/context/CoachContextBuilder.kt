@@ -18,6 +18,7 @@ object CoachContextBuilder {
     suspend fun build(
         db: PulseLoopDatabase,
         conversationSummary: String? = null,
+        environment: EnvironmentContext? = null,
     ): CoachContextPacket {
         val now = System.currentTimeMillis()
         val profile = db.userProfileDao().get()
@@ -90,6 +91,7 @@ object CoachContextBuilder {
             ),
             conversationSummary = conversationSummary,
             dataQualityWarnings = warnings,
+            environment = environment,
         )
     }
 

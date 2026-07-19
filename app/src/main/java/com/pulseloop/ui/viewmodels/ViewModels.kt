@@ -661,6 +661,8 @@ class CoachViewModel(
     private val orchestrator: com.pulseloop.coach.orchestration.CoachOrchestrator,
     /** Resolves staged attachment refs to wire payloads (injected so the VM stays context-free). */
     private val attachmentPayloads: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> List<com.pulseloop.coach.attachments.CoachImagePayload> = { emptyList() },
+    /** Opt-in city + weather (iOS #65d), injected so the VM stays context-free like [attachmentPayloads]. */
+    private val environmentSnapshot: suspend () -> com.pulseloop.coach.context.EnvironmentContext? = { null },
 ) : ViewModel() {
     data class CoachState(
         val messages: List<ChatMessage> = emptyList(),
@@ -768,7 +770,7 @@ class CoachViewModel(
                 attachmentsJson = com.pulseloop.coach.attachments.CoachAttachmentRef.encode(attachments),
             ))
             try {
-                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db)
+                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db, environment = environmentSnapshot())
                 // Drop error bubbles: they're app-generated diagnostics (a provider HTTP error),
                 // not real assistant turns. Replaying them as assistant history would feed the
                 // model garbage like "Coach error · HTTP 404 …" as if it had said it.

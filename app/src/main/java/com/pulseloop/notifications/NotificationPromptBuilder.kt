@@ -26,6 +26,7 @@ object NotificationPromptBuilder {
             appendLine("- Be warm and engaging, like a thoughtful coach. At most one emoji, and only if it fits.")
             appendLine("- Ground every claim in the provided data. If data is thin, keep it light and honest; never invent numbers.")
             appendLine("- No medical diagnosis or alarming language. Wellness tone only.")
+            appendLine("- When an `environment` block (city + weather) is present, actively consider it when shaping the check-in (outdoor vs indoor, timing around rain, hydration). If conditions are extreme (very hot, very cold, storms, heavy rain), call it out with one practical adjustment — hydrate more, layer up, or move indoors.")
         }
     }
 
