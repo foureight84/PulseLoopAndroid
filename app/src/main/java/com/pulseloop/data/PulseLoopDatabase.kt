@@ -38,8 +38,9 @@ import com.pulseloop.data.entity.*
         CoachSummaryEntity::class,
         WearableLogEntity::class,
         BatterySampleEntity::class,
+        CoachNotificationRecordEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -62,6 +63,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun wearableLogDao(): WearableLogDao
     abstract fun rawPacketDao(): RawPacketDao
     abstract fun batterySampleDao(): BatterySampleDao
+    abstract fun coachNotificationRecordDao(): CoachNotificationRecordDao
 
     companion object {
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
@@ -184,6 +186,25 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v11 → v12: persisted delivered check-ins, so the notification generator can
+         *  avoid repeating its own recent phrasing/openings (iOS #65 anti-repeat hint). */
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `coach_notification_records` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `body` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_coach_notification_records_createdAt` ON `coach_notification_records` (`createdAt`)")
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -191,7 +212,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
                     // coach conversation on any future version bump that misses a

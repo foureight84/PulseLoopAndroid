@@ -27,14 +27,28 @@ object NotificationPromptBuilder {
             appendLine("- Ground every claim in the provided data. If data is thin, keep it light and honest; never invent numbers.")
             appendLine("- No medical diagnosis or alarming language. Wellness tone only.")
             appendLine("- When an `environment` block (city + weather) is present, actively consider it when shaping the check-in (outdoor vs indoor, timing around rain, hydration). If conditions are extreme (very hot, very cold, storms, heavy rain), call it out with one practical adjustment — hydrate more, layer up, or move indoors.")
+            appendLine("- A coaching angle and your recent check-ins are provided — vary your voice and structure; never open two check-ins the same way.")
         }
     }
 
-    fun developerMessage(packet: NotificationContextPacket): String {
+    fun developerMessage(
+        packet: NotificationContextPacket,
+        angle: String = "",
+        recentTexts: List<String> = emptyList(),
+    ): String {
         val json = packet.toJsonString()
         return buildString {
             appendLine("Context (last ~12 hours):")
             appendLine(json)
+            if (angle.isNotEmpty()) {
+                appendLine()
+                appendLine("Coaching angle for this check-in (take it unless the data makes it a poor fit): $angle")
+            }
+            if (recentTexts.isNotEmpty()) {
+                appendLine()
+                appendLine("Your most recent check-ins — do NOT repeat their phrasing, openings, or structure:")
+                recentTexts.forEach { appendLine("- $it") }
+            }
             appendLine()
             appendLine("Write a fresh ${packet.slot} check-in now as {\"title\",\"body\"}.")
         }

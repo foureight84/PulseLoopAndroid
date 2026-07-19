@@ -58,6 +58,13 @@ class CoachSummaryCoordinator(
                 pendingToday = true
                 scheduleRefresh()
             }
+            // A completed full sync is exactly the signal the sleep-card sync gate
+            // (iOS #65) waits on — re-check so a night that arrived too early to pass
+            // the gate isn't stranded until some unrelated event happens to fire.
+            is PulseEvent.SyncProgress -> if (event.stage == "done") {
+                pendingSleep = true
+                scheduleRefresh()
+            }
             else -> {}
         }
     }

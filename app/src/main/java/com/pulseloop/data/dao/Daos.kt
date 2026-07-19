@@ -355,6 +355,10 @@ interface CoachSummaryDao {
     @Query("SELECT * FROM coach_summaries WHERE kind = :kind ORDER BY updatedAt DESC LIMIT 1")
     suspend fun latest(kind: String): CoachSummaryEntity?
 
+    /** Most recent cards of a kind, newest first — feeds the anti-repeat prompt hint (iOS #65). */
+    @Query("SELECT * FROM coach_summaries WHERE kind = :kind ORDER BY updatedAt DESC LIMIT :limit")
+    suspend fun recent(kind: String, limit: Int): List<CoachSummaryEntity>
+
     @Query("SELECT * FROM coach_summaries WHERE kind = :kind AND scopeKey = :scopeKey LIMIT 1")
     fun getFlow(kind: String, scopeKey: String): Flow<CoachSummaryEntity?>
 
@@ -363,4 +367,17 @@ interface CoachSummaryDao {
 
     @Query("DELETE FROM coach_summaries WHERE kind = :kind AND scopeKey = :scopeKey")
     suspend fun delete(kind: String, scopeKey: String)
+}
+
+@Dao
+interface CoachNotificationRecordDao {
+    @Insert
+    suspend fun insert(record: CoachNotificationRecordEntity)
+
+    /** Most recent delivered check-ins, newest first — anti-repeat prompt hint (iOS #65). */
+    @Query("SELECT * FROM coach_notification_records ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun recent(limit: Int = 6): List<CoachNotificationRecordEntity>
+
+    @Query("DELETE FROM coach_notification_records")
+    suspend fun clear()
 }

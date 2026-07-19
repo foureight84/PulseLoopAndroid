@@ -13,8 +13,11 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
 import com.pulseloop.MainActivity
+import com.pulseloop.coach.config.CoachSleepSyncGate
+import com.pulseloop.coach.config.CoachVarietyHints
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.entity.CoachNotificationRecordEntity
 import com.pulseloop.ring.PulseEvent
 import com.pulseloop.ring.PulseEventBus
 import com.pulseloop.ring.RingBLEClient
@@ -37,6 +40,7 @@ import java.util.concurrent.TimeUnit
 object CoachNotifications {
     private const val CHANNEL_ID = "coach_checkins"
     private const val DAILY_WORK_NAME = "coach_daily_checkin"
+    private const val SLEEP_RETRY_WORK_NAME = "coach_checkin_sleep_retry"
     private const val NOTIFICATION_ID = 2001
 
     fun createChannel(context: Context) {
@@ -88,6 +92,28 @@ object CoachNotifications {
 
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(DAILY_WORK_NAME)
+        WorkManager.getInstance(context).cancelUniqueWork(SLEEP_RETRY_WORK_NAME)
+    }
+
+    /**
+     * One +45min one-off wake to retry a morning check-in that was skipped because
+     * last night's sleep hadn't synced yet (iOS #65 `submitSleepRetry`). Best-effort;
+     * the next periodic run also covers the case where this doesn't land.
+     */
+    fun scheduleSleepRetry(context: Context) {
+        val request = OneTimeWorkRequestBuilder<CoachNotificationWorker>()
+            .setInitialDelay(45, TimeUnit.MINUTES)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiresBatteryNotLow(true)
+                    .build()
+            )
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            SLEEP_RETRY_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
     }
 
     /** Show an immediate check-in notification. */
@@ -152,9 +178,18 @@ class CoachNotificationWorker(
 
             // Determine current slot
             val now = LocalDateTime.now()
+            val nowMillis = System.currentTimeMillis()
             val hour = now.hour
             val slot = CoachNotificationSlot.current(hour, keyStore.morningHour, keyStore.eveningHour)
                 ?: CoachNotificationSlot.forcedSlot(hour)
+
+            // Morning-only (iOS #65): don't fire until last night's sleep has fully synced —
+            // otherwise the check-in leads with partial/absent sleep. Skip WITHOUT showing a
+            // notification so the +45min retry (or the next periodic run) can fire it once synced.
+            if (slot == CoachNotificationSlot.MORNING && !sleepDataSynced(db, nowMillis)) {
+                CoachNotifications.scheduleSleepRetry(applicationContext)
+                return Result.success()
+            }
 
             // Sync-before-notify (iOS #61c): a bounded, best-effort connect so the check-in
             // reflects today's data instead of whatever happened to be in Room when the ring
@@ -168,13 +203,21 @@ class CoachNotificationWorker(
             val environment = com.pulseloop.coach.context.WeatherContextService(applicationContext).snapshot()
             val packet = NotificationContextBuilder.build(slot, db, environment = environment)
 
+            // Variety + anti-repeat (iOS #65): a deterministic per-day/slot coaching angle,
+            // plus the last few delivered check-ins so the model doesn't repeat itself.
+            val angle = CoachVarietyHints.angle(now.toLocalDate().toString() + slot.name.lowercase())
+            val recentTexts = db.coachNotificationRecordDao().recent(6).map { "${it.title} — ${it.body}" }
+
             // Generate via AI or fallback
             val notification = try {
-                generateWithAI(slot, packet, keyStore.apiKey, keyStore.model)
+                generateWithAI(slot, packet, keyStore.apiKey, keyStore.model, angle, recentTexts)
             } catch (e: Exception) {
                 scripted(slot, packet)
             }
 
+            db.coachNotificationRecordDao().insert(
+                CoachNotificationRecordEntity(title = notification.title, body = notification.body)
+            )
             CoachNotifications.showNow(applicationContext, notification.title, notification.body)
             Result.success()
         } catch (e: Exception) {
@@ -226,11 +269,24 @@ class CoachNotificationWorker(
         }
     }
 
+    /**
+     * Ported from CoachNotificationService.sleepDataSynced (iOS #65). Whether last
+     * night's sleep is safe to summarize in the morning check-in. See
+     * [CoachSleepSyncGate.sleepDataSynced] for the exact rule.
+     */
+    private suspend fun sleepDataSynced(db: PulseLoopDatabase, now: Long): Boolean {
+        val session = db.sleepSessionDao().recent(1).firstOrNull()
+        val device = db.deviceDao().current()
+        return CoachSleepSyncGate.sleepDataSynced(session?.endAt, device?.lastFullSyncAt, now)
+    }
+
     private suspend fun generateWithAI(
         slot: CoachNotificationSlot,
         packet: NotificationContextPacket,
         apiKey: String,
         model: String,
+        angle: String = "",
+        recentTexts: List<String> = emptyList(),
     ): CoachNotificationContent {
         val client = OpenAIResponsesClient(apiKey)
 
@@ -241,7 +297,7 @@ class CoachNotificationWorker(
             )),
             JsonObject(mapOf(
                 "role" to JsonPrimitive("developer"),
-                "content" to JsonPrimitive(NotificationPromptBuilder.developerMessage(packet)),
+                "content" to JsonPrimitive(NotificationPromptBuilder.developerMessage(packet, angle, recentTexts)),
             )),
         ))
 

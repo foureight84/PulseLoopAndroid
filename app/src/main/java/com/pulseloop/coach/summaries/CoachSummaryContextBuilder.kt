@@ -21,6 +21,9 @@ object CoachSummaryContextBuilder {
         val contextJson: String,
         val signature: String,
         val fallback: CoachSummaryContent,
+        /** The end of the night this summary describes (sleepDay only); null for today.
+         *  Drives the sleep-sync gate in [CoachSummaryService] (iOS #65). */
+        val sleepSessionEnd: Long? = null,
     )
 
     // ── Today ────────────────────────────────────────────────────────────
@@ -132,6 +135,7 @@ object CoachSummaryContextBuilder {
             contextJson = contextJson,
             signature = sig,
             fallback = CoachSummaryContent(coach.headline, coach.body, coach.chips),
+            sleepSessionEnd = session.endAt,
         )
     }
 

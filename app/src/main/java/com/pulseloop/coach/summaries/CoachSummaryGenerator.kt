@@ -26,12 +26,14 @@ object CoachSummaryGenerator {
         flags: CoachFeatureFlags,
         apiKey: String,
         client: ResponsesClient? = null,
+        angle: String = "",
+        recentTexts: List<String> = emptyList(),
     ): CoachSummaryContent = withContext(Dispatchers.IO) {
         if (!flags.coachEnabled || apiKey.isBlank()) return@withContext fallback
         try {
             val input = JsonArray(listOf(
                 message("system", CoachSummaryPromptBuilder.systemPrompt(kind)),
-                message("developer", CoachSummaryPromptBuilder.developerMessage(contextJSON)),
+                message("developer", CoachSummaryPromptBuilder.developerMessage(contextJSON, angle, recentTexts)),
             ))
             val textFormat = JsonObject(mapOf(
                 "format" to JsonObject(mapOf(

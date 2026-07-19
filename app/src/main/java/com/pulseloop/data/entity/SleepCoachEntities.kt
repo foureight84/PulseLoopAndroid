@@ -211,3 +211,17 @@ data class CoachSummaryEntity(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 )
+
+/**
+ * Ported from [CoachNotificationRecord] in CoachNotificationModels.swift (iOS
+ * #65's `recentNotificationTexts()` reader — the record itself predates #65).
+ * A delivered daily check-in, kept purely so the generator can avoid repeating
+ * its own recent phrasing/openings (iOS #65 anti-repeat hint).
+ */
+@Entity(tableName = "coach_notification_records", indices = [Index("createdAt")])
+data class CoachNotificationRecordEntity(
+    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String,
+    val body: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)
