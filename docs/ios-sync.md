@@ -56,7 +56,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | — | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | ~~Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework~~ **RE-TRIAGED** into #57a–g below (was mis-billed a single "L"; PR is 3676 ins/42 files across finish-time aggregates, route distance, edit/log-past UI, vitals backfill, and an HR-stream bug) | — | — | see sub-rows |
 | ☑ | #57a | 07-18 | **Finish-time aggregates + daily rollup credit** (calories via Keytel HR model / MET fallback, avg/max/min HR, avg/latest SpO2, `ActivityDaily.activeMinutes`/`distanceMeters` credited once at finish, reversed on delete) | **PORT** | M | `<pending commit>` — `WorkoutMetricsEngine.kt` (pure, 5 oracle tests ported from `WorkoutMetricsEngineTests.swift`) + `ActivityRollup.kt` (credit/reverse, shared by `LiveWorkoutManager.finish()` and both delete sites — UI trash icon + coach `delete_activity_session`) + `LiveWorkoutManager.recomputeSummary()` querying the shared `measurements` table by `[startedAt, endedAt]` window (Android has no per-session `ActivitySample` link table like iOS, so no `backfillSamples`/`linkSample` port was needed for this slice). Runtime-verified on `emulator-5554`: a real gym workout start→finish showed **Calories: 4** (previously permanent "—") with Active Min correctly floored to 0 for a 48s session, and delete correctly ran the reversal path with no crash. |
 | ☑ | #57f | 07-18 | **Fix workout HR realtime-stream self-kill bug** (newly discovered, not in the original ledger estimate — the ~60s HR spot-poll loop's cleanup unconditionally disabled *any* active HR sensor mode, including the workout's own realtime stream, killing it almost immediately every workout) + Colmi realtime-HR decode dual-layout fix | **PORT** | S | `<pending commit>` — `WorkoutSensorPollingService` now skips its HR spot-poll entirely while `coordinator.workoutHRActive`, since a continuous stream already feeds `latestHRValue`; `ColmiDecoder`'s `0x1e` branch now accepts both the documented errCode+bpm layout and the original legacy bpm-only layout (mirrors iOS's defensive fix, since the real hardware layout was never confirmed) — 4 new test cases ported from `ColmiDecoderTests.swift`. **Bundled, unrelated crash fix found while runtime-verifying**: Android declared `FOREGROUND_SERVICE_HEALTH` but never `ACTIVITY_RECOGNITION`/`BODY_SENSORS`/`HIGH_SAMPLING_RATE_SENSORS`, so *every* workout start crashed outright on API 34+ (confirmed on the `emulator-5554` API-35 image) — added the manifest permission + a runtime `ACTIVITY_RECOGNITION` request gate in `ActivityScreen.kt` before `LiveWorkoutManager.start()`, mirroring the existing BLE-permission request pattern in `OnboardingScreen.kt`. |
-| ☐ | #57b | 07-08 | **RouteDistanceEngine consolidation** (gap + GPS-jump-speed filtered distance/splits, replacing two independent unfiltered haversine implementations) | **ADAPT** | M | |
+| ☑ | #57b | 07-18 | **RouteDistanceEngine consolidation** (gap + GPS-jump-speed filtered distance/splits, replacing two independent unfiltered haversine implementations) | **ADAPT** | M | `933edc5` — `RouteDistanceEngine`+`ActivityTrackingProfile` (pure, 12 oracle tests ported from `RouteDistanceEngineTests.swift`) shared by the live tile, finish summary, and splits table. **Real bug found and fixed along the way**: nothing ever inserted into `activity_gps_points` — the Room entity/DAO existed but `GpsRouteRecorder` only tracked an in-memory unfiltered `Pair<lat,lon>` list, so `WorkoutMapView` and the splits table were always empty for every workout. Ported `GpsRouteRecorder.swift`'s per-fix accuracy/speed/stationary/course-delta accept-reject gate, persists every fix (accepted or rejected), and drives the live distance off `RouteDistanceEngine.Accumulator`. `LiveWorkoutManager.recomputeSummary` now derives `distanceMeters` + the previously-dead `gpsPointCount`/`rejectedGpsPointCount`/`lastGpsPointAt` fields from the persisted route at finish. Runtime-verified on `emulator-5554`: a real recorded walk (13 simulated fixes via `adb emu geo fix`) showed the live tile and finish summary agreeing exactly (0.09 mi) — matching an independently hand-computed gap/speed-filtered distance — the map rendered a real route for the first time, and `gpsPointCount`/`distanceMeters`/`calories` all populated correctly in the DB. |
 | ☐ | #57c | 07-08 | **Edit-workout: recompute-aware + UI** (re-slice samples to a new time window, recompute aggregates/rollup, small edit sheet) | **ADAPT** | M | depends on #57a/#57b |
 | ☐ | #57d | 07-08 | **Log Past Activity screen** (net-new UI; backend logic already exists via the `create_activity_session_from_description` coach tool) | **PORT** | S | best after #57a |
 | ☐ | #57e | 07-08 | **Post-workout vitals backfill/reconcile** (ring-log HR/SpO2 samples arriving after finish should still attach to the just-finished session) | **ADAPT** | M | depends on #57a |
@@ -157,8 +157,10 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > currently-shipping bug: the workout HR spot-poll loop was unconditionally disabling the workout's
 > own realtime HR stream within ~60s of every workout start) are both **DONE**, runtime-verified on
 > `emulator-5554` via a real start→finish→delete cycle (a genuine, separate, blocking crash was hit
-> and fixed along the way — see the session note). **Next up: #57b** (RouteDistanceEngine
-> consolidation), then #57c/#57d/#57e/#57g per the ranked order in the session note.
+> and fixed along the way — see the session note). **#57b** (RouteDistanceEngine consolidation) is
+> also **DONE** (`933edc5`, 2026-07-18) — see the port-queue row for what shipped (a real dormant-
+> persistence bug fixed along the way). **Next up: #57c**, then #57d/#57e/#57g per the ranked order
+> in the session note.
 >
 > **Prior state (still accurate below):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
 > battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
@@ -231,9 +233,9 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 10. **#57 Activity-recording redesign** — **RE-TRIAGED into #57a–g** (see port-queue rows above and
     the 2026-07-18 session note below). ~~**#57a**~~ finish aggregates + rollup ✅ **DONE**.
-    ~~**#57f**~~ HR-stream self-kill bug + decode robustness ✅ **DONE**. Remaining: #57b
-    (RouteDistanceEngine, M), #57c (edit-workout, M), #57d (Log Past Activity UI, S), #57e (vitals
-    backfill, M), #57g (finished-notification polish, S).
+    ~~**#57f**~~ HR-stream self-kill bug + decode robustness ✅ **DONE**. ~~**#57b**~~
+    RouteDistanceEngine ✅ **DONE**. Remaining: #57c (edit-workout, M), #57d (Log Past Activity UI,
+    S), #57e (vitals backfill, M), #57g (finished-notification polish, S).
 11. ~~**#77 jring protocol-parity**~~ ✅ **DONE (protocol-layer subset)** `160430a` — see the
     2026-07-18 note below for what shipped vs. what's deferred.
 
@@ -324,6 +326,61 @@ records cleanly with zero crashes.
 
 `:app:assembleDebug` + `:app:testDebugUnitTest` green throughout (487 tests, 9 new: 5
 `WorkoutMetricsEngineTest` + 4 `ColmiDecoderTest` additions).
+
+### 2026-07-18 session (cont'd) — #57b RouteDistanceEngine (branch `iOS_sync_2026-07-16`)
+
+**#57b RouteDistanceEngine consolidation — DONE**, commit `933edc5`. Ported `RouteDistanceEngine` +
+`ActivityTrackingProfile` 1:1 from `RouteDistanceEngine.swift`: gap/speed-filtered segment distance,
+splits (moving-time-across-gap semantics), and an incremental `Accumulator` for O(1) live updates —
+one engine shared by the live tile, finish summary, and splits table so they can never disagree. 12
+oracle tests ported from `RouteDistanceEngineTests.swift` (straight-km, rejected-points-excluded,
+pause-teleport, speed-spike, unsorted-input, splits-across-gap, profile-fallback, 3×
+accumulator-matches-batch, out-of-order-skip, seed-matches-incremental), all green.
+
+**Real, previously-shipping bug found and fixed while wiring the engine in, not part of the
+original recon:** `activity_gps_points` had a fully-defined Room entity + DAO (`insert`/`forSession`)
+that **nothing ever called** — `GpsRouteRecorder` only tracked an in-memory unfiltered
+`List<Pair<lat,lon>>` (via a `DistanceUtils.totalDistance` helper, now deleted as dead code) and
+never persisted a single fix. `WorkoutSummaryScreen`'s GPS route map and splits table both read from
+that DAO, so they had been silently rendering empty for every GPS workout ever recorded on Android.
+Ported `GpsRouteRecorder.swift`'s per-fix `rejectionReason` gate (accuracy/staleness, then
+speed/minMove/course-delta/minInterval once a prior accepted fix exists) onto Android's
+`android.location.Location` (bearing instead of course, `distanceTo` instead of `CLLocation.distance`),
+persisting every fix — accepted or rejected, with its reason — via the existing DAO, and switched the
+live tile to `RouteDistanceEngine.Accumulator` fed only accepted fixes instead of the raw haversine
+sum. Also wired `LocationRequest.Builder.setMinUpdateDistanceMeters(profile.distanceFilterMeters)`,
+which the profile always had but nothing read. `LiveWorkoutManager.recomputeSummary` (from #57a) now
+re-derives `distanceMeters` from the persisted route via `RouteDistanceEngine.distanceMeters` at
+finish (instead of trusting the live accumulator's last value) and populates
+`gpsPointCount`/`rejectedGpsPointCount`/`lastGpsPointAt` — three more fields that existed on
+`ActivitySessionEntity` since it was first modeled but were never written. `WorkoutSummaryScreen`'s
+own local unfiltered `haversineMeters`/`kmSplitSeconds` (the "two independent implementations" the
+ledger row named) is replaced with `RouteDistanceEngine.splitSeconds`.
+
+**Runtime-verified on `emulator-5554`** via a real recorded walk, not synthetic DB rows: fed 13 GPS
+fixes through `adb emu geo fix` (northbound, ~15m/~4s apart) while a "Walking" session recorded live.
+All 13 persisted (`activity_gps_points` — previously always empty, confirmed via on-device
+`sqlite3`). The live tile settled at **0.09 mi**; independently hand-computing the same gap
+(30s)/speed(5 m/s) filter over the actual persisted lat/lon/timestamps in Python confirmed
+149.17 m = 0.0927 mi — the engine correctly dropped one genuine gap segment (a 36s pause from slow
+manual UI navigation before the loop started) and one borderline speed segment (15.08 m in 3.01 s =
+5.01 m/s, just over the walk profile's 5 m/s ceiling), exactly as designed. After Finish, the summary
+screen showed the **identical 0.09 mi** (live/finish agreement — the core invariant), the map
+rendered the real 13-point route for the first time ("15 m · 13 pts" scale label), and the session
+row confirmed `distanceMeters=149.17`, `gpsPointCount=13`, `rejectedGpsPointCount=0`,
+`lastGpsPointAt` matching the last fix, `calories=14.5` (from #57a's engine, now fed a real
+distance). Zero crashes/exceptions in logcat throughout. `:app:assembleDebug` +
+`:app:testDebugUnitTest` green (499 tests).
+
+**Deliberately out of scope, left for later items:** the "GPS coverage %" / "Dropped GPS points"
+data-quality rows from iOS's new `RecordSummaryViews.swift` are a separate, larger UI section not
+itemized in the #57a–g breakdown — `gpsPointCount`/`rejectedGpsPointCount` are now correctly
+populated and ready for it, but no summary-screen row was added this pass.
+
+**To resume:** continue Tier 3 at **#57c Edit-workout** (re-slice samples to a new time window,
+recompute aggregates/rollup via #57a's `recomputeSummary` + #57b's `RouteDistanceEngine`, small edit
+sheet UI) — M effort, depends on #57a+#57b (both done). Then #57d (Log Past Activity UI), #57e
+(vitals backfill), #57g (notification polish). Full detail in the port-queue rows above.
 
 ### 2026-07-17 Tier 2 session — recon + #61a (branch `iOS_sync_2026-07-16`)
 
