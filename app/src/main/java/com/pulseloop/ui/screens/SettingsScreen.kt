@@ -82,19 +82,6 @@ fun SettingsScreen(
             onSetUp = { navigate("pairing") },
         )
 
-        // DEVICE — only rings that expose a configurable measurement interval (Colmi) declare
-        // MEASUREMENT_INTERVAL, so the generic 56ff jring never shows this row.
-        SettingsSection(
-            title = "Device",
-            rows = buildList {
-                if (capabilities.contains(WearableCapability.MEASUREMENT_INTERVAL)) {
-                    add(SettingsRowItem(Icons.Filled.Timer, PulseColors.spo2, "Measurement Frequency") {
-                        navigate("settings/measurement")
-                    })
-                }
-            },
-        )
-
         // AI COACH — check-ins are a coach sub-feature, only shown once the coach is on.
         SettingsSection(
             title = "AI Coach",
@@ -111,17 +98,25 @@ fun SettingsScreen(
         )
 
         // GENERAL — Physiology sits under User Profile (iOS SettingsView General group), feeding the
-        // optional inputs that tune the vitals reference ranges.
+        // optional inputs that tune the vitals reference ranges. Measurement Frequency sits under
+        // Physiology — only rings that expose a configurable measurement interval (Colmi) declare
+        // MEASUREMENT_INTERVAL, so the generic 56ff jring never shows this row (iOS #74: dropped the
+        // old ring-only "Device" section for this since the row had no other members).
         SettingsSection(
             title = "General",
-            rows = listOf(
-                SettingsRowItem(Icons.Filled.AccountCircle, PulseColors.accent, "User Profile") {
+            rows = buildList {
+                add(SettingsRowItem(Icons.Filled.AccountCircle, PulseColors.accent, "User Profile") {
                     navigate("settings/profile")
-                },
-                SettingsRowItem(Icons.Filled.MonitorHeart, PulseColors.hrv, "Physiology") {
+                })
+                add(SettingsRowItem(Icons.Filled.MonitorHeart, PulseColors.hrv, "Physiology") {
                     navigate("settings/physiology")
-                },
-            ),
+                })
+                if (capabilities.contains(WearableCapability.MEASUREMENT_INTERVAL)) {
+                    add(SettingsRowItem(Icons.Filled.Timer, PulseColors.spo2, "Measurement Frequency") {
+                        navigate("settings/measurement")
+                    })
+                }
+            },
         )
 
         // METRICS
