@@ -60,7 +60,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | #57c | 07-19 | **Edit-workout: recompute-aware + UI** (re-slice samples to a new time window, recompute aggregates/rollup, small edit sheet) | **ADAPT** | M | `f526fce` — `ActivityAggregates.applyEdit`/`recompute` (shared with `LiveWorkoutManager.finish()`, killing the prior duplicated recompute) reverses the old day's rollup, updates type/start/end, and re-derives calories/HR/SpO2/GPS distance windowed to the new span. Coach `update_activity_session` (`PendingActionExecutor.applyUpdates`, both the same-day and queued-confirmation paths) now routes type/time changes through the same service instead of a stale field-copy; pure branching split out as `resolveUpdates` for unit tests. New Edit button + bottom sheet (type dropdown, two-step date/time pickers, iOS's validation messaging) on `WorkoutSummaryScreen`. Runtime-verified on `emulator-5554`: edited a real finished workout's type and moved its window to the previous day — calories/duration recomputed for the new type, GPS distance correctly dropped to 0 (route now outside the window), daily rollup moved cleanly (today debited, new day credited) with no drift. **Real bug found and fixed along the way**: `WorkoutSummaryScreen`'s GPS point query wasn't windowed to `[startedAt, endedAt]`, so the map/splits kept showing a workout's full route even after an edit shrank or moved its window — now windowed to match the aggregate recompute (iOS's `RecordSummaryComponents.swift` comment calls this out explicitly). |
 | ☑ | #57d | 07-19 | **Log Past Activity screen** (net-new UI; backend logic already exists via the `create_activity_session_from_description` coach tool) | **PORT** | S | `4bbfa7f` — new `ManualActivityService.create` (shared by the screen and the coach tool: validate type/duration/future-end → `ActivityAggregates.recompute` → upsert → `ActivityRollup.credit`, mirroring `LiveWorkoutManager.finish()`) + `LogPastActivityScreen` (type grid, past-only `DateTimeButton` start picker reused from #57c's edit sheet, +/-5min duration stepper + 15/30/45/60/90 chips) + new entry card on `ActivityScreen` below Record/History. **Real bug found and fixed along the way**: the existing coach tool did a raw entity insert and never called `ActivityRollup.credit`, so coach-logged manual sessions silently never counted toward the daily rollup — now routes through the shared service (also ports iOS's future-clamp guard so an unspecified start time can't default past "now"). Runtime-verified on `emulator-5554`: logged a past 45-min run through the new screen — calories (514) and active minutes (45) computed from the MET/HR engine, the TODAY list and weekly-goal ring credited correctly, and the coach tool's fix was exercised implicitly since it now shares the identical code path.
 | ☑ | #57e | 07-18 | **Post-workout vitals backfill/reconcile** (ring-log HR/SpO2 samples arriving after finish should still attach to the just-finished session) | **ADAPT** | M | `31d5835` — every completed sync (`SyncProgress("done")`) now calls `EventPersistenceSubscriber.reconcileRecentlyFinishedWorkouts()`, which re-runs `ActivityAggregates.recompute` (never touches the rollup, so idempotent) for sessions finished within `ActivityAggregates.backfillWindowMillis` (15 min, mirrors iOS `backfillLinkWindowSeconds`). Android has no per-sample `ActivitySample` link table like iOS, so `linkSample`/`backfillSamples`/the live-vs-history gap-fill dedup weren't ported — `recompute` already windows the shared `measurements` table by `[startedAt, endedAt]` regardless of source, so a late "history" row is picked up for free once reconcile re-triggers it (same architectural note as #57a). New DAO query `ActivitySessionDao.finishedSince(cutoff)` + pure `ActivityAggregates.isWithinBackfillWindow` (3 unit tests mirroring iOS `WorkoutReconcileTests.swift`'s window-eligibility oracles). Runtime-verified on `emulator-5554` via `sqlite3` injection (no ring hardware in this environment to fire a real `SyncProgress("done")`): `finishedSince` correctly matched a session ended 5 min ago and excluded one ended 20 min ago, and the windowed HR query picked up a late "history" sample alongside the original "live" one (130→120 avg) exactly as `recompute` would compute it — the live BLE trigger itself wasn't exercised, consistent with every other hardware-gated item in this ledger. |
-| ☐ | #57g | 07-08 | **Finished-workout notification card + Colmi decode robustness polish** | **PORT** | S | depends on #57a (avg HR) |
+| ☑ | #57g | 07-19 | **Finished-workout notification card + Colmi decode robustness polish** | **PORT** | S | `bcfde92` — decode-robustness half already shipped inside #57f (`851b276`). This pass: `WorkoutForegroundService` swaps the ongoing tracker notification for a dismissible "`<type>` complete" summary (duration/distance/calories/avg HR) on finish, `stopForeground(STOP_FOREGROUND_DETACH)` keeps it posted, and a `WorkoutCompleteDismissWorker` one-off (10 min delay) cancels it — mirrors iOS Live Activity's `.after(.now + 10*60)` dismissal vs. `.immediate` on cancel/discard (which still calls the old immediate `stopService` path, no summary). **Real bug found and fixed along the way**: `LiveWorkoutManager.refreshNotification()` sent live elapsed/distance/HR as intent extras every 5 ticks, but `onStartCommand` never read them — the ongoing notification had been frozen at its initial "0:00 / -- bpm" state for every workout ever recorded; now reads and applies them. **Runtime-verified on `emulator-5554`**: recorded a real indoor Gym workout (`dumpsys notification` confirmed the live extras fix — elapsed advanced to "0:25" mid-workout instead of staying at 0:00), tapped Finish, confirmed the notification flipped to "gym complete" / "1:18 · 7 cal" with `flags=0` (no longer `ONGOING_EVENT`/`FOREGROUND_SERVICE`), then force-ran the scheduled JobScheduler job for the dismiss worker (`cmd jobscheduler run -f`) and confirmed the notification was cancelled. **#57 is now fully cleared.** |
 | ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
 | ☑ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1) + `1075586` (stages 2–3). Android uses a discrete edit-mode (Customize button → hide badge + move up/down + Hidden tray) instead of free-form drag |
 | — | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | ~~Coach transparency/context rehaul~~ **RE-TRIAGED** into #65a–f below (was mis-billed "M"; PR is 2058 ins/47 files, and unlike iOS — where conversation persistence already existed — Android's coach chat was 100% in-memory, so "port the persisted usage/trace fields" first required wiring real persistence at all) | — | — | see sub-rows |
@@ -161,16 +161,24 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > also **DONE** (`933edc5`, 2026-07-18) — see the port-queue row for what shipped (a real dormant-
 > persistence bug fixed along the way).
 >
-> **▶ RESUME HERE (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
+> **▶ RESUME HERE (2026-07-19 session, cont'd):** **#57g finished-workout notification card DONE**
+> (`bcfde92`) — see the port-queue row for full detail. The Colmi decode-robustness half had already
+> landed inside #57f; this pass covered the notification-card half (`WorkoutForegroundService`
+> swaps to a dismissible "complete" summary on finish, auto-cancelled after 10 min via a
+> `WorkoutCompleteDismissWorker` one-off) plus a real, previously-invisible bug found along the way
+> (the ongoing tracker notification never read its own live-update intent extras, so it was frozen
+> at "0:00" for every workout ever recorded). **#57 Activity-recording redesign is now fully
+> cleared (#57a–g all done).** Next: move to **Tier 4** (#82 YCBT/TK5+SmartHealth ring rebuild or
+> #90 LuckRing/TK18, both XL — pick one via AskUserQuestion, matching the #77-vs-#57 precedent) or
+> the smaller blocked/deferred items (#79 blocked on no Activity-trends screen, #74 revisit-after-#35
+> is now unblocked since #35 shipped, #61f has no standalone work left).
+>
+> **Prior (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
 > the port-queue row for full detail (new `ManualActivityService.create` shared by the screen and
 > the `create_activity_session_from_description` coach tool, fixing a real gap where the coach tool
 > never credited the daily rollup). **#57e post-workout vitals backfill/reconcile DONE** (`31d5835`)
 > — see the port-queue row for full detail (sync-triggered `ActivityAggregates.recompute` re-run for
-> recently-finished sessions; no per-sample link table needed on Android, unlike iOS). **#57 is now
-> fully clear except #57g** (finished-workout notification card + Colmi decode robustness polish,
-> depends on #57a's avg HR, which is done) — pick that up next, then move to the next Tier item in
-> the port queue above (#82 YCBT/TK5+SmartHealth ring rebuild or #90 LuckRing/TK18, both XL, or the
-> smaller #79/#74/#61f open items).
+> recently-finished sessions; no per-sample link table needed on Android, unlike iOS).
 >
 > **#57c edit-workout DONE** (`f526fce`, 2026-07-19) — see the port-queue row for full detail
 > (`ActivityAggregates.applyEdit`/`recompute` shared with `LiveWorkoutManager.finish()`, the coach
@@ -246,12 +254,12 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 **Tier 3 — large, focused work (own commits):**
 
-10. **#57 Activity-recording redesign** — **RE-TRIAGED into #57a–g** (see port-queue rows above and
-    the 2026-07-18/19 session notes below). ~~**#57a**~~ finish aggregates + rollup ✅ **DONE**.
-    ~~**#57f**~~ HR-stream self-kill bug + decode robustness ✅ **DONE**. ~~**#57b**~~
-    RouteDistanceEngine ✅ **DONE**. ~~**#57c**~~ edit-workout ✅ **DONE**. ~~**#57d**~~ Log Past
-    Activity screen ✅ **DONE** `4bbfa7f`. Remaining: #57e (vitals backfill, M), #57g
-    (finished-notification polish, S).
+10. ~~**#57 Activity-recording redesign**~~ — **RE-TRIAGED into #57a–g, ALL DONE, fully cleared**
+    (see port-queue rows above and the 2026-07-18/19 session notes below). ~~**#57a**~~ finish
+    aggregates + rollup ✅ **DONE**. ~~**#57f**~~ HR-stream self-kill bug + decode robustness ✅
+    **DONE**. ~~**#57b**~~ RouteDistanceEngine ✅ **DONE**. ~~**#57c**~~ edit-workout ✅ **DONE**.
+    ~~**#57d**~~ Log Past Activity screen ✅ **DONE** `4bbfa7f`. ~~**#57e**~~ vitals backfill ✅
+    **DONE** `31d5835`. ~~**#57g**~~ finished-notification card ✅ **DONE** `bcfde92`.
 11. ~~**#77 jring protocol-parity**~~ ✅ **DONE (protocol-layer subset)** `160430a` — see the
     2026-07-18 note below for what shipped vs. what's deferred.
 
