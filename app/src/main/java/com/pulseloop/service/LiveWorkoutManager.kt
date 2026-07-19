@@ -92,7 +92,6 @@ class LiveWorkoutManager(
     suspend fun finish(session: ActivitySessionEntity) {
         gps.stop()
         polling.stop()
-        stopForegroundService()
         tickJob?.cancel()
         val now = System.currentTimeMillis()
         val finished = session.copy(statusRaw = "finished", endedAt = now, updatedAt = now)
@@ -100,6 +99,7 @@ class LiveWorkoutManager(
         db.activitySessionDao().upsert(summarized)
         ActivityRollup.credit(db, summarized)
         coordinator.stopWorkoutHeartRate()
+        finishForegroundService(summarized)
         _state.value = WorkoutState()
     }
 
@@ -166,6 +166,22 @@ class LiveWorkoutManager(
 
     private fun stopForegroundService() {
         context.stopService(Intent(context, WorkoutForegroundService::class.java))
+    }
+
+    // Replaces the ongoing tracker notification with a "workout complete" summary card that
+    // lingers for a while before auto-dismissing, instead of vanishing immediately (mirrors iOS
+    // Live Activity's `.after(.now + 10*60)` dismissal policy vs. `.immediate` on cancel/discard).
+    private fun finishForegroundService(session: ActivitySessionEntity) {
+        val elapsedSeconds = (((session.endedAt ?: System.currentTimeMillis()) - session.startedAt) / 1000).toInt()
+        val intent = Intent(context, WorkoutForegroundService::class.java).apply {
+            action = WorkoutForegroundService.ACTION_FINISH
+            putExtra("activityName", session.type)
+            putExtra("elapsedSeconds", elapsedSeconds)
+            putExtra("distanceMeters", session.distanceMeters ?: 0.0)
+            session.calories?.let { putExtra("calories", it) }
+            session.avgHeartRate?.let { putExtra("avgHeartRate", it) }
+        }
+        context.startService(intent)
     }
 
     fun destroy() { scope.cancel(); tickJob?.cancel() }

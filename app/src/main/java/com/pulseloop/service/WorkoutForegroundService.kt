@@ -6,7 +6,14 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
 import com.pulseloop.R
+import java.util.concurrent.TimeUnit
 
 /**
  * Android foreground service for live workout — replaces iOS Live Activity / Dynamic Island.
@@ -19,6 +26,8 @@ class WorkoutForegroundService : Service() {
         const val ACTION_STOP = "com.pulseloop.STOP_WORKOUT"
         const val ACTION_PAUSE = "com.pulseloop.PAUSE_WORKOUT"
         const val ACTION_RESUME = "com.pulseloop.RESUME_WORKOUT"
+        const val ACTION_FINISH = "com.pulseloop.FINISH_WORKOUT"
+        private const val DISMISS_WORK_NAME = "workout_complete_dismiss"
     }
 
     private var status = "recording"
@@ -37,12 +46,55 @@ class WorkoutForegroundService : Service() {
             ACTION_STOP -> stopSelf()
             ACTION_PAUSE -> { status = "paused"; updateNotification() }
             ACTION_RESUME -> { status = "recording"; updateNotification() }
+            ACTION_FINISH -> { finishWithSummary(intent); return START_NOT_STICKY }
+            else -> applyLiveExtras(intent)
         }
         startForeground(NOTIFICATION_ID, buildNotification())
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    // The plain (no-action) update path was only ever mutating this instance's fields via the
+    // public `update()` method, which nothing called — `LiveWorkoutManager.refreshNotification()`
+    // sends its live elapsed/distance/HR as intent extras instead, and those were silently
+    // dropped, so the ongoing notification never advanced past its initial "0:00 / -- bpm" state.
+    private fun applyLiveExtras(intent: Intent?) {
+        intent ?: return
+        if (!intent.hasExtra("elapsedSeconds")) return
+        activityName = intent.getStringExtra("activityName") ?: activityName
+        status = intent.getStringExtra("status") ?: status
+        elapsedSec = intent.getIntExtra("elapsedSeconds", elapsedSec)
+        distanceM = intent.getDoubleExtra("distanceMeters", distanceM)
+        val hr = intent.getIntExtra("heartRate", 0)
+        heartRate = if (hr > 0) hr else null
+    }
+
+    // Swaps the ongoing tracker notification for a dismissible "workout complete" summary card
+    // (mirrors iOS's Live Activity `.after(.now + 10*60)` dismissal policy on a real finish, vs.
+    // `.immediate` on cancel/discard, which still goes through `stopService` with no summary).
+    private fun finishWithSummary(intent: Intent) {
+        val name = intent.getStringExtra("activityName") ?: activityName
+        val elapsed = intent.getIntExtra("elapsedSeconds", elapsedSec)
+        val distance = intent.getDoubleExtra("distanceMeters", distanceM)
+        val calories = if (intent.hasExtra("calories")) intent.getDoubleExtra("calories", 0.0) else null
+        val avgHeartRate = if (intent.hasExtra("avgHeartRate")) intent.getDoubleExtra("avgHeartRate", 0.0) else null
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIFICATION_ID, buildFinishedNotification(name, elapsed, distance, calories, avgHeartRate))
+        stopForeground(STOP_FOREGROUND_DETACH)
+        scheduleDismiss()
+        stopSelf()
+    }
+
+    private fun scheduleDismiss() {
+        val request = OneTimeWorkRequestBuilder<WorkoutCompleteDismissWorker>()
+            .setInitialDelay(10, TimeUnit.MINUTES)
+            .build()
+        WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+            DISMISS_WORK_NAME, ExistingWorkPolicy.REPLACE, request,
+        )
+    }
 
     fun update(
         activityName: String = this.activityName,
@@ -92,6 +144,30 @@ class WorkoutForegroundService : Service() {
             .build()
     }
 
+    private fun buildFinishedNotification(
+        name: String,
+        elapsedSeconds: Int,
+        distanceMeters: Double,
+        calories: Double?,
+        avgHeartRate: Double?,
+    ): Notification {
+        val parts = mutableListOf(formatElapsed(elapsedSeconds))
+        if (distanceMeters > 0) {
+            parts += if (distanceMeters >= 1000) "%.1f km".format(distanceMeters / 1000) else "%.0f m".format(distanceMeters)
+        }
+        calories?.let { parts += "${it.toInt()} cal" }
+        avgHeartRate?.let { parts += "avg ${it.toInt()} bpm" }
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("$name complete")
+            .setContentText(parts.joinToString(" · "))
+            .setSmallIcon(android.R.drawable.ic_dialog_map)
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -105,5 +181,13 @@ class WorkoutForegroundService : Service() {
     private fun formatElapsed(sec: Int): String {
         val h = sec / 3600; val m = (sec % 3600) / 60; val s = sec % 60
         return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+    }
+}
+
+/** One-off dismissal of the "workout complete" card after its ~10-min lingering window. */
+class WorkoutCompleteDismissWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        NotificationManagerCompat.from(applicationContext).cancel(WorkoutForegroundService.NOTIFICATION_ID)
+        return Result.success()
     }
 }
