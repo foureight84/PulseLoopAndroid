@@ -10,6 +10,10 @@
     <!-- Hold the CPU awake during overnight streaming — a foreground service keeps
          the process alive but Doze still defers coroutine timers without this. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Without a Doze exemption the OS throttles overnight BLE reconnection even
+         with an FGS + wakelock — the ring drops and can't recover until the app is
+         foregrounded (observed 2026-07-19: dropped 00:18, no recovery until 07:08). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Phase 2: BLE permissions -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>

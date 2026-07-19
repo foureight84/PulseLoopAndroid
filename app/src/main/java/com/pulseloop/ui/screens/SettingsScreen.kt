@@ -90,6 +90,38 @@ fun SettingsScreen(
             }
         }
 
+        // Background operation — Doze exemption for reliable overnight tracking.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+                var exempt by remember { mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName)) }
+                Text("Background operation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (exempt) "Enabled — the ring can reconnect overnight without the app open."
+                    else "Off — Android may throttle overnight ring reconnection. Enable for reliable sleep tracking.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (exempt) com.pulseloop.ui.theme.MetricColors.ZoneGood else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!exempt) {
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = {
+                        try {
+                            context.startActivity(android.content.Intent(
+                                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                android.net.Uri.parse("package:${context.packageName}")))
+                        } catch (_: Exception) {
+                            context.startActivity(android.content.Intent(
+                                android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                        exempt = pm.isIgnoringBatteryOptimizations(context.packageName)
+                    }, Modifier.fillMaxWidth()) {
+                        Text("Allow background operation")
+                    }
+                }
+            }
+        }
+
         // AI Coach section — ported from CoachSettingsSection.swift
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
