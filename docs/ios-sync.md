@@ -62,7 +62,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | #65c | 07-18 | **Tool-call trace persistence + UI** (`MIGRATION_10_11` adds `label`/`statusRaw`/`sequence` to `coach_tool_calls`; a `CoachToolTraceDisclosure`-equivalent Composable) | **PORT** | S | `34d0494` — `MIGRATION_10_11` (v10→v11) adds the 3 columns + a `messageId` index; `CoachOrchestrator.CoachToolCallTrace` already computed `label`/`status` per call, just wasn't threaded into the entity — the write site now does `forEachIndexed` for `sequence`. `ChatMessage` gained an `id` field (threaded from `CoachMessageEntity.id` on load / `assistantMessageId` on send) since Room has no SwiftData-style live `@Query` from within a Composable — `CoachToolTraceDisclosure` collects a `Flow<List<CoachToolCallEntity>>` keyed by messageId instead. UI mirrors iOS: collapsed "Used N tools" (or ≤2 friendly labels joined by " → "), expands to per-row success/error glyph + label + one-line summary, ~180ms ease animation. Runtime-verified on `emulator-5554`: real v10→v11 upgrade over existing data (schema + index landed, all 4 prior messages survived), then synthetic tool-call rows (2 success + 1 error) confirmed both collapsed and expanded rendering before cleanup |
 | ☑ | #65d | 07-18 | **Environment/weather context** (Open-Meteo + existing `FusedLocationProviderClient` dep for coarse city/region, cached in SharedPreferences/DataStore; feeds coach context + `NotificationContextBuilder`) | **ADAPT** | L | `d46e121` — new `WeatherContextService` (coarse one-shot `FusedLocationProviderClient` fix, foreground+authorized gated; on-device `Geocoder` reverse-geocode to city/region only, raw coords never leave the device; Open-Meteo HTTP fetch via the existing OkHttp dep, WMO `weather_code` mapped to a condition string) + `WeatherContextStore` (SharedPreferences JSON cache, modeled on `MetricPrefsStore`) mirror `CoachEnvironmentContextService`'s TTLs (30min weather / 6h location / 3h stale window / 5min retry cooldown) and never-throws degrade logic exactly. `environment` field added to both `CoachContextPacket` and `NotificationContextPacket`, threaded through `CoachViewModel.sendMessage` and `CoachNotificationWorker`, plus system-prompt guidance sentences. New opt-in "Use location & weather" toggle (default off, `ApiKeyStore.enableEnvironmentContext`) in AI Coach settings requests `ACCESS_COARSE_LOCATION` only when turned on. Runtime-verified on `emulator-5554`: toggle persists + requests permission; with a real fix (`PRIORITY_HIGH_ACCURACY` temporarily substituted to route around the emulator's simulated network-location provider having no real fix, then reverted to the production `PRIORITY_BALANCED_POWER_ACCURACY`) the full geocode→Open-Meteo→cache pipeline resolved correctly end-to-end (San Francisco, CA; real current/high/low/precip/sunrise/sunset); a timed-out fix under the production priority degrades gracefully with no crash, confirming the never-throws design. |
 | ⊘ | #65e | — | Context budget (`.compact` mode) | **SKIP** | — | iOS's compact budget only triggers for the Apple on-device provider, which has no Android equivalent — revisit only if Android gains a constrained/offline provider |
-| ☐ | #65f | — | **Variety hints + notification sleep-gating** (FNV-1a "coaching angle" rotation + recent-check-in anti-repeat + sleep-data-synced gate for morning check-ins, reusing `DeviceEntity.lastFullSyncAt` from #61c) | **ADAPT** | S | small, mechanical |
+| ☑ | #65f | 07-18 | **Variety hints + notification sleep-gating** (FNV-1a "coaching angle" rotation + recent-check-in anti-repeat + sleep-data-synced gate for morning check-ins, reusing `DeviceEntity.lastFullSyncAt` from #61c) | **PORT** (re-scoped S→M: real iOS diff spans both notification check-ins AND Today/Sleep summary cards, not just notifications) | M | `a46882f` |
 | ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
 | — | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | ~~Activity UI sync-alerts bugfix~~ **RE-TRIAGED** into #61a–f below (was mis-billed "S"; PR is ~1188 ins/34 files) | — | — | see sub-rows |
 | ☑ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | `e5b68f6` — `BatteryAlertEngine`+`BatteryAlertMonitor`+`BatteryNotifications` (own channel) + `ApiKeyStore.batteryAlertsEnabled` (default ON) + Check-Ins toggle; 8 iOS oracle tests ported green |
@@ -91,17 +91,33 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
 wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
 
-> **▶ RESUME HERE (next session):** Tier 1 clear, Tier 2 #61a–f done; **#65 re-triaged into #65a–f**
-> (2026-07-17/18) — **#65a**, **#65b**, **#65c**, and now **#65d (environment/weather context)
-> DONE** (`d46e121`), all runtime-verified on `emulator-5554`. #65d is an ADAPT, not a straight
-> port — Android has no WeatherKit equivalent, so `WeatherContextService` uses Open-Meteo (free,
-> no API key) + `FusedLocationProviderClient`/on-device `Geocoder`, mirroring
-> `CoachEnvironmentContextService`'s TTLs and never-throws degrade logic exactly. #65b also fixed
-> a real (non-iOS-parity) bug found along the way: `OpenAIResponse.parse` threw on any real API
-> response with output content — see the #65b row for detail. **Next: #65f (variety hints +
-> notification sleep-gating)** — small, mechanical, reuses `DeviceEntity.lastFullSyncAt` from
-> #61c. That's the last open Tier-2 item; #65e (context-budget compact mode) has no Android
-> equivalent yet and should stay SKIPped unless a constrained/offline provider is added.
+> **▶ RESUME HERE (next session):** Tier 1 and Tier 2 both fully clear — **#65 is DONE**, re-triaged
+> into #65a–f, all landed 2026-07-17/18: **#65a** persistence (`daed897`), **#65b** usage tracking
+> (`3b1808c`), **#65c** tool-call trace (`34d0494`), **#65d** environment/weather (`d46e121`), **#65f**
+> variety hints + sleep gating (`a46882f`) — every one runtime-verified on `emulator-5554`. #65e
+> (context-budget compact mode) stays SKIPped by design — no Android equivalent of the Apple
+> on-device provider it gates. **#65f turned out bigger than its "S, notification-only" original
+> scope**: the real iOS diff (`CoachVarietyHints` + the sleep-sync gates) touches BOTH the daily
+> notification check-in AND the Today/Sleep `CoachSummaryService` cards, so the port covers both
+> surfaces — new `CoachVarietyHints`/`CoachSleepSyncGate` (pure, shared), a new
+> `coach_notification_records` table (`MIGRATION_11_12`, v11→v12) for the notification anti-repeat
+> hint, `CoachSummaryDao.recent()` for the card anti-repeat hint, and `CoachSummaryService`'s old
+> "once per night" one-shot sleep-card gate replaced with iOS's two-part timing gate (30min-after-
+> wake floor, then full-sync-after-end or a 2h fallback) plus signature-based one-corrective-pass
+> regeneration. `CoachSummaryCoordinator` also now re-checks on a completed sync
+> (`PulseEvent.SyncProgress("done")`), not just on data events, so a night that arrives too early to
+> pass the gate isn't stranded until an unrelated event happens to fire later. Runtime-verified via a
+> real v11→v12 upgrade over existing app data (36 pre-existing demo sleep sessions + the device row
+> survived; new table's schema confirmed via `sqlite_master`) plus a clean post-migration launch (no
+> crash, Today screen rendered). The gate math itself is covered by ported unit tests
+> (`CoachVarietyHintsTest`, `CoachSleepSyncGateTest`, mirroring iOS's `CoachWS3Tests.swift` oracles) —
+> the actual worker short-circuit (skip + `scheduleSleepRetry`) wasn't exercised live because reaching
+> it requires a non-blank API key, which this environment doesn't have (same limitation noted for
+> #65b/#65d).
+>
+> **Next up: Tier 3** — **#57 Activity-recording redesign** + post-workout vitals backfill + realtime-
+> HR keepalive rework, and **#77 jring protocol-parity** (RingBLEClient + JringSyncEngine +
+> JringClock). Both L-sized, own commits. See the Tier 3/4 lists below for what's after that.
 >
 > **Prior state (still accurate below):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
 > battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
@@ -140,8 +156,10 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 **Tier 2 — medium features:**
 
-5. **#65 Coach transparency/context rehaul** (M, ADAPT). **⚠️ recon 2026-07-17: really L→XL** — Android
-   coach chat is in-memory (iOS persists to SwiftData); WeatherKit has no Android SDK. Bigger than "M".
+5. ~~**#65 Coach transparency/context rehaul**~~ ✅ **DONE**, re-triaged into #65a–f (see the ledger
+   rows and the port-priority memory for full detail on each). Landed 2026-07-17/18: #65a `daed897`,
+   #65b `3b1808c`, #65c `34d0494`, #65d `d46e121`, #65f `a46882f`. #65e stays SKIPped (no Android
+   equivalent of the Apple on-device provider it gates).
 6. ~~**#61a Battery low/critical alerts**~~ ✅ **DONE** `e5b68f6`. `BatteryAlertEngine`
    (pure, 8 iOS oracle tests ported green) + `BatteryAlertMonitor` (bus collector, per-day latch in
    SharedPreferences) + `BatteryNotifications` (own "Ring Battery" channel, one-shot, POST_NOTIFICATIONS
