@@ -68,6 +68,41 @@ class ColmiDecoderTest {
         assertTrue(ColmiDecoder.decodeNormal(frame).isEmpty())
     }
 
+    // The realtime 0x1e reply layout is unverified on hardware, so the decoder accepts both
+    // plausible shapes. Documented (GadgetBridge/colmi) layout: 1e <errCode> <bpm> (iOS #57g).
+    @Test
+    fun `realtime heart rate errCode-bpm layout decodes`() {
+        val frame = ColmiPacket.frame(byteArrayOf(0x1E.toByte(), 0x00, 75))
+        val events = ColmiDecoder.decodeNormal(frame)
+        val hr = events.first() as RingDecodedEvent.HeartRateSample
+        assertEquals(75, hr.bpm)
+    }
+
+    @Test
+    fun `realtime heart rate error code gives completion`() {
+        // errCode=1 (not worn), bpm slot empty → completion, no sample.
+        val frame = ColmiPacket.frame(byteArrayOf(0x1E.toByte(), 0x01, 0x00))
+        val events = ColmiDecoder.decodeNormal(frame)
+        assertTrue(events.first() is RingDecodedEvent.HeartRateComplete)
+    }
+
+    @Test
+    fun `realtime heart rate sentinel gives completion`() {
+        // 0xee no-reading sentinel in the first slot, nothing plausible after it.
+        val frame = ColmiPacket.frame(byteArrayOf(0x1E.toByte(), 0xEE.toByte(), 0x00))
+        val events = ColmiDecoder.decodeNormal(frame)
+        assertTrue(events.first() is RingDecodedEvent.HeartRateComplete)
+    }
+
+    @Test
+    fun `realtime heart rate legacy layout still decodes`() {
+        // Legacy shape 1e <bpm> with trailing zeros (the layout this decoder originally assumed).
+        val frame = ColmiPacket.frame(byteArrayOf(0x1E.toByte(), 68, 0x00))
+        val events = ColmiDecoder.decodeNormal(frame)
+        val hr = events.first() as RingDecodedEvent.HeartRateSample
+        assertEquals(68, hr.bpm)
+    }
+
     @Test
     fun `manual heart rate error gives completion`() {
         val frame = ColmiPacket.frame(byteArrayOf(0x69, 0, 1, 80))

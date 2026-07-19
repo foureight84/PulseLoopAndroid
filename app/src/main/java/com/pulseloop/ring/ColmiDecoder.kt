@@ -49,9 +49,20 @@ object ColmiDecoder {
                 listOf(RingDecodedEvent.HeartRateSample(bpm = value, _timestamp = now))
             }
             ColmiCommandID.REALTIME_HEART_RATE -> {
-                val bpm = v[1].toInt()
-                if (bpm !in 30..220) return emptyList()
-                listOf(RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
+                // Realtime reply layout is unverified on hardware, so accept both plausible
+                // shapes: documented (GadgetBridge/colmi) errCode+bpm — like manual 0x69, flag
+                // first — or this decoder's original legacy bpm-only assumption. A zero error
+                // code with no plausible bpm anywhere is warm-up; a nonzero code is a genuine
+                // no-reading (iOS #57g).
+                val first = v[1].toInt()
+                when {
+                    first == 0 && v[2].toInt() in 30..220 ->
+                        listOf(RingDecodedEvent.HeartRateSample(bpm = v[2].toInt(), _timestamp = now))
+                    first in 30..220 ->
+                        listOf(RingDecodedEvent.HeartRateSample(bpm = first, _timestamp = now))
+                    first != 0 -> listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
+                    else -> emptyList()
+                }
             }
             ColmiCommandID.REALTIME_HEART_RATE_ERROR ->
                 listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
