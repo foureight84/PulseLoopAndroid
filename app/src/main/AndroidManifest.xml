@@ -20,9 +20,13 @@
     <!-- Phase 7: Notifications for coach check-ins (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Phase 4+: Foreground service for workout -->
+    <!-- Phase 4+: Foreground service for workout. Android 14+ requires the "health" foreground
+         service type to be paired with at least one of ACTIVITY_RECOGNITION/BODY_SENSORS/
+         HIGH_SAMPLING_RATE_SENSORS or startForeground() throws SecurityException — this was
+         missing entirely, so every workout start crashed on API 34+. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <!-- Self-update: fetch the GitHub release manifest/APK and install it -->
     <uses-permission android:name="android.permission.INTERNET" />

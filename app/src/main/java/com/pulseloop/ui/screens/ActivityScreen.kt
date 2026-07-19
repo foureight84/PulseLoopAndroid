@@ -1,5 +1,9 @@
 package com.pulseloop.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
@@ -70,6 +75,37 @@ fun ActivityScreen(
     var pickerOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
     var goalsOpen by remember { mutableStateOf(false) }
+
+    // The workout foreground service is typed "health" (Android 14+), which requires holding
+    // ACTIVITY_RECOGNITION or startForeground() throws — request it right before starting rather
+    // than at app launch, since it's only needed for this one action.
+    var pendingStart by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    val activityRecognitionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val pending = pendingStart
+        pendingStart = null
+        if (granted && pending != null) {
+            val (type, useGps) = pending
+            scope.launch {
+                liveWorkout?.start(type, useGps)
+                navController?.navigate("record")
+            }
+        }
+    }
+    fun startWorkout(type: String, useGps: Boolean) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            scope.launch {
+                liveWorkout?.start(type, useGps)
+                navController?.navigate("record")
+            }
+        } else {
+            pendingStart = type to useGps
+            activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+    }
 
     val todayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
     val todayWorkouts = state.finishedWorkouts.filter { it.startedAt >= todayStart }
@@ -160,10 +196,7 @@ fun ActivityScreen(
             onDismiss = { pickerOpen = false },
             onStart = { type, useGps ->
                 pickerOpen = false
-                scope.launch {
-                    liveWorkout?.start(type, useGps)
-                    navController?.navigate("record")
-                }
+                startWorkout(type, useGps)
             },
         )
     }
