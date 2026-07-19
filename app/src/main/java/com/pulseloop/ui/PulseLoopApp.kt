@@ -64,7 +64,7 @@ fun PulseLoopApp() {
         val bleClient = remember { RingBLEClient(context) }
         val apiKeyStore = remember { ApiKeyStore(context) }
         val coordinator = remember { RingSyncCoordinator(bleClient, db, apiKeyStore) }
-        val gpsRecorder = remember { GpsRouteRecorder(context) }
+        val gpsRecorder = remember { GpsRouteRecorder(context, db) }
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
         val persistence = remember {
             // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),

@@ -26,6 +26,8 @@ import androidx.compose.ui.unit.sp
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.ActivityGpsPointEntity
 import com.pulseloop.data.entity.ActivitySessionEntity
+import com.pulseloop.service.ActivityTrackingProfile
+import com.pulseloop.service.RouteDistanceEngine
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
@@ -37,10 +39,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * Finished-workout summary — ported from RecordSummaryComponents.swift (WorkoutMetricsSections):
@@ -103,7 +101,7 @@ fun WorkoutSummaryScreen(
         item { StatsGrid(s) }
         if (s.useGps) {
             item { WorkoutMapView(points = points) }
-            item { SplitsCard(points, units) }
+            item { SplitsCard(points, units, s.type) }
         }
         item { Spacer(Modifier.height(48.dp)) }
     }
@@ -242,11 +240,12 @@ private fun StatsGrid(s: ActivitySessionEntity) {
 
 /** Per-km (or per-mi) splits with relative pace bars; fastest split highlighted (SplitsTable). */
 @Composable
-private fun SplitsCard(points: List<ActivityGpsPointEntity>, units: UnitSystem) {
+private fun SplitsCard(points: List<ActivityGpsPointEntity>, units: UnitSystem, activityType: String) {
     val splitMeters = if (units == UnitSystem.IMPERIAL) 1609.344 else 1000.0
     val splitLabel = if (units == UnitSystem.IMPERIAL) "MI" else "KM"
     val paceUnit = ActivityMeta.paceUnit(units)
-    val splits = remember(points, splitMeters) { kmSplitSeconds(points, splitMeters) }
+    val profile = remember(activityType) { ActivityTrackingProfile.profile(activityType) }
+    val splits = remember(points, splitMeters, profile) { RouteDistanceEngine.splitSeconds(points, splitMeters, profile) }
     if (splits.isEmpty()) return
 
     val fastest = splits.min()
@@ -300,30 +299,3 @@ private fun paceLabel(secPerUnit: Double, paceUnit: String): String {
     return "%d:%02d %s".format(total / 60, total % 60, paceUnit)
 }
 
-/** Elapsed seconds per completed split, walking the GPS trace (kmSplitSeconds in Swift). */
-private fun kmSplitSeconds(points: List<ActivityGpsPointEntity>, splitMeters: Double): List<Double> {
-    if (points.size < 2) return emptyList()
-    val splits = mutableListOf<Double>()
-    var accumulated = 0.0
-    var splitStartTs = points.first().timestamp
-    for (i in 1 until points.size) {
-        val a = points[i - 1]
-        val b = points[i]
-        accumulated += haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude)
-        if (accumulated >= splitMeters) {
-            splits.add((b.timestamp - splitStartTs) / 1000.0)
-            splitStartTs = b.timestamp
-            accumulated -= splitMeters
-        }
-    }
-    return splits
-}
-
-private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-    val r = 6_371_000.0
-    val dLat = Math.toRadians(lat2 - lat1)
-    val dLon = Math.toRadians(lon2 - lon1)
-    val a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2) * sin(dLon / 2)
-    return r * 2 * atan2(sqrt(a), sqrt(1 - a))
-}
