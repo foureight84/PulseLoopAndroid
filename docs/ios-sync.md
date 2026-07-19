@@ -58,7 +58,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | #57f | 07-18 | **Fix workout HR realtime-stream self-kill bug** (newly discovered, not in the original ledger estimate — the ~60s HR spot-poll loop's cleanup unconditionally disabled *any* active HR sensor mode, including the workout's own realtime stream, killing it almost immediately every workout) + Colmi realtime-HR decode dual-layout fix | **PORT** | S | `<pending commit>` — `WorkoutSensorPollingService` now skips its HR spot-poll entirely while `coordinator.workoutHRActive`, since a continuous stream already feeds `latestHRValue`; `ColmiDecoder`'s `0x1e` branch now accepts both the documented errCode+bpm layout and the original legacy bpm-only layout (mirrors iOS's defensive fix, since the real hardware layout was never confirmed) — 4 new test cases ported from `ColmiDecoderTests.swift`. **Bundled, unrelated crash fix found while runtime-verifying**: Android declared `FOREGROUND_SERVICE_HEALTH` but never `ACTIVITY_RECOGNITION`/`BODY_SENSORS`/`HIGH_SAMPLING_RATE_SENSORS`, so *every* workout start crashed outright on API 34+ (confirmed on the `emulator-5554` API-35 image) — added the manifest permission + a runtime `ACTIVITY_RECOGNITION` request gate in `ActivityScreen.kt` before `LiveWorkoutManager.start()`, mirroring the existing BLE-permission request pattern in `OnboardingScreen.kt`. |
 | ☑ | #57b | 07-18 | **RouteDistanceEngine consolidation** (gap + GPS-jump-speed filtered distance/splits, replacing two independent unfiltered haversine implementations) | **ADAPT** | M | `933edc5` — `RouteDistanceEngine`+`ActivityTrackingProfile` (pure, 12 oracle tests ported from `RouteDistanceEngineTests.swift`) shared by the live tile, finish summary, and splits table. **Real bug found and fixed along the way**: nothing ever inserted into `activity_gps_points` — the Room entity/DAO existed but `GpsRouteRecorder` only tracked an in-memory unfiltered `Pair<lat,lon>` list, so `WorkoutMapView` and the splits table were always empty for every workout. Ported `GpsRouteRecorder.swift`'s per-fix accuracy/speed/stationary/course-delta accept-reject gate, persists every fix (accepted or rejected), and drives the live distance off `RouteDistanceEngine.Accumulator`. `LiveWorkoutManager.recomputeSummary` now derives `distanceMeters` + the previously-dead `gpsPointCount`/`rejectedGpsPointCount`/`lastGpsPointAt` fields from the persisted route at finish. Runtime-verified on `emulator-5554`: a real recorded walk (13 simulated fixes via `adb emu geo fix`) showed the live tile and finish summary agreeing exactly (0.09 mi) — matching an independently hand-computed gap/speed-filtered distance — the map rendered a real route for the first time, and `gpsPointCount`/`distanceMeters`/`calories` all populated correctly in the DB. |
 | ☑ | #57c | 07-19 | **Edit-workout: recompute-aware + UI** (re-slice samples to a new time window, recompute aggregates/rollup, small edit sheet) | **ADAPT** | M | `f526fce` — `ActivityAggregates.applyEdit`/`recompute` (shared with `LiveWorkoutManager.finish()`, killing the prior duplicated recompute) reverses the old day's rollup, updates type/start/end, and re-derives calories/HR/SpO2/GPS distance windowed to the new span. Coach `update_activity_session` (`PendingActionExecutor.applyUpdates`, both the same-day and queued-confirmation paths) now routes type/time changes through the same service instead of a stale field-copy; pure branching split out as `resolveUpdates` for unit tests. New Edit button + bottom sheet (type dropdown, two-step date/time pickers, iOS's validation messaging) on `WorkoutSummaryScreen`. Runtime-verified on `emulator-5554`: edited a real finished workout's type and moved its window to the previous day — calories/duration recomputed for the new type, GPS distance correctly dropped to 0 (route now outside the window), daily rollup moved cleanly (today debited, new day credited) with no drift. **Real bug found and fixed along the way**: `WorkoutSummaryScreen`'s GPS point query wasn't windowed to `[startedAt, endedAt]`, so the map/splits kept showing a workout's full route even after an edit shrank or moved its window — now windowed to match the aggregate recompute (iOS's `RecordSummaryComponents.swift` comment calls this out explicitly). |
-| ☐ | #57d | 07-08 | **Log Past Activity screen** (net-new UI; backend logic already exists via the `create_activity_session_from_description` coach tool) | **PORT** | S | best after #57a |
+| ☑ | #57d | 07-19 | **Log Past Activity screen** (net-new UI; backend logic already exists via the `create_activity_session_from_description` coach tool) | **PORT** | S | `4bbfa7f` — new `ManualActivityService.create` (shared by the screen and the coach tool: validate type/duration/future-end → `ActivityAggregates.recompute` → upsert → `ActivityRollup.credit`, mirroring `LiveWorkoutManager.finish()`) + `LogPastActivityScreen` (type grid, past-only `DateTimeButton` start picker reused from #57c's edit sheet, +/-5min duration stepper + 15/30/45/60/90 chips) + new entry card on `ActivityScreen` below Record/History. **Real bug found and fixed along the way**: the existing coach tool did a raw entity insert and never called `ActivityRollup.credit`, so coach-logged manual sessions silently never counted toward the daily rollup — now routes through the shared service (also ports iOS's future-clamp guard so an unspecified start time can't default past "now"). Runtime-verified on `emulator-5554`: logged a past 45-min run through the new screen — calories (514) and active minutes (45) computed from the MET/HR engine, the TODAY list and weekly-goal ring credited correctly, and the coach tool's fix was exercised implicitly since it now shares the identical code path.
 | ☐ | #57e | 07-08 | **Post-workout vitals backfill/reconcile** (ring-log HR/SpO2 samples arriving after finish should still attach to the just-finished session) | **ADAPT** | M | depends on #57a |
 | ☐ | #57g | 07-08 | **Finished-workout notification card + Colmi decode robustness polish** | **PORT** | S | depends on #57a (avg HR) |
 | ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
@@ -161,15 +161,18 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > also **DONE** (`933edc5`, 2026-07-18) — see the port-queue row for what shipped (a real dormant-
 > persistence bug fixed along the way).
 >
-> **▶ RESUME HERE (2026-07-19 session):** **#57c edit-workout DONE** (`f526fce`) — see the port-queue
-> row for full detail (`ActivityAggregates.applyEdit`/`recompute` shared with `LiveWorkoutManager
-> .finish()`, the coach executor's `applyUpdates`/`resolveUpdates` split, the new edit sheet UI, and
-> a real GPS-map-windowing bug found and fixed while runtime-verifying). **Next up: #57d** (Log Past
-> Activity screen — net-new UI, backend logic already exists via the coach's
-> `create_activity_session_from_description` tool → `ManualActivityService` on iOS; Android doesn't
-> have a `ManualActivityService`-equivalent yet, so check `ToolImplementations.kt`'s activity-creation
-> tool before assuming one is needed), then #57e (vitals backfill/reconcile) and #57g (finished-
-> notification polish) per the ranked order in the 2026-07-18 session note below.
+> **▶ RESUME HERE (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
+> the port-queue row for full detail (new `ManualActivityService.create` shared by the screen and
+> the `create_activity_session_from_description` coach tool, fixing a real gap where the coach tool
+> never credited the daily rollup). **Next up: #57e** (post-workout vitals backfill/reconcile — HR/
+> SpO2 samples arriving after finish should still attach to the just-finished session), then #57g
+> (finished-workout notification card + Colmi decode polish) per the ranked order in the 2026-07-18
+> session note below.
+>
+> **#57c edit-workout DONE** (`f526fce`, 2026-07-19) — see the port-queue row for full detail
+> (`ActivityAggregates.applyEdit`/`recompute` shared with `LiveWorkoutManager.finish()`, the coach
+> executor's `applyUpdates`/`resolveUpdates` split, the new edit sheet UI, and a real
+> GPS-map-windowing bug found and fixed while runtime-verifying).
 >
 > **Prior state (still accurate below):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
 > battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
@@ -241,10 +244,11 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 **Tier 3 — large, focused work (own commits):**
 
 10. **#57 Activity-recording redesign** — **RE-TRIAGED into #57a–g** (see port-queue rows above and
-    the 2026-07-18 session note below). ~~**#57a**~~ finish aggregates + rollup ✅ **DONE**.
+    the 2026-07-18/19 session notes below). ~~**#57a**~~ finish aggregates + rollup ✅ **DONE**.
     ~~**#57f**~~ HR-stream self-kill bug + decode robustness ✅ **DONE**. ~~**#57b**~~
-    RouteDistanceEngine ✅ **DONE**. ~~**#57c**~~ edit-workout ✅ **DONE**. Remaining: #57d (Log Past
-    Activity UI, S), #57e (vitals backfill, M), #57g (finished-notification polish, S).
+    RouteDistanceEngine ✅ **DONE**. ~~**#57c**~~ edit-workout ✅ **DONE**. ~~**#57d**~~ Log Past
+    Activity screen ✅ **DONE** `4bbfa7f`. Remaining: #57e (vitals backfill, M), #57g
+    (finished-notification polish, S).
 11. ~~**#77 jring protocol-parity**~~ ✅ **DONE (protocol-layer subset)** `160430a` — see the
     2026-07-18 note below for what shipped vs. what's deferred.
 
@@ -390,6 +394,47 @@ populated and ready for it, but no summary-screen row was added this pass.
 recompute aggregates/rollup via #57a's `recomputeSummary` + #57b's `RouteDistanceEngine`, small edit
 sheet UI) — M effort, depends on #57a+#57b (both done). Then #57d (Log Past Activity UI), #57e
 (vitals backfill), #57g (notification polish). Full detail in the port-queue rows above.
+
+### 2026-07-19 Tier 3 session — #57d (branch `iOS_sync_2026-07-16`)
+
+Ported iOS's `LogPastActivityView.swift` (net-new full-page form) and, along with it, the
+`ManualActivityService.swift` shared creation path it and the coach's
+`create_activity_session_from_description` tool both go through on iOS. Android had no equivalent
+service — its coach tool did a raw `ActivitySessionEntity` insert inline. Building the shared
+`ManualActivityService.create` (validate type/duration/future-end → `ActivityAggregates.recompute`
+→ upsert → `ActivityRollup.credit`, mirroring `LiveWorkoutManager.finish()`'s existing sequence) and
+switching the coach tool onto it surfaced a real, previously-invisible gap: **coach-logged manual
+sessions never credited the daily rollup** — `active minutes`/`distance` silently dropped for any
+workout the coach recorded from a description. Also ported iOS's future-clamp guard (an
+unspecified start time defaulting to same-day noon can land in the future for an early-morning
+"log today's run"; pull it back so it still ends by now instead of throwing).
+
+New `LogPastActivityScreen` (`ui/screens/LogPastActivityScreen.kt`): 2-column `ActivityMeta.ORDER`
+type grid, a past-only `DateTimeButton` for the start time (the exact same date-restricted picker
+#57c's edit sheet already built — widened from `private` to `internal` and reused as-is, along with
+`EditFieldRow`/`CircleIconButton`/`formatDateTime`/the UTC-midnight helpers), a computed read-only
+"Ends" row, and a +/-5min duration stepper with 15/30/45/60/90 quick chips — same shape as iOS's
+form. New entry card on `ActivityScreen` below the Record/History row (`clock.arrow.circlepath` →
+`Icons.Filled.History`), new `"log_past_activity"` nav route that replaces itself with
+`activity_detail/{id}` on save (mirrors iOS's `path.removeLast(); path.append(.activityDetail)`).
+
+`ManualActivityService.validate` pulled out pure (mirrors `ActivityAggregates.isValidEdit`'s
+existing pattern) for a real unit test (`ManualActivityServiceTest`, 4 cases ported from
+`ManualActivityServiceTests.swift`) — the DB-side recompute/credit half has no Android
+Room-in-memory test harness (same documented gap as #57a/#57c), so runtime verification covers it.
+
+Runtime-verified on `emulator-5554`: opened the new screen from the Activity tab, picked Running,
+kept the default 1hr-ago start, stepped duration to 45m via the quick chip (Ends label recomputed
+live to match), saved — landed on the workout summary showing Duration 45:00 / Active Min 45 /
+Calories 514 (MET engine, no HR samples in that historical window). Back on the Activity tab, the
+weekly-goal ring filled to 45 MIN and the TODAY list showed the new "Running · 45m" row, confirming
+`ActivityRollup.credit` ran (the fix the coach tool's refactor also gets for free, since it now
+shares this exact code path). `:app:assembleDebug` + `:app:testDebugUnitTest` green.
+
+**To resume:** continue Tier 3 at **#57e** (post-workout vitals backfill/reconcile — ring-log HR/
+SpO2 samples arriving after finish should still attach to the just-finished session's aggregates),
+then **#57g** (finished-workout notification card + Colmi decode robustness polish). Full detail in
+the port-queue rows above.
 
 ### 2026-07-17 Tier 2 session — recon + #61a (branch `iOS_sync_2026-07-16`)
 
