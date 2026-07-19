@@ -834,8 +834,9 @@ object ActionTools {
         val isToday = session.startedAt >= todayStart
 
         if (isToday) {
-            val updated = com.pulseloop.coach.orchestration.PendingActionExecutor.applyUpdates(updates, session)
-            kotlinx.coroutines.runBlocking { db.activitySessionDao().upsert(updated) }
+            kotlinx.coroutines.runBlocking {
+                com.pulseloop.coach.orchestration.PendingActionExecutor.applyUpdates(db, updates, session)
+            }
             ToolResult("""{"ok":true,"updated":true,"activity_id":"$activityId"}""")
         } else {
             ctx.pendingActions.add(com.pulseloop.coach.orchestration.PendingAction(

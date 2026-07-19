@@ -96,57 +96,12 @@ class LiveWorkoutManager(
         tickJob?.cancel()
         val now = System.currentTimeMillis()
         val finished = session.copy(statusRaw = "finished", endedAt = now, updatedAt = now)
-        val summarized = recomputeSummary(finished)
+        val summarized = ActivityAggregates.recompute(db, finished)
         db.activitySessionDao().upsert(summarized)
         ActivityRollup.credit(db, summarized)
         coordinator.stopWorkoutHeartRate()
         _state.value = WorkoutState()
     }
-
-    /** Re-derive calories/HR/SpO2/distance aggregates from whatever the ring and GPS reported
-     *  during the workout's window. Mirrors ActivityService.recomputeSummary (iOS #57a) — Android
-     *  has no per-session sample-linking table, so this queries the shared measurements store by
-     *  [startedAt, endedAt] directly instead of iOS's ActivitySample join. Distance/splits are
-     *  recomputed from the persisted GPS points (not the live accumulator) so finish-time totals
-     *  always agree with what `RouteDistanceEngine` reports everywhere else (iOS #57b). */
-    private suspend fun recomputeSummary(session: ActivitySessionEntity): ActivitySessionEntity {
-        val end = session.endedAt ?: System.currentTimeMillis()
-        val hrRows = db.measurementDao().range(com.pulseloop.ring.MeasurementKind.HEART_RATE.name, session.startedAt, end)
-            .filter { it.value > 0 }
-        val spo2Rows = db.measurementDao().range(com.pulseloop.ring.MeasurementKind.SPO2.name, session.startedAt, end)
-            .filter { it.value > 0 }
-            .sortedBy { it.timestamp }
-        val duration = maxOf(0, (((end - session.startedAt) / 1000.0) - session.totalPauseSeconds).toInt())
-        val profileEntity = db.userProfileDao().get()
-
-        val gpsPoints = if (session.useGps) db.activityGpsPointDao().forSession(session.id) else emptyList()
-        val acceptedCount = gpsPoints.count { it.accepted }
-        val distanceMeters = if (session.useGps) {
-            RouteDistanceEngine.distanceMeters(gpsPoints, ActivityTrackingProfile.profile(session.type))
-        } else null
-
-        val calories = WorkoutMetricsEngine.calories(
-            type = session.type,
-            durationSeconds = duration,
-            distanceMeters = distanceMeters,
-            hrSamples = hrRows.map { it.timestamp to it.value },
-            profile = MetricsProfileValues(sex = profileEntity?.sex, age = profileEntity?.age, weightKg = profileEntity?.weightKg),
-        )
-        return session.copy(
-            calories = calories,
-            distanceMeters = distanceMeters,
-            avgHeartRate = hrRows.map { it.value }.average0(),
-            maxHeartRate = hrRows.maxOfOrNull { it.value },
-            minHeartRate = hrRows.minOfOrNull { it.value },
-            avgSpO2 = spo2Rows.map { it.value }.average0(),
-            latestSpO2 = spo2Rows.lastOrNull()?.value,
-            gpsPointCount = acceptedCount,
-            rejectedGpsPointCount = gpsPoints.size - acceptedCount,
-            lastGpsPointAt = gpsPoints.maxOfOrNull { it.timestamp },
-        )
-    }
-
-    private fun List<Double>.average0(): Double? = if (isEmpty()) null else average()
 
     suspend fun cancel(session: ActivitySessionEntity) {
         gps.stop()
