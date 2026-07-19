@@ -175,6 +175,11 @@ interface ActivitySessionDao {
     @Query("SELECT * FROM activity_sessions ORDER BY startedAt DESC LIMIT :limit")
     fun recentFlow(limit: Int = 10): Flow<List<ActivitySessionEntity>>
 
+    // iOS #57e post-workout vitals backfill: sessions still eligible to have late ring-log
+    // HR/SpO2 history re-attach after finish (see ActivityAggregates.backfillWindowMillis).
+    @Query("SELECT * FROM activity_sessions WHERE statusRaw = 'finished' AND endedAt >= :cutoff")
+    suspend fun finishedSince(cutoff: Long): List<ActivitySessionEntity>
+
     @Upsert
     suspend fun upsert(session: ActivitySessionEntity)
 }

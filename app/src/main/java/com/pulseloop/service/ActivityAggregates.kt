@@ -8,8 +8,11 @@ import com.pulseloop.ring.MeasurementKind
  * Ported from ActivityService.recomputeSummary/applyEdit in PulseServices.swift (iOS #57a/#57c).
  * [recompute] re-derives calories/HR/SpO2/distance from a session's current
  * [startedAt, endedAt] window — shared by `LiveWorkoutManager.finish()` (window is the full
- * recording span) and [applyEdit] (window may have shrunk or moved, so measurements and GPS
- * points outside it must drop out).
+ * recording span), [applyEdit] (window may have shrunk or moved, so measurements and GPS
+ * points outside it must drop out), and `EventPersistenceSubscriber`'s post-sync reconcile (iOS
+ * #57e — late ring-log HR/SpO2 history landing inside an already-finished session's window).
+ * Never touches [ActivityRollup] (minutes/distance, credited once at finish), so re-running it
+ * for the same session is always safe.
  */
 object ActivityAggregates {
     suspend fun recompute(db: PulseLoopDatabase, session: ActivitySessionEntity): ActivitySessionEntity {
@@ -93,6 +96,23 @@ object ActivityAggregates {
         if (newEndedAt > now) return false
         if (newEndedAt - newStartedAt <= (session.totalPauseSeconds * 1000).toLong()) return false
         return true
+    }
+
+    /** How long after finish ring-log history may still update a session's aggregates (iOS
+     *  `ActivityService.backfillLinkWindowSeconds`, #57e) — covers the post-workout backfill
+     *  sync and a reconnect shortly after finishing. */
+    const val backfillWindowMillis: Long = 15 * 60_000L
+
+    /** Pulled out of the sync-driven reconcile for independent testability (iOS
+     *  `testStaleFinishedSessionDoesNotAttract` / `testHistorySampleLinksToRecentlyFinishedSession`
+     *  in WorkoutReconcileTests.swift). */
+    internal fun isWithinBackfillWindow(
+        session: ActivitySessionEntity,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean {
+        if (session.statusRaw != "finished") return false
+        val ended = session.endedAt ?: return false
+        return now - ended < backfillWindowMillis
     }
 
     private fun List<Double>.average0(): Double? = if (isEmpty()) null else average()

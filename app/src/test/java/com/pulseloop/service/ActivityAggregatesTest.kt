@@ -56,4 +56,27 @@ class ActivityAggregatesTest {
         val session = finishedSession().copy(statusRaw = "recording")
         assertFalse(ActivityAggregates.isValidEdit(session, start, start + 1_800_000L, now))
     }
+
+    // iOS #57e post-workout vitals backfill — mirrors WorkoutReconcileTests.swift's
+    // testHistorySampleLinksToRecentlyFinishedSession / testStaleFinishedSessionDoesNotAttract.
+    // The DAO-side `finishedSince` query and the `recompute`-on-sync-done reconcile itself have no
+    // Android unit-test equivalent (same in-memory-Room gap noted above) — runtime-verified instead.
+
+    @Test
+    fun `recently finished session is within the backfill window`() {
+        val session = finishedSession(endedAt = now - 300_000L) // finished 5 min ago
+        assertTrue(ActivityAggregates.isWithinBackfillWindow(session, now))
+    }
+
+    @Test
+    fun `session finished beyond the backfill window does not attract`() {
+        val session = finishedSession(endedAt = now - 1_200_000L) // finished 20 min ago
+        assertFalse(ActivityAggregates.isWithinBackfillWindow(session, now))
+    }
+
+    @Test
+    fun `non-finished session is never within the backfill window`() {
+        val session = finishedSession(endedAt = now - 60_000L).copy(statusRaw = "recording")
+        assertFalse(ActivityAggregates.isWithinBackfillWindow(session, now))
+    }
 }

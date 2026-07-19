@@ -224,6 +224,7 @@ class EventPersistenceSubscriber(
                     }
                     // The rows are committed by now; the next sync re-checks against the database.
                     seenHistoryKeys.clear()
+                    reconcileRecentlyFinishedWorkouts()
                 }
             }
             is PulseEvent.HeartRateComplete -> {}
@@ -262,6 +263,22 @@ class EventPersistenceSubscriber(
         // Same slot, possibly refined value (the ring can revise an averaged block).
         db.measurementDao().updateValue(existing.id, value)
         return true
+    }
+
+    /**
+     * Post-workout vitals backfill (iOS #57e): a ring's own HR/SpO2 log often only reaches the
+     * phone on the *next* sync — a reconnect right after finishing, or a delayed history flush —
+     * so a session can finish before its window's ring-log samples have landed. Every completed
+     * sync re-derives aggregates for sessions that finished within [ActivityAggregates.backfillWindowMillis],
+     * picking up whatever now sits in `[startedAt, endedAt]`. [ActivityAggregates.recompute] never
+     * touches [ActivityRollup] (minutes/distance credited once at finish), so re-running it here is
+     * idempotent and safe to call on every sync, not just the first one after finish.
+     */
+    private suspend fun reconcileRecentlyFinishedWorkouts() {
+        val cutoff = System.currentTimeMillis() - ActivityAggregates.backfillWindowMillis
+        for (session in db.activitySessionDao().finishedSince(cutoff)) {
+            db.activitySessionDao().upsert(ActivityAggregates.recompute(db, session))
+        }
     }
 
     /** Throttled battery-history write (iOS #61b): only on change or a 30-min floor. */
