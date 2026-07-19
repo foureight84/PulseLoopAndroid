@@ -28,6 +28,12 @@ class EventPersistenceSubscriber(
     private var lastBatteryLogAt: Long? = null
     private val batteryMinIntervalMs = 30 * 60_000L
 
+    /** Identity of a history sample within one sync run — see [isDuplicateHistory]. */
+    private data class HistoryKey(val kind: String, val epochSecond: Long)
+    /** History samples already seen this sync. Cleared when a sync completes, so it can't grow
+     *  unbounded across a long-lived session. */
+    private val seenHistoryKeys = mutableSetOf<HistoryKey>()
+
     fun start() {
         if (job != null) return
         job = scope.launch {
@@ -159,6 +165,10 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.HistoryMeasurement -> {
+                // History rows are upserted on (kind, timestamp): a ring replays the same log
+                // every time we re-request a day, and the epochs it stamps are deterministic, so
+                // an exact-timestamp match is a valid identity.
+                if (isDuplicateHistory(event.kind.name, event.value, event.timestamp.toEpochMilli())) return
                 db.measurementDao().insert(MeasurementEntity(
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
@@ -212,6 +222,8 @@ class EventPersistenceSubscriber(
                     if (device != null) {
                         db.deviceDao().upsert(device.copy(lastFullSyncAt = System.currentTimeMillis()))
                     }
+                    // The rows are committed by now; the next sync re-checks against the database.
+                    seenHistoryKeys.clear()
                 }
             }
             is PulseEvent.HeartRateComplete -> {}
@@ -236,6 +248,20 @@ class EventPersistenceSubscriber(
                 // 0xF6 is never needed here. Kept as a decoded event purely for diagnostics.
             }
         }
+    }
+
+    /** True when this history sample is already stored (updating the existing row's value in
+     *  place). Two tiers: an in-process key set keeps the hot sync path off the database
+     *  entirely, and a single indexed fetch catches re-syncs across launches. */
+    private suspend fun isDuplicateHistory(kind: String, value: Double, timestampMs: Long): Boolean {
+        val key = HistoryKey(kind, timestampMs / 1000)
+        if (key in seenHistoryKeys) return true
+        seenHistoryKeys += key
+
+        val existing = db.measurementDao().findHistoryAt(kind, timestampMs) ?: return false
+        // Same slot, possibly refined value (the ring can revise an averaged block).
+        db.measurementDao().updateValue(existing.id, value)
+        return true
     }
 
     /** Throttled battery-history write (iOS #61b): only on change or a 30-min floor. */

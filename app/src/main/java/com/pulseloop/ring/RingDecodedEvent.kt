@@ -81,6 +81,7 @@ sealed class RingDecodedEvent {
         is CommandAck -> Instant.EPOCH
         is FirmwareVersion -> Instant.EPOCH
         is BindNotify -> Instant.EPOCH
+        is BandFunction -> Instant.EPOCH
         is Unknown -> Instant.EPOCH
     }
 
@@ -182,6 +183,15 @@ sealed class RingDecodedEvent {
         override val kind = "bind_notify"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"action":$action,"state":$state}"""
+    }
+
+    /** Capability bitmask reply (0x20). Consumed by `JringSyncEngine`; produces no `PulseEvent`. */
+    data class BandFunction(
+        val capabilities: JringBandCapabilities
+    ) : RingDecodedEvent() {
+        override val kind = "band_function"
+        override val confidence = DecodeConfidence.PARTIAL   // bit ordering unverified against hardware
+        override val debugJSON = """{"temp":${capabilities.hasTemperature},"spo2_separate":${capabilities.separateBloodOxygenMode},"spo2_offline":${capabilities.hasOxygenOfflineHistory},"pressure":${capabilities.hasPressureHistory}}"""
     }
 
     data class StressSample(

@@ -147,6 +147,11 @@ interface RingSyncEngine {
      *  [android.bluetooth.BluetoothDevice.createBond] call. No-op if unsupported. */
     fun setOnBondRequested(callback: () -> Unit) {}
 
+    /** Re-push the device clock after the phone's timezone or wall clock changes. Only rings
+     *  whose firmware keys behaviour off their own RTC need this (jring's sleep detection and
+     *  day-indexed history do). Default no-op. */
+    fun resyncTime() {}
+
     /** Store the user's profile *without* sending — the connect handshake sends it. No-op if unsupported. */
     fun setUserProfile(profile: UserProfileValues) {}
 

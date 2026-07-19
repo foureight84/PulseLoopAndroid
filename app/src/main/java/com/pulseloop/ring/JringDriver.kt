@@ -50,7 +50,11 @@ object JringCoordinator : WearableCoordinator {
  * Thin wrapper over RingDecoder/RingEncoder for jring devices.
  */
 class JringDriver(private val writer: RingCommandWriter) : WearableDriver {
-    private val decoder = RingDecoder
+    /** One clock per connection, shared by the decoder and the sync engine: the engine latches
+     *  the UTC offset when it sends 0x01, and the decoder subtracts that same offset off every
+     *  ring-stamped history timestamp. See [JringClock]. */
+    private val clock = JringClock()
+    private val decoder = RingDecoder(clock)
 
     override val serviceUUIDs = listOf(RingUUIDs.SERVICE)
     override val writeUUID = RingUUIDs.WRITE
@@ -63,35 +67,63 @@ class JringDriver(private val writer: RingCommandWriter) : WearableDriver {
     override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> =
         decoder.decode(data)
 
-    override fun makeSyncEngine(): RingSyncEngine = JringSyncEngine(writer)
+    override fun makeSyncEngine(): RingSyncEngine = JringSyncEngine(writer, clock)
 }
 
 /**
  * Ported from [JringSyncEngine] in JringSyncEngine.swift.
  * Fire-and-forget sync engine for jring devices.
  */
-class JringSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
+class JringSyncEngine(
+    private val writer: RingCommandWriter?,
+    private val clock: JringClock,
+) : RingSyncEngine {
     private val encoder = RingEncoder
+
+    /** The ring's self-reported feature bits (0x20 reply), or `null` if it never answered.
+     *  Nothing branches on these yet — captured so a future offline-history sync chain can gate
+     *  its extra per-day queries once the bit ordering is confirmed against real hardware. */
+    private var bandCapabilities: JringBandCapabilities? = null
 
     override fun runStartup() {
         writer?.enqueue(encoder.makeStatusCommand())
-        writer?.enqueue(encoder.makeTimeSyncCommand())
+        enqueueTimeSync()
         writer?.enqueue(encoder.makeLocaleCommand())
         writer?.enqueue(encoder.makeDefaultUserInfoCommand())
+        // 0x19 arms the ring's continuous background sensor logging. The vendor app sends this on
+        // every connect; without it the ring records almost nothing, which is why users previously
+        // had to initialise with the vendor app first.
+        writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 30))
+        writer?.enqueue(encoder.makeBandFunctionCommand())
         writer?.enqueue(encoder.makeHistoryQueryCommand())
         writer?.enqueue(encoder.makeHistoryMeasurementQueryCommand())
     }
 
     override fun handle(event: RingDecodedEvent) {
-        // Ring-side bind handshake (0x4B), mirroring the official app's
-        // onNotifyBindedInfo: the ring drives binding on connect so it stays paired
-        // to us and keeps streaming. Unbind (on forget) is handled in RingBLEClient.
-        if (event is RingDecodedEvent.BindNotify) {
-            when (event.action) {
+        when (event) {
+            // Ring-side bind handshake (0x4B), mirroring the official app's
+            // onNotifyBindedInfo: the ring drives binding on connect so it stays paired
+            // to us and keeps streaming. Unbind (on forget) is handled in RingBLEClient.
+            is RingDecodedEvent.BindNotify -> when (event.action) {
                 0 -> if (event.state == 0) writer?.enqueue(encoder.makeBindAppStartCommand()) // INIT → APP_START
                 2 -> writer?.enqueue(encoder.makeBindSuccessCommand())                         // ACK → SUCCESS
             }
+            is RingDecodedEvent.BandFunction -> bandCapabilities = event.capabilities
+            else -> {}
         }
+    }
+
+    /** Latch the offset we're about to encode, then send it. The decoder subtracts the same
+     *  value back off every ring-stamped timestamp — the two halves must always move together. */
+    private fun enqueueTimeSync() {
+        clock.capture()
+        writer?.enqueue(encoder.makeTimeSyncCommand())
+    }
+
+    /** Re-push the clock after the phone's timezone or wall clock changes, so the ring's RTC
+     *  keeps tracking local time (its sleep detection and day-indexed history depend on it). */
+    override fun resyncTime() {
+        enqueueTimeSync()
     }
 
     override fun startHeartRate() {

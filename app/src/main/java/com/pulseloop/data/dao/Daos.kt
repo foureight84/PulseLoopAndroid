@@ -58,6 +58,17 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
+    /** Look up an already-persisted history row at an exact timestamp — the identity a ring's
+     *  history replay is deduped on (a ring re-sends the same log every re-sync, with
+     *  deterministic per-record epochs). */
+    @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND timestamp = :timestamp AND sourceRaw = 'history' LIMIT 1")
+    suspend fun findHistoryAt(kind: String, timestamp: Long): MeasurementEntity?
+
+    /** Update a row's value in place — used when a re-synced history sample revises an existing
+     *  one (the ring can refine an averaged block) without creating a duplicate row. */
+    @Query("UPDATE measurements SET value = :value WHERE id = :id")
+    suspend fun updateValue(id: String, value: Double)
+
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
 
