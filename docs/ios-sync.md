@@ -24,9 +24,9 @@ intentional platform differences listed at the bottom.
 |---|---|
 | **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `4dae095` — Merge PR #66 measure-HR redesign, 2026-07-16 |
-| **Last triage date** | 2026-07-16 |
-| **Range covered** | 48 commits / 9 first-parent items since `b3697c0` (2026-07-12) |
+| **Last triaged iOS commit** | `0d1b965` — seed: month of demo workouts + 30-day vitals series, 2026-07-18 |
+| **Last triage date** | 2026-07-18 |
+| **Range covered** | 48 commits / 9 first-parent items since `b3697c0` (2026-07-12), plus 1 direct commit (`0d1b965`) |
 
 ---
 
@@ -52,7 +52,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#49](https://github.com/saksham2001/PulseLoopiOS/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | `de60096` |
 | ☑ | [#44](https://github.com/saksham2001/PulseLoopiOS/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | `c8efccd` |
 | ☑ | [#71](https://github.com/saksham2001/PulseLoopiOS/pull/71) `4fd008a` | 07-10 | Colmi R08 ring support (catalog entry) | **PORT** | S | `be74a19` |
-| ☐ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** | L | |
+| ☑ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** (partial — see 2026-07-18 note) | L | `160430a` |
 | ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
 | ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
 | ☑ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1) + `1075586` (stages 2–3). Android uses a discrete edit-mode (Customize button → hide badge + move up/down + Hidden tray) instead of free-form drag |
@@ -86,6 +86,10 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PORT** (fit-to-viewport N/A) | S | `ad2cc5b` — finale medallion + "Setup complete" eyebrow + refreshed copy (You're all set / Today·First sync·Days 3–7 / Start using PulseLoop) + welcome subtitle. Fit-to-viewport N/A (Compose sizes natively) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `78ca593` | 07-01 | **Physiology settings screen** (athlete mode, altitude, beta-blockers, lung condition, glucose unit → tune `VitalsThresholdEngine`) — sub-surface of #35 that the XL dashboard port dropped | **PORT** | S–M | `d760c24` |
 
+`0d1b965` (2026-07-18, direct commit, not a PR) — "seed: month of demo workouts + 30-day vitals
+series", dev-only `PulseLoop/Persistence/SeedData.swift` change (denser demo data for iOS's own
+seeded-data mode). **SKIP** — no portable behavior, Android has its own independent seed data.
+
 ## Port priority — open items (as of 2026-07-17)
 
 Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
@@ -115,9 +119,37 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > it requires a non-blank API key, which this environment doesn't have (same limitation noted for
 > #65b/#65d).
 >
-> **Next up: Tier 3** — **#57 Activity-recording redesign** + post-workout vitals backfill + realtime-
-> HR keepalive rework, and **#77 jring protocol-parity** (RingBLEClient + JringSyncEngine +
-> JringClock). Both L-sized, own commits. See the Tier 3/4 lists below for what's after that.
+> **▶ RESUME HERE (2026-07-18 session):** **#77 jring protocol-parity DONE (protocol-layer subset)**
+> `160430a`, `:app:assembleDebug` + `:app:testDebugUnitTest` green (68 new/changed test assertions
+> across `RingDecoderTest`/`RingEventBridgeTest`/new `JringClockTest`), no real jring hardware in
+> this environment so verification stopped at build+test, not a live connect. Recon found real bugs
+> beyond what the ledger's rough "+120 lines on the engine" estimate implied — ported: `JringClock`
+> (the jring's RTC holds local wall-clock seconds, not true UTC — `RingEncoder.makeTimeSyncCommand`
+> and `RingDecoder` now share one offset per connection; `RingDecoder` went from a singleton
+> `object` to an instantiable `class` to carry it); the SpO₂ spot-measurement fix (was silently
+> sending `0x23` mode 1 = **blood pressure** via an unrelated, vendor-unused `0x3E` toggle — now
+> correctly mode 2 via the same command combined-measurement already used, matching the vendor);
+> arming the ring's background sensor logging on connect (`0x19` was never sent in `runStartup` at
+> all — likely why jring users previously needed the vendor app to initialize first); the `0x19`
+> trailing-byte fix (`0x02`→`0x01`, a misread of an unrelated app arg); a history-timestamp
+> plausibility gate generalized from sleep-only to all `HistoryMeasurement` kinds (safety net for
+> the clock fix); and history-row dedup on `(kind, timestamp)` so a jring's full-log replay on every
+> re-sync doesn't pile up duplicate measurement rows. **Deliberately deferred** (additive product
+> features, not bug fixes, so left out of this pass): a dedicated blood-pressure measurement action
+> and `MANUAL_BLOOD_PRESSURE`/`COMBINED_VITALS_MEASUREMENT` capabilities (Android's existing
+> `measureCombined()` already surfaces BP/stress/fatigue/blood-sugar through the normal event
+> pipeline, so there's no missing user-facing capability, just no *dedicated* BP button); and
+> auto-`resyncTime()` on phone timezone/DST change (the `resyncTime()` method + jring override
+> exist and are called by nothing yet — every reconnect already re-syncs the clock, bounding the
+> real-world staleness window). Full recon detail in the port-priority memory
+> (`ios-sync-port-priority`) from earlier in this session, not duplicated here.
+>
+> **Next up: Tier 3** — **#57 Activity-recording redesign** (post-workout vitals backfill +
+> realtime-HR keepalive rework). Recon already done this session (see the port-priority memory) —
+> found the keepalive piece is already ALREADY-HAVE on Android (landed independently via an earlier
+> QRing-parity commit), the real gap is Android computing **zero workout calories today** (`--` on
+> every session) plus no centralized route-distance engine, and net-new edit/log-past-activity UI.
+> L-sized, own commit(s). See the Tier 3/4 lists below for what's after that.
 >
 > **Prior state (still accurate below):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
 > battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
@@ -189,7 +221,8 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 **Tier 3 — large, focused work (own commits):**
 
 10. **#57 Activity-recording redesign** + post-workout vitals backfill + realtime-HR keepalive rework (L, ADAPT).
-11. **#77 jring protocol-parity** (RingBLEClient + JringSyncEngine + JringClock) (L, ADAPT).
+11. ~~**#77 jring protocol-parity**~~ ✅ **DONE (protocol-layer subset)** `160430a` — see the
+    2026-07-18 note below for what shipped vs. what's deferred.
 
 **Tier 4 — XL, dedicated branch each:**
 
