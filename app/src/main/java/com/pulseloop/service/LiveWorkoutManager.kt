@@ -95,14 +95,49 @@ class LiveWorkoutManager(
         stopForegroundService()
         tickJob?.cancel()
         val now = System.currentTimeMillis()
-        db.activitySessionDao().upsert(session.copy(
+        val finished = session.copy(
             statusRaw = "finished", endedAt = now,
             distanceMeters = gps.state.value.totalDistance,
             updatedAt = now,
-        ))
+        )
+        val summarized = recomputeSummary(finished)
+        db.activitySessionDao().upsert(summarized)
+        ActivityRollup.credit(db, summarized)
         coordinator.stopWorkoutHeartRate()
         _state.value = WorkoutState()
     }
+
+    /** Re-derive calories/HR/SpO2 aggregates from whatever the ring reported during the workout's
+     *  window. Mirrors ActivityService.recomputeSummary (iOS #57a) — Android has no per-session
+     *  sample-linking table, so this queries the shared measurements store by [startedAt, endedAt]
+     *  directly instead of iOS's ActivitySample join. */
+    private suspend fun recomputeSummary(session: ActivitySessionEntity): ActivitySessionEntity {
+        val end = session.endedAt ?: System.currentTimeMillis()
+        val hrRows = db.measurementDao().range(com.pulseloop.ring.MeasurementKind.HEART_RATE.name, session.startedAt, end)
+            .filter { it.value > 0 }
+        val spo2Rows = db.measurementDao().range(com.pulseloop.ring.MeasurementKind.SPO2.name, session.startedAt, end)
+            .filter { it.value > 0 }
+            .sortedBy { it.timestamp }
+        val duration = maxOf(0, (((end - session.startedAt) / 1000.0) - session.totalPauseSeconds).toInt())
+        val profileEntity = db.userProfileDao().get()
+        val calories = WorkoutMetricsEngine.calories(
+            type = session.type,
+            durationSeconds = duration,
+            distanceMeters = session.distanceMeters,
+            hrSamples = hrRows.map { it.timestamp to it.value },
+            profile = MetricsProfileValues(sex = profileEntity?.sex, age = profileEntity?.age, weightKg = profileEntity?.weightKg),
+        )
+        return session.copy(
+            calories = calories,
+            avgHeartRate = hrRows.map { it.value }.average0(),
+            maxHeartRate = hrRows.maxOfOrNull { it.value },
+            minHeartRate = hrRows.minOfOrNull { it.value },
+            avgSpO2 = spo2Rows.map { it.value }.average0(),
+            latestSpO2 = spo2Rows.lastOrNull()?.value,
+        )
+    }
+
+    private fun List<Double>.average0(): Double? = if (isEmpty()) null else average()
 
     suspend fun cancel(session: ActivitySessionEntity) {
         gps.stop()

@@ -25,6 +25,7 @@ object PendingActionExecutor {
 
         return when (action.kind) {
             PendingActionKind.DELETE_ACTIVITY_SESSION -> {
+                com.pulseloop.service.ActivityRollup.reverse(db, session)
                 db.activitySessionDao().upsert(
                     session.copy(
                         statusRaw = "cancelled",

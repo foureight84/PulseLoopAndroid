@@ -117,6 +117,7 @@ fun WorkoutSummaryScreen(
                 TextButton(onClick = {
                     confirmDelete = false
                     scope.launch {
+                        com.pulseloop.service.ActivityRollup.reverse(db, s)
                         db.activitySessionDao().upsert(s.copy(statusRaw = "deleted", updatedAt = System.currentTimeMillis()))
                         onBack()
                     }
