@@ -12,7 +12,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -153,6 +155,33 @@ fun ActivityScreen(
                 ) {
                     Icon(Icons.Filled.CalendarMonth, "Workout history", tint = PulseColors.textSecondary)
                 }
+            }
+        }
+
+        item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(68.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(PulseColors.card)
+                    .border(1.dp, PulseColors.borderSubtle, RoundedCornerShape(20.dp))
+                    .clickable { navController?.navigate("log_past_activity") }
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(40.dp).clip(CircleShape).background(PulseColors.accentSoft),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.History, null, tint = PulseColors.accent, modifier = Modifier.size(20.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Log Past Activity", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+                    Text("Add a workout you forgot to record", fontSize = 12.sp, color = PulseColors.textMuted)
+                }
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = PulseColors.textMuted)
             }
         }
 

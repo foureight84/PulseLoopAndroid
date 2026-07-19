@@ -263,7 +263,7 @@ private fun EditWorkoutSheet(
 }
 
 @Composable
-private fun EditFieldRow(title: String, content: @Composable () -> Unit) {
+internal fun EditFieldRow(title: String, content: @Composable () -> Unit) {
     val shape = RoundedCornerShape(16.dp)
     Row(
         Modifier
@@ -283,7 +283,7 @@ private fun EditFieldRow(title: String, content: @Composable () -> Unit) {
 /** Tapping shows a date picker, then a time picker, combining into one epoch-millis value. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DateTimeButton(valueMillis: Long, onChange: (Long) -> Unit) {
+internal fun DateTimeButton(valueMillis: Long, onChange: (Long) -> Unit) {
     var showDate by remember { mutableStateOf(false) }
     var showTime by remember { mutableStateOf(false) }
     var pendingDayMillis by remember { mutableLongStateOf(valueMillis) }
@@ -350,23 +350,23 @@ private fun DateTimeButton(valueMillis: Long, onChange: (Long) -> Unit) {
     }
 }
 
-private fun formatDateTime(millis: Long): String =
+internal fun formatDateTime(millis: Long): String =
     SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(millis))
 
 /** The calendar date of a local-epoch millis value, expressed at UTC midnight (what DatePicker wants). */
-private fun localMillisToUtcMidnight(localMillis: Long): Long {
+internal fun localMillisToUtcMidnight(localMillis: Long): Long {
     val date = java.time.Instant.ofEpochMilli(localMillis).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
     return date.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
 }
 
 /** The local-midnight start-of-day for the calendar date a DatePicker reports as UTC-midnight millis. */
-private fun utcMidnightToLocalDayStart(utcMillis: Long): Long {
+internal fun utcMidnightToLocalDayStart(utcMillis: Long): Long {
     val date = java.time.Instant.ofEpochMilli(utcMillis).atZone(java.time.ZoneOffset.UTC).toLocalDate()
     return date.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
 }
 
 @Composable
-private fun CircleIconButton(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color, onTap: () -> Unit) {
+internal fun CircleIconButton(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color, onTap: () -> Unit) {
     Box(
         Modifier
             .size(44.dp)

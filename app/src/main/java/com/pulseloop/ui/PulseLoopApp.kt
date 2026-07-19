@@ -487,6 +487,16 @@ fun PulseLoopApp() {
                     val id = backStackEntry.arguments?.getString("id") ?: return@paddedComposable
                     WorkoutSummaryScreen(sessionId = id, onBack = { navController.popBackStack() })
                 }
+                paddedComposable("log_past_activity") {
+                    LogPastActivityScreen(
+                        onBack = { navController.popBackStack() },
+                        onSaved = { id ->
+                            navController.navigate("activity_detail/$id") {
+                                popUpTo("activity")
+                            }
+                        },
+                    )
+                }
                 // Coach draws full-bleed under the glass top/bottom bars (like the other tabs), so
                 // the chat frosts under its header and the composer can clear the keyboard itself.
                 composable("coach") {
