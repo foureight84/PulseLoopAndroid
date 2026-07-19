@@ -53,7 +53,14 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#44](https://github.com/saksham2001/PulseLoopiOS/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | `c8efccd` |
 | ☑ | [#71](https://github.com/saksham2001/PulseLoopiOS/pull/71) `4fd008a` | 07-10 | Colmi R08 ring support (catalog entry) | **PORT** | S | `be74a19` |
 | ☑ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** (partial — see 2026-07-18 note) | L | `160430a` |
-| ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
+| — | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | ~~Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework~~ **RE-TRIAGED** into #57a–g below (was mis-billed a single "L"; PR is 3676 ins/42 files across finish-time aggregates, route distance, edit/log-past UI, vitals backfill, and an HR-stream bug) | — | — | see sub-rows |
+| ☑ | #57a | 07-18 | **Finish-time aggregates + daily rollup credit** (calories via Keytel HR model / MET fallback, avg/max/min HR, avg/latest SpO2, `ActivityDaily.activeMinutes`/`distanceMeters` credited once at finish, reversed on delete) | **PORT** | M | `<pending commit>` — `WorkoutMetricsEngine.kt` (pure, 5 oracle tests ported from `WorkoutMetricsEngineTests.swift`) + `ActivityRollup.kt` (credit/reverse, shared by `LiveWorkoutManager.finish()` and both delete sites — UI trash icon + coach `delete_activity_session`) + `LiveWorkoutManager.recomputeSummary()` querying the shared `measurements` table by `[startedAt, endedAt]` window (Android has no per-session `ActivitySample` link table like iOS, so no `backfillSamples`/`linkSample` port was needed for this slice). Runtime-verified on `emulator-5554`: a real gym workout start→finish showed **Calories: 4** (previously permanent "—") with Active Min correctly floored to 0 for a 48s session, and delete correctly ran the reversal path with no crash. |
+| ☑ | #57f | 07-18 | **Fix workout HR realtime-stream self-kill bug** (newly discovered, not in the original ledger estimate — the ~60s HR spot-poll loop's cleanup unconditionally disabled *any* active HR sensor mode, including the workout's own realtime stream, killing it almost immediately every workout) + Colmi realtime-HR decode dual-layout fix | **PORT** | S | `<pending commit>` — `WorkoutSensorPollingService` now skips its HR spot-poll entirely while `coordinator.workoutHRActive`, since a continuous stream already feeds `latestHRValue`; `ColmiDecoder`'s `0x1e` branch now accepts both the documented errCode+bpm layout and the original legacy bpm-only layout (mirrors iOS's defensive fix, since the real hardware layout was never confirmed) — 4 new test cases ported from `ColmiDecoderTests.swift`. **Bundled, unrelated crash fix found while runtime-verifying**: Android declared `FOREGROUND_SERVICE_HEALTH` but never `ACTIVITY_RECOGNITION`/`BODY_SENSORS`/`HIGH_SAMPLING_RATE_SENSORS`, so *every* workout start crashed outright on API 34+ (confirmed on the `emulator-5554` API-35 image) — added the manifest permission + a runtime `ACTIVITY_RECOGNITION` request gate in `ActivityScreen.kt` before `LiveWorkoutManager.start()`, mirroring the existing BLE-permission request pattern in `OnboardingScreen.kt`. |
+| ☐ | #57b | 07-08 | **RouteDistanceEngine consolidation** (gap + GPS-jump-speed filtered distance/splits, replacing two independent unfiltered haversine implementations) | **ADAPT** | M | |
+| ☐ | #57c | 07-08 | **Edit-workout: recompute-aware + UI** (re-slice samples to a new time window, recompute aggregates/rollup, small edit sheet) | **ADAPT** | M | depends on #57a/#57b |
+| ☐ | #57d | 07-08 | **Log Past Activity screen** (net-new UI; backend logic already exists via the `create_activity_session_from_description` coach tool) | **PORT** | S | best after #57a |
+| ☐ | #57e | 07-08 | **Post-workout vitals backfill/reconcile** (ring-log HR/SpO2 samples arriving after finish should still attach to the just-finished session) | **ADAPT** | M | depends on #57a |
+| ☐ | #57g | 07-08 | **Finished-workout notification card + Colmi decode robustness polish** | **PORT** | S | depends on #57a (avg HR) |
 | ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
 | ☑ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1) + `1075586` (stages 2–3). Android uses a discrete edit-mode (Customize button → hide badge + move up/down + Hidden tray) instead of free-form drag |
 | — | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | ~~Coach transparency/context rehaul~~ **RE-TRIAGED** into #65a–f below (was mis-billed "M"; PR is 2058 ins/47 files, and unlike iOS — where conversation persistence already existed — Android's coach chat was 100% in-memory, so "port the persisted usage/trace fields" first required wiring real persistence at all) | — | — | see sub-rows |
@@ -144,12 +151,14 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > real-world staleness window). Full recon detail in the port-priority memory
 > (`ios-sync-port-priority`) from earlier in this session, not duplicated here.
 >
-> **Next up: Tier 3** — **#57 Activity-recording redesign** (post-workout vitals backfill +
-> realtime-HR keepalive rework). Recon already done this session (see the port-priority memory) —
-> found the keepalive piece is already ALREADY-HAVE on Android (landed independently via an earlier
-> QRing-parity commit), the real gap is Android computing **zero workout calories today** (`--` on
-> every session) plus no centralized route-distance engine, and net-new edit/log-past-activity UI.
-> L-sized, own commit(s). See the Tier 3/4 lists below for what's after that.
+> **▶ RESUME HERE (2026-07-18 session, cont'd):** **#57 re-triaged into #57a–g** (mirroring the
+> #61/#65 pattern — see the port-queue row and the 2026-07-18 #57 session note below). **#57a**
+> (finish-time calories/HR/SpO2 aggregates + daily rollup credit) and **#57f** (a newly-discovered,
+> currently-shipping bug: the workout HR spot-poll loop was unconditionally disabling the workout's
+> own realtime HR stream within ~60s of every workout start) are both **DONE**, runtime-verified on
+> `emulator-5554` via a real start→finish→delete cycle (a genuine, separate, blocking crash was hit
+> and fixed along the way — see the session note). **Next up: #57b** (RouteDistanceEngine
+> consolidation), then #57c/#57d/#57e/#57g per the ranked order in the session note.
 >
 > **Prior state (still accurate below):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
 > battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
@@ -220,7 +229,11 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 **Tier 3 — large, focused work (own commits):**
 
-10. **#57 Activity-recording redesign** + post-workout vitals backfill + realtime-HR keepalive rework (L, ADAPT).
+10. **#57 Activity-recording redesign** — **RE-TRIAGED into #57a–g** (see port-queue rows above and
+    the 2026-07-18 session note below). ~~**#57a**~~ finish aggregates + rollup ✅ **DONE**.
+    ~~**#57f**~~ HR-stream self-kill bug + decode robustness ✅ **DONE**. Remaining: #57b
+    (RouteDistanceEngine, M), #57c (edit-workout, M), #57d (Log Past Activity UI, S), #57e (vitals
+    backfill, M), #57g (finished-notification polish, S).
 11. ~~**#77 jring protocol-parity**~~ ✅ **DONE (protocol-layer subset)** `160430a` — see the
     2026-07-18 note below for what shipped vs. what's deferred.
 
@@ -233,6 +246,84 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
 - **#74 Measurement-Frequency relocation** — deferred, but **revisit after #35**: it was deferred for "no Physiology route," and #35 creates exactly that route, giving the "move Measurement Frequency under Physiology" idea a home.
+
+### 2026-07-18 Tier 3 session — #57 re-triage + #57a/#57f (branch `iOS_sync_2026-07-16`)
+
+Pulled the real iOS diff for `8182d8d` (7 commits, 3676 ins/42 files across `PulseServices.swift`,
+new `WorkoutMetricsEngine.swift`/`RouteDistanceEngine.swift`/`WorkoutVitalsPlan.swift`, `RecordViews.swift`,
+new `LogPastActivityView.swift`, `ColmiDecoder.swift`, `RingSyncCoordinator.swift`, etc.) and re-triaged
+into **#57a–g**, same pattern as #61/#65. Ported the top two by value-for-effort.
+
+**#57a Finish-time aggregates + daily rollup credit — DONE.** New `WorkoutMetricsEngine.kt` (pure
+object: Keytel et al. 2005 HR-based kcal when profile complete + HR coverage ≥60% of workout
+minutes, else a per-type/speed-tiered MET table — ported 1:1 from the iOS engine, 5 oracle tests
+from `WorkoutMetricsEngineTests.swift` all green). `LiveWorkoutManager.finish()` now calls a new
+`recomputeSummary()` that queries the shared `measurements` table by `[startedAt, endedAt]` window
+for HR/SpO2 (kind `HEART_RATE`/`SPO2`, filtered `value > 0`) and populates
+`avgHeartRate`/`maxHeartRate`/`minHeartRate`/`avgSpO2`/`latestSpO2`/`calories` — previously every
+field but `distanceMeters` stayed permanently null, so `WorkoutSummaryScreen` showed "—" for
+calories on every single workout. **Deliberately did not port iOS's `ActivitySample`/`backfillSamples`/
+`linkSample` session-linking machinery** — Android has no per-session sample-link table and doesn't
+need one for this slice; a direct time-windowed query against the existing `measurements` table is
+simpler and sufficient (the session-linking complexity is what iOS needs for post-workout backfill
+reconciliation — that's #57e, not #57a). New `ActivityRollup.kt` (`credit`/`reverse`, mirroring
+`creditDailyRollup`/`reverseDailyRollup`) increments/decrements `ActivityDaily.activeMinutes` (and
+`distanceMeters` for GPS workouts) exactly once at finish, reversed at both delete sites (the
+`WorkoutSummaryScreen` trash-icon UI path and the coach `delete_activity_session` →
+`PendingActionExecutor` path — previously duplicated dead-end deletes with no rollup awareness at
+all, since Android had never credited anything to reverse before). **Runtime-verified on
+`emulator-5554`**: started a real "Gym" workout (no GPS) via the UI, waited ~48s, tapped Finish —
+summary screen showed **Calories: 4** (previously permanent "—") and **Active Min: 0** (correctly
+floored — 48s doesn't reach a full minute), confirmed via on-device `sqlite3`
+(`calories=4.6666...`, `statusRaw=finished`). AVG/MAX/MIN HR and SpO2 correctly stayed "—" (no ring
+connected in this environment, so no measurement rows existed in the window — expected, not a bug).
+Deleted the session afterward via the trash icon to exercise the reversal path — no crash. `distanceMeters`
+double-credit risk noted for future reference: `EventPersistenceSubscriber`'s ring-history bucket
+recompute (`applyActivityBucket`) only *overwrites* `distanceMeters` for **non-today** days; for
+today it ratchets (`maxOf`), so a workout's credited GPS distance survives same-day ring syncs. A
+workout that credits on one day and gets bucket-recomputed after midnight on a *later* sync could in
+principle have its credit overwritten — a narrow, pre-existing class of risk (the same ratchet-vs-
+overwrite split already exists for the live vs. history paths generally), not something this pass
+introduced or attempted to fully close.
+
+**#57f Fix workout HR realtime-stream self-kill bug — DONE**, plus a **newly-discovered, unrelated,
+currently-shipping crash fixed along the way** since it blocked runtime verification entirely.
+Tracing the workout HR data path (prompted by the ledger's stale "realtime-HR keepalive" framing —
+confirmed ALREADY-HAVE, landed independently via `c910942`) surfaced a real, live bug not in the
+original recon: `WorkoutSensorPollingService`'s ~60s HR spot-poll loop calls
+`RingSyncCoordinator.measureHR()`, whose `finally` block unconditionally calls
+`engine.stopHeartRate()` — which, per both `ColmiSyncEngine` and `JringDriver`, disables *any*
+active HR sensor mode, including the continuous realtime stream `LiveWorkoutManager.start()` had
+just enabled via `coordinator.startWorkoutHeartRate()`. Net effect: the workout's own live HR
+stream was silently torn down by its first spot-poll cycle, within about a minute of every workout,
+and nothing ever restarted it — this was shipping, undetected, on every recorded workout. Fixed by
+having `WorkoutSensorPollingService` skip its HR spot-poll entirely while
+`coordinator.workoutHRActive` is true (a continuous stream already feeds `latestHRValue`; no
+need to redundantly and destructively spot-poll on top of it). Also ported iOS's defensive
+`ColmiDecoder` fix for the `0x1e` realtime-HR reply: the real hardware layout was never confirmed,
+so the decoder now accepts either the documented errCode+bpm shape or the original legacy bpm-only
+shape (4 new test cases ported from `ColmiDecoderTests.swift`, all green). **Deliberately did not
+port** the full `WorkoutVitalsPlan` capability-driven stream/spot/ring-log abstraction (iOS's
+broader fix) — the narrow bug fix above is S-effort and directly addresses the actual defect;
+`WorkoutVitalsPlan` is a larger, separate abstraction whose value is unclear until this fix is
+observed stable, so it stays deferred.
+
+**Bundled crash fix, discovered while runtime-verifying #57a/#57f, not part of either's original
+scope:** starting *any* workout on the API-35 emulator crashed immediately with
+`SecurityException: Starting FGS with type health ... requires ... ACTIVITY_RECOGNITION,
+BODY_SENSORS, HIGH_SAMPLING_RATE_SENSORS`. `WorkoutForegroundService` has declared
+`foregroundServiceType="health"` since Phase 6, but the manifest only ever requested
+`FOREGROUND_SERVICE_HEALTH` — Android 14+ additionally requires holding one of those three sensor
+permissions for a "health" foreground service, and none were declared, so this has apparently
+crashed on every API 34+ workout start since the type was added, unrelated to anything in this PR.
+Added `<uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />` to the manifest
+plus a runtime permission-request gate in `ActivityScreen.kt` (mirrors the existing BLE-permission
+request pattern in `OnboardingScreen.kt`) before `LiveWorkoutManager.start()`. Confirmed fixed on
+`emulator-5554`: the system permission dialog now appears and, on Allow, the workout starts and
+records cleanly with zero crashes.
+
+`:app:assembleDebug` + `:app:testDebugUnitTest` green throughout (487 tests, 9 new: 5
+`WorkoutMetricsEngineTest` + 4 `ColmiDecoderTest` additions).
 
 ### 2026-07-17 Tier 2 session — recon + #61a (branch `iOS_sync_2026-07-16`)
 
