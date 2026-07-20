@@ -29,9 +29,10 @@ object ActivityAggregates {
             db.activityGpsPointDao().forSession(session.id).filter { it.timestamp in session.startedAt..end }
         } else emptyList()
         val acceptedCount = gpsPoints.count { it.accepted }
-        val distanceMeters = if (session.useGps) {
+        val routeDistance = if (acceptedCount >= 2) {
             RouteDistanceEngine.distanceMeters(gpsPoints, ActivityTrackingProfile.profile(session.type))
         } else null
+        val distanceMeters = resolveDistanceMeters(session, acceptedCount, routeDistance)
 
         val calories = WorkoutMetricsEngine.calories(
             type = session.type,
@@ -53,6 +54,17 @@ object ActivityAggregates {
             lastGpsPointAt = gpsPoints.maxOfOrNull { it.timestamp },
         )
     }
+
+    /**
+     * iOS `gpsDistance(session:context:) ?? session.distanceMeters` (PulseServices.swift:838):
+     * the route-derived value only exists when ≥2 accepted points lie in the window — anything
+     * else (a non-GPS session, a GPS session shorter than two fixes, an edit that moved the
+     * window off the route) must keep the distance already on the session, e.g. one entered
+     * manually via the Log-Past screen or the coach's create_activity_session_from_description
+     * tool. Pure, so the rule is unit-testable without a Room harness.
+     */
+    fun resolveDistanceMeters(session: ActivitySessionEntity, acceptedGpsPoints: Int, routeDistance: Double?): Double? =
+        (if (session.useGps && acceptedGpsPoints >= 2) routeDistance else null) ?: session.distanceMeters
 
     /**
      * Post-finish edit, deliberately limited to type + time window (iOS #57c). Reverses the old

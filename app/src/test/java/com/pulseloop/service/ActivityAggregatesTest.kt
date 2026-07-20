@@ -1,6 +1,7 @@
 package com.pulseloop.service
 
 import com.pulseloop.data.entity.ActivitySessionEntity
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,5 +79,32 @@ class ActivityAggregatesTest {
     fun `non-finished session is never within the backfill window`() {
         val session = finishedSession(endedAt = now - 60_000L).copy(statusRaw = "recording")
         assertFalse(ActivityAggregates.isWithinBackfillWindow(session, now))
+    }
+
+    // MARK: resolveDistanceMeters (iOS `gpsDistance(...) ?? session.distanceMeters`)
+
+    @Test
+    fun `manually entered distance survives recompute on a non-GPS session`() {
+        val session = finishedSession().copy(type = "gym", useGps = false, distanceMeters = 5000.0)
+        assertEquals(5000.0, ActivityAggregates.resolveDistanceMeters(session, acceptedGpsPoints = 0, routeDistance = null)!!, 0.001)
+    }
+
+    @Test
+    fun `route distance wins when a GPS session has at least two accepted points`() {
+        val session = finishedSession().copy(useGps = true, distanceMeters = 1234.0)
+        assertEquals(4800.0, ActivityAggregates.resolveDistanceMeters(session, acceptedGpsPoints = 7, routeDistance = 4800.0)!!, 0.001)
+    }
+
+    @Test
+    fun `GPS session with fewer than two accepted points keeps its stored distance`() {
+        // e.g. an edit that moved the window off the recorded route.
+        val session = finishedSession().copy(useGps = true, distanceMeters = 4800.0)
+        assertEquals(4800.0, ActivityAggregates.resolveDistanceMeters(session, acceptedGpsPoints = 1, routeDistance = null)!!, 0.001)
+    }
+
+    @Test
+    fun `session with no distance and no route stays null`() {
+        val session = finishedSession().copy(useGps = false, distanceMeters = null)
+        assertEquals(null, ActivityAggregates.resolveDistanceMeters(session, acceptedGpsPoints = 0, routeDistance = null))
     }
 }
