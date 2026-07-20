@@ -485,15 +485,15 @@ class RingBLEClient(private val context: Context) {
      * User-initiated Disconnect (the Settings button). Unlike the transient [disconnect] used by
      * the background worker and lifecycle, this makes the disconnect STICK: it sets a persisted
      * flag that suppresses every auto-reconnect path until the user reconnects ([userConnect]) or
-     * pairs a new ring. For a model we OS-bond (the R09) it also removes the bond, since a bonded
-     * link can otherwise be held connected by the OS — the ring re-bonds (with the OS prompt) on
-     * the next user reconnect. Non-bonded models (R10 and the rest) just drop the link, matching
-     * the iOS "Disconnect" experience. The stored ring identity is kept either way, so the ring
-     * stays listed and one tap reconnects it; use [forget] to remove it entirely.
+     * pairs a new ring. If this ring is currently OS-bonded (see [bondActiveDevice]) it also
+     * removes the bond, since a bonded link can otherwise be held connected by the OS — the ring
+     * re-bonds (with the OS prompt) on the next user reconnect. Non-bonded rings just drop the
+     * link, matching the iOS "Disconnect" experience. The stored ring identity is kept either
+     * way, so the ring stays listed and one tap reconnects it; use [forget] to remove it entirely.
      */
     fun userDisconnect() {
         prefs.edit().putBoolean(USER_DISCONNECTED_KEY, true).apply()
-        if (activeModelRequiresBond() && hasPermissions()) {
+        if (hasPermissions()) {
             try {
                 bluetoothGatt?.device?.let { dev ->
                     if (dev.bondState != BluetoothDevice.BOND_NONE) {
@@ -670,18 +670,16 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
-    /** True only when the connected model is one we deliberately OS-bond (currently the R09).
-     *  See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
-    private fun activeModelRequiresBond(): Boolean =
-        com.pulseloop.wearables.WearableModel.model(_state.value.activeWearableModelID)
-            ?.requiresOsBond == true
-
     /**
      * Create an OS-level bond with the connected ring — invoked by the sync engine only when
-     * the ring's device-support reply advertises `supportBlePair` (Colmi R09 and newer). The
-     * official QRing app does exactly this, which is why its rings appear in the phone's
-     * paired-devices list and hold a stable link; connecting GATT-only (no bond) is what left
-     * PulseLoop's users stuck on "Connecting" and cycling Bluetooth to recover.
+     * the ring's device-support reply advertises `supportBlePair`. This now matches the official
+     * QRing app exactly: it bonds *every* ring that reports the bit, with no per-model
+     * allowlist (confirmed against the decompiled QRing sources, `DeviceCmdInit.init` —
+     * `if (deviceSupportFunctionRsp.supportBlePair) { ...; bleCreateBond() }`, unconditional on
+     * model). PulseLoop previously narrowed this to just the Colmi R09 (the one model it had
+     * confirmed needed it), which left other `supportBlePair` rings — e.g. the R11 — connecting
+     * GATT-only and, per user reports, stuck on "Connecting" with no stable link. Connecting
+     * GATT-only (no bond) is what left PulseLoop's users stuck cycling Bluetooth to recover.
      *
      * Idempotent: skipped when already bonded/bonding, so it fires at most once per ring. Runs
      * after service discovery (the reply that triggers it arrives post-CONNECTED), so it does
@@ -697,14 +695,6 @@ class RingBLEClient(private val context: Context) {
      */
     private fun bondActiveDevice() {
         if (!hasPermissions()) return
-        // Only bond the models that actually need it on Android (the R09). Every other ring
-        // works GATT-only like iOS; bonding them just adds a pairing prompt and leaves the
-        // in-app Disconnect unable to release the link. QRing bonds every supportBlePair ring —
-        // we deliberately don't. A supportBlePair reply from any other model is a no-op here.
-        if (!activeModelRequiresBond()) {
-            Log.i("RingBLEClient", "Ring reports supportBlePair but this model works GATT-only — skipping bond")
-            return
-        }
         scope.launch {
             awaitOpsFlushed()
             // The link may have dropped while we waited for the queue to settle.
@@ -754,7 +744,8 @@ class RingBLEClient(private val context: Context) {
         activeDriver = driver
         activeSyncEngine = driver.makeSyncEngine()
         // Capability-gated bonding: the engine fires this only when the ring's device-support
-        // reply advertises supportBlePair (Colmi R09 and newer). See docs/qring-ble-adoption.md.
+        // reply advertises supportBlePair, matching every model that sets the bit (not just
+        // R09). See docs/qring-ble-adoption.md and bondActiveDevice()'s KDoc.
         activeSyncEngine?.setOnBondRequested { bondActiveDevice() }
         updateState {
             copy(
@@ -1029,11 +1020,11 @@ class RingBLEClient(private val context: Context) {
                         // requestMtu()/discoverServices() — a known Android instability that
                         // caused frequent disconnects. Instead we bond later, and only when the
                         // ring asks: the Colmi engine reads the device-support bitfield during
-                        // startup and, if supportBlePair is set (R09 and newer), calls back into
+                        // startup and, if supportBlePair is set, calls back into
                         // bondActiveDevice() — well after discovery, matching the official QRing
-                        // app (which also bonds post-discovery, gated on supportBlePair). Rings
-                        // that don't advertise the bit (jring 56ff, older R02) are never bonded,
-                        // preserving prior behaviour. See docs/qring-ble-adoption.md §Pairing.
+                        // app exactly (bonds post-discovery, gated on supportBlePair alone, no
+                        // per-model allowlist). Rings that don't advertise the bit (jring 56ff)
+                        // are never bonded. See docs/qring-ble-adoption.md §Pairing.
                         // Request a high-priority connection interval, matching the official app
                         // (BluetoothLeService.requestConnectionPriority(1) on connect).
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
@@ -1227,7 +1218,19 @@ class RingBLEClient(private val context: Context) {
             // (e.g. Colmi pref-read replies seeding the measurement config).
             if (!forgetPending) activeSyncEngine?.handleRawNotify(value)
 
-            for (decoded in driver.ingest(value, characteristic.uuid.toString())) {
+            val decodedEvents = driver.ingest(value, characteristic.uuid.toString())
+            // Log once per physical BLE notification, not once per decoded event — a single
+            // reassembled buffer (e.g. a "full history" sleep reply) can decode into many
+            // events (one per day), which used to re-log the same bytes N times and made a
+            // single notification look like N separate retransmissions in diagnostics.
+            if (!forgetPending) {
+                decodedEvents.firstOrNull()?.let { first ->
+                    PulseEventBus.publishBlocking(
+                        PulseEvent.RawPacket(PacketDirection.INCOMING, value, first)
+                    )
+                }
+            }
+            for (decoded in decodedEvents) {
                 // A forget is in flight: don't persist any more data or re-publish a
                 // "connected" device state (which would re-create the row we're clearing).
                 // Just watch for the ring's unbind ack (6 = UNBOND_ACK, 3 = ACK_CANCEL).
@@ -1238,9 +1241,6 @@ class RingBLEClient(private val context: Context) {
                     }
                     continue
                 }
-                PulseEventBus.publishBlocking(
-                    PulseEvent.RawPacket(PacketDirection.INCOMING, value, decoded)
-                )
                 for (event in RingEventBridge.eventsFor(decoded)) {
                     PulseEventBus.publishBlocking(event)
                 }
