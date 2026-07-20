@@ -94,6 +94,15 @@ data class WearableModel(
             advertisedNamePatterns = listOf("^[A-Za-z0-9]+( [A-Za-z0-9]+)* [0-9A-Fa-f]{4}$"),
         )
 
+        // TK18 -- the LuckRing app / "K6" protocol (company ID 0xFF64). The only hardware-tested unit
+        // of the whole 0xFF64 family, so it stays limited-support. No dedicated product art yet --
+        // falls back to the generic ring silhouette, same as TK5.
+        val LUCK_RING_TK18 = WearableModel(
+            id = "luckring-tk18", displayName = "TK18", brand = "LuckRing", family = RingDeviceType.LUCK_RING,
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Temp · BP · Sleep · Steps",
+            advertisedNamePatterns = listOf("^TK18([ _-].*)?$"),
+        )
+
         private fun colmi(
             id: String,
             name: String,
@@ -113,7 +122,7 @@ data class WearableModel(
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
             COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59, TK5,
+            YAWELL_R05, YAWELL_R10, H59, TK5, LUCK_RING_TK18,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
             COLMI_SMARTHEALTH,

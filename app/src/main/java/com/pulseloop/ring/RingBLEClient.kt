@@ -31,14 +31,21 @@ import java.util.UUID
 @SuppressLint("MissingPermission")
 class RingBLEClient(private val context: Context) {
 
-    /** Registry of supported wearables. Adding a wearable = append one entry. */
+    /** Registry of supported wearables. Adding a wearable = append one entry.
+     *
+     * The order is load-bearing at exactly two places:
+     *   - `ColmiSmartHealthCoordinator` must precede `TK5Coordinator`. A SmartHealth-Colmi's
+     *     advertised name would otherwise also satisfy TK5's looser manufacturer-data fallback (see
+     *     `ColmiSmartHealthCoordinator.matches()` doc for why order here matters).
+     *   - `LuckRingCoordinator` must precede `TK5Coordinator`. LuckRing matches strong,
+     *     family-exclusive signals (the `F618` service, the `0xFF64` company ID) that no other
+     *     coordinator claims; ordering it ahead of TK5 is defensive, so TK5's weak `TK5`-name prefix
+     *     could never shadow a hypothetical `TK5x`-named LuckRing sibling. */
     private val coordinators: List<WearableCoordinator> = listOf(
         JringCoordinator,
         ColmiCoordinator,
-        // Checked ahead of TK5Coordinator: a SmartHealth-Colmi's advertised name would otherwise
-        // also satisfy TK5's looser manufacturer-data fallback (see ColmiSmartHealthCoordinator's
-        // matches() doc for why order here matters).
         ColmiSmartHealthCoordinator,
+        LuckRingCoordinator,
         TK5Coordinator,
     )
 
@@ -858,6 +865,17 @@ class RingBLEClient(private val context: Context) {
                         false
                     } else {
                         val target = if (op.useCommandChannel) commandChar ?: wChar else wChar
+                        // The write type must come from the characteristic, not the framework
+                        // default. A characteristic that only supports write-without-response (the
+                        // LuckRing/TK18's `B002`) rejects a WRITE_TYPE_DEFAULT request over GATT —
+                        // the ring's own GATT server has no Write property to answer it, so the write
+                        // fails or times out instead of ever reaching the ring. Mirrors iOS's
+                        // `CBCharacteristicWriteType` fix for the same characteristic.
+                        target.writeType = if (target.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
+                            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                        } else {
+                            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        }
                         target.value = op.data
                         // Publish the outgoing packet once, on the first issue attempt only — a
                         // retry storm used to log 200 duplicate CommandAcks, flooding the 200-entry

@@ -67,5 +67,8 @@ enum class RingDeviceType(val displayName: String) {
     // Both speak the Yucheng YCBT protocol (see YCBTProtocol.kt) via the shared YCBTDriver —
     // two families only because they need distinct advertisement-matching + capability sets.
     TK5("TK5"),
-    COLMI_SMART_HEALTH("Colmi / Yawell ring (SmartHealth)");
+    COLMI_SMART_HEALTH("Colmi / Yawell ring (SmartHealth)"),
+    // LuckRing / TK18 family (the "K6" vendor SDK, company ID 0xFF64). Sold under simsonlab and
+    // other brands; TK18 is the hardware-tested unit. See LuckRingCoordinator.
+    LUCK_RING("LuckRing");
 }

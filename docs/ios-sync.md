@@ -88,7 +88,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#83](https://github.com/saksham2001/PulseLoopiOS/pull/83) `2367d23` | 07-15 | Split same-day sleep into sessions (night + naps, 60-min gap) + Day carousel | **ADAPT** | L | `0d7212c` — `SleepSegmentation` + `EventPersistenceSubscriber.reconcileWakingDay` (overlap-matched stable ids) + `SleepInsights.collapseByDay` + `byDay` longest-session + `HorizontalPager` carousel. iOS's `DerivedUpdateRow` no-op signal + `migrateSleepSessionSegmentsIfNeeded` migration both dropped — Room Flows already drive reactivity and sleep rebuilds from the ring on every connect (see DataRepairs note) |
 | ☑ | [#84](https://github.com/saksham2001/PulseLoopiOS/pull/84) `8b86e5c` | 07-15 | Sleep › Day navigation (page between days) | **PORT** | M | `0d7212c` — `SleepViewModel` dayOffset + `stepDay`/`jumpToDay`/`resetToToday`, chevron header + bounded Material3 `DatePicker` (UTC↔local day-key conversion). Day view isolated from the Today tile (lastNight stays on the true reference night) |
 | ☑ | [#85](https://github.com/saksham2001/PulseLoopiOS/pull/85) `9093e9b` | 07-15 | Multi-session sleep days in demo seed | **PORT-with-#83** | S | `0d7212c` — `DemoDataSeeder.napsForDay`/`napStageBlocks` — demo nap sessions keyed `demo-sleep-<day>-<napStart>` (sourceRaw demo); days 0/1 get 2 naps, day 2 one, day 5 one |
-| ☐ | [#90](https://github.com/saksham2001/PulseLoopiOS/pull/90) `9d05481` | 07-15 | LuckRing/TK18 ring support (Coolwear "K6" / 0xFF64 `f618` protocol) | **PORT** | XL | |
+| ☐ | [#90](https://github.com/saksham2001/PulseLoopiOS/pull/90) `9d05481` | 07-15 | LuckRing/TK18 ring support (Coolwear "K6" / 0xFF64 `f618` protocol) | **PORT** | XL | `<pending commit>` (protocol-layer subset, see 2026-07-19 session note) |
 | ☑ | [#88](https://github.com/saksham2001/PulseLoopiOS/pull/88) `e937a39` | 07-15 | Refresh stale screens after data changes (coach edit → aggregates, goal-edit rings, metric-detail on-sync) | **ADAPT** | S | already-have (Room Flows cover b/c/d; a is an architecture-specific non-gap) |
 | ☑ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PORT** (fit-to-viewport N/A) | S | `ad2cc5b` — finale medallion + "Setup complete" eyebrow + refreshed copy (You're all set / Today·First sync·Days 3–7 / Start using PulseLoop) + welcome subtitle. Fit-to-viewport N/A (Compose sizes natively) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `78ca593` | 07-01 | **Physiology settings screen** (athlete mode, altitude, beta-blockers, lung condition, glucose unit → tune `VitalsThresholdEngine`) — sub-surface of #35 that the XL dashboard port dropped | **PORT** | S–M | `d760c24` |
@@ -254,6 +254,51 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > with the user first — they wanted everything consolidated on this branch rather than left on a
 > separate Tier-4 feature branch).
 >
+> **▶ RESUME HERE (2026-07-19 session, cont'd yet again):** **#90 LuckRing/TK18 — DONE
+> (protocol-layer subset)**, on `iOS_sync_2026-07-16` (not yet pushed — pending commit). Only Tier-4
+> item left after #82, so no AskUserQuestion pick was needed this time. Ground-truthed directly
+> against the decompiled vendor app already in this repo (`decompiled-coolring/`,
+> `com.kewo.coolring` / package `ce.com.cenewbluesdk`, internal family "K6") rather than transcribed
+> blind from iOS: `queue/b.java`'s `getSendData`/`Analysis` confirmed the exact 20-byte head/
+> continuation framing and app-ACK bytes byte-for-byte against the iOS port, and `CEBC.java`
+> confirmed every cmdType/dataType/sleep-status constant used. Ported: `LuckRingProtocol.kt`
+> (UUIDs/cmdType/dataType table/LE byte helpers/frame/packetizer/frame-assembler/MixInfo TLV),
+> `LuckRingEncoder.kt` (connect bundle + toggles + requests), `LuckRingDecoder.kt` (battery/firmware/
+> sport/sleep-session-segmentation/HR/SpO2/BP/HRV/temp/stress), `LuckRingHistorySync.kt` (the
+> time-settled history pager — this protocol has no transfer cursor or terminal marker, unlike YCBT,
+> so completion is inferred from a settle/stall timeout instead of a CRC'd terminal block),
+> `LuckRingDriver.kt` (ACK-before-decode) and `LuckRingSyncEngine.kt`. New
+> `RingDeviceType.LUCK_RING` + `WearableModel.LUCK_RING_TK18` catalog entry (no dedicated product art
+> yet, falls back to the generic ring like TK5) + `LuckRingCoordinator` registered ahead of
+> `TK5Coordinator` in `RingBLEClient.coordinators` (defensive ordering — LuckRing's signals are
+> family-exclusive and don't actually collide with TK5's today).
+>
+> **One real, verified-against-the-decompiled-SDK BLE bug fixed in the shared `RingBLEClient`**
+> (found by cross-checking the vendor's own `CEBlueTooth_5.java`/`queue/b.java`, and independently
+> confirmed by iOS's own equivalent fix on real TK18 hardware): `pumpOps()`'s `CommandWrite` branch
+> never set `BluetoothGattCharacteristic.writeType`, so every write went out as the framework default
+> `WRITE_TYPE_DEFAULT` (write-with-response) regardless of what the target characteristic actually
+> supports. The LuckRing/TK18's write characteristic (`B002`) is write-without-response only — a
+> write-with-response request against it has no `PROPERTY_WRITE` to answer over GATT, so it fails or
+> times out instead of ever reaching the ring. Fixed generically off the characteristic's own
+> `PROPERTY_WRITE` flag (mirrors the existing `cccdEnableValue` fix from #82, which did the same for
+> notify-vs-indicate) — a no-op for every other ring, whose write characteristics all advertise
+> `PROPERTY_WRITE`. Deliberately did **not** port LuckRing's "first pair" pairing-animation trigger
+> (`K6_DATA_TYPE_PAIR_FINISH`'s leading byte) — the ring/driver layer is intentionally Context-free
+> (no persisted-flag seam exists there, unlike `UserProfileValues`/`MeasurementSettings` which the
+> app layer seeds before `runStartup`), and the cosmetic cost of never showing the ring's one-time
+> pairing flash is far smaller than replaying it on every reconnect; see `LuckRingEncoder.
+> startupBundle`'s doc comment.
+>
+> `:app:assembleDebug` + `:app:testDebugUnitTest` green (612 tests; new `LuckRingProtocolTest`/
+> `LuckRingEncoderTest`/`LuckRingDecoderTest`/`LuckRingDriverTest`/`LuckRingHistorySyncTest` plus
+> `PairingMatchingTest` additions for the new coordinator/catalog entry — one pre-existing
+> `PairingMatchingTest` assertion enumerating registered coordinators needed updating for the new
+> family, same as every prior ring addition). **No TK18/LuckRing hardware in this environment** —
+> verification stopped at a clean app run on `emulator-5554` (no crash, existing seeded device/
+> pairing flow unaffected, `Settings → Wearable` screen for the already-paired demo Colmi ring still
+> renders fine), not a live connect — same gap as every other hardware-gated item in this ledger.
+>
 > **Prior (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
 > the port-queue row for full detail (new `ManualActivityService.create` shared by the screen and
 > the `create_activity_session_from_description` coach tool, fixing a real gap where the coach tool
@@ -347,7 +392,7 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 **Tier 4 — XL, dedicated branch each:**
 
 12. ~~**#82 YCBT (Yucheng) protocol rebuild**~~ — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT). **Protocol-layer subset DONE** `7a941a5`, pushed to `iOS_sync_2026-07-16` — no real hardware to verify a live connect; see the 2026-07-19 session note.
-13. **#90 LuckRing/TK18** — Coolwear "K6" / `0xFF64` protocol (XL, PORT).
+13. ~~**#90 LuckRing/TK18**~~ — Coolwear "K6" / `0xFF64` protocol (XL, PORT). **Protocol-layer subset DONE** `<pending commit>`, on `iOS_sync_2026-07-16` — no real TK18/LuckRing hardware to verify a live connect; see the 2026-07-19 session note.
 
 **Blocked / deferred:**
 

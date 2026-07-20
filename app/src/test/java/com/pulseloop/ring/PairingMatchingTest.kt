@@ -68,6 +68,7 @@ class PairingMatchingTest {
         val registeredTypes = setOf(
             JringCoordinator.deviceType, ColmiCoordinator.deviceType,
             TK5Coordinator.deviceType, ColmiSmartHealthCoordinator.deviceType,
+            LuckRingCoordinator.deviceType,
         )
         for (model in WearableModel.CATALOG) {
             assertTrue("no coordinator for ${model.displayName}", registeredTypes.contains(model.family))
@@ -192,6 +193,35 @@ class PairingMatchingTest {
         // The broad SmartHealth pattern is registered last, so every QRing-Colmi pattern above it
         // in the catalog still wins for an underscore name.
         assertEquals("colmi-r02", WearableModel.modelForAdvertisedName("R02_A1B2")?.id)
+    }
+
+    // ── LuckRing / TK18 (iOS #90) ────────────────────────────────────
+
+    @Test
+    fun `luckring matches by advertised f618 service`() {
+        val adv = AdvertisementInfo(listOf(LuckRingUUIDs.SERVICE), null)
+        assertTrue(LuckRingCoordinator.matches("anything", adv))
+        assertTrue(LuckRingCoordinator.matches(null, adv))
+    }
+
+    @Test
+    fun `luckring matches by manufacturer company id prefix`() {
+        // Company ID 0xFF64 in the little-endian slot => 64 FF.
+        val adv = AdvertisementInfo(emptyList(), byteArrayOf(0x64, 0xFF.toByte(), 0x01, 0x02))
+        assertTrue(LuckRingCoordinator.matches("anything", adv))
+    }
+
+    @Test
+    fun `luckring matches by catalog name pattern`() {
+        assertTrue(LuckRingCoordinator.matches("TK18", noAdv))
+        assertTrue(LuckRingCoordinator.matches("TK18_AA11", noAdv))
+        assertFalse(LuckRingCoordinator.matches("TK5 24AA", noAdv))
+        assertFalse(LuckRingCoordinator.matches("R02_A1B2", noAdv))
+    }
+
+    @Test
+    fun `luckring name resolves to the exact catalog model`() {
+        assertEquals("luckring-tk18", WearableModel.modelForAdvertisedName("TK18")?.id)
     }
 
     @Test
