@@ -193,9 +193,12 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > via AskUserQuestion) or #79 (still blocked on no Activity-trends screen).
 >
 > **▶ RESUME HERE (2026-07-19 session, cont'd again):** **#82 YCBT/TK5+SmartHealth-Colmi — DONE
-> (protocol-layer subset)** `7a941a5` on a **new dedicated branch `ios_82_ycbt_tk5_smarthealth`**
-> (branched off `iOS_sync_2026-07-16`, per Tier 4's "own branch" convention — not yet merged/pushed).
-> User picked #82 over #90 via AskUserQuestion, with explicit guidance: for a BLE protocol rebuild,
+> (protocol-layer subset)** `7a941a5` + docs `853d4a4`, on `iOS_sync_2026-07-16` directly and
+> **pushed to origin**. (Briefly landed on its own branch `ios_82_ycbt_tk5_smarthealth` per Tier 4's
+> "own branch" convention, but the user asked for everything consolidated onto
+> `iOS_sync_2026-07-16` instead — fast-forward merged since the branch was a clean 2-commit ahead
+> of it, then the feature branch was deleted both locally and on origin.) User picked #82 over #90
+> via AskUserQuestion, with explicit guidance: for a BLE protocol rebuild,
 > reference the **official vendor Android app's actual behavior**, not iOS's CoreBluetooth calls,
 > since Android's BLE stack differs (pairing/bonding, MTU, connection sequencing) and past
 > iOS-sequencing ports caused real pairing/data bugs. Decompiled the SmartHealth APK
@@ -247,9 +250,9 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > `YCBTHealthRecordsTest` plus `PairingMatchingTest` additions for the two new coordinators/catalog
 > entries). **No TK5/SmartHealth-Colmi hardware in this environment** — verification stopped at a
 > clean app run on `emulator-5554` (no crash, existing seeded device/pairing flow unaffected), not a
-> live connect (same gap as #61c/#65b/#65d/#77). **Not yet pushed** — this is mid-XL-item work on its
-> own branch, ask the user before pushing/merging once further along or considered a good stopping
-> point.
+> live connect (same gap as #61c/#65b/#65d/#77). **Pushed to origin/iOS_sync_2026-07-16** (confirmed
+> with the user first — they wanted everything consolidated on this branch rather than left on a
+> separate Tier-4 feature branch).
 >
 > **Prior (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
 > the port-queue row for full detail (new `ManualActivityService.create` shared by the screen and
@@ -343,7 +346,7 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 **Tier 4 — XL, dedicated branch each:**
 
-12. ~~**#82 YCBT (Yucheng) protocol rebuild**~~ — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT). **Protocol-layer subset DONE** `7a941a5` on branch `ios_82_ycbt_tk5_smarthealth` (not yet merged) — no real hardware to verify a live connect; see the 2026-07-19 session note.
+12. ~~**#82 YCBT (Yucheng) protocol rebuild**~~ — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT). **Protocol-layer subset DONE** `7a941a5`, pushed to `iOS_sync_2026-07-16` — no real hardware to verify a live connect; see the 2026-07-19 session note.
 13. **#90 LuckRing/TK18** — Coolwear "K6" / `0xFF64` protocol (XL, PORT).
 
 **Blocked / deferred:**
