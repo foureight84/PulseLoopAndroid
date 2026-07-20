@@ -113,6 +113,7 @@ class EventPersistenceSubscriber(
                     // 0x0C device-info already gives the complete "<CID><DID>V<version>" string.
                     firmwareVersion = event.firmware ?: device.firmwareVersion,
                     lastConnectedAt = if (state == "CONNECTED") System.currentTimeMillis() else device.lastConnectedAt,
+                    lastSyncAt = if (state == "CONNECTED") System.currentTimeMillis() else device.lastSyncAt,
                     updatedAt = System.currentTimeMillis(),
                 ))
             }
