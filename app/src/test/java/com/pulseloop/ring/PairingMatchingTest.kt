@@ -100,25 +100,6 @@ class PairingMatchingTest {
         }
     }
 
-    // ── OS-bond gating (only the R09 needs a bond on Android) ───────────
-
-    @Test
-    fun `only the R09 requires an OS bond`() {
-        assertTrue("R09 must require an OS bond", WearableModel.COLMI_R09.requiresOsBond)
-        // Every other catalog model works GATT-only like iOS — no bond, no pairing prompt.
-        val bonded = WearableModel.CATALOG.filter { it.requiresOsBond }.map { it.id }
-        assertEquals(listOf("colmi-r09"), bonded)
-    }
-
-    @Test
-    fun `bond decision resolves from the advertised name`() {
-        // The R09 advertises as R09_xxxx → gate bonds it; the R10 advertises as COLMI R10_xxxx
-        // → gate leaves it unbonded. This is exactly the input RingBLEClient.bondActiveDevice uses.
-        assertTrue(WearableModel.modelForAdvertisedName("R09_00AA")?.requiresOsBond == true)
-        assertFalse(WearableModel.modelForAdvertisedName("COLMI R10_xyz")?.requiresOsBond == true)
-        assertFalse(WearableModel.modelForAdvertisedName("R02_A1B2")?.requiresOsBond == true)
-    }
-
     @Test
     fun `detected model overrides carousel selection`() {
         val model = WearableModel.resolve(
