@@ -35,6 +35,11 @@ class RingBLEClient(private val context: Context) {
     private val coordinators: List<WearableCoordinator> = listOf(
         JringCoordinator,
         ColmiCoordinator,
+        // Checked ahead of TK5Coordinator: a SmartHealth-Colmi's advertised name would otherwise
+        // also satisfy TK5's looser manufacturer-data fallback (see ColmiSmartHealthCoordinator's
+        // matches() doc for why order here matters).
+        ColmiSmartHealthCoordinator,
+        TK5Coordinator,
     )
 
     // MARK: Observable state
@@ -752,6 +757,20 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
+    /**
+     * Additive-only capability refinement from the connected unit's own reported bitmap (YCBT
+     * `02 01` SupportFunction; see [WearableCoordinator.bitmapGatedCapabilities]). Intersecting
+     * with the coordinator's gate-able set means a device can never claim a capability its family
+     * doesn't offer as gate-able, and unioning into the current set means this can only ever *add*
+     * — never take back a baseline promise.
+     */
+    private fun refineActiveCapabilities(reported: Set<WearableCapability>) {
+        val coordinator = activeCoordinator ?: return
+        val granted = reported.intersect(coordinator.bitmapGatedCapabilities)
+        if (granted.isEmpty()) return
+        updateState { copy(activeCapabilities = activeCapabilities + granted) }
+    }
+
     private fun enqueueOp(op: GattOp) {
         synchronized(opLock) { opQueue.addLast(op) }
         pumpOps()
@@ -1067,18 +1086,19 @@ class RingBLEClient(private val context: Context) {
 
                 for (ch in service.characteristics) {
                     val uuid = ch.uuid.toString()
-                    when {
-                        uuid == driver.writeUUID -> writeChar = ch
-                        uuid == driver.commandUUID -> commandChar = ch
-                        driver.notifyUUIDs.any { it == uuid } -> {
-                            notifyChars[ch.uuid] = ch
-                            gatt.setCharacteristicNotification(ch, true)
-                            ch.getDescriptor(CCCD_UUID)?.let { desc ->
-                                enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
-                            }
+                    // Not mutually exclusive: YCBT's command characteristic (be940001) is
+                    // simultaneously the write target AND a notify source (command replies), so
+                    // it must both be recorded as writeChar and get its CCCD enabled below.
+                    if (uuid == driver.writeUUID) writeChar = ch
+                    if (uuid == driver.commandUUID) commandChar = ch
+                    if (driver.notifyUUIDs.any { it == uuid }) {
+                        notifyChars[ch.uuid] = ch
+                        gatt.setCharacteristicNotification(ch, true)
+                        ch.getDescriptor(CCCD_UUID)?.let { desc ->
+                            enqueueOp(GattOp.DescriptorWrite(desc, cccdEnableValue(ch)))
                         }
-                        uuid == driver.batteryCharUUID -> batteryChar = ch
                     }
+                    if (uuid == driver.batteryCharUUID) batteryChar = ch
                 }
             }
 
@@ -1096,7 +1116,7 @@ class RingBLEClient(private val context: Context) {
                 service.getCharacteristic(measureUuid)?.let { ch ->
                     gatt.setCharacteristicNotification(ch, true)
                     ch.getDescriptor(CCCD_UUID)?.let { desc ->
-                        enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
+                        enqueueOp(GattOp.DescriptorWrite(desc, cccdEnableValue(ch)))
                     }
                 }
             }
@@ -1206,6 +1226,7 @@ class RingBLEClient(private val context: Context) {
                 for (event in RingEventBridge.eventsFor(decoded)) {
                     PulseEventBus.publishBlocking(event)
                 }
+                if (decoded is RingDecodedEvent.SupportFunctions) refineActiveCapabilities(decoded.capabilities)
                 activeSyncEngine?.handle(decoded)
             }
         }
@@ -1400,6 +1421,24 @@ class RingBLEClient(private val context: Context) {
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private val DIS_SERVICE_UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
         private val FW_REV_UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+
+        /**
+         * The correct CCCD value for a characteristic's *declared* property — indication
+         * (`ENABLE_INDICATION_VALUE`) if it advertises `PROPERTY_INDICATE`, notification otherwise.
+         * Every prior driver's notify characteristics happen to be plain-notify, so a single
+         * hardcoded `ENABLE_NOTIFICATION_VALUE` never surfaced a bug — but YCBT's async stream
+         * (`be940003`) is indicate-only on the real ring (confirmed against the decompiled vendor
+         * SDK's `BleHelper.java`), and the standard Blood Pressure / Glucose Measurement
+         * characteristics (`0x2A35`/`0x2A18`) are indicate-only per their BLE SIG profiles too.
+         * Writing the wrong CCCD value means the peripheral never delivers anything on that
+         * characteristic.
+         */
+        private fun cccdEnableValue(characteristic: BluetoothGattCharacteristic): ByteArray =
+            if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) {
+                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+            } else {
+                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            }
 
         /** Decode IEEE 11073 SFLOAT: exponent (4-bit signed) + mantissa (12-bit signed). */
         fun decodeSFLOAT(b0: Byte, b1: Byte): Double {

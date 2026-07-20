@@ -183,5 +183,6 @@ fun DeviceHeroCard(
  */
 private fun fallbackRingImage(type: RingDeviceType?): Int? = when (type) {
     RingDeviceType.JRING -> R.drawable.ring_jring
-    RingDeviceType.COLMI_R02, null -> null
+    // No dedicated product art yet for either YCBT family — falls back to the generic ring.
+    RingDeviceType.COLMI_R02, RingDeviceType.TK5, RingDeviceType.COLMI_SMART_HEALTH, null -> null
 }

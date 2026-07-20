@@ -183,7 +183,20 @@ data class AdvertisementInfo(
  */
 interface WearableCoordinator {
     val deviceType: RingDeviceType
+    /** The floor: what every unit of this family does. An unconditional promise — see
+     *  [bitmapGatedCapabilities] for capabilities a *specific* unit may or may not have. */
     val capabilities: Set<WearableCapability>
+    /**
+     * Per-SKU capabilities offered only if the connected unit's own reported bitmap claims them
+     * (YCBT `02 01` SupportFunction; see `YCBTSupportFunction`). Empty for families with no such
+     * bitmap (jring, QRing-Colmi) — their [capabilities] set is the whole story.
+     *
+     * Refinement is **additive-only**: [RingBLEClient] unions this (intersected with what the
+     * device actually reports) into [capabilities] once connected. The device's own reply can
+     * only ever *add* a capability the family already offers as gate-able, never take one away
+     * from [capabilities].
+     */
+    val bitmapGatedCapabilities: Set<WearableCapability> get() = emptySet()
     val iconSystemName: String
     val displayName: String get() = deviceType.displayName
 

@@ -36,7 +36,15 @@ enum class WearableCapability(val key: String) {
     // Configurable all-day measurement: the device exposes a settable HR sampling interval and
     // per-vital monitoring toggles (Colmi `0x16` + prefs). The generic jring has no such control,
     // so it never declares this and the Measurement settings section stays hidden for it.
-    MEASUREMENT_INTERVAL("measurementInterval");
+    MEASUREMENT_INTERVAL("measurementInterval"),
+
+    // YCBT (TK5 / SmartHealth-Colmi): the all-day SpO2 log is a separate query (`05 1A`) from the
+    // spot-measurement gate below, and on-demand HRV/BP are their own SupportFunction bits distinct
+    // from the trend/history capability.
+    SPO2_HISTORY("spo2History"),
+    MANUAL_HRV("manualHrv"),
+    MANUAL_BLOOD_PRESSURE("manualBloodPressure"),
+    VO2MAX("vo2max");
 
     companion object {
         fun fromCsv(csv: String): Set<WearableCapability> =
@@ -55,5 +63,9 @@ enum class RingDeviceType(val displayName: String) {
     JRING("SMART_RING"),
     // One protocol family covering the whole Colmi/Yawell line — the exact model comes from
     // WearableModel (iOS #49), so the family label stays honest about the ambiguity.
-    COLMI_R02("Colmi / Yawell ring");
+    COLMI_R02("Colmi / Yawell ring"),
+    // Both speak the Yucheng YCBT protocol (see YCBTProtocol.kt) via the shared YCBTDriver —
+    // two families only because they need distinct advertisement-matching + capability sets.
+    TK5("TK5"),
+    COLMI_SMART_HEALTH("Colmi / Yawell ring (SmartHealth)");
 }

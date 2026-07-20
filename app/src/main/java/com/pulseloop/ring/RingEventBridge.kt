@@ -96,6 +96,18 @@ object RingEventBridge {
 
         is RingDecodedEvent.BandFunction ->
             emptyList() // Consumed by JringSyncEngine directly; produces no PulseEvent
+
+        is RingDecodedEvent.SupportFunctions ->
+            emptyList() // Consumed by RingBLEClient to refine active capabilities; produces no PulseEvent
+
+        is RingDecodedEvent.ChipScheme ->
+            emptyList() // Diagnostic only
+
+        is RingDecodedEvent.WearingStatus ->
+            emptyList() // Debug-feed only; nothing gates on wear state yet
+
+        is RingDecodedEvent.MeasurementRejected ->
+            emptyList() // RingSyncCoordinator reads this off the raw-packet feed to abort a spot measurement
     }
 
     /** Shared plausibility window: within the last ~8 days (the history horizon) and no more

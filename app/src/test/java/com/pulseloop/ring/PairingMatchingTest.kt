@@ -65,7 +65,10 @@ class PairingMatchingTest {
 
     @Test
     fun `catalog families all have a registered coordinator`() {
-        val registeredTypes = setOf(JringCoordinator.deviceType, ColmiCoordinator.deviceType)
+        val registeredTypes = setOf(
+            JringCoordinator.deviceType, ColmiCoordinator.deviceType,
+            TK5Coordinator.deviceType, ColmiSmartHealthCoordinator.deviceType,
+        )
         for (model in WearableModel.CATALOG) {
             assertTrue("no coordinator for ${model.displayName}", registeredTypes.contains(model.family))
         }
@@ -150,6 +153,45 @@ class PairingMatchingTest {
     fun `device type valueOf roundtrip`() {
         assertEquals(RingDeviceType.JRING, RingDeviceType.valueOf("JRING"))
         assertEquals(RingDeviceType.COLMI_R02, RingDeviceType.valueOf("COLMI_R02"))
+    }
+
+    // ── YCBT family matching (iOS #82: TK5 + SmartHealth-Colmi) ─────────
+
+    @Test
+    fun `tk5 matches by name prefix`() {
+        assertTrue(TK5Coordinator.matches("TK5 24AA", noAdv))
+        assertTrue(TK5Coordinator.matches("tk5 24aa", noAdv))   // case-insensitive prefix
+        assertFalse(TK5Coordinator.matches("R99 54DC", noAdv))
+        assertFalse(TK5Coordinator.matches("R02_A1B2", noAdv))
+    }
+
+    @Test
+    fun `tk5 matches by manufacturer data prefix when unnamed`() {
+        val adv = AdvertisementInfo(emptyList(), byteArrayOf(0x10, 0x78, 0x65, 0x01, 0xAA.toByte()))
+        assertTrue(TK5Coordinator.matches(null, adv))
+    }
+
+    @Test
+    fun `smarthealth colmi matches space-separated names, not underscore ones`() {
+        assertTrue(ColmiSmartHealthCoordinator.matches("R99 54DC", noAdv))
+        assertFalse(ColmiSmartHealthCoordinator.matches("R02_A1B2", noAdv))
+        // TK5 resolves to its own family via the catalog, so this coordinator defers to TK5Coordinator.
+        assertFalse(ColmiSmartHealthCoordinator.matches("TK5 24AA", noAdv))
+    }
+
+    @Test
+    fun `smarthealth colmi never claims a name advertising the qring service`() {
+        val adv = AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V1), null)
+        assertFalse(ColmiSmartHealthCoordinator.matches("R99 54DC", adv))
+    }
+
+    @Test
+    fun `ycbt names resolve to exact catalog models`() {
+        assertEquals("tk5", WearableModel.modelForAdvertisedName("TK5 24AA")?.id)
+        assertEquals("colmi-smarthealth", WearableModel.modelForAdvertisedName("R99 54DC")?.id)
+        // The broad SmartHealth pattern is registered last, so every QRing-Colmi pattern above it
+        // in the catalog still wins for an underscore name.
+        assertEquals("colmi-r02", WearableModel.modelForAdvertisedName("R02_A1B2")?.id)
     }
 
     @Test

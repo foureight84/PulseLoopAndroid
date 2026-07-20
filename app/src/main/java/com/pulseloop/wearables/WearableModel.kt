@@ -68,6 +68,32 @@ data class WearableModel(
         val YAWELL_R11 = colmi("yawell-r11", "Yawell R11", "Yawell", "^R11_[0-9A-F]{4}$", R.drawable.ring_yawell_r11)
         val H59 = colmi("h59", "H59 Ring", "H59", "^H59_.*", R.drawable.ring_h59)
 
+        // YCBT protocol family (iOS #82): TK5 + Colmi/Yawell rings that ship with the
+        // SmartHealth app instead of QRing. No dedicated product art yet — falls back to the
+        // generic ring silhouette.
+        val TK5 = WearableModel(
+            id = "tk5", displayName = "TK5", brand = "TK5", family = RingDeviceType.TK5,
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Sleep",
+            advertisedNamePatterns = listOf("^TK5 [0-9A-Fa-f]{4}$"),
+        )
+
+        /**
+         * Same physical Colmi/Yawell line as [COLMI_R02] etc., but the SmartHealth-flavoured
+         * firmware speaks YCBT, not QRing — a different protocol family entirely (see
+         * `ColmiSmartHealthCoordinator`). Distinguished from every QRing-Colmi pattern above by the
+         * SmartHealth naming convention (space before the trailing hex, not underscore): `R99 54DC`
+         * vs `R02_A1B2`. Deliberately generic (one card for the whole naming convention, not one per
+         * model) since only one SmartHealth-Colmi unit has ever been seen — a false-positive match
+         * costs one extra pairing-list row, not a broken connection, since the coordinator itself
+         * (not this catalog entry) is what a real device ultimately connects through.
+         */
+        val COLMI_SMARTHEALTH = WearableModel(
+            id = "colmi-smarthealth", displayName = "Colmi / Yawell (SmartHealth app)", brand = "Colmi",
+            family = RingDeviceType.COLMI_SMART_HEALTH,
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · Sleep",
+            advertisedNamePatterns = listOf("^[A-Za-z0-9]+( [A-Za-z0-9]+)* [0-9A-Fa-f]{4}$"),
+        )
+
         private fun colmi(
             id: String,
             name: String,
@@ -87,7 +113,10 @@ data class WearableModel(
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
             COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59,
+            YAWELL_R05, YAWELL_R10, H59, TK5,
+            // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
+            // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
+            COLMI_SMARTHEALTH,
         )
 
         fun model(id: String?): WearableModel? {
