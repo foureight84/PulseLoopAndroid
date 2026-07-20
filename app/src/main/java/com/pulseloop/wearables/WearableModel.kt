@@ -27,6 +27,17 @@ data class WearableModel(
     val advertisedNamePatterns: List<String>,
     /** Product image for this ring; when null, [com.pulseloop.ui.components.RingArtView] falls back to a generic ring. */
     @DrawableRes val imageRes: Int? = null,
+    /**
+     * Whether this model needs an OS-level bond (`createBond`) to hold a stable Android link.
+     * True only for models with demonstrated GATT-only fragility — the Colmi R09 (connects once
+     * then can't re-sync unless bonded) and the R11/Yawell R11 (same silicon, stuck on
+     * "Connecting" GATT-only — issue #29). Every other model works GATT-only exactly like iOS
+     * (which bonds nothing), so we leave them unbonded to avoid the pairing prompt — most
+     * notably the R10, which showed the OS pairing dialog when this gate was briefly dropped in
+     * favor of matching QRing's blanket `supportBlePair` bond. See docs/qring-ble-adoption.md
+     * §5a. Expand this only when a model is shown to need it on real hardware.
+     */
+    val requiresOsBond: Boolean = false,
 ) {
     companion object {
         // "jring" is intentionally lowercase — that's how the brand styles its name.
@@ -43,16 +54,22 @@ data class WearableModel(
         val COLMI_R06 = colmi("colmi-r06", "Colmi R06", "Colmi", "^R06_.*", R.drawable.ring_colmi_r06)
         val COLMI_R07 = colmi("colmi-r07", "Colmi R07", "Colmi", "^COLMI R07_.*", R.drawable.ring_colmi_r07)
         val COLMI_R08 = colmi("colmi-r08", "Colmi R08", "Colmi", "^R08_.*", R.drawable.ring_colmi_r08)
-        val COLMI_R09 = colmi("colmi-r09", "Colmi R09", "Colmi", "^R09_.*", R.drawable.ring_colmi_r09)
+        // R09 is one of two models that need an OS bond to hold a stable Android link (see
+        // WearableModel.requiresOsBond).
+        val COLMI_R09 = colmi("colmi-r09", "Colmi R09", "Colmi", "^R09_.*", R.drawable.ring_colmi_r09,
+            requiresOsBond = true)
         val COLMI_R10 = colmi("colmi-r10", "Colmi R10", "Colmi", "^COLMI R10_.*", R.drawable.ring_colmi_r10)
-        // The R11 shares its product art with the Yawell R11 (same hardware, same look).
-        val COLMI_R11 = colmi("colmi-r11", "Colmi R11", "Colmi", "^R11C_[0-9A-F]{4}$", R.drawable.ring_yawell_r11)
+        // The R11 shares its product art with the Yawell R11 (same hardware, same look) and the
+        // same OS-bond requirement (issue #29 — stuck on "Connecting" GATT-only).
+        val COLMI_R11 = colmi("colmi-r11", "Colmi R11", "Colmi", "^R11C_[0-9A-F]{4}$", R.drawable.ring_yawell_r11,
+            requiresOsBond = true)
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
 
         // Yawell-branded variants
         val YAWELL_R05 = colmi("yawell-r05", "Yawell R05", "Yawell", "^R05_[0-9A-F]{4}$", R.drawable.ring_yawell_r05)
         val YAWELL_R10 = colmi("yawell-r10", "Yawell R10", "Yawell", "^R10_[0-9A-F]{4}$", R.drawable.ring_yawell_r10)
-        val YAWELL_R11 = colmi("yawell-r11", "Yawell R11", "Yawell", "^R11_[0-9A-F]{4}$", R.drawable.ring_yawell_r11)
+        val YAWELL_R11 = colmi("yawell-r11", "Yawell R11", "Yawell", "^R11_[0-9A-F]{4}$", R.drawable.ring_yawell_r11,
+            requiresOsBond = true)
         val H59 = colmi("h59", "H59 Ring", "H59", "^H59_.*", R.drawable.ring_h59)
 
         // YCBT protocol family (iOS #82): TK5 + Colmi/Yawell rings that ship with the
@@ -96,11 +113,13 @@ data class WearableModel(
             brand: String,
             pattern: String,
             @DrawableRes imageRes: Int?,
+            requiresOsBond: Boolean = false,
         ) = WearableModel(
             id = id, displayName = name, brand = brand, family = RingDeviceType.COLMI_R02,
             tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Stress · Temp · Sleep",
             advertisedNamePatterns = listOf(pattern),
             imageRes = imageRes,
+            requiresOsBond = requiresOsBond,
         )
 
         /** Every supported model. The pairing screen groups by brand and sorts each tab alphabetically. */

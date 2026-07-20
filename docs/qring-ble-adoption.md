@@ -34,7 +34,7 @@ which is NOT a Colmi ring and must never be affected by Colmi-specific changes.
 | PulseLoop driver | `ColmiDriver` / `ColmiSyncEngine` / `ColmiEncoder` / `ColmiDecoder` | `JringDriver` |
 | Framing | 16 bytes: 15 content + 1 checksum (`ColmiPacket.frame`) | identity / 20-byte |
 | Official app | QRing (`com.oudmon.ble`) | (other) |
-| Bonding | **Yes, if `supportBlePair`** | No (unencrypted) |
+| Bonding | **Only R09/R11 — see §5a**, not "whenever `supportBlePair`" (that's QRing's rule, not ours) | No (unencrypted) |
 
 **Key insight:** R09 is not a different protocol from R02 — it's the same opcodes on newer
 firmware (`RT09_*`) that is *stricter* about payload completeness and *expects* an OS bond.
@@ -170,9 +170,38 @@ it never parsed `0x3C`. So the fix had to *teach PulseLoop to read `0x3C`* and r
   `createBond()` only in a quiet gap — `createBond()` on a busy link can force a transient
   re-encrypt/disconnect on some firmware that would drop those in-flight ops.
 - **Idempotent:** guarded on `BOND_NONE`, so it bonds at most once per ring.
-- **Visible UX change (intended):** the ring now appears in the phone's Bluetooth
-  paired-devices list and lights the status-bar BT icon — this is the point, and matches
-  QRing. These rings use "just works" pairing (no passkey dialog).
+- **Visible UX change (intended, but ONLY for allowlisted models):** the ring appears in the
+  phone's Bluetooth paired-devices list and lights the status-bar BT icon — this is the point
+  for the R09/R11, and matches QRing for them. These rings use "just works" pairing (no
+  passkey dialog).
+
+> ### ⚠️ Bonding scope is a hand-curated allowlist — NOT "whenever `supportBlePair`"
+> **This is the single most re-litigated decision in this doc. Read it before touching
+> `bondActiveDevice()`, `WearableModel.requiresOsBond`, or anything with "bond" in the name.**
+>
+> The real QRing app (`DeviceCmdInit.init`, quoted above) bonds **unconditionally** whenever
+> the ring's `0x3C` reply sets `supportBlePair` — no per-model check at all. **PulseLoop
+> deliberately does not do this.** `RingBLEClient.bondActiveDevice()` also requires
+> `WearableModel.requiresOsBond == true` for the resolved model, currently just
+> `COLMI_R09`, `COLMI_R11`, `YAWELL_R11` — the models with a *demonstrated* GATT-only
+> fragility. Every other Colmi/Yawell model, including the **R10**, reports `supportBlePair`
+> too but stays GATT-only on purpose: bonding is a real UX cost (an OS pairing dialog, the
+> ring occupying the phone's paired-devices list) that isn't worth paying for a model that
+> already holds a stable link without it.
+>
+> **This has already regressed once.** 2026-07-15 (`0978636`) introduced the allowlist
+> specifically to stop the R10 from showing the pairing dialog. 2026-07-19 (`2e8412c`), a fix
+> for issue #29 (Colmi R11 stuck on "Connecting") removed the allowlist entirely in favor of
+> matching QRing's blanket rule — which fixed the R11 but immediately reopened the R10
+> pairing-dialog regression in the same release. Corrected by restoring the allowlist and
+> adding the R11/Yawell R11 to it **by name**, instead of widening the condition back to
+> `supportBlePair` alone.
+>
+> **The rule going forward:** when a new model is confirmed (real hardware, or a credible,
+> specific user report) to need an OS bond, add that model to the allowlist by name. Do
+> **not** "simplify" or "match QRing exactly" by conditioning on `supportBlePair` alone —
+> that generalization is exactly what caused the regression, and it will cause it again for
+> the R10 (or any other non-allowlisted model that happens to report the bit).
 
 ### 5b. Stuck on "Connecting…" forever (first pairing)
 **QRing arms a no-callback timeout on *every* connect** (`mTimeoutRunnable`, 40s in
@@ -199,7 +228,7 @@ write can't hang the connection; "toggle Bluetooth" hint after 2 sightless recon
 |---|---|---|---|
 | Auto-HR write | 7-field `0x16` | 4-byte `0x16` (truncated) | **7-field `0x16`** |
 | Reads capabilities (`0x3C`) | yes | no | **yes** |
-| OS bond | if `supportBlePair` | never | **if `supportBlePair`** |
+| OS bond | if `supportBlePair` (any model) | never | **if `supportBlePair` AND model on the [allowlist](#5a-no-os-bond-the-main-pairing-defect) (R09/R11)** |
 | First-pair connect timeout | 40s, every attempt | none (gated out) | **30s, every attempt** |
 | Reconnect timeout | 40s | 30s (reconnect only) | 30s (reconnect only) |
 | `connectGatt` params | `false`, `TRANSPORT_LE` | same | same |
