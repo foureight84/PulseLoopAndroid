@@ -399,6 +399,27 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
 - ~~**#74 Measurement-Frequency relocation**~~ ✅ **DONE** `368a3f2` (2026-07-19) — see the session note below.
 
+### 2026-07-20 PR #28 review + fix pass (branch `iOS_sync_2026-07-16`)
+
+Full code review of the sync batch (two passes, 10 parallel agents total, cross-referenced
+against iOS `main` and the decompiled vendor apps) — findings live in
+`docs/pr28-review-findings.md` (52 items). All High-severity items plus the mechanical
+Mediums were fixed in 8 commits (`c93c687`..`eb803f4`), `:app:assembleDebug` +
+`:app:testDebugUnitTest` green (613 tests, incl. 8 ported `SpotMeasurementGateTests` oracles
+and 4 new `resolveDistanceMeters` cases). Headlines: Colmi never emitted
+`SyncProgress("done")` (dead-lettered #61c/#65f/#57e for the flagship family — now published
+in `ColmiSyncEngine.finishSync`); `restartWorkoutHeartRateIfActive()` ported + called from
+every spot-measurement cleanup (the #57f bug class fully closed, shape validated against the
+decompiled SmartHealth app); `SpotMeasurementGate` refusal fast-fail ported (iOS `c8969a4`
+riding #82); SpO2 window 40→60s; `ActivityAggregates.recompute` keeps manually-entered
+distance (`?? session.distanceMeters` restored); weather coords coarsened to ~1km on the wire;
+`ensureFreshData` BLE lifecycle/foreground-coordination/`hasRecentData` fixes; pause-accounting
+rework (one deliberate divergence — see upstream candidates); workout-notification actions
+routed through a new `WorkoutCommandBus`; per-type `ActivityMetricSet` (cycle = speed) ported.
+Still open (documented in the findings file): LuckRing first-pair byte, coach-card chat
+seeding, sleep-carousel a11y, workout-screen recovery/analytics sections (backlog), and the
+remaining Low items.
+
 ### 2026-07-18 Tier 3 session — #57 re-triage + #57a/#57f (branch `iOS_sync_2026-07-16`)
 
 Pulled the real iOS diff for `8182d8d` (7 commits, 3676 ins/42 files across `PulseServices.swift`,
@@ -1270,6 +1291,15 @@ upstream — each entry says what changed here and whether iOS should look at it
   generic family label. Android now falls back to the stored value on null (DB side) and
   retains the pref when the previous model's family matches the connected device (BLE side).
   iOS #49's resolve has the same null path; check its persistence behavior.
+- **Finishing a paused workout counts the trailing pause as active time (fixed on Android
+  2026-07-20, `dc1513b`).** iOS's `totalPauseSeconds` only advances at *resume*
+  (`ActivityRecorderService.resume`), so finishing from a paused state leaves the pause→finish
+  span in the active duration, inflating duration/active-minutes/calories. Android's `finish()`
+  now banks that span (`pauseCarry`) before recomputing — deliberate divergence from iOS.
+- **An OpenRouter slug can leak into MiniMax requests (spotted in the PR #28 review, unfixed on
+  both).** iOS's `CoachSettings.minimaxModel` is computed over the single shared `model` string
+  (`CoachSettings.swift:202-205`), so a slug set for another provider reaches MiniMax. Android
+  persists a dedicated per-provider field and is not affected; no Android change needed.
 
 **Android-only (platform-specific, no iOS action expected):**
 
