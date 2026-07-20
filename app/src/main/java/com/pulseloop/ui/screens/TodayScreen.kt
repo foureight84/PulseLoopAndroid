@@ -20,6 +20,14 @@ import com.pulseloop.service.VitalsThresholdEngine
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.ui.components.*
+import com.pulseloop.ui.dashboard.CustomizeCardsButton
+import com.pulseloop.ui.dashboard.DashboardCard
+import com.pulseloop.ui.dashboard.EditableCard
+import com.pulseloop.ui.dashboard.HiddenMetricsTray
+import com.pulseloop.ui.dashboard.MetricPrefsStore
+import com.pulseloop.ui.dashboard.MetricScope
+import com.pulseloop.ui.dashboard.ReorderDoneBar
+import com.pulseloop.ui.dashboard.rememberDashboardEditState
 import com.pulseloop.util.Formats
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.TodayViewModel
@@ -56,7 +64,9 @@ fun TodayScreen(
     val context = LocalContext.current
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
-    val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
+    val keyStore = remember { ApiKeyStore(context) }
+    val units = keyStore.resolvedUnitSystem
+    val coachEnabled = keyStore.coachEnabled
     val pullRefreshState = rememberPullRefreshState(
         refreshing = isRefreshing,
         onRefresh = {
@@ -77,18 +87,50 @@ fun TodayScreen(
     }
     val hero = remember(state, sleep) { deriveHero(state, sleep) }
 
-    // The tile list in iOS grid order, then chunked into 2-column rows.
-    val tiles = buildList<@Composable (Modifier) -> Unit> {
-        add { m -> ActivityTileFor(state, units, m) { navController?.navigate("activity") } }
-        add { m -> SleepTileFor(sleep, m) { navController?.navigate("sleep") } }
-        add { m -> ChartTile(cards.getValue(MetricKind.HEART_RATE), vitals.hrSamples, m) { navController?.navigate("vitals/hr") } }
-        add { m -> ChartTile(cards.getValue(MetricKind.SPO2), vitals.spo2Samples, m) { navController?.navigate("vitals/spo2") } }
-        if (vitals.supportsHrv) add { m -> ChartTile(cards.getValue(MetricKind.HRV), vitals.hrvSamples, m) { navController?.navigate("vitals/hrv") } }
-        if (vitals.supportsTemp) add { m -> ChartTile(cards.getValue(MetricKind.TEMPERATURE), vitals.tempSamples, m) { navController?.navigate("vitals/temp") } }
-        if (vitals.supportsStress) add { m -> GaugeTile(cards.getValue(MetricKind.STRESS), m) { navController?.navigate("vitals/stress") } }
-        if (vitals.supportsFatigue) add { m -> GaugeTile(cards.getValue(MetricKind.FATIGUE), m) { navController?.navigate("vitals/fatigue") } }
-        if (vitals.supportsGlucose) add { m -> GaugeTile(cards.getValue(MetricKind.GLUCOSE), m) { navController?.navigate("vitals/glucose") } }
-        if (vitals.supportsBP) add { m -> BloodPressureTile(cards.getValue(MetricKind.BLOOD_PRESSURE), vitals, m) { navController?.navigate("vitals/bp") } }
+    // Per-metric visibility + user order (iOS #64), read reactively so a hide/show/reorder
+    // recomposes immediately (this is also the iOS #70 reactivity).
+    val prefsStore = remember { MetricPrefsStore.get(context) }
+    val prefs by prefsStore.prefs.collectAsState()
+    val editState = rememberDashboardEditState(MetricScope.TODAY, prefsStore)
+
+    val supported: (DashboardCard) -> Boolean = { card ->
+        when (card) {
+            DashboardCard.ACTIVITY, DashboardCard.SLEEP,
+            DashboardCard.HEART_RATE, DashboardCard.SPO2 -> true
+            DashboardCard.HRV -> vitals.supportsHrv
+            DashboardCard.TEMPERATURE -> vitals.supportsTemp
+            DashboardCard.STRESS -> vitals.supportsStress
+            DashboardCard.FATIGUE -> vitals.supportsFatigue
+            DashboardCard.GLUCOSE -> vitals.supportsGlucose
+            DashboardCard.BLOOD_PRESSURE -> vitals.supportsBP
+        }
+    }
+    val allSupported = DashboardCard.todayDefault.filter(supported)
+    SideEffect { editState.configure(allSupported, DashboardCard.todayDefault) }
+
+    val visibleKeys = allSupported.filter { !prefs.isHidden(it, MetricScope.TODAY) }.map { it.key }.toSet()
+    val visibleOrdered: List<DashboardCard> = run {
+        val base = if (editState.editing) editState.liveOrder
+            else prefsStore.resolvedOrder(visibleKeys, DashboardCard.todayDefault.map { it.key }, MetricScope.TODAY)
+                .mapNotNull { DashboardCard.fromKey(it) }
+        base.filter { it.key in visibleKeys }
+    }
+    val hiddenCards = allSupported.filter { prefs.isHidden(it, MetricScope.TODAY) }
+
+    // Dispatch a card id to its tile composable (order/visibility decided above).
+    val todayCardFor: @Composable (DashboardCard, Modifier) -> Unit = { card, m ->
+        when (card) {
+            DashboardCard.ACTIVITY -> ActivityTileFor(state, units, m) { navController?.navigate("activity") }
+            DashboardCard.SLEEP -> SleepTileFor(sleep, m) { navController?.navigate("sleep") }
+            DashboardCard.HEART_RATE -> ChartTile(cards.getValue(MetricKind.HEART_RATE), vitals.hrSamples, m) { navController?.navigate("vitals/hr") }
+            DashboardCard.SPO2 -> ChartTile(cards.getValue(MetricKind.SPO2), vitals.spo2Samples, m) { navController?.navigate("vitals/spo2") }
+            DashboardCard.HRV -> ChartTile(cards.getValue(MetricKind.HRV), vitals.hrvSamples, m) { navController?.navigate("vitals/hrv") }
+            DashboardCard.TEMPERATURE -> ChartTile(cards.getValue(MetricKind.TEMPERATURE), vitals.tempSamples, m) { navController?.navigate("vitals/temp") }
+            DashboardCard.STRESS -> GaugeTile(cards.getValue(MetricKind.STRESS), m) { navController?.navigate("vitals/stress") }
+            DashboardCard.FATIGUE -> GaugeTile(cards.getValue(MetricKind.FATIGUE), m) { navController?.navigate("vitals/fatigue") }
+            DashboardCard.GLUCOSE -> GaugeTile(cards.getValue(MetricKind.GLUCOSE), m) { navController?.navigate("vitals/glucose") }
+            DashboardCard.BLOOD_PRESSURE -> BloodPressureTile(cards.getValue(MetricKind.BLOOD_PRESSURE), vitals, m) { navController?.navigate("vitals/bp") }
+        }
     }
 
     Box(Modifier.fillMaxSize().pullRefresh(pullRefreshState)) {
@@ -100,27 +142,53 @@ fun TodayScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item { HeroInsightCard(hero.title, hero.summary, hero.chips) }
-
-            items(tiles.chunked(2).size) { rowIndex ->
-                val row = tiles.chunked(2)[rowIndex]
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    row.forEach { tile -> tile(Modifier.weight(1f)) }
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
+            // Top insight card. When the coach is on it owns this slot (tap → chat);
+            // otherwise the deterministic hero fills it. Only ever one card here, so the coach
+            // summary and the hero can't render the same content twice on one screen (iOS #42).
+            item {
+                val summary = state.coachSummary
+                when {
+                    coachEnabled && summary != null -> CoachMessageCard(
+                        headline = summary.title,
+                        body = summary.body,
+                        chips = parseChips(summary.chipsJSON),
+                        onTap = { navController?.navigate("coach") },
+                    )
+                    coachEnabled -> CoachMessageCard(
+                        headline = "Want a recap?",
+                        body = "Want a summary from the latest ring context? Tap to open the coach.",
+                        chips = emptyList(),
+                        onTap = { navController?.navigate("coach") },
+                    )
+                    else -> HeroInsightCard(hero.title, hero.summary, hero.chips)
                 }
             }
 
             item {
-                val summary = state.coachSummary
-                CoachMessageCard(
-                    headline = summary?.title ?: "Want a recap?",
-                    body = summary?.body
-                        ?: "Want a summary from the latest ring context? Tap to open the coach.",
-                    chips = summary?.let { parseChips(it.chipsJSON) } ?: emptyList(),
-                    onTap = { navController?.navigate("coach") },
-                )
-                Spacer(Modifier.height(64.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (editState.editing) ReorderDoneBar { editState.exit() }
+                    else CustomizeCardsButton { editState.enterEditing() }
+                }
             }
+
+            val rows = visibleOrdered.chunked(2)
+            items(rows.size) { rowIndex ->
+                val row = rows[rowIndex]
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    row.forEach { card ->
+                        EditableCard(editState, card, Modifier.weight(1f)) {
+                            todayCardFor(card, Modifier.fillMaxWidth())
+                        }
+                    }
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+
+            if (editState.editing) {
+                item { HiddenMetricsTray(hiddenCards) { editState.setHidden(it, false) } }
+            }
+
+            item { Spacer(Modifier.height(64.dp)) }
         }
 
         PullRefreshIndicator(

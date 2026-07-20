@@ -7,6 +7,9 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -33,6 +36,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Paid
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -40,6 +44,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -304,7 +309,10 @@ private fun WelcomeStep(getStarted: () -> Unit, exploreWithoutRing: () -> Unit) 
                 )
                 .clip(RoundedCornerShape(22.dp)),
         )
-        StepHeader(title = "Set up PulseLoop")
+        StepHeader(
+            title = "Set up PulseLoop",
+            subtitle = "Your health, on your terms — no subscription, no cloud.",
+        )
 
         // Two-column feature grid (rows of two, since we're inside a scroll column).
         features.chunked(2).forEach { pair ->
@@ -461,20 +469,33 @@ private data class BaselineMilestone(
 
 @Composable
 private fun BaselineStep(finish: () -> Unit) {
+    // iOS #75 finale copy: Today / First sync / Days 3–7.
     val milestones = listOf(
-        BaselineMilestone(null, "Day 1", "Basic activity and vitals", PulseColors.info),
-        BaselineMilestone(Icons.Filled.Bedtime, "After sleep", "Sleep trends", PulseColors.sleep),
-        BaselineMilestone(Icons.AutoMirrored.Filled.TrendingUp, "After 3–7 days", "Personalized baseline", PulseColors.success),
+        BaselineMilestone(null, "Today", "Activity and live vitals, right away", PulseColors.info),
+        BaselineMilestone(Icons.Filled.Bedtime, "First sync", "Sleep stages and nightly trends", PulseColors.sleep),
+        BaselineMilestone(Icons.AutoMirrored.Filled.TrendingUp, "Days 3–7", "Your personalized baseline unlocks", PulseColors.success),
+    )
+
+    // Celebratory finale (iOS #75): the medallion scales in on appear. reduceMotion-equivalent
+    // isn't gated here — the spring settles quickly and Compose respects the system animator scale.
+    var appeared by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { appeared = true }
+    val medallionScale by animateFloatAsState(
+        targetValue = if (appeared) 1f else 0.3f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessLow),
+        label = "medallionScale",
     )
 
     StepScaffold(
         footer = {
-            PrimaryButton("Go to app", icon = Icons.Filled.ArrowForward, onClick = finish)
+            PrimaryButton("Start using PulseLoop", icon = Icons.Filled.ArrowForward, onClick = finish)
         },
     ) {
+        SuccessMedallion(scale = medallionScale)
+        SetupCompleteEyebrow()
         StepHeader(
-            title = "You're ready",
-            subtitle = "A little context before your first day with PulseLoop.",
+            title = "You're all set",
+            subtitle = "Wear your ring today. Your baseline builds from here.",
         )
 
         Column(
@@ -536,6 +557,49 @@ private fun BaselineStep(finish: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/** Animated success medallion: two concentric accent rings around a check-seal badge, scaled in
+ *  on appear (iOS #75 finale "Tier 1" medallion). */
+@Composable
+private fun SuccessMedallion(scale: Float) {
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(140.dp).scale(scale)) {
+        Box(
+            Modifier.size(140.dp).clip(CircleShape)
+                .border(2.dp, PulseColors.accent.copy(alpha = 0.12f), CircleShape),
+        )
+        Box(
+            Modifier.size(104.dp).clip(CircleShape)
+                .border(2.dp, PulseColors.accent.copy(alpha = 0.25f), CircleShape),
+        )
+        Box(
+            Modifier.size(96.dp).clip(CircleShape).background(PulseColors.accent.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Verified,
+                contentDescription = "Setup complete",
+                tint = PulseColors.accent,
+                modifier = Modifier.size(56.dp),
+            )
+        }
+    }
+}
+
+/** "Setup complete" accent pill above the finale title (iOS #75 eyebrow). */
+@Composable
+private fun SetupCompleteEyebrow() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(PulseColors.accent.copy(alpha = 0.16f))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Icon(Icons.Filled.Verified, contentDescription = null, Modifier.size(14.dp), tint = PulseColors.accent)
+        Text("Setup complete", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.accent)
     }
 }
 

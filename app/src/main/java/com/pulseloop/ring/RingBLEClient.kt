@@ -31,10 +31,22 @@ import java.util.UUID
 @SuppressLint("MissingPermission")
 class RingBLEClient(private val context: Context) {
 
-    /** Registry of supported wearables. Adding a wearable = append one entry. */
+    /** Registry of supported wearables. Adding a wearable = append one entry.
+     *
+     * The order is load-bearing at exactly two places:
+     *   - `ColmiSmartHealthCoordinator` must precede `TK5Coordinator`. A SmartHealth-Colmi's
+     *     advertised name would otherwise also satisfy TK5's looser manufacturer-data fallback (see
+     *     `ColmiSmartHealthCoordinator.matches()` doc for why order here matters).
+     *   - `LuckRingCoordinator` must precede `TK5Coordinator`. LuckRing matches strong,
+     *     family-exclusive signals (the `F618` service, the `0xFF64` company ID) that no other
+     *     coordinator claims; ordering it ahead of TK5 is defensive, so TK5's weak `TK5`-name prefix
+     *     could never shadow a hypothetical `TK5x`-named LuckRing sibling. */
     private val coordinators: List<WearableCoordinator> = listOf(
         JringCoordinator,
         ColmiCoordinator,
+        ColmiSmartHealthCoordinator,
+        LuckRingCoordinator,
+        TK5Coordinator,
     )
 
     // MARK: Observable state
@@ -473,15 +485,15 @@ class RingBLEClient(private val context: Context) {
      * User-initiated Disconnect (the Settings button). Unlike the transient [disconnect] used by
      * the background worker and lifecycle, this makes the disconnect STICK: it sets a persisted
      * flag that suppresses every auto-reconnect path until the user reconnects ([userConnect]) or
-     * pairs a new ring. For a model we OS-bond (the R09) it also removes the bond, since a bonded
-     * link can otherwise be held connected by the OS — the ring re-bonds (with the OS prompt) on
-     * the next user reconnect. Non-bonded models (R10 and the rest) just drop the link, matching
-     * the iOS "Disconnect" experience. The stored ring identity is kept either way, so the ring
-     * stays listed and one tap reconnects it; use [forget] to remove it entirely.
+     * pairs a new ring. If this ring is currently OS-bonded (see [bondActiveDevice]) it also
+     * removes the bond, since a bonded link can otherwise be held connected by the OS — the ring
+     * re-bonds (with the OS prompt) on the next user reconnect. Non-bonded rings just drop the
+     * link, matching the iOS "Disconnect" experience. The stored ring identity is kept either
+     * way, so the ring stays listed and one tap reconnects it; use [forget] to remove it entirely.
      */
     fun userDisconnect() {
         prefs.edit().putBoolean(USER_DISCONNECTED_KEY, true).apply()
-        if (activeModelRequiresBond() && hasPermissions()) {
+        if (hasPermissions()) {
             try {
                 bluetoothGatt?.device?.let { dev ->
                     if (dev.bondState != BluetoothDevice.BOND_NONE) {
@@ -658,18 +670,16 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
-    /** True only when the connected model is one we deliberately OS-bond (currently the R09).
-     *  See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
-    private fun activeModelRequiresBond(): Boolean =
-        com.pulseloop.wearables.WearableModel.model(_state.value.activeWearableModelID)
-            ?.requiresOsBond == true
-
     /**
      * Create an OS-level bond with the connected ring — invoked by the sync engine only when
-     * the ring's device-support reply advertises `supportBlePair` (Colmi R09 and newer). The
-     * official QRing app does exactly this, which is why its rings appear in the phone's
-     * paired-devices list and hold a stable link; connecting GATT-only (no bond) is what left
-     * PulseLoop's users stuck on "Connecting" and cycling Bluetooth to recover.
+     * the ring's device-support reply advertises `supportBlePair`. This now matches the official
+     * QRing app exactly: it bonds *every* ring that reports the bit, with no per-model
+     * allowlist (confirmed against the decompiled QRing sources, `DeviceCmdInit.init` —
+     * `if (deviceSupportFunctionRsp.supportBlePair) { ...; bleCreateBond() }`, unconditional on
+     * model). PulseLoop previously narrowed this to just the Colmi R09 (the one model it had
+     * confirmed needed it), which left other `supportBlePair` rings — e.g. the R11 — connecting
+     * GATT-only and, per user reports, stuck on "Connecting" with no stable link. Connecting
+     * GATT-only (no bond) is what left PulseLoop's users stuck cycling Bluetooth to recover.
      *
      * Idempotent: skipped when already bonded/bonding, so it fires at most once per ring. Runs
      * after service discovery (the reply that triggers it arrives post-CONNECTED), so it does
@@ -685,14 +695,6 @@ class RingBLEClient(private val context: Context) {
      */
     private fun bondActiveDevice() {
         if (!hasPermissions()) return
-        // Only bond the models that actually need it on Android (the R09). Every other ring
-        // works GATT-only like iOS; bonding them just adds a pairing prompt and leaves the
-        // in-app Disconnect unable to release the link. QRing bonds every supportBlePair ring —
-        // we deliberately don't. A supportBlePair reply from any other model is a no-op here.
-        if (!activeModelRequiresBond()) {
-            Log.i("RingBLEClient", "Ring reports supportBlePair but this model works GATT-only — skipping bond")
-            return
-        }
         scope.launch {
             awaitOpsFlushed()
             // The link may have dropped while we waited for the queue to settle.
@@ -742,7 +744,8 @@ class RingBLEClient(private val context: Context) {
         activeDriver = driver
         activeSyncEngine = driver.makeSyncEngine()
         // Capability-gated bonding: the engine fires this only when the ring's device-support
-        // reply advertises supportBlePair (Colmi R09 and newer). See docs/qring-ble-adoption.md.
+        // reply advertises supportBlePair, matching every model that sets the bit (not just
+        // R09). See docs/qring-ble-adoption.md and bondActiveDevice()'s KDoc.
         activeSyncEngine?.setOnBondRequested { bondActiveDevice() }
         updateState {
             copy(
@@ -750,6 +753,20 @@ class RingBLEClient(private val context: Context) {
                 activeCapabilities = coordinator.capabilities,
             )
         }
+    }
+
+    /**
+     * Additive-only capability refinement from the connected unit's own reported bitmap (YCBT
+     * `02 01` SupportFunction; see [WearableCoordinator.bitmapGatedCapabilities]). Intersecting
+     * with the coordinator's gate-able set means a device can never claim a capability its family
+     * doesn't offer as gate-able, and unioning into the current set means this can only ever *add*
+     * — never take back a baseline promise.
+     */
+    private fun refineActiveCapabilities(reported: Set<WearableCapability>) {
+        val coordinator = activeCoordinator ?: return
+        val granted = reported.intersect(coordinator.bitmapGatedCapabilities)
+        if (granted.isEmpty()) return
+        updateState { copy(activeCapabilities = activeCapabilities + granted) }
     }
 
     private fun enqueueOp(op: GattOp) {
@@ -839,6 +856,17 @@ class RingBLEClient(private val context: Context) {
                         false
                     } else {
                         val target = if (op.useCommandChannel) commandChar ?: wChar else wChar
+                        // The write type must come from the characteristic, not the framework
+                        // default. A characteristic that only supports write-without-response (the
+                        // LuckRing/TK18's `B002`) rejects a WRITE_TYPE_DEFAULT request over GATT —
+                        // the ring's own GATT server has no Write property to answer it, so the write
+                        // fails or times out instead of ever reaching the ring. Mirrors iOS's
+                        // `CBCharacteristicWriteType` fix for the same characteristic.
+                        target.writeType = if (target.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
+                            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                        } else {
+                            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        }
                         target.value = op.data
                         // Publish the outgoing packet once, on the first issue attempt only — a
                         // retry storm used to log 200 duplicate CommandAcks, flooding the 200-entry
@@ -992,11 +1020,11 @@ class RingBLEClient(private val context: Context) {
                         // requestMtu()/discoverServices() — a known Android instability that
                         // caused frequent disconnects. Instead we bond later, and only when the
                         // ring asks: the Colmi engine reads the device-support bitfield during
-                        // startup and, if supportBlePair is set (R09 and newer), calls back into
+                        // startup and, if supportBlePair is set, calls back into
                         // bondActiveDevice() — well after discovery, matching the official QRing
-                        // app (which also bonds post-discovery, gated on supportBlePair). Rings
-                        // that don't advertise the bit (jring 56ff, older R02) are never bonded,
-                        // preserving prior behaviour. See docs/qring-ble-adoption.md §Pairing.
+                        // app exactly (bonds post-discovery, gated on supportBlePair alone, no
+                        // per-model allowlist). Rings that don't advertise the bit (jring 56ff)
+                        // are never bonded. See docs/qring-ble-adoption.md §Pairing.
                         // Request a high-priority connection interval, matching the official app
                         // (BluetoothLeService.requestConnectionPriority(1) on connect).
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
@@ -1067,18 +1095,19 @@ class RingBLEClient(private val context: Context) {
 
                 for (ch in service.characteristics) {
                     val uuid = ch.uuid.toString()
-                    when {
-                        uuid == driver.writeUUID -> writeChar = ch
-                        uuid == driver.commandUUID -> commandChar = ch
-                        driver.notifyUUIDs.any { it == uuid } -> {
-                            notifyChars[ch.uuid] = ch
-                            gatt.setCharacteristicNotification(ch, true)
-                            ch.getDescriptor(CCCD_UUID)?.let { desc ->
-                                enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
-                            }
+                    // Not mutually exclusive: YCBT's command characteristic (be940001) is
+                    // simultaneously the write target AND a notify source (command replies), so
+                    // it must both be recorded as writeChar and get its CCCD enabled below.
+                    if (uuid == driver.writeUUID) writeChar = ch
+                    if (uuid == driver.commandUUID) commandChar = ch
+                    if (driver.notifyUUIDs.any { it == uuid }) {
+                        notifyChars[ch.uuid] = ch
+                        gatt.setCharacteristicNotification(ch, true)
+                        ch.getDescriptor(CCCD_UUID)?.let { desc ->
+                            enqueueOp(GattOp.DescriptorWrite(desc, cccdEnableValue(ch)))
                         }
-                        uuid == driver.batteryCharUUID -> batteryChar = ch
                     }
+                    if (uuid == driver.batteryCharUUID) batteryChar = ch
                 }
             }
 
@@ -1096,7 +1125,7 @@ class RingBLEClient(private val context: Context) {
                 service.getCharacteristic(measureUuid)?.let { ch ->
                     gatt.setCharacteristicNotification(ch, true)
                     ch.getDescriptor(CCCD_UUID)?.let { desc ->
-                        enqueueOp(GattOp.DescriptorWrite(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
+                        enqueueOp(GattOp.DescriptorWrite(desc, cccdEnableValue(ch)))
                     }
                 }
             }
@@ -1189,7 +1218,19 @@ class RingBLEClient(private val context: Context) {
             // (e.g. Colmi pref-read replies seeding the measurement config).
             if (!forgetPending) activeSyncEngine?.handleRawNotify(value)
 
-            for (decoded in driver.ingest(value, characteristic.uuid.toString())) {
+            val decodedEvents = driver.ingest(value, characteristic.uuid.toString())
+            // Log once per physical BLE notification, not once per decoded event — a single
+            // reassembled buffer (e.g. a "full history" sleep reply) can decode into many
+            // events (one per day), which used to re-log the same bytes N times and made a
+            // single notification look like N separate retransmissions in diagnostics.
+            if (!forgetPending) {
+                decodedEvents.firstOrNull()?.let { first ->
+                    PulseEventBus.publishBlocking(
+                        PulseEvent.RawPacket(PacketDirection.INCOMING, value, first)
+                    )
+                }
+            }
+            for (decoded in decodedEvents) {
                 // A forget is in flight: don't persist any more data or re-publish a
                 // "connected" device state (which would re-create the row we're clearing).
                 // Just watch for the ring's unbind ack (6 = UNBOND_ACK, 3 = ACK_CANCEL).
@@ -1200,12 +1241,10 @@ class RingBLEClient(private val context: Context) {
                     }
                     continue
                 }
-                PulseEventBus.publishBlocking(
-                    PulseEvent.RawPacket(PacketDirection.INCOMING, value, decoded)
-                )
                 for (event in RingEventBridge.eventsFor(decoded)) {
                     PulseEventBus.publishBlocking(event)
                 }
+                if (decoded is RingDecodedEvent.SupportFunctions) refineActiveCapabilities(decoded.capabilities)
                 activeSyncEngine?.handle(decoded)
             }
         }
@@ -1400,6 +1439,24 @@ class RingBLEClient(private val context: Context) {
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private val DIS_SERVICE_UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
         private val FW_REV_UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+
+        /**
+         * The correct CCCD value for a characteristic's *declared* property — indication
+         * (`ENABLE_INDICATION_VALUE`) if it advertises `PROPERTY_INDICATE`, notification otherwise.
+         * Every prior driver's notify characteristics happen to be plain-notify, so a single
+         * hardcoded `ENABLE_NOTIFICATION_VALUE` never surfaced a bug — but YCBT's async stream
+         * (`be940003`) is indicate-only on the real ring (confirmed against the decompiled vendor
+         * SDK's `BleHelper.java`), and the standard Blood Pressure / Glucose Measurement
+         * characteristics (`0x2A35`/`0x2A18`) are indicate-only per their BLE SIG profiles too.
+         * Writing the wrong CCCD value means the peripheral never delivers anything on that
+         * characteristic.
+         */
+        private fun cccdEnableValue(characteristic: BluetoothGattCharacteristic): ByteArray =
+            if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) {
+                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+            } else {
+                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            }
 
         /** Decode IEEE 11073 SFLOAT: exponent (4-bit signed) + mantissa (12-bit signed). */
         fun decodeSFLOAT(b0: Byte, b1: Byte): Double {

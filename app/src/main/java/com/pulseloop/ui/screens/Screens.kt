@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,6 +30,14 @@ import com.pulseloop.ui.components.toColor
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.*
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.ui.dashboard.CustomizeCardsButton
+import com.pulseloop.ui.dashboard.DashboardCard
+import com.pulseloop.ui.dashboard.EditableCard
+import com.pulseloop.ui.dashboard.HiddenMetricsTray
+import com.pulseloop.ui.dashboard.MetricPrefsStore
+import com.pulseloop.ui.dashboard.MetricScope
+import com.pulseloop.ui.dashboard.ReorderDoneBar
+import com.pulseloop.ui.dashboard.rememberDashboardEditState
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
 import kotlinx.coroutines.delay
@@ -52,6 +61,10 @@ fun VitalsScreen(
     val scope = rememberCoroutineScope()
     var measuring by remember { mutableStateOf(false) }
     var remaining by remember { mutableStateOf(0) }
+    // Set when a spot measurement finishes with every leg FAILED — iOS #66's "an honest retry":
+    // the refusal gate keeps bad values off screen, and this surfaces the failure with iOS's
+    // per-kind copy instead of silently re-enabling the button (second-pass finding #30).
+    var measureFailed by remember { mutableStateOf(false) }
     // Two measurement flavours:
     //  • combined (56ff/Jring): one 0x23 packet → BP + SpO₂ + stress + fatigue + blood sugar
     //  • spot (Colmi): sequential live HR + SpO₂ via the real-time command (0x69)
@@ -72,6 +85,155 @@ fun VitalsScreen(
         val inputs = state.toCardInputs(vitalsUnits)
         MetricKind.entries.associateWith { metric -> VitalsCardFactory.card(metric, inputs, state.profile) }
     }
+
+    // Per-metric visibility + user order (iOS #64), read reactively (also the iOS #70 reactivity).
+    val prefsStore = remember { MetricPrefsStore.get(vitalsScreenContext) }
+    val prefs by prefsStore.prefs.collectAsState()
+    val editState = rememberDashboardEditState(MetricScope.VITALS, prefsStore)
+
+    val supported: (DashboardCard) -> Boolean = { card ->
+        when (card) {
+            DashboardCard.HEART_RATE, DashboardCard.SPO2 -> true
+            DashboardCard.BLOOD_PRESSURE -> state.supportsBP
+            DashboardCard.HRV -> state.supportsHrv
+            DashboardCard.STRESS -> state.supportsStress
+            DashboardCard.FATIGUE -> state.supportsFatigue
+            DashboardCard.GLUCOSE -> state.supportsGlucose
+            DashboardCard.TEMPERATURE -> state.supportsTemp
+            else -> false   // Activity/Sleep are Today-only
+        }
+    }
+    val allSupported = DashboardCard.vitalsDefault.filter(supported)
+    SideEffect { editState.configure(allSupported, DashboardCard.vitalsDefault) }
+
+    val visibleKeys = allSupported.filter { !prefs.isHidden(it, MetricScope.VITALS) }.map { it.key }.toSet()
+    val visibleOrdered: List<DashboardCard> = run {
+        val base = if (editState.editing) editState.liveOrder
+            else prefsStore.resolvedOrder(visibleKeys, DashboardCard.vitalsDefault.map { it.key }, MetricScope.VITALS)
+                .mapNotNull { DashboardCard.fromKey(it) }
+        base.filter { it.key in visibleKeys }
+    }
+    val hiddenCards = allSupported.filter { prefs.isHidden(it, MetricScope.VITALS) }
+
+    // Dispatch a card id to its full-width Vitals card (order/visibility decided above).
+    val vitalsCardFor: @Composable (DashboardCard) -> Unit = { card ->
+        when (card) {
+            DashboardCard.HEART_RATE -> VitalCard(
+                state = cards.getValue(MetricKind.HEART_RATE),
+                onTap = { navController?.navigate("vitals/hr") },
+            ) {
+                if (state.hrSamples.isNotEmpty()) {
+                    val c = cards.getValue(MetricKind.HEART_RATE)
+                    ZoneLineChart(
+                        samples = c.samples, zones = c.zones, yDomain = c.yDomain,
+                        accent = ZonePalette.accent(MetricKind.HEART_RATE),
+                        referenceBands = c.referenceBands, dashedRules = c.dashedRules,
+                    )
+                } else {
+                    Text("No HR samples yet — sync your ring to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            DashboardCard.SPO2 -> VitalCard(
+                state = cards.getValue(MetricKind.SPO2),
+                onTap = { navController?.navigate("vitals/spo2") },
+            ) {
+                if (state.spo2Samples.isNotEmpty()) {
+                    val c = cards.getValue(MetricKind.SPO2)
+                    ZoneLineChart(
+                        samples = c.samples, zones = c.zones, yDomain = c.yDomain,
+                        accent = ZonePalette.accent(MetricKind.SPO2),
+                        referenceBands = c.referenceBands, dashedRules = c.dashedRules,
+                        showPoints = true,
+                    )
+                } else {
+                    Text("No SpO₂ samples yet — take a reading to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            DashboardCard.BLOOD_PRESSURE -> VitalCard(
+                state = cards.getValue(MetricKind.BLOOD_PRESSURE),
+                onTap = { navController?.navigate("vitals/bp") },
+            ) {
+                val sys = state.bpSystolic?.toDouble()
+                val dia = state.bpDiastolic?.toDouble()
+                if (sys != null && dia != null) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        BpGaugeColumn(
+                            title = "Systolic", value = sys, domain = 80.0..190.0,
+                            zones = cards.getValue(MetricKind.BLOOD_PRESSURE).zones,
+                            fallback = ZonePalette.accent(MetricKind.BLOOD_PRESSURE),
+                            modifier = Modifier.weight(1f),
+                        )
+                        BpGaugeColumn(
+                            title = "Diastolic", value = dia, domain = 50.0..130.0,
+                            zones = com.pulseloop.service.VitalsThresholdEngine.diastolicReferenceZones(),
+                            fallback = ZonePalette.accent(MetricKind.BLOOD_PRESSURE).copy(alpha = 0.7f),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                } else {
+                    Text("No blood pressure data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (measuring) {
+                    Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            DashboardCard.HRV -> VitalCard(
+                state = cards.getValue(MetricKind.HRV),
+                onTap = { navController?.navigate("vitals/hrv") },
+            ) {
+                if (state.latestHrv != null && state.hrvSamples.isNotEmpty()) {
+                    val c = cards.getValue(MetricKind.HRV)
+                    ZoneLineChart(
+                        samples = c.samples, zones = c.zones, yDomain = c.yDomain,
+                        accent = ZonePalette.accent(MetricKind.HRV),
+                        referenceBands = c.referenceBands, dashedRules = c.dashedRules,
+                    )
+                } else {
+                    Text("No HRV data yet — HRV builds up over a few hours of wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            DashboardCard.STRESS -> VitalGaugeCardItem(
+                card = cards.getValue(MetricKind.STRESS),
+                hasReading = state.stressSamples.isNotEmpty() && (state.latestStress?.toInt() ?: 0) >= 10,
+                emptyText = "No stress data yet — take a measurement.",
+                onTap = { navController?.navigate("vitals/stress") },
+            )
+            DashboardCard.FATIGUE -> VitalGaugeCardItem(
+                card = cards.getValue(MetricKind.FATIGUE),
+                hasReading = state.fatigueSamples.isNotEmpty() && (state.latestFatigue?.toInt() ?: 0) >= 10,
+                emptyText = "No fatigue data yet — take a measurement.",
+                onTap = { navController?.navigate("vitals/fatigue") },
+            )
+            DashboardCard.GLUCOSE -> VitalGaugeCardItem(
+                card = cards.getValue(MetricKind.GLUCOSE),
+                hasReading = state.bloodSugar != null,
+                emptyText = "No blood sugar data yet.",
+                measuring = measuring,
+                onTap = { navController?.navigate("vitals/glucose") },
+            )
+            DashboardCard.TEMPERATURE -> VitalCard(
+                state = cards.getValue(MetricKind.TEMPERATURE),
+                onTap = { navController?.navigate("vitals/temp") },
+            ) {
+                val tempVal = state.latestTemp
+                if (tempVal != null && state.tempSamples.isNotEmpty()) {
+                    val c = cards.getValue(MetricKind.TEMPERATURE)
+                    ZoneLineChart(
+                        samples = c.samples, zones = c.zones, yDomain = c.yDomain,
+                        accent = ZonePalette.accent(MetricKind.TEMPERATURE),
+                        referenceBands = c.referenceBands, dashedRules = c.dashedRules,
+                    )
+                } else {
+                    Text("No temperature data yet — temperature trends appear after overnight wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            else -> {}
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -93,6 +255,7 @@ fun VitalsScreen(
                         enabled = !measuring,
                         onClick = {
                             measuring = true
+                            measureFailed = false
                             remaining = measureSeconds
                             scope.launch {
                                 val ticker = launch {
@@ -104,6 +267,12 @@ fun VitalsScreen(
                                     ticker.cancel()
                                     remaining = 0
                                     measuring = false
+                                    if (!combinedMode &&
+                                        (coordinator.hrState == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED ||
+                                            coordinator.spo2State == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED)
+                                    ) {
+                                        measureFailed = true
+                                    }
                                     viewModel?.refreshNow()  // show the new reading immediately
                                 }
                             }
@@ -132,176 +301,38 @@ fun VitalsScreen(
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
+            if (measureFailed && !measuring) {
+                Spacer(Modifier.height(8.dp))
+                // iOS MeasurementKindPresentation failure copy ("…Keep the ring snug and your
+                // hand still, then try again."), shown until the next attempt.
+                Text(
+                    "Couldn't get a steady reading. Keep the ring snug and your hand still, then try again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
             Spacer(Modifier.height(8.dp))
         }
 
-        // Card order mirrors VitalsView.swift: HR, SpO₂, BP, HRV, Stress, Fatigue, Glucose, Temp.
-
-        // Heart Rate
+        // Card order mirrors VitalsView.swift (HR, SpO₂, BP, HRV, Stress, Fatigue, Glucose, Temp)
+        // by default, but honors the user's per-metric visibility + order (iOS #64). Long-press a
+        // card to reorder/hide; the Hidden tray restores.
         item {
-            VitalCard(
-                state = cards.getValue(MetricKind.HEART_RATE),
-                onTap = { navController?.navigate("vitals/hr") },
-            ) {
-                if (state.hrSamples.isNotEmpty()) {
-                    run {
-                        val card = cards.getValue(MetricKind.HEART_RATE)
-                        ZoneLineChart(
-                            samples = card.samples, zones = card.zones, yDomain = card.yDomain,
-                            accent = ZonePalette.accent(MetricKind.HEART_RATE),
-                            referenceBands = card.referenceBands, dashedRules = card.dashedRules,
-                        )
-                    }
-                } else {
-                    Text("No HR samples yet — sync your ring to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                if (editState.editing) ReorderDoneBar { editState.exit() }
+                else CustomizeCardsButton { editState.enterEditing() }
             }
         }
 
-        // SpO2
-        item {
-            VitalCard(
-                state = cards.getValue(MetricKind.SPO2),
-                onTap = { navController?.navigate("vitals/spo2") },
-            ) {
-                if (state.spo2Samples.isNotEmpty()) {
-                    run {
-                        val card = cards.getValue(MetricKind.SPO2)
-                        ZoneLineChart(
-                            samples = card.samples, zones = card.zones, yDomain = card.yDomain,
-                            accent = ZonePalette.accent(MetricKind.SPO2),
-                            referenceBands = card.referenceBands, dashedRules = card.dashedRules,
-                            showPoints = true,
-                        )
-                    }
-                } else {
-                    Text("No SpO₂ samples yet — take a reading to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+        items(visibleOrdered, key = { it.key }) { card ->
+            EditableCard(editState, card, Modifier.fillMaxWidth()) {
+                vitalsCardFor(card)
             }
         }
 
-        // Blood Pressure — two ring gauges side by side (VitalBloodPressureCard in Swift).
-        if (state.supportsBP) {
-            item {
-                VitalCard(
-                    state = cards.getValue(MetricKind.BLOOD_PRESSURE),
-                    onTap = { navController?.navigate("vitals/bp") },
-                ) {
-                    val sys = state.bpSystolic?.toDouble()
-                    val dia = state.bpDiastolic?.toDouble()
-                    if (sys != null && dia != null) {
-                        Row(
-                            Modifier.fillMaxWidth().padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            BpGaugeColumn(
-                                title = "Systolic", value = sys, domain = 80.0..190.0,
-                                zones = cards.getValue(MetricKind.BLOOD_PRESSURE).zones,
-                                fallback = ZonePalette.accent(MetricKind.BLOOD_PRESSURE),
-                                modifier = Modifier.weight(1f),
-                            )
-                            BpGaugeColumn(
-                                title = "Diastolic", value = dia, domain = 50.0..130.0,
-                                zones = com.pulseloop.service.VitalsThresholdEngine.diastolicReferenceZones(),
-                                fallback = ZonePalette.accent(MetricKind.BLOOD_PRESSURE).copy(alpha = 0.7f),
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    } else {
-                        Text("No blood pressure data yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    if (measuring) {
-                        Text("Measuring… updates when complete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-            }
-        }
-
-        // HRV (capability-gated)
-        if (state.supportsHrv) {
-            item {
-                VitalCard(
-                    state = cards.getValue(MetricKind.HRV),
-                    onTap = { navController?.navigate("vitals/hrv") },
-                ) {
-                    if (state.latestHrv != null && state.hrvSamples.isNotEmpty()) {
-                        run {
-                        val card = cards.getValue(MetricKind.HRV)
-                        ZoneLineChart(
-                            samples = card.samples, zones = card.zones, yDomain = card.yDomain,
-                            accent = ZonePalette.accent(MetricKind.HRV),
-                            referenceBands = card.referenceBands, dashedRules = card.dashedRules,
-                        )
-                    }
-                    } else {
-                        Text("No HRV data yet — HRV builds up over a few hours of wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
-
-        // Stress — ring gauge card (VitalGaugeCard in Swift). The ring's valid stress range
-        // starts at 10 (official bands: 10-20 excellent …), so treat anything below that as no
-        // reading rather than a misleading "Excellent".
-        if (state.supportsStress) {
-            item {
-                VitalGaugeCardItem(
-                    card = cards.getValue(MetricKind.STRESS),
-                    hasReading = state.stressSamples.isNotEmpty() && (state.latestStress?.toInt() ?: 0) >= 10,
-                    emptyText = "No stress data yet — take a measurement.",
-                    onTap = { navController?.navigate("vitals/stress") },
-                )
-            }
-        }
-
-        // Fatigue — ring gauge card. TYPE_FATIGUE (byte[5]) from the combined measurement.
-        if (state.supportsFatigue) {
-            item {
-                VitalGaugeCardItem(
-                    card = cards.getValue(MetricKind.FATIGUE),
-                    hasReading = state.fatigueSamples.isNotEmpty() && (state.latestFatigue?.toInt() ?: 0) >= 10,
-                    emptyText = "No fatigue data yet — take a measurement.",
-                    onTap = { navController?.navigate("vitals/fatigue") },
-                )
-            }
-        }
-
-        // Blood Sugar — ring gauge card (VitalGlucoseCard in Swift).
-        if (state.supportsGlucose) {
-            item {
-                VitalGaugeCardItem(
-                    card = cards.getValue(MetricKind.GLUCOSE),
-                    hasReading = state.bloodSugar != null,
-                    emptyText = "No blood sugar data yet.",
-                    measuring = measuring,
-                    onTap = { navController?.navigate("vitals/glucose") },
-                )
-            }
-        }
-
-        // Temperature (capability-gated)
-        if (state.supportsTemp) {
-            item {
-                VitalCard(
-                    state = cards.getValue(MetricKind.TEMPERATURE),
-                    onTap = { navController?.navigate("vitals/temp") },
-                ) {
-                    val tempVal = state.latestTemp
-                    if (tempVal != null && state.tempSamples.isNotEmpty()) {
-                        run {
-                            // Factory-converted samples/zones so line + bands share the display unit.
-                            val card = cards.getValue(MetricKind.TEMPERATURE)
-                            ZoneLineChart(
-                                samples = card.samples, zones = card.zones, yDomain = card.yDomain,
-                                accent = ZonePalette.accent(MetricKind.TEMPERATURE),
-                                referenceBands = card.referenceBands, dashedRules = card.dashedRules,
-                            )
-                        }
-                    } else {
-                        Text("No temperature data yet — temperature trends appear after overnight wear.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
+        if (editState.editing) {
+            item { HiddenMetricsTray(hiddenCards) { editState.setHidden(it, false) } }
         }
 
         item { Spacer(Modifier.height(32.dp)) }
@@ -413,6 +444,9 @@ fun VitalDetailScreen(
 ) {
     val context = LocalContext.current
     val units = apiKeyStore?.resolvedUnitSystem ?: com.pulseloop.settings.UnitSystem.METRIC
+    // Glucose display unit for the detail chart's zones/axis/stats (iOS #43 §3); the VM already
+    // converts the plotted readings, this converts the reference layer the screen owns.
+    val gUnit = apiKeyStore?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL
     val vm = remember { VitalDetailViewModel(db, metric, apiKeyStore, units) }
     val state by vm.state.collectAsState()
 
@@ -520,7 +554,10 @@ fun VitalDetailScreen(
                                 colorSecondary = ZonePalette.accent(MetricKind.BLOOD_PRESSURE).copy(alpha = 0.5f),
                                 legendPrimary = if (state.isBP) "Systolic" else null,
                                 legendSecondary = if (state.isBP) "Diastolic" else null,
-                                thresholds = state.thresholds,
+                                // Points arrive in display units from the VM; convert the zone/axis
+                                // reference to match so temp bands (°F) and glucose bands (mmol/L)
+                                // line up with the plotted line (iOS #43 §2/§3).
+                                thresholds = displayThresholds(state.thresholds, metric, units, gUnit),
                                 timestamps = state.timestamps,
                                 tooltipTimeFormatter = { ts -> tooltipTime(ts, state.period) },
                             )
@@ -540,13 +577,13 @@ fun VitalDetailScreen(
                             .padding(horizontal = 10.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        DetailStat("Latest", state.latest?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Latest", state.latest?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                         DetailStatDivider()
-                        DetailStat("Average", state.avg?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Average", state.avg?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                         DetailStatDivider()
-                        DetailStat("Min", state.min?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Min", state.min?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                         DetailStatDivider()
-                        DetailStat("Max", state.max?.let { formatStat(it, metric) } ?: "--", Modifier.weight(1f))
+                        DetailStat("Max", state.max?.let { formatStat(it, metric, gUnit) } ?: "--", Modifier.weight(1f))
                     }
                 }
 
@@ -588,7 +625,7 @@ fun VitalDetailScreen(
                                     )
                                     Spacer(Modifier.weight(1f))
                                     Text(
-                                        zoneRangeText(zone, metric, units),
+                                        zoneRangeText(zone, metric, units, gUnit),
                                         fontSize = 12.sp,
                                         color = PulseColors.textMuted,
                                     )
@@ -731,10 +768,18 @@ private fun zoneRangeText(
     zone: com.pulseloop.service.MetricZone,
     metric: String,
     units: UnitSystem,
+    gUnit: com.pulseloop.service.GlucoseUnit,
 ): String {
-    fun display(v: Double): Double = if (metric == "temp") UnitConverter.temperature(v, units) else v
-    fun fmt(v: Double): String =
-        if (metric == "temp") "%.1f".format(display(v)) else "${display(v).toInt()}"
+    fun display(v: Double): Double = when (metric) {
+        "temp" -> UnitConverter.temperature(v, units)
+        "glucose" -> gUnit.fromMgdl(v)
+        else -> v
+    }
+    fun fmt(v: Double): String = when {
+        metric == "temp" -> "%.1f".format(display(v))
+        metric == "glucose" && gUnit == com.pulseloop.service.GlucoseUnit.MMOL -> "%.1f".format(display(v))
+        else -> "${display(v).toInt()}"
+    }
     val lo = zone.lower
     val hi = zone.upper
     return when {
@@ -813,10 +858,32 @@ private fun tooltipTime(ts: Long, period: Period): String {
     }
 }
 
-private fun formatStat(value: Double, metric: String): String = when (metric) {
+private fun formatStat(value: Double, metric: String, gUnit: com.pulseloop.service.GlucoseUnit): String = when (metric) {
     "temp" -> "%.1f".format(value)
-    "glucose" -> "%.1f".format(value)
+    // Values arrive already in the display unit; mmol/L wants a decimal, mg/dL is whole.
+    "glucose" -> if (gUnit == com.pulseloop.service.GlucoseUnit.MMOL) "%.1f".format(value) else "%.0f".format(value)
     "hrv" -> "%.0f".format(value)
     else -> "%.0f".format(value)
+}
+
+/**
+ * Convert an engine [MetricThresholds] (canonical units) into the chart's display units so the
+ * zone bands and y-axis match the VM's already-converted points — temperature to °F, glucose to
+ * mmol/L (iOS #43 §2/§3). Other metrics (and null) pass through unchanged.
+ */
+private fun displayThresholds(
+    t: com.pulseloop.ui.components.MetricThresholds?,
+    metric: String,
+    units: UnitSystem,
+    gUnit: com.pulseloop.service.GlucoseUnit,
+): com.pulseloop.ui.components.MetricThresholds? {
+    if (t == null || (metric != "temp" && metric != "glucose")) return t
+    fun d(v: Double): Double =
+        if (metric == "temp") UnitConverter.temperature(v, units) else gUnit.fromMgdl(v)
+    return t.copy(
+        displayMin = d(t.displayMin),
+        displayMax = d(t.displayMax),
+        zones = t.zones.map { it.copy(start = d(it.start), end = d(it.end)) },
+    )
 }
 

@@ -13,9 +13,21 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
 import com.pulseloop.MainActivity
+import com.pulseloop.coach.config.CoachSleepSyncGate
+import com.pulseloop.coach.config.CoachVarietyHints
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.entity.CoachNotificationRecordEntity
+import com.pulseloop.ring.PulseEvent
+import com.pulseloop.ring.PulseEventBus
+import com.pulseloop.ring.RingBLEClient
+import com.pulseloop.service.loadPersistedMeasurementSettings
+import com.pulseloop.service.loadPersistedUserProfile
 import com.pulseloop.settings.ApiKeyStore
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
 import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
@@ -28,6 +40,7 @@ import java.util.concurrent.TimeUnit
 object CoachNotifications {
     private const val CHANNEL_ID = "coach_checkins"
     private const val DAILY_WORK_NAME = "coach_daily_checkin"
+    private const val SLEEP_RETRY_WORK_NAME = "coach_checkin_sleep_retry"
     private const val NOTIFICATION_ID = 2001
 
     fun createChannel(context: Context) {
@@ -79,6 +92,28 @@ object CoachNotifications {
 
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(DAILY_WORK_NAME)
+        WorkManager.getInstance(context).cancelUniqueWork(SLEEP_RETRY_WORK_NAME)
+    }
+
+    /**
+     * One +45min one-off wake to retry a morning check-in that was skipped because
+     * last night's sleep hadn't synced yet (iOS #65 `submitSleepRetry`). Best-effort;
+     * the next periodic run also covers the case where this doesn't land.
+     */
+    fun scheduleSleepRetry(context: Context) {
+        val request = OneTimeWorkRequestBuilder<CoachNotificationWorker>()
+            .setInitialDelay(45, TimeUnit.MINUTES)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiresBatteryNotLow(true)
+                    .build()
+            )
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            SLEEP_RETRY_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
     }
 
     /** Show an immediate check-in notification. */
@@ -110,6 +145,16 @@ class CoachNotificationWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
+    companion object {
+        /** iOS #61c `syncWaitTimeout` — caps ensureFreshData so a stale BLE link can't hang the worker. */
+        private const val SYNC_WAIT_TIMEOUT_MS = 15_000L
+        /** iOS #61c `hasFreshFullSync` — a completed sync within this window skips a new one. */
+        private const val FRESH_SYNC_WINDOW_MS = 10 * 60_000L
+        /** iOS `freshnessWindow` (3h) — a live measurement this recent counts as fresh data even
+         *  without a completed full sync (covers rings that stream continuously). */
+        private const val RECENT_DATA_WINDOW_MS = 3 * 60 * 60_000L
+    }
+
     override suspend fun doWork(): Result {
         // Re-check the opt-in at FIRE time, before any notification can be built:
         // periodic work can outlive a toggle-off, so a disabled feature must mean
@@ -136,20 +181,46 @@ class CoachNotificationWorker(
 
             // Determine current slot
             val now = LocalDateTime.now()
+            val nowMillis = System.currentTimeMillis()
             val hour = now.hour
             val slot = CoachNotificationSlot.current(hour, keyStore.morningHour, keyStore.eveningHour)
                 ?: CoachNotificationSlot.forcedSlot(hour)
 
-            // Build context
-            val packet = NotificationContextBuilder.build(slot, db)
+            // Morning-only (iOS #65): don't fire until last night's sleep has fully synced —
+            // otherwise the check-in leads with partial/absent sleep. Skip WITHOUT showing a
+            // notification so the +45min retry (or the next periodic run) can fire it once synced.
+            if (slot == CoachNotificationSlot.MORNING && !sleepDataSynced(db, nowMillis)) {
+                CoachNotifications.scheduleSleepRetry(applicationContext)
+                return Result.success()
+            }
+
+            // Sync-before-notify (iOS #61c): a bounded, best-effort connect so the check-in
+            // reflects today's data instead of whatever happened to be in Room when the ring
+            // was last opened. Always proceeds to build+send afterward with whatever's now
+            // there — a stale check-in beats a missed one.
+            ensureFreshData(db)
+
+            // Build context. The weather service degrades to a cached (or null) reading on
+            // its own when the app isn't foregrounded — see WeatherContextService — so it's
+            // always safe to call from this background worker.
+            val environment = com.pulseloop.coach.context.WeatherContextService(applicationContext).snapshot()
+            val packet = NotificationContextBuilder.build(slot, db, environment = environment)
+
+            // Variety + anti-repeat (iOS #65): a deterministic per-day/slot coaching angle,
+            // plus the last few delivered check-ins so the model doesn't repeat itself.
+            val angle = CoachVarietyHints.angle(now.toLocalDate().toString() + slot.name.lowercase())
+            val recentTexts = db.coachNotificationRecordDao().recent(6).map { "${it.title} — ${it.body}" }
 
             // Generate via AI or fallback
             val notification = try {
-                generateWithAI(slot, packet, keyStore.apiKey, keyStore.model)
+                generateWithAI(slot, packet, keyStore.apiKey, keyStore.model, angle, recentTexts)
             } catch (e: Exception) {
                 scripted(slot, packet)
             }
 
+            db.coachNotificationRecordDao().insert(
+                CoachNotificationRecordEntity(title = notification.title, body = notification.body)
+            )
             CoachNotifications.showNow(applicationContext, notification.title, notification.body)
             Result.success()
         } catch (e: Exception) {
@@ -163,11 +234,95 @@ class CoachNotificationWorker(
         }
     }
 
+    /**
+     * Ported from CoachNotificationService.ensureFreshData (iOS #61c). This worker always owns a
+     * private [RingBLEClient] (unlike the foreground [com.pulseloop.service.RingSyncCoordinator]),
+     * so there's no "sync already in flight" to await — only connect-and-sync, bounded by
+     * [SYNC_WAIT_TIMEOUT_MS] so a stale link can never hang the worker past its own budget.
+     * Skips outright when no real ring is paired, or the last completed sync is still fresh.
+     */
+    private suspend fun ensureFreshData(db: PulseLoopDatabase) {
+        val device = db.deviceDao().currentReal() ?: return
+        val now = System.currentTimeMillis()
+        val fresh = device.lastFullSyncAt?.let { now - it < FRESH_SYNC_WINDOW_MS } ?: false
+        if (fresh) return
+
+        // iOS `hasRecentData`: a fresh *live* measurement is as good as a completed sync (covers
+        // jring, which streams samples continuously rather than running a paged history sync) —
+        // skip the forced connect + full runStartup iOS deliberately avoids paying at every
+        // check-in.
+        val latestMeasurementAt = db.measurementDao().latestTimestamp()
+        if (latestMeasurementAt != null && now - latestMeasurementAt < RECENT_DATA_WINDOW_MS) return
+
+        // iOS branches on the app's *shared* coordinator and never opens a second client: when
+        // the ring is already connected (the foreground app holding the link — its CONNECTED
+        // event is what stamps this state), just give any in-flight sync a bounded chance to
+        // land. Opening our own GATT here would wipe the sleep tables under the user (the
+        // CONNECTED event rebuilds them), duplicate every decode into the shared bus, and
+        // interleave two sync engines' history commands on one link.
+        if (device.stateRaw == "CONNECTED") {
+            awaitSyncDone()
+            return
+        }
+
+        val bleClient = RingBLEClient(applicationContext)
+        if (!bleClient.hasPermissions()) {
+            // destroy(), not just drop the reference: the client's init-started connection
+            // watchdog would otherwise keep firing into permission-less connect attempts.
+            bleClient.destroy()
+            return
+        }
+
+        val measurementSettings = loadPersistedMeasurementSettings(db)
+        val profileValues = loadPersistedUserProfile(db, ApiKeyStore(applicationContext))
+
+        try {
+            withTimeoutOrNull(SYNC_WAIT_TIMEOUT_MS) {
+                val doneSignal = async {
+                    PulseEventBus.events.filterIsInstance<PulseEvent.SyncProgress>().first { it.stage == "done" }
+                }
+                bleClient.onConnected = {
+                    val engine = bleClient.syncEngine
+                    engine?.setMeasurementSettings(measurementSettings)
+                    profileValues?.let { engine?.setUserProfile(it) }
+                    engine?.runStartup()
+                }
+                bleClient.connectLastKnown()
+                doneSignal.await()
+            }
+        } finally {
+            // destroy(), not disconnect(): the client's connection watchdog (started in init)
+            // survives disconnect() and re-attaches the ring ~15s after the worker exits —
+            // re-firing onConnected → a full runStartup, then holding the ring with no UI.
+            bleClient.destroy()
+        }
+    }
+
+    /** Give an in-flight sync (driven by whoever owns the live link) a bounded chance to finish. */
+    private suspend fun awaitSyncDone() {
+        withTimeoutOrNull(SYNC_WAIT_TIMEOUT_MS) {
+            PulseEventBus.events.filterIsInstance<PulseEvent.SyncProgress>().first { it.stage == "done" }
+        }
+    }
+
+    /**
+     * Ported from CoachNotificationService.sleepDataSynced (iOS #65). Whether last
+     * night's sleep is safe to summarize in the morning check-in. See
+     * [CoachSleepSyncGate.sleepDataSynced] for the exact rule.
+     */
+    private suspend fun sleepDataSynced(db: PulseLoopDatabase, now: Long): Boolean {
+        val session = db.sleepSessionDao().recent(1).firstOrNull()
+        val device = db.deviceDao().current()
+        return CoachSleepSyncGate.sleepDataSynced(session?.endAt, device?.lastFullSyncAt, now)
+    }
+
     private suspend fun generateWithAI(
         slot: CoachNotificationSlot,
         packet: NotificationContextPacket,
         apiKey: String,
         model: String,
+        angle: String = "",
+        recentTexts: List<String> = emptyList(),
     ): CoachNotificationContent {
         val client = OpenAIResponsesClient(apiKey)
 
@@ -178,7 +333,7 @@ class CoachNotificationWorker(
             )),
             JsonObject(mapOf(
                 "role" to JsonPrimitive("developer"),
-                "content" to JsonPrimitive(NotificationPromptBuilder.developerMessage(packet)),
+                "content" to JsonPrimitive(NotificationPromptBuilder.developerMessage(packet, angle, recentTexts)),
             )),
         ))
 

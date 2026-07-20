@@ -17,7 +17,7 @@ class RingDecoderTest {
     @Test
     fun `decode activity update from valid packet`() {
         val data = composeRingPacket(0x03, buildActivityPayload(1000, 2500, 150))
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertEquals(1, events.size)
         val event = events[0]
         assertTrue(event is RingDecodedEvent.ActivityUpdate)
@@ -33,7 +33,7 @@ class RingDecoderTest {
         payload[0] = 85.toByte() // battery percent at byte[1]
         payload[1] = 0.toByte()  // not charging at byte[2]
         val data = composeRingPacket(0x0B, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertEquals(1, events.size)
         assertTrue(events[0] is RingDecodedEvent.Battery)
         val b = events[0] as RingDecodedEvent.Battery
@@ -47,7 +47,7 @@ class RingDecoderTest {
         payload[0] = 100.toByte()
         payload[1] = 1.toByte() // charging
         val data = composeRingPacket(0x0B, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue((events[0] as RingDecodedEvent.Battery).charging)
     }
 
@@ -58,7 +58,7 @@ class RingDecoderTest {
         // timestamp at bytes[1-4] must be non-zero
         payload[0] = 1.toByte()
         val data = composeRingPacket(0x14, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertEquals(1, events.size)
         assertTrue(events[0] is RingDecodedEvent.HeartRateSample)
         assertEquals(72, (events[0] as RingDecodedEvent.HeartRateSample).bpm)
@@ -70,7 +70,7 @@ class RingDecoderTest {
         payload[4] = 72.toByte()
         // timestamp bytes[1-4] all zero
         val data = composeRingPacket(0x14, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue((events[0] as RingDecodedEvent.HeartRateSample).isError)
     }
 
@@ -85,7 +85,7 @@ class RingDecoderTest {
         payload[5] = 30.toByte()   // stress at byte[6]
         payload[6] = 51.toByte()   // blood sugar ×10 at byte[7] → 5.1 mmol/L → 91.88 mg/dL
         val data = composeRingPacket(0x24, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events.size >= 6) // HR + systolic + diastolic + SpO2 + fatigue + stress + sugar
         assertTrue(events.any { it is RingDecodedEvent.HeartRateSample && (it as RingDecodedEvent.HeartRateSample).bpm == 72 })
         assertTrue(events.any { it is RingDecodedEvent.Spo2Result && (it as RingDecodedEvent.Spo2Result).value == 97 })
@@ -105,7 +105,7 @@ class RingDecoderTest {
         payload[3] = 98.toByte()   // SpO2 = 98
         payload[4] = 0.toByte()    // stress = 0 → skip
         val data = composeRingPacket(0x24, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertEquals(1, events.size)
         assertTrue(events[0] is RingDecodedEvent.Spo2Result)
     }
@@ -115,7 +115,7 @@ class RingDecoderTest {
         val payload = ByteArray(19)
         payload[0] = 98.toByte() // SpO2 at byte[1]
         val data = composeRingPacket(0x3F, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Spo2Result)
         assertEquals(98, (events[0] as RingDecodedEvent.Spo2Result).value)
     }
@@ -125,7 +125,7 @@ class RingDecoderTest {
         val payload = ByteArray(19)
         for (i in 4..18) payload[i] = ((i - 4) * 10).toByte() // 0, 10, 20... steps
         val data = composeRingPacket(0x10, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertEquals(15, events.size)
         assertTrue(events.all { it is RingDecodedEvent.ActivityBucket })
         assertEquals(0, (events[0] as RingDecodedEvent.ActivityBucket).steps)
@@ -141,7 +141,7 @@ class RingDecoderTest {
         payload[10] = 73; payload[11] = 70; payload[12] = 72
         // bytes[14-19] = next 6 samples: all zero → skip
         val data = composeRingPacket(0x16, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertEquals(1, events.size)
         assertTrue(events[0] is RingDecodedEvent.HistoryMeasurement)
         val m = events[0] as RingDecodedEvent.HistoryMeasurement
@@ -154,7 +154,7 @@ class RingDecoderTest {
         payload[0] = 0xF0.toByte() // header marker
         payload[5] = 0x0A          // total=10 at bytes[6-7] (LE)
         val data = composeRingPacket(0x16, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.HistorySyncProgress)
     }
 
@@ -163,7 +163,7 @@ class RingDecoderTest {
         val payload = ByteArray(19)
         payload[0] = 0xFF.toByte() // end marker
         val data = composeRingPacket(0x16, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.HistorySyncFinished)
     }
 
@@ -172,21 +172,21 @@ class RingDecoderTest {
         val payload = ByteArray(19)
         payload[0] = 70.toByte() // < 80 at byte[1]
         val data = composeRingPacket(0x3F, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Spo2Progress)
     }
 
     @Test
     fun `decode heart rate complete`() {
         val data = composeRingPacket(0x27, ByteArray(19))
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.HeartRateComplete)
     }
 
     @Test
     fun `decode SpO2 complete`() {
         val data = composeRingPacket(0x28, ByteArray(19))
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Spo2Complete)
     }
 
@@ -199,7 +199,7 @@ class RingDecoderTest {
         payload[2] = ((ts shr 16) and 0xFF).toByte()
         payload[3] = ((ts shr 24) and 0xFF).toByte()
         val data = composeRingPacket(0x01, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.TimeSyncAck)
         assertEquals(ts.toLong(), (events[0] as RingDecodedEvent.TimeSyncAck)._timestamp.epochSecond)
     }
@@ -208,7 +208,7 @@ class RingDecoderTest {
     fun `decode status packet`() {
         val payload = ByteArray(19) { 0xAA.toByte() }
         val data = composeRingPacket(0x0C, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Status)
         assertNotNull((events[0] as RingDecodedEvent.Status).address)
     }
@@ -216,7 +216,7 @@ class RingDecoderTest {
     @Test
     fun `decode command ack`() {
         val data = composeRingPacket(0x02, ByteArray(19))
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.CommandAck)
     }
 
@@ -224,7 +224,7 @@ class RingDecoderTest {
 
     @Test
     fun `decode empty array returns unknown`() {
-        val events = RingDecoder.decode(byteArrayOf())
+        val events = RingDecoder().decode(byteArrayOf())
         assertEquals(1, events.size)
         assertTrue(events[0] is RingDecodedEvent.Unknown)
     }
@@ -234,7 +234,7 @@ class RingDecoderTest {
         val payload = ByteArray(19) { 0 }
         payload[0] = 1; payload[1] = 2; payload[2] = 3
         val data = composeRingPacket(0xFE, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Unknown)
         assertEquals(0xFEu.toUByte(), (events[0] as RingDecodedEvent.Unknown).commandId)
     }
@@ -243,7 +243,7 @@ class RingDecoderTest {
     fun `decode truncated activity update returns unknown`() {
         val data = ByteArray(5)
         data[0] = 0x03.toByte()
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Unknown)
     }
 
@@ -251,7 +251,7 @@ class RingDecoderTest {
     fun `decode truncated status returns status without address`() {
         // 20-byte packet but payload only has status code (bytes 1-2), no MAC
         val data = composeRingPacket(0x0C, ByteArray(19) { 0 })
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Status)
         // MAC extracted from padding zeros is all-zeros, not null.
         // The decoder can't distinguish "truncated" from "MAC = 00:00:00:00:00:00".
@@ -272,7 +272,7 @@ class RingDecoderTest {
         payload[9] = 0x7F.toByte()          // LIGHT (127, <80 but >=1... wait, 127 >= 80)
         for (i in 10..18) payload[i] = 0x01.toByte() // LIGHT
         val data = composeRingPacket(0x11, payload)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.SleepTimeline)
         val sleep = events[0] as RingDecodedEvent.SleepTimeline
         assertEquals(15, sleep.stages.size)
@@ -288,8 +288,56 @@ class RingDecoderTest {
     fun `decode truncated sleep timeline returns unknown`() {
         // Truly truncated: only 4 bytes total
         val data = byteArrayOf(0x11, 0, 0, 0)
-        val events = RingDecoder.decode(data)
+        val events = RingDecoder().decode(data)
         assertTrue(events[0] is RingDecodedEvent.Unknown)
+    }
+
+    // ── Band Function (0x20) ────────────────────────────────────────────
+
+    @Test
+    fun `decode 0x20 band function reply`() {
+        val payload = ByteArray(19)
+        // bit 65 = separateBloodOxygenMode: byte index 65/8 = 8, bit 65%8 = 1 → payload[8] bit 1
+        payload[8] = (1 shl 1).toByte()
+        val data = composeRingPacket(0x20, payload)
+        val events = RingDecoder().decode(data)
+        assertTrue(events[0] is RingDecodedEvent.BandFunction)
+        val caps = (events[0] as RingDecodedEvent.BandFunction).capabilities
+        assertTrue(caps.separateBloodOxygenMode)
+        assertFalse(caps.hasTemperature)
+    }
+
+    // ── Clock-aware decoding (JringClock) ───────────────────────────────
+
+    @Test
+    fun `decode without a clock treats ring epoch as true UTC`() {
+        val ts = 1700000000
+        val payload = ByteArray(19)
+        payload[0] = (ts and 0xFF).toByte()
+        payload[1] = ((ts shr 8) and 0xFF).toByte()
+        payload[2] = ((ts shr 16) and 0xFF).toByte()
+        payload[3] = ((ts shr 24) and 0xFF).toByte()
+        val data = composeRingPacket(0x01, payload)
+        val events = RingDecoder(clock = null).decode(data)
+        assertEquals(ts.toLong(), (events[0] as RingDecodedEvent.TimeSyncAck)._timestamp.epochSecond)
+    }
+
+    @Test
+    fun `decode with a clock subtracts the latched offset from a ring-stamped epoch`() {
+        val offsetSeconds = -28800L   // fixed -8h, matching Pacific standard time
+        val fixedZone = java.util.SimpleTimeZone((offsetSeconds * 1000).toInt(), "Fixed-8")
+        val trueEpoch = 1700000000L
+        val expected = Instant.ofEpochSecond(trueEpoch)
+        val clock = JringClock(timeZone = fixedZone, now = expected)
+        val ringStampedEpoch = trueEpoch + offsetSeconds
+        val payload = ByteArray(19)
+        payload[0] = (ringStampedEpoch and 0xFF).toByte()
+        payload[1] = ((ringStampedEpoch shr 8) and 0xFF).toByte()
+        payload[2] = ((ringStampedEpoch shr 16) and 0xFF).toByte()
+        payload[3] = ((ringStampedEpoch shr 24) and 0xFF).toByte()
+        val data = composeRingPacket(0x01, payload)
+        val events = RingDecoder(clock = clock).decode(data)
+        assertEquals(expected, (events[0] as RingDecodedEvent.TimeSyncAck)._timestamp)
     }
 
     // ── End-to-End encode → decode roundtrip ────────────────────────────
@@ -318,6 +366,50 @@ class RingDecoderTest {
         cmd[0] = 0x3A.toByte()
         assertEquals(0x3A.toByte(), cmd[0])
         assertEquals(0, cmd[1].toInt() and 0xFF)
+    }
+
+    @Test
+    fun `automatic heart rate command's trailing byte is 0x01`() {
+        // The vendor SDK hardcodes byte[7]; an earlier 0x02 here was a misread of the app's own
+        // unrelated snooze argument.
+        val cmd = RingEncoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 30)
+        assertEquals(0x19.toByte(), cmd[0])
+        assertEquals(0x01.toByte(), cmd[5])
+        assertEquals(30.toByte(), cmd[6])
+        assertEquals(0x01.toByte(), cmd[7])
+    }
+
+    @Test
+    fun `spo2 start command uses mode 2 of the 0x23 selector`() {
+        // Mode 1 is blood pressure — sending it here silently ran the wrong measurement.
+        val cmd = RingEncoder.makeSpO2StartCommand()
+        assertEquals(0x23.toByte(), cmd[0])
+        assertEquals(0x02.toByte(), cmd[1])
+    }
+
+    @Test
+    fun `combined measurement rides the same command as spot spo2`() {
+        assertArrayEquals(RingEncoder.makeSpO2StartCommand(), RingEncoder.makeCombinedMeasurementStart())
+        assertArrayEquals(RingEncoder.makeSpO2StopCommand(), RingEncoder.makeCombinedMeasurementStop())
+    }
+
+    @Test
+    fun `band function query command is 0x20`() {
+        val cmd = RingEncoder.makeBandFunctionCommand()
+        assertEquals(0x20.toByte(), cmd[0])
+    }
+
+    @Test
+    fun `time sync command encodes local wall-clock, not true UTC`() {
+        val fixedZone = java.util.SimpleTimeZone((-8 * 3600 * 1000), "Fixed-8")
+        val instant = Instant.ofEpochSecond(1700000000L)
+        val cmd = RingEncoder.makeTimeSyncCommand(instant = instant, timeZone = fixedZone)
+        val encodedTs = (cmd[1].toLong() and 0xFF) or
+            ((cmd[2].toLong() and 0xFF) shl 8) or
+            ((cmd[3].toLong() and 0xFF) shl 16) or
+            ((cmd[4].toLong() and 0xFF) shl 24)
+        assertEquals(instant.epochSecond - 8 * 3600, encodedTs)
+        assertEquals((-8).toByte(), cmd[5])
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────

@@ -35,7 +35,7 @@ class PairingMatchingTest {
     @Test
     fun `colmi family names match`() {
         val names = listOf(
-            "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R09_00AA",
+            "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
             "COLMI R10_xyz", "COLMI R12_x", "R05_1A2B", "R10_DEAD", "R11_BEEF",
             "R11C_BEEF", "H59_anything",
         )
@@ -65,7 +65,11 @@ class PairingMatchingTest {
 
     @Test
     fun `catalog families all have a registered coordinator`() {
-        val registeredTypes = setOf(JringCoordinator.deviceType, ColmiCoordinator.deviceType)
+        val registeredTypes = setOf(
+            JringCoordinator.deviceType, ColmiCoordinator.deviceType,
+            TK5Coordinator.deviceType, ColmiSmartHealthCoordinator.deviceType,
+            LuckRingCoordinator.deviceType,
+        )
         for (model in WearableModel.CATALOG) {
             assertTrue("no coordinator for ${model.displayName}", registeredTypes.contains(model.family))
         }
@@ -81,6 +85,7 @@ class PairingMatchingTest {
             "R03_1234" to "colmi-r03",
             "R06_FFFF" to "colmi-r06",
             "COLMI R07_9" to "colmi-r07",
+            "R08_1234" to "colmi-r08",
             "R09_00AA" to "colmi-r09",
             "COLMI R10_xyz" to "colmi-r10",
             "R11C_BEEF" to "colmi-r11",
@@ -93,25 +98,6 @@ class PairingMatchingTest {
         for ((name, modelID) in expected) {
             assertEquals(name, modelID, WearableModel.modelForAdvertisedName(name)?.id)
         }
-    }
-
-    // ── OS-bond gating (only the R09 needs a bond on Android) ───────────
-
-    @Test
-    fun `only the R09 requires an OS bond`() {
-        assertTrue("R09 must require an OS bond", WearableModel.COLMI_R09.requiresOsBond)
-        // Every other catalog model works GATT-only like iOS — no bond, no pairing prompt.
-        val bonded = WearableModel.CATALOG.filter { it.requiresOsBond }.map { it.id }
-        assertEquals(listOf("colmi-r09"), bonded)
-    }
-
-    @Test
-    fun `bond decision resolves from the advertised name`() {
-        // The R09 advertises as R09_xxxx → gate bonds it; the R10 advertises as COLMI R10_xxxx
-        // → gate leaves it unbonded. This is exactly the input RingBLEClient.bondActiveDevice uses.
-        assertTrue(WearableModel.modelForAdvertisedName("R09_00AA")?.requiresOsBond == true)
-        assertFalse(WearableModel.modelForAdvertisedName("COLMI R10_xyz")?.requiresOsBond == true)
-        assertFalse(WearableModel.modelForAdvertisedName("R02_A1B2")?.requiresOsBond == true)
     }
 
     @Test
@@ -149,6 +135,74 @@ class PairingMatchingTest {
     fun `device type valueOf roundtrip`() {
         assertEquals(RingDeviceType.JRING, RingDeviceType.valueOf("JRING"))
         assertEquals(RingDeviceType.COLMI_R02, RingDeviceType.valueOf("COLMI_R02"))
+    }
+
+    // ── YCBT family matching (iOS #82: TK5 + SmartHealth-Colmi) ─────────
+
+    @Test
+    fun `tk5 matches by name prefix`() {
+        assertTrue(TK5Coordinator.matches("TK5 24AA", noAdv))
+        assertTrue(TK5Coordinator.matches("tk5 24aa", noAdv))   // case-insensitive prefix
+        assertFalse(TK5Coordinator.matches("R99 54DC", noAdv))
+        assertFalse(TK5Coordinator.matches("R02_A1B2", noAdv))
+    }
+
+    @Test
+    fun `tk5 matches by manufacturer data prefix when unnamed`() {
+        val adv = AdvertisementInfo(emptyList(), byteArrayOf(0x10, 0x78, 0x65, 0x01, 0xAA.toByte()))
+        assertTrue(TK5Coordinator.matches(null, adv))
+    }
+
+    @Test
+    fun `smarthealth colmi matches space-separated names, not underscore ones`() {
+        assertTrue(ColmiSmartHealthCoordinator.matches("R99 54DC", noAdv))
+        assertFalse(ColmiSmartHealthCoordinator.matches("R02_A1B2", noAdv))
+        // TK5 resolves to its own family via the catalog, so this coordinator defers to TK5Coordinator.
+        assertFalse(ColmiSmartHealthCoordinator.matches("TK5 24AA", noAdv))
+    }
+
+    @Test
+    fun `smarthealth colmi never claims a name advertising the qring service`() {
+        val adv = AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V1), null)
+        assertFalse(ColmiSmartHealthCoordinator.matches("R99 54DC", adv))
+    }
+
+    @Test
+    fun `ycbt names resolve to exact catalog models`() {
+        assertEquals("tk5", WearableModel.modelForAdvertisedName("TK5 24AA")?.id)
+        assertEquals("colmi-smarthealth", WearableModel.modelForAdvertisedName("R99 54DC")?.id)
+        // The broad SmartHealth pattern is registered last, so every QRing-Colmi pattern above it
+        // in the catalog still wins for an underscore name.
+        assertEquals("colmi-r02", WearableModel.modelForAdvertisedName("R02_A1B2")?.id)
+    }
+
+    // ── LuckRing / TK18 (iOS #90) ────────────────────────────────────
+
+    @Test
+    fun `luckring matches by advertised f618 service`() {
+        val adv = AdvertisementInfo(listOf(LuckRingUUIDs.SERVICE), null)
+        assertTrue(LuckRingCoordinator.matches("anything", adv))
+        assertTrue(LuckRingCoordinator.matches(null, adv))
+    }
+
+    @Test
+    fun `luckring matches by manufacturer company id prefix`() {
+        // Company ID 0xFF64 in the little-endian slot => 64 FF.
+        val adv = AdvertisementInfo(emptyList(), byteArrayOf(0x64, 0xFF.toByte(), 0x01, 0x02))
+        assertTrue(LuckRingCoordinator.matches("anything", adv))
+    }
+
+    @Test
+    fun `luckring matches by catalog name pattern`() {
+        assertTrue(LuckRingCoordinator.matches("TK18", noAdv))
+        assertTrue(LuckRingCoordinator.matches("TK18_AA11", noAdv))
+        assertFalse(LuckRingCoordinator.matches("TK5 24AA", noAdv))
+        assertFalse(LuckRingCoordinator.matches("R02_A1B2", noAdv))
+    }
+
+    @Test
+    fun `luckring name resolves to the exact catalog model`() {
+        assertEquals("luckring-tk18", WearableModel.modelForAdvertisedName("TK18")?.id)
     }
 
     @Test

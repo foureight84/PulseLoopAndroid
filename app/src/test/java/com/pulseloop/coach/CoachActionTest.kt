@@ -104,41 +104,53 @@ class CoachActionTest {
         assertNull(updates.startTime)
     }
 
-    // ── PendingActionExecutor applyUpdates ──────────────────────────────
+    // ── PendingActionExecutor.resolveUpdates (iOS #57c) ─────────────────
+    // `applyUpdates` itself now routes type/time changes through `ActivityAggregates.applyEdit`
+    // (a DB-integration call, like `LiveWorkoutManager.finish()` / `ActivityRollup` — this app has
+    // no in-memory-Room/Robolectric test harness) — `resolveUpdates` pulls out its pure branching
+    // (duration-derives-end, a start-only shift preserves the span, notes/effort pass through) so
+    // that part stays independently testable.
 
     @Test
-    fun `applyUpdates changes type`() {
+    fun `resolveUpdates type change alone does not touch the window`() {
         val session = createTestSession(type = "walk", distanceMeters = 1000.0)
-        val updates = ActivityUpdates(type = "run")
-        val result = PendingActionExecutor.applyUpdates(updates, session)
-        assertEquals("run", result.type)
-        // Other fields unchanged
-        assertEquals(session.notes, result.notes)
-        assertEquals(session.distanceMeters!!, result.distanceMeters!!, 0.01)
+        val resolved = PendingActionExecutor.resolveUpdates(ActivityUpdates(type = "run"), session)
+        assertEquals("run", resolved.type)
+        assertEquals(session.startedAt, resolved.startedAt)
+        assertEquals(session.endedAt, resolved.endedAt)
+        assertTrue(resolved.windowChanged)
     }
 
     @Test
-    fun `applyUpdates changes distance`() {
-        val session = createTestSession(distanceMeters = 1000.0)
-        val updates = ActivityUpdates(distanceKm = 5.0)
-        val result = PendingActionExecutor.applyUpdates(updates, session)
-        assertEquals(5000.0, result.distanceMeters!!, 0.01)
-    }
-
-    @Test
-    fun `applyUpdates null updates returns original`() {
+    fun `resolveUpdates duration derives a new end time`() {
         val session = createTestSession()
-        val result = PendingActionExecutor.applyUpdates(null, session)
-        assertEquals(session, result)
+        val resolved = PendingActionExecutor.resolveUpdates(ActivityUpdates(durationMin = 45.0), session)
+        assertEquals(session.startedAt + 45L * 60_000, resolved.endedAt)
+        assertTrue(resolved.windowChanged)
     }
 
     @Test
-    fun `applyUpdates changes notes only`() {
+    fun `resolveUpdates start shift without duration preserves the span`() {
+        val session = createTestSession()
+        val originalSpan = session.endedAt!! - session.startedAt
+        // startTime is date-level only (CoachDataAccess.parseLocalDate truncates to start-of-day).
+        val targetDate = java.time.Instant.ofEpochMilli(session.startedAt)
+            .atZone(java.time.ZoneId.systemDefault()).toLocalDate().minusDays(1)
+        val expectedStart = targetDate.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val resolved = PendingActionExecutor.resolveUpdates(
+            ActivityUpdates(startTime = targetDate.toString()), session,
+        )
+        assertEquals(expectedStart, resolved.startedAt)
+        assertEquals(originalSpan, resolved.endedAt - resolved.startedAt)
+    }
+
+    @Test
+    fun `resolveUpdates with no type or time fields leaves the window unchanged`() {
         val session = createTestSession(notes = "old note")
-        val updates = ActivityUpdates(notes = "new note")
-        val result = PendingActionExecutor.applyUpdates(updates, session)
-        assertEquals("new note", result.notes)
-        assertEquals(session.type, result.type)
+        val resolved = PendingActionExecutor.resolveUpdates(ActivityUpdates(notes = "new note"), session)
+        assertFalse(resolved.windowChanged)
+        assertEquals("new note", resolved.notes)
+        assertEquals(session.type, resolved.type)
     }
 
     // ── ToolExecutionContext with Pending Actions ───────────────────────

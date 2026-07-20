@@ -59,6 +59,30 @@ enum class OpenRouterModel(val slug: String, val blurb: String) {
 }
 
 /**
+ * Ported from [MiniMaxModel] in CoachSettings.swift (iOS #54).
+ * Preset MiniMax model slugs surfaced in Settings. MiniMax's OpenAI-compatible
+ * endpoint takes the model name verbatim; these are the curated picks.
+ */
+enum class MiniMaxModel(val slug: String, val blurb: String) {
+    M3("MiniMax-M3", "Latest — agentic reasoning, tool use, 1M context (default)"),
+    M27("MiniMax-M2.7", "Recursive self-improvement (~60 tps)"),
+    M27_HIGHSPEED("MiniMax-M2.7-highspeed", "M2.7 — same performance, faster (~100 tps)"),
+    M25("MiniMax-M2.5", "Peak performance & value (~60 tps)"),
+    M25_HIGHSPEED("MiniMax-M2.5-highspeed", "M2.5 — same performance, faster (~100 tps)"),
+    M21("MiniMax-M2.1", "Strong multi-language programming (~60 tps)"),
+    M21_HIGHSPEED("MiniMax-M2.1-highspeed", "M2.1 — faster (~100 tps)"),
+    M2("MiniMax-M2", "Agentic capabilities, advanced reasoning");
+
+    val label: String get() = slug
+
+    companion object {
+        /** Sensible default when switching to MiniMax — the latest agentic model,
+         *  best suited to the coach's multi-round tool loop. */
+        val DEFAULT = M3
+    }
+}
+
+/**
  * Ported from [CoachModel] in CoachSettings.swift.
  * Preset OpenAI model choices. The stored model (`ApiKeyStore.model`) is a free
  * string (so a new model can be typed/served without a code change); these are

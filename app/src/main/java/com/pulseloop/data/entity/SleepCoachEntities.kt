@@ -50,6 +50,10 @@ data class CoachConversationEntity(
     val title: String = "Today check-in",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** Running totals across every turn in the conversation (iOS #65). */
+    val totalInputTokens: Int = 0,
+    val totalOutputTokens: Int = 0,
+    val totalCostUSD: Double = 0.0,
 )
 
 /**
@@ -67,13 +71,21 @@ data class CoachConversationEntity(
 data class CoachMessageEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val conversationId: String,
-    val role: String,            // "user" | "assistant" | "system"
+    val role: String,            // "user" | "assistant" | "error" | "system"
     val body: String,
     val cardsJSON: String? = null,
     val pendingActionJSON: String? = null,
     /** JSON array of CoachAttachmentRef (image attachments), null when none. Mirrors iOS CoachMessage.attachmentsJSON. */
     val attachmentsJson: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    /** Token/cost accounting for this turn (iOS #65), null when the provider
+     *  didn't report usage. [modelUsed]/[providerUsed] are stamped whenever a
+     *  model call was attempted, even without token usage. */
+    val inputTokens: Int? = null,
+    val outputTokens: Int? = null,
+    val costUSD: Double? = null,
+    val modelUsed: String? = null,
+    val providerUsed: String? = null,
 )
 
 /**
@@ -96,7 +108,7 @@ data class CoachMemoryEntity(
 /**
  * Ported from [CoachToolCall] in PulseModels.swift.
  */
-@Entity(tableName = "coach_tool_calls", indices = [Index("conversationId")])
+@Entity(tableName = "coach_tool_calls", indices = [Index("conversationId"), Index("messageId")])
 data class CoachToolCallEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val conversationId: String,
@@ -104,6 +116,9 @@ data class CoachToolCallEntity(
     val toolName: String,
     val inputJSON: String? = null,
     val outputJSON: String? = null,
+    val label: String = "",
+    val statusRaw: String = "success",
+    val sequence: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -195,4 +210,18 @@ data class CoachSummaryEntity(
     val dataSignature: String,      // hash of input data to detect staleness
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * Ported from [CoachNotificationRecord] in CoachNotificationModels.swift (iOS
+ * #65's `recentNotificationTexts()` reader — the record itself predates #65).
+ * A delivered daily check-in, kept purely so the generator can avoid repeating
+ * its own recent phrasing/openings (iOS #65 anti-repeat hint).
+ */
+@Entity(tableName = "coach_notification_records", indices = [Index("createdAt")])
+data class CoachNotificationRecordEntity(
+    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String,
+    val body: String,
+    val createdAt: Long = System.currentTimeMillis(),
 )

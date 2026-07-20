@@ -13,6 +13,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pulseloop.service.HeartRateZones
+import com.pulseloop.settings.UnitConverter
+import com.pulseloop.settings.UnitSystem
+import com.pulseloop.ui.components.ActivityMeta
 import kotlinx.coroutines.delay
 
 /**
@@ -27,21 +30,33 @@ fun RecordScreen(
     heartRate: Int? = null,
     spO2: Int? = null,
     isPaused: Boolean = false,
+    useGps: Boolean = true,
     hrZone: HeartRateZones.Zone = HeartRateZones.Zone.REST,
+    units: UnitSystem = UnitSystem.METRIC,
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
     onFinish: () -> Unit = {},
 ) {
     val elapsed = formatElapsed(elapsedSeconds)
-    val pace = if (distanceMeters >= 50 && elapsedSeconds > 0) {
-        val p = (elapsedSeconds.toDouble() / (distanceMeters / 1000.0))
-        formatPace(p)
-    } else "--"
+    val metricSet = ActivityMeta.metricSet(activityName)
+    // Pace honors the unit preference and rounds seconds before the min:sec split
+    // (299.85 s → 5:00, not 4:00) via the shared helper — iOS #43. Cycling shows average
+    // speed instead ("min/km reads oddly on a bike" — iOS ActivityMetricSet).
+    val paceOrSpeedLabel: String
+    val paceOrSpeedValue: String
+    if (metricSet.showsSpeed) {
+        paceOrSpeedLabel = "Speed"
+        paceOrSpeedValue = ActivityMeta.speed(distanceMeters, elapsedSeconds, units) ?: "—"
+    } else {
+        paceOrSpeedLabel = "Pace"
+        paceOrSpeedValue = ActivityMeta.pace(distanceMeters, elapsedSeconds, units)
+            ?.let { it + ActivityMeta.paceUnit(units) } ?: "—"
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         // Activity name + status
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(activityName, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text(ActivityMeta.label(activityName), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             if (isPaused) {
                 Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small) {
                     Text("PAUSED", Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
@@ -68,12 +83,23 @@ fun RecordScreen(
         }
         Spacer(Modifier.height(12.dp))
 
-        // Stat tiles
+        // Stat tiles — GPS tiles only for GPS sessions, matching iOS (`if session.useGps`);
+        // iOS has no live calories tile, so the permanent "--" placeholder is dropped.
         LazyVerticalGrid(columns = GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { StatTile("Distance", if (distanceMeters >= 1000) "%.1f km".format(distanceMeters / 1000) else "%.0f m".format(distanceMeters)) }
-            item { StatTile("Pace", pace) }
+            if (useGps && metricSet.showsDistance) {
+                item {
+                    val distText = if (units == UnitSystem.METRIC && distanceMeters < 1000) {
+                        "%.0f m".format(distanceMeters)
+                    } else {
+                        "%.2f %s".format(UnitConverter.distance(distanceMeters, units), UnitConverter.distanceUnit(units))
+                    }
+                    StatTile("Distance", distText)
+                }
+            }
+            if (useGps && (metricSet.showsPace || metricSet.showsSpeed)) {
+                item { StatTile(paceOrSpeedLabel, paceOrSpeedValue) }
+            }
             item { StatTile("SpO₂", spO2?.let { "$it%" } ?: "--") }
-            item { StatTile("Calories", "--") }
         }
 
         Spacer(Modifier.weight(1f))
@@ -116,10 +142,4 @@ private fun StatTile(label: String, value: String) {
 private fun formatElapsed(sec: Int): String {
     val h = sec / 3600; val m = (sec % 3600) / 60; val s = sec % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
-}
-
-private fun formatPace(secondsPerKm: Double): String {
-    val min = (secondsPerKm / 60).toInt()
-    val sec = (secondsPerKm % 60).toInt()
-    return "%d'%02d\"/km".format(min, sec)
 }

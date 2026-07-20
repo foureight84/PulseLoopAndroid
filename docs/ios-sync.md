@@ -24,9 +24,9 @@ intentional platform differences listed at the bottom.
 |---|---|
 | **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `e00c24b` — glass-UI fixup, 2026-07-10 |
-| **Last triage date** | 2026-07-10 |
-| **Range covered** | 99 commits / 15 first-parent items since `80195a6` (2026-07-10) |
+| **Last triaged iOS commit** | `0d1b965` — seed: month of demo workouts + 30-day vitals series, 2026-07-18 |
+| **Last triage date** | 2026-07-18 |
+| **Range covered** | 48 commits / 9 first-parent items since `b3697c0` (2026-07-12), plus 1 direct commit (`0d1b965`) |
 
 ---
 
@@ -39,29 +39,899 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#17](https://github.com/saksham2001/PulseLoopiOS/pull/17) `26a6075` | 06-24 | Colmi HR enable + activity sample idempotency | **PORT** | M | `1a4f007` |
 | ☑ | [#15](https://github.com/saksham2001/PulseLoopiOS/pull/15) `eb5a288` | 07-02 | Sleep sessions splitting at midnight | **ADAPT** | M | `1a4f007` |
 | ☑ | [#11](https://github.com/saksham2001/PulseLoopiOS/pull/11) `a582f7a` | 07-01 | Dance activity type | **PORT** | S | `4aad39a` |
-| ☐ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PARTIAL** | M | |
-| ☐ | [#41](https://github.com/saksham2001/PulseLoopiOS/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | |
+| ☑ | [#43](https://github.com/saksham2001/PulseLoopiOS/pull/43) `a280388` | 07-04 | Units consistency (temp/glucose/distance/pace) | **PORT** | M | `4075752` (pace/distance) + `d760c24` (§3 glucose dashboard, via #35) + `09e9122` (§2 temp + §3 glucose detail chart) |
+| ☑ | [#41](https://github.com/saksham2001/PulseLoopiOS/pull/41) `102aa35` | 07-04 | Status pill: "Disconnected" not endless "Searching…" | **PARTIAL** | S | already-have (`AppChrome.ConnectionStatusPill`) |
 | ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `f0a4aee` | 07-01 | Vitals dashboard redesign (zones, cards, rings, detail screens) | **PORT** | XL | `19aac67`+`c978b32`+`f756010` |
 | ☑ | [#19](https://github.com/saksham2001/PulseLoopiOS/pull/19) `445be25` | 06-25 | Settings redesign + measurement frequency control | **ADAPT** | L | `f4bcd47` |
 | ☑ | [#9](https://github.com/saksham2001/PulseLoopiOS/pull/9) `cd62903` | 06-26 | Coach: multi-provider (Gemini) | **PORT** | L | `049058d`+`4d81a07` |
 | ☑ | [#22](https://github.com/saksham2001/PulseLoopiOS/pull/22) `909c5cd` | 06-26 | Coach: OpenRouter provider (fold in #40 slug fix) | **PORT** | L | `049058d`+`4d81a07` |
 | ☑ | [#31](https://github.com/saksham2001/PulseLoopiOS/pull/31) `cbb2487` | 06-29 | Coach: image attachments (multimodal) | **PORT** | M | `049058d`+`4d81a07` |
-| ☐ | [#24](https://github.com/saksham2001/PulseLoopiOS/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | |
+| ☑ | [#24](https://github.com/saksham2001/PulseLoopiOS/pull/24) `be6274f` | 06-28 | Coach scheduler thread-safety crash | **ADAPT** | S | no-op (no analogous bug — `CoachNotificationWorker` is a CoroutineWorker, no MainActor assert) |
 | ☑ | — | 07-06 | **Design-parity sweep**: iOS dashboard design across all tabs (see notes) | **PORT** | XL | `4aad39a` |
 | ☑ | [#48](https://github.com/saksham2001/PulseLoopiOS/pull/48) `aff8574` | 07-05 | Pairing redesign: brand tabs, ring product images, onboarding flow, shared profile/goal editors | **PORT** | L | `a38ddf5` |
 | ☑ | [#49](https://github.com/saksham2001/PulseLoopiOS/pull/49) `779740b` | 07-06 | Settings rehaul: device hero card, grouped sections, exact-model matching | **PORT** | L | `de60096` |
 | ☑ | [#44](https://github.com/saksham2001/PulseLoopiOS/pull/44) `80195a6` | 07-06 | Home-screen widgets (3 widgets + snapshot pipeline) | **ADAPT** | XL | `c8efccd` |
-| ☐ | [#71](https://github.com/saksham2001/PulseLoopiOS/pull/71) `4fd008a` | 07-10 | Colmi R08 ring support (catalog entry) | **PORT** | S | |
-| ☐ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** | L | |
-| ☐ | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework | **ADAPT** | L | |
-| ☐ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | |
-| ☐ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | |
-| ☐ | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | Coach transparency/context rehaul | **ADAPT** | M | |
-| ☐ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **PORT** | L | |
-| ☐ | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | Activity UI sync-alerts bugfix | **ADAPT** | S | |
-| ☐ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | |
-| ☐ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | |
-| ☐ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | |
+| ☑ | [#71](https://github.com/saksham2001/PulseLoopiOS/pull/71) `4fd008a` | 07-10 | Colmi R08 ring support (catalog entry) | **PORT** | S | `be74a19` |
+| ☑ | [#77](https://github.com/saksham2001/PulseLoopiOS/pull/77) `4241d54` | 07-10 | jring protocol-parity fixes (RingBLEClient + JringSyncEngine + JringClock) | **ADAPT** (partial — see 2026-07-18 note) | L | `160430a` |
+| — | [#57](https://github.com/saksham2001/PulseLoopiOS/pull/57) `8182d8d` | 07-08 | ~~Activity-recording redesign + post-workout vitals backfill + realtime-HR keepalive rework~~ **RE-TRIAGED** into #57a–g below (was mis-billed a single "L"; PR is 3676 ins/42 files across finish-time aggregates, route distance, edit/log-past UI, vitals backfill, and an HR-stream bug) | — | — | see sub-rows |
+| ☑ | #57a | 07-18 | **Finish-time aggregates + daily rollup credit** (calories via Keytel HR model / MET fallback, avg/max/min HR, avg/latest SpO2, `ActivityDaily.activeMinutes`/`distanceMeters` credited once at finish, reversed on delete) | **PORT** | M | `<pending commit>` — `WorkoutMetricsEngine.kt` (pure, 5 oracle tests ported from `WorkoutMetricsEngineTests.swift`) + `ActivityRollup.kt` (credit/reverse, shared by `LiveWorkoutManager.finish()` and both delete sites — UI trash icon + coach `delete_activity_session`) + `LiveWorkoutManager.recomputeSummary()` querying the shared `measurements` table by `[startedAt, endedAt]` window (Android has no per-session `ActivitySample` link table like iOS, so no `backfillSamples`/`linkSample` port was needed for this slice). Runtime-verified on `emulator-5554`: a real gym workout start→finish showed **Calories: 4** (previously permanent "—") with Active Min correctly floored to 0 for a 48s session, and delete correctly ran the reversal path with no crash. |
+| ☑ | #57f | 07-18 | **Fix workout HR realtime-stream self-kill bug** (newly discovered, not in the original ledger estimate — the ~60s HR spot-poll loop's cleanup unconditionally disabled *any* active HR sensor mode, including the workout's own realtime stream, killing it almost immediately every workout) + Colmi realtime-HR decode dual-layout fix | **PORT** | S | `<pending commit>` — `WorkoutSensorPollingService` now skips its HR spot-poll entirely while `coordinator.workoutHRActive`, since a continuous stream already feeds `latestHRValue`; `ColmiDecoder`'s `0x1e` branch now accepts both the documented errCode+bpm layout and the original legacy bpm-only layout (mirrors iOS's defensive fix, since the real hardware layout was never confirmed) — 4 new test cases ported from `ColmiDecoderTests.swift`. **Bundled, unrelated crash fix found while runtime-verifying**: Android declared `FOREGROUND_SERVICE_HEALTH` but never `ACTIVITY_RECOGNITION`/`BODY_SENSORS`/`HIGH_SAMPLING_RATE_SENSORS`, so *every* workout start crashed outright on API 34+ (confirmed on the `emulator-5554` API-35 image) — added the manifest permission + a runtime `ACTIVITY_RECOGNITION` request gate in `ActivityScreen.kt` before `LiveWorkoutManager.start()`, mirroring the existing BLE-permission request pattern in `OnboardingScreen.kt`. |
+| ☑ | #57b | 07-18 | **RouteDistanceEngine consolidation** (gap + GPS-jump-speed filtered distance/splits, replacing two independent unfiltered haversine implementations) | **ADAPT** | M | `933edc5` — `RouteDistanceEngine`+`ActivityTrackingProfile` (pure, 12 oracle tests ported from `RouteDistanceEngineTests.swift`) shared by the live tile, finish summary, and splits table. **Real bug found and fixed along the way**: nothing ever inserted into `activity_gps_points` — the Room entity/DAO existed but `GpsRouteRecorder` only tracked an in-memory unfiltered `Pair<lat,lon>` list, so `WorkoutMapView` and the splits table were always empty for every workout. Ported `GpsRouteRecorder.swift`'s per-fix accuracy/speed/stationary/course-delta accept-reject gate, persists every fix (accepted or rejected), and drives the live distance off `RouteDistanceEngine.Accumulator`. `LiveWorkoutManager.recomputeSummary` now derives `distanceMeters` + the previously-dead `gpsPointCount`/`rejectedGpsPointCount`/`lastGpsPointAt` fields from the persisted route at finish. Runtime-verified on `emulator-5554`: a real recorded walk (13 simulated fixes via `adb emu geo fix`) showed the live tile and finish summary agreeing exactly (0.09 mi) — matching an independently hand-computed gap/speed-filtered distance — the map rendered a real route for the first time, and `gpsPointCount`/`distanceMeters`/`calories` all populated correctly in the DB. |
+| ☑ | #57c | 07-19 | **Edit-workout: recompute-aware + UI** (re-slice samples to a new time window, recompute aggregates/rollup, small edit sheet) | **ADAPT** | M | `f526fce` — `ActivityAggregates.applyEdit`/`recompute` (shared with `LiveWorkoutManager.finish()`, killing the prior duplicated recompute) reverses the old day's rollup, updates type/start/end, and re-derives calories/HR/SpO2/GPS distance windowed to the new span. Coach `update_activity_session` (`PendingActionExecutor.applyUpdates`, both the same-day and queued-confirmation paths) now routes type/time changes through the same service instead of a stale field-copy; pure branching split out as `resolveUpdates` for unit tests. New Edit button + bottom sheet (type dropdown, two-step date/time pickers, iOS's validation messaging) on `WorkoutSummaryScreen`. Runtime-verified on `emulator-5554`: edited a real finished workout's type and moved its window to the previous day — calories/duration recomputed for the new type, GPS distance correctly dropped to 0 (route now outside the window), daily rollup moved cleanly (today debited, new day credited) with no drift. **Real bug found and fixed along the way**: `WorkoutSummaryScreen`'s GPS point query wasn't windowed to `[startedAt, endedAt]`, so the map/splits kept showing a workout's full route even after an edit shrank or moved its window — now windowed to match the aggregate recompute (iOS's `RecordSummaryComponents.swift` comment calls this out explicitly). |
+| ☑ | #57d | 07-19 | **Log Past Activity screen** (net-new UI; backend logic already exists via the `create_activity_session_from_description` coach tool) | **PORT** | S | `4bbfa7f` — new `ManualActivityService.create` (shared by the screen and the coach tool: validate type/duration/future-end → `ActivityAggregates.recompute` → upsert → `ActivityRollup.credit`, mirroring `LiveWorkoutManager.finish()`) + `LogPastActivityScreen` (type grid, past-only `DateTimeButton` start picker reused from #57c's edit sheet, +/-5min duration stepper + 15/30/45/60/90 chips) + new entry card on `ActivityScreen` below Record/History. **Real bug found and fixed along the way**: the existing coach tool did a raw entity insert and never called `ActivityRollup.credit`, so coach-logged manual sessions silently never counted toward the daily rollup — now routes through the shared service (also ports iOS's future-clamp guard so an unspecified start time can't default past "now"). Runtime-verified on `emulator-5554`: logged a past 45-min run through the new screen — calories (514) and active minutes (45) computed from the MET/HR engine, the TODAY list and weekly-goal ring credited correctly, and the coach tool's fix was exercised implicitly since it now shares the identical code path.
+| ☑ | #57e | 07-18 | **Post-workout vitals backfill/reconcile** (ring-log HR/SpO2 samples arriving after finish should still attach to the just-finished session) | **ADAPT** | M | `31d5835` — every completed sync (`SyncProgress("done")`) now calls `EventPersistenceSubscriber.reconcileRecentlyFinishedWorkouts()`, which re-runs `ActivityAggregates.recompute` (never touches the rollup, so idempotent) for sessions finished within `ActivityAggregates.backfillWindowMillis` (15 min, mirrors iOS `backfillLinkWindowSeconds`). Android has no per-sample `ActivitySample` link table like iOS, so `linkSample`/`backfillSamples`/the live-vs-history gap-fill dedup weren't ported — `recompute` already windows the shared `measurements` table by `[startedAt, endedAt]` regardless of source, so a late "history" row is picked up for free once reconcile re-triggers it (same architectural note as #57a). New DAO query `ActivitySessionDao.finishedSince(cutoff)` + pure `ActivityAggregates.isWithinBackfillWindow` (3 unit tests mirroring iOS `WorkoutReconcileTests.swift`'s window-eligibility oracles). Runtime-verified on `emulator-5554` via `sqlite3` injection (no ring hardware in this environment to fire a real `SyncProgress("done")`): `finishedSince` correctly matched a session ended 5 min ago and excluded one ended 20 min ago, and the windowed HR query picked up a late "history" sample alongside the original "live" one (130→120 avg) exactly as `recompute` would compute it — the live BLE trigger itself wasn't exercised, consistent with every other hardware-gated item in this ledger. |
+| ☑ | #57g | 07-19 | **Finished-workout notification card + Colmi decode robustness polish** | **PORT** | S | `bcfde92` — decode-robustness half already shipped inside #57f (`851b276`). This pass: `WorkoutForegroundService` swaps the ongoing tracker notification for a dismissible "`<type>` complete" summary (duration/distance/calories/avg HR) on finish, `stopForeground(STOP_FOREGROUND_DETACH)` keeps it posted, and a `WorkoutCompleteDismissWorker` one-off (10 min delay) cancels it — mirrors iOS Live Activity's `.after(.now + 10*60)` dismissal vs. `.immediate` on cancel/discard (which still calls the old immediate `stopService` path, no summary). **Real bug found and fixed along the way**: `LiveWorkoutManager.refreshNotification()` sent live elapsed/distance/HR as intent extras every 5 ticks, but `onStartCommand` never read them — the ongoing notification had been frozen at its initial "0:00 / -- bpm" state for every workout ever recorded; now reads and applies them. **Runtime-verified on `emulator-5554`**: recorded a real indoor Gym workout (`dumpsys notification` confirmed the live extras fix — elapsed advanced to "0:25" mid-workout instead of staying at 0:00), tapped Finish, confirmed the notification flipped to "gym complete" / "1:18 · 7 cal" with `flags=0` (no longer `ONGOING_EVENT`/`FOREGROUND_SERVICE`), then force-ran the scheduled JobScheduler job for the dismiss worker (`cmd jobscheduler run -f`) and confirmed the notification was cancelled. **#57 is now fully cleared.** |
+| ☑ | [#54](https://github.com/saksham2001/PulseLoopiOS/pull/54) `cda2e9c` | 07-07 | Coach: MiniMax provider | **PORT** | M | `22d1ecc` |
+| ☑ | [#64](https://github.com/saksham2001/PulseLoopiOS/pull/64) `338226a` | 07-09 | Long-press to reorder & hide cards (Today/Vitals) | **PORT** | M | `8f51349` (stage 1) + `1075586` (stages 2–3). Android uses a discrete edit-mode (Customize button → hide badge + move up/down + Hidden tray) instead of free-form drag |
+| — | [#65](https://github.com/saksham2001/PulseLoopiOS/pull/65) `4a60cfe` | 07-09 | ~~Coach transparency/context rehaul~~ **RE-TRIAGED** into #65a–f below (was mis-billed "M"; PR is 2058 ins/47 files, and unlike iOS — where conversation persistence already existed — Android's coach chat was 100% in-memory, so "port the persisted usage/trace fields" first required wiring real persistence at all) | — | — | see sub-rows |
+| ☑ | #65a | 07-17 | **Wire real chat persistence** (bring the dormant `CoachConversation/Message/ToolCall` Room entities+DAOs to life — they existed, fully defined, since an earlier port session, but nothing wrote to them) | **PORT** | M | `daed897` — `CoachViewModel` now loads the most recent conversation's messages on init (or starts a fresh persisted thread), persists every user/assistant turn + tool-call trace via the existing DAOs, and "+" starts a new persisted conversation without deleting the old one's rows. No schema change — uses the tables exactly as they already existed. Runtime-verified on `emulator-5554` (API 35): send → force-stop → relaunch reloads the same thread; "+" → force-stop → relaunch loads the new (not old) thread; old conversation's rows confirmed intact via on-device `sqlite3`. Error bubbles were initially left unpersisted (no schema support yet) — #65b closes that gap |
+| ☑ | #65b | 07-18 | **Token/cost usage tracking** (`CoachTokenUsage`/`CoachModelPricing`, `CoachOrchestrator.TurnResult.usage`, provider clients parse real usage, `MIGRATION_9_10` adds token/cost/model/provider columns to `coach_conversations`/`coach_messages`, `CoachUsageSheet`-equivalent screen) | **PORT** | M | `3b1808c` — plus an out-of-scope bugfix bundled in: `OpenAIResponse.parse` decoded `output` via automatic kotlinx.serialization polymorphism, but `ResponseOutputItem` was a bare marker interface (not `sealed`/`@Serializable`) — any real API response with non-empty `output` threw a decode exception (confirmed via a probe test; user approved fixing it in the same pass since it's the exact class #65b needed to touch). Replaced with manual JSON parsing (matches iOS's own manual `[String: Any]` walk) that also fixed a missing `call_id`->`callId` mapping and now skips unrecognized item types (e.g. `reasoning`) instead of failing the turn. `CoachTokenUsage`/`CoachModelPricing` ported with iOS's exact July-2026 pricing table (not approximated); all 4 provider clients (OpenAI/Gemini/OpenRouter/MiniMax) parse real usage per their own JSON shape; error turns now persist too (role `"error"`, not skipped) with usage stamped, closing the gap #65a left open. `CoachUsageSheet` (Compose `ModalBottomSheet`) reachable via a new header button. Runtime-verified on a real v9->v10 upgrade over existing app data (schema confirmed via `.schema`, old rows survived); usage-sheet rendering (provider label, comma-formatted tokens, `$0.0089`-style cost, per-message breakdown expand/collapse) verified by injecting realistic values via on-device `sqlite3` (no real API key available in this environment to generate live usage) |
+| ☑ | #65c | 07-18 | **Tool-call trace persistence + UI** (`MIGRATION_10_11` adds `label`/`statusRaw`/`sequence` to `coach_tool_calls`; a `CoachToolTraceDisclosure`-equivalent Composable) | **PORT** | S | `34d0494` — `MIGRATION_10_11` (v10→v11) adds the 3 columns + a `messageId` index; `CoachOrchestrator.CoachToolCallTrace` already computed `label`/`status` per call, just wasn't threaded into the entity — the write site now does `forEachIndexed` for `sequence`. `ChatMessage` gained an `id` field (threaded from `CoachMessageEntity.id` on load / `assistantMessageId` on send) since Room has no SwiftData-style live `@Query` from within a Composable — `CoachToolTraceDisclosure` collects a `Flow<List<CoachToolCallEntity>>` keyed by messageId instead. UI mirrors iOS: collapsed "Used N tools" (or ≤2 friendly labels joined by " → "), expands to per-row success/error glyph + label + one-line summary, ~180ms ease animation. Runtime-verified on `emulator-5554`: real v10→v11 upgrade over existing data (schema + index landed, all 4 prior messages survived), then synthetic tool-call rows (2 success + 1 error) confirmed both collapsed and expanded rendering before cleanup |
+| ☑ | #65d | 07-18 | **Environment/weather context** (Open-Meteo + existing `FusedLocationProviderClient` dep for coarse city/region, cached in SharedPreferences/DataStore; feeds coach context + `NotificationContextBuilder`) | **ADAPT** | L | `d46e121` — new `WeatherContextService` (coarse one-shot `FusedLocationProviderClient` fix, foreground+authorized gated; on-device `Geocoder` reverse-geocode to city/region only, raw coords never leave the device; Open-Meteo HTTP fetch via the existing OkHttp dep, WMO `weather_code` mapped to a condition string) + `WeatherContextStore` (SharedPreferences JSON cache, modeled on `MetricPrefsStore`) mirror `CoachEnvironmentContextService`'s TTLs (30min weather / 6h location / 3h stale window / 5min retry cooldown) and never-throws degrade logic exactly. `environment` field added to both `CoachContextPacket` and `NotificationContextPacket`, threaded through `CoachViewModel.sendMessage` and `CoachNotificationWorker`, plus system-prompt guidance sentences. New opt-in "Use location & weather" toggle (default off, `ApiKeyStore.enableEnvironmentContext`) in AI Coach settings requests `ACCESS_COARSE_LOCATION` only when turned on. Runtime-verified on `emulator-5554`: toggle persists + requests permission; with a real fix (`PRIORITY_HIGH_ACCURACY` temporarily substituted to route around the emulator's simulated network-location provider having no real fix, then reverted to the production `PRIORITY_BALANCED_POWER_ACCURACY`) the full geocode→Open-Meteo→cache pipeline resolved correctly end-to-end (San Francisco, CA; real current/high/low/precip/sunrise/sunset); a timed-out fix under the production priority degrades gracefully with no crash, confirming the never-throws design. |
+| ⊘ | #65e | — | Context budget (`.compact` mode) | **SKIP** | — | iOS's compact budget only triggers for the Apple on-device provider, which has no Android equivalent — revisit only if Android gains a constrained/offline provider |
+| ☑ | #65f | 07-18 | **Variety hints + notification sleep-gating** (FNV-1a "coaching angle" rotation + recent-check-in anti-repeat + sleep-data-synced gate for morning check-ins, reusing `DeviceEntity.lastFullSyncAt` from #61c) | **PORT** (re-scoped S→M: real iOS diff spans both notification check-ins AND Today/Sleep summary cards, not just notifications) | M | `a46882f` |
+| ⊘ | [#56](https://github.com/saksham2001/PulseLoopiOS/pull/56) `440aaf4` | 07-10 | TK5 ring support (SmartHealth protocol; own sleep decode + multi-record periodic history) | **SUPERSEDED by #82** | — | — |
+| — | [#61](https://github.com/saksham2001/PulseLoopiOS/pull/61) `39b611f` | 07-08 | ~~Activity UI sync-alerts bugfix~~ **RE-TRIAGED** into #61a–f below (was mis-billed "S"; PR is ~1188 ins/34 files) | — | — | see sub-rows |
+| ☑ | #61a | 07-08 | **Battery low/critical alerts** (`BatteryAlertMonitor`: pure latched per-day crossing engine @20%/10% + re-arm bands + notification) | **PORT** | M | `e5b68f6` — `BatteryAlertEngine`+`BatteryAlertMonitor`+`BatteryNotifications` (own channel) + `ApiKeyStore.batteryAlertsEnabled` (default ON) + Check-Ins toggle; 8 iOS oracle tests ported green |
+| ☑ | #61b | 07-08 | **Battery history + drainage graph** (persist battery samples + chart in Wearable settings) | **PORT** | M | `b5fcbf4` — `BatterySampleEntity`+DAO (`MIGRATION_7_8`, v7→v8) + throttled write in `EventPersistenceSubscriber` + `BatteryHistorySection` (24h/7d `ZoneLineChart`, fixed 0–100, critical/low/good zones) in Wearable settings; migration + chart runtime-verified on a real v7 upgrade |
+| ☑ | #61c | 07-08 | **Coach notification improvements** (`CoachNotificationService` +73, `NotificationsSettingsView` +39, prompt/orchestrator/settings) | **ADAPT** | M | `ce15582` — `DeviceEntity.lastFullSyncAt` (`MIGRATION_8_9`, v8→v9) stamped on `SyncProgress("done")`; `NotificationContextBuilder` staleness gate switched to it; `CoachNotificationWorker.ensureFreshData` (bounded 15s connect+wait, reuses `RingSyncWorker`'s pattern) before context build. Migration runtime-verified on a real v8→v9 upgrade; BLE path not exercised (no hardware) |
+| ☑ | #61d | 07-08 | **Workout-history day grouping** (TODAY/YESTERDAY/date headers in the history sheet) | **PORT** | S | `9c7fecb` — grouped `WorkoutHistoryDialog` by `LocalDate`. (Card style polish is iOS-specific `activityValueStyle`; N/A) |
+| ☑ | #61e | 07-08 | **Sleep-page coach card → bottom** | **ALREADY-HAVE** | S | Android `SleepScreen` already renders the coach card at the bottom of both Day and aggregate views (hero opens, coach closes) — no change needed |
+| ☑ | #61f | 07-08 | **Sync-event plumbing + misc bugfixes** (`PulseEventBus`/`RingEventBridge`/`RingSyncCoordinator`/`ActivityMigrations` + `SleepInsights`/`TodayTiles`/`ActivityRings`/`RingProtocol` fixes) | **RESOLVED** | M | no standalone work — the 2 worth-porting survivors (`lastFullSyncAt` + an await-completion primitive) both landed inside #61c (`ce15582`) |
+| ☑ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | `be74a19` |
+| ☑ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | `3e14fef` |
+| ☑ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | `368a3f2` |
+| ☐ | [#82](https://github.com/saksham2001/PulseLoopiOS/pull/82) `902c449` | 07-11 | YCBT (Yucheng) protocol rebuild: TK5 + **SmartHealth-app Colmi rings** + pairing app-variant picker (**supersedes #56**) | **PORT** | XL | `7a941a5` (protocol-layer subset, see 2026-07-19 session note) |
+| ☐ | [#79](https://github.com/saksham2001/PulseLoopiOS/pull/79) `952cf4f` | 07-12 | Activity Year trends: divide in-progress current month by elapsed days, not full 30/31 | **PORT-when-built** | S | |
+| ☑ | [#70](https://github.com/saksham2001/PulseLoopiOS/pull/70) `ac2b81a` | 07-12 | Today/Vitals apply Settings visibility + chart-detail changes immediately | **BLOCKED (behind #64)** | S | subsumed by #64 — Today/Vitals read the prefs StateFlow directly, so a visibility/order change recomposes immediately (no signature needed). Chart-detail resolution N/A on Android |
+| ☑ | [#66](https://github.com/saksham2001/PulseLoopiOS/pull/66) `4dae095` | 07-16 | Measure HR/SpO₂ countdown redesign + **robust measurement** (warm-up echo discard, contact-gap, median/majority gate) | **PORT** | L | `36da8f2` (robustness; modal chrome deferred) |
+| ☑ | [#83](https://github.com/saksham2001/PulseLoopiOS/pull/83) `2367d23` | 07-15 | Split same-day sleep into sessions (night + naps, 60-min gap) + Day carousel | **ADAPT** | L | `0d7212c` — `SleepSegmentation` + `EventPersistenceSubscriber.reconcileWakingDay` (overlap-matched stable ids) + `SleepInsights.collapseByDay` + `byDay` longest-session + `HorizontalPager` carousel. iOS's `DerivedUpdateRow` no-op signal + `migrateSleepSessionSegmentsIfNeeded` migration both dropped — Room Flows already drive reactivity and sleep rebuilds from the ring on every connect (see DataRepairs note) |
+| ☑ | [#84](https://github.com/saksham2001/PulseLoopiOS/pull/84) `8b86e5c` | 07-15 | Sleep › Day navigation (page between days) | **PORT** | M | `0d7212c` — `SleepViewModel` dayOffset + `stepDay`/`jumpToDay`/`resetToToday`, chevron header + bounded Material3 `DatePicker` (UTC↔local day-key conversion). Day view isolated from the Today tile (lastNight stays on the true reference night) |
+| ☑ | [#85](https://github.com/saksham2001/PulseLoopiOS/pull/85) `9093e9b` | 07-15 | Multi-session sleep days in demo seed | **PORT-with-#83** | S | `0d7212c` — `DemoDataSeeder.napsForDay`/`napStageBlocks` — demo nap sessions keyed `demo-sleep-<day>-<napStart>` (sourceRaw demo); days 0/1 get 2 naps, day 2 one, day 5 one |
+| ☐ | [#90](https://github.com/saksham2001/PulseLoopiOS/pull/90) `9d05481` | 07-15 | LuckRing/TK18 ring support (Coolwear "K6" / 0xFF64 `f618` protocol) | **PORT** | XL | `57e1e23` (protocol-layer subset, see 2026-07-19 session note) |
+| ☑ | [#88](https://github.com/saksham2001/PulseLoopiOS/pull/88) `e937a39` | 07-15 | Refresh stale screens after data changes (coach edit → aggregates, goal-edit rings, metric-detail on-sync) | **ADAPT** | S | already-have (Room Flows cover b/c/d; a is an architecture-specific non-gap) |
+| ☑ | [#75](https://github.com/saksham2001/PulseLoopiOS/pull/75) `5390a95` | 07-16 | Onboarding fit-to-viewport + copy polish + celebratory finale | **PORT** (fit-to-viewport N/A) | S | `ad2cc5b` — finale medallion + "Setup complete" eyebrow + refreshed copy (You're all set / Today·First sync·Days 3–7 / Start using PulseLoop) + welcome subtitle. Fit-to-viewport N/A (Compose sizes natively) |
+| ☑ | [#35](https://github.com/saksham2001/PulseLoopiOS/pull/35) `78ca593` | 07-01 | **Physiology settings screen** (athlete mode, altitude, beta-blockers, lung condition, glucose unit → tune `VitalsThresholdEngine`) — sub-surface of #35 that the XL dashboard port dropped | **PORT** | S–M | `d760c24` |
+
+`0d1b965` (2026-07-18, direct commit, not a PR) — "seed: month of demo workouts + 30-day vitals
+series", dev-only `PulseLoop/Persistence/SeedData.swift` change (denser demo data for iOS's own
+seeded-data mode). **SKIP** — no portable behavior, Android has its own independent seed data.
+
+## Port priority — open items (as of 2026-07-17)
+
+Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
+wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
+
+> **▶ RESUME HERE (next session):** Tier 1 and Tier 2 both fully clear — **#65 is DONE**, re-triaged
+> into #65a–f, all landed 2026-07-17/18: **#65a** persistence (`daed897`), **#65b** usage tracking
+> (`3b1808c`), **#65c** tool-call trace (`34d0494`), **#65d** environment/weather (`d46e121`), **#65f**
+> variety hints + sleep gating (`a46882f`) — every one runtime-verified on `emulator-5554`. #65e
+> (context-budget compact mode) stays SKIPped by design — no Android equivalent of the Apple
+> on-device provider it gates. **#65f turned out bigger than its "S, notification-only" original
+> scope**: the real iOS diff (`CoachVarietyHints` + the sleep-sync gates) touches BOTH the daily
+> notification check-in AND the Today/Sleep `CoachSummaryService` cards, so the port covers both
+> surfaces — new `CoachVarietyHints`/`CoachSleepSyncGate` (pure, shared), a new
+> `coach_notification_records` table (`MIGRATION_11_12`, v11→v12) for the notification anti-repeat
+> hint, `CoachSummaryDao.recent()` for the card anti-repeat hint, and `CoachSummaryService`'s old
+> "once per night" one-shot sleep-card gate replaced with iOS's two-part timing gate (30min-after-
+> wake floor, then full-sync-after-end or a 2h fallback) plus signature-based one-corrective-pass
+> regeneration. `CoachSummaryCoordinator` also now re-checks on a completed sync
+> (`PulseEvent.SyncProgress("done")`), not just on data events, so a night that arrives too early to
+> pass the gate isn't stranded until an unrelated event happens to fire later. Runtime-verified via a
+> real v11→v12 upgrade over existing app data (36 pre-existing demo sleep sessions + the device row
+> survived; new table's schema confirmed via `sqlite_master`) plus a clean post-migration launch (no
+> crash, Today screen rendered). The gate math itself is covered by ported unit tests
+> (`CoachVarietyHintsTest`, `CoachSleepSyncGateTest`, mirroring iOS's `CoachWS3Tests.swift` oracles) —
+> the actual worker short-circuit (skip + `scheduleSleepRetry`) wasn't exercised live because reaching
+> it requires a non-blank API key, which this environment doesn't have (same limitation noted for
+> #65b/#65d).
+>
+> **▶ RESUME HERE (2026-07-18 session):** **#77 jring protocol-parity DONE (protocol-layer subset)**
+> `160430a`, `:app:assembleDebug` + `:app:testDebugUnitTest` green (68 new/changed test assertions
+> across `RingDecoderTest`/`RingEventBridgeTest`/new `JringClockTest`), no real jring hardware in
+> this environment so verification stopped at build+test, not a live connect. Recon found real bugs
+> beyond what the ledger's rough "+120 lines on the engine" estimate implied — ported: `JringClock`
+> (the jring's RTC holds local wall-clock seconds, not true UTC — `RingEncoder.makeTimeSyncCommand`
+> and `RingDecoder` now share one offset per connection; `RingDecoder` went from a singleton
+> `object` to an instantiable `class` to carry it); the SpO₂ spot-measurement fix (was silently
+> sending `0x23` mode 1 = **blood pressure** via an unrelated, vendor-unused `0x3E` toggle — now
+> correctly mode 2 via the same command combined-measurement already used, matching the vendor);
+> arming the ring's background sensor logging on connect (`0x19` was never sent in `runStartup` at
+> all — likely why jring users previously needed the vendor app to initialize first); the `0x19`
+> trailing-byte fix (`0x02`→`0x01`, a misread of an unrelated app arg); a history-timestamp
+> plausibility gate generalized from sleep-only to all `HistoryMeasurement` kinds (safety net for
+> the clock fix); and history-row dedup on `(kind, timestamp)` so a jring's full-log replay on every
+> re-sync doesn't pile up duplicate measurement rows. **Deliberately deferred** (additive product
+> features, not bug fixes, so left out of this pass): a dedicated blood-pressure measurement action
+> and `MANUAL_BLOOD_PRESSURE`/`COMBINED_VITALS_MEASUREMENT` capabilities (Android's existing
+> `measureCombined()` already surfaces BP/stress/fatigue/blood-sugar through the normal event
+> pipeline, so there's no missing user-facing capability, just no *dedicated* BP button); and
+> auto-`resyncTime()` on phone timezone/DST change (the `resyncTime()` method + jring override
+> exist and are called by nothing yet — every reconnect already re-syncs the clock, bounding the
+> real-world staleness window). Full recon detail in the port-priority memory
+> (`ios-sync-port-priority`) from earlier in this session, not duplicated here.
+>
+> **▶ RESUME HERE (2026-07-18 session, cont'd):** **#57 re-triaged into #57a–g** (mirroring the
+> #61/#65 pattern — see the port-queue row and the 2026-07-18 #57 session note below). **#57a**
+> (finish-time calories/HR/SpO2 aggregates + daily rollup credit) and **#57f** (a newly-discovered,
+> currently-shipping bug: the workout HR spot-poll loop was unconditionally disabling the workout's
+> own realtime HR stream within ~60s of every workout start) are both **DONE**, runtime-verified on
+> `emulator-5554` via a real start→finish→delete cycle (a genuine, separate, blocking crash was hit
+> and fixed along the way — see the session note). **#57b** (RouteDistanceEngine consolidation) is
+> also **DONE** (`933edc5`, 2026-07-18) — see the port-queue row for what shipped (a real dormant-
+> persistence bug fixed along the way).
+>
+> **▶ RESUME HERE (2026-07-19 session, cont'd):** **#57g finished-workout notification card DONE**
+> (`bcfde92`) — see the port-queue row for full detail. The Colmi decode-robustness half had already
+> landed inside #57f; this pass covered the notification-card half (`WorkoutForegroundService`
+> swaps to a dismissible "complete" summary on finish, auto-cancelled after 10 min via a
+> `WorkoutCompleteDismissWorker` one-off) plus a real, previously-invisible bug found along the way
+> (the ongoing tracker notification never read its own live-update intent extras, so it was frozen
+> at "0:00" for every workout ever recorded). **#57 Activity-recording redesign is now fully
+> cleared (#57a–g all done).** Next: move to **Tier 4** (#82 YCBT/TK5+SmartHealth ring rebuild or
+> #90 LuckRing/TK18, both XL — pick one via AskUserQuestion, matching the #77-vs-#57 precedent) or
+> the smaller blocked/deferred items (#79 blocked on no Activity-trends screen, #74 revisit-after-#35
+> is now unblocked since #35 shipped, #61f has no standalone work left).
+>
+> **▶ RESUME HERE (2026-07-19 session, cont'd again):** **#74 Measurement-Frequency relocation
+> DONE** `368a3f2`. User picked this (via AskUserQuestion) over jumping straight into Tier 4's XL
+> items. Straightforward cosmetic ADAPT once unblocked by #35's Physiology screen: in
+> `SettingsScreen.kt`, folded the ring-only "Device" section (which held only the capability-gated
+> Measurement Frequency row) into "General", positioned right after "Physiology" — same
+> `WearableCapability.MEASUREMENT_INTERVAL` gate and route, just relocated, so `generalRows` went
+> from a fixed `listOf` to a `buildList`. The old "Device" section is deleted outright (it had no
+> other members once the row moved, matching what iOS's own diff did). Android's "AI Coach" section
+> stays a separate top-level section before "General" (pre-existing structural divergence from iOS,
+> where AI Coach nests inside General — out of scope for #74, which only ever moved Measurement
+> Frequency upstream too). `:app:assembleDebug` + `:app:testDebugUnitTest` green. **Runtime-verified
+> on `emulator-5554`**: confirmed the "Device" section is gone and General shows only User
+> Profile/Physiology when the seeded demo device's capabilities lack `measurementInterval`; then
+> temporarily patched `devices.capabilitiesRaw` via on-device `sqlite3` to add it, relaunched, and
+> confirmed the row renders correctly between Physiology and Metrics, tapped into General fine, then
+> reverted the DB patch before finishing (device never actually has this capability in the seed
+> data). Next: **Tier 4** (#82 YCBT/TK5+SmartHealth ring rebuild or #90 LuckRing/TK18, both XL — pick
+> via AskUserQuestion) or #79 (still blocked on no Activity-trends screen).
+>
+> **▶ RESUME HERE (2026-07-19 session, cont'd again):** **#82 YCBT/TK5+SmartHealth-Colmi — DONE
+> (protocol-layer subset)** `7a941a5` + docs `853d4a4`, on `iOS_sync_2026-07-16` directly and
+> **pushed to origin**. (Briefly landed on its own branch `ios_82_ycbt_tk5_smarthealth` per Tier 4's
+> "own branch" convention, but the user asked for everything consolidated onto
+> `iOS_sync_2026-07-16` instead — fast-forward merged since the branch was a clean 2-commit ahead
+> of it, then the feature branch was deleted both locally and on origin.) User picked #82 over #90
+> via AskUserQuestion, with explicit guidance: for a BLE protocol rebuild,
+> reference the **official vendor Android app's actual behavior**, not iOS's CoreBluetooth calls,
+> since Android's BLE stack differs (pairing/bonding, MTU, connection sequencing) and past
+> iOS-sequencing ports caused real pairing/data bugs. Decompiled the SmartHealth APK
+> (`com.zhuoting.healthyucheng`, user-provided, already in `apk/`) with jadx into
+> `decompiled-smarthealth/` at the PulseLoop repo root — confirmed it contains the exact
+> `com.yucheng.ycbtsdk` v4.0.10 package iOS's own `docs/YCBT-Protocol.md` cites as ground truth, so
+> the byte-level protocol (frame format, CRC16, command catalog, record layouts) ported directly
+> from iOS's Swift is trustworthy — it was already built from decompiling this same Android SDK, not
+> derived from CoreBluetooth. Ported: `YCBTProtocol.kt` (UUIDs/frame/CRC/byte-epoch helpers/groups/
+> commands/history-type table/measurement modes/frame-assembler/SupportFunction bitmap parser),
+> `YCBTSettingsEncoder.kt`/`YCBTEncoder.kt` (connect handshake), `YCBTDecoder.kt`, `YCBTHealthRecords.kt`
+> (all 9 history record types incl. the variable-length sleep-session walk with tag-masking + start-time
+> dedup), `YCBTHistoryTransfer.kt` (request→header→data→terminal-CRC→ACK state machine with stall
+> watchdog + one-retry-then-skip), `YCBTDriver.kt`/`YCBTSyncEngine.kt` (`WearableDriver`/`RingSyncEngine`
+> impls), `TK5Coordinator`/`ColmiSmartHealthCoordinator` in new `YCBTCoordinators.kt`. New
+> `WearableModel.TK5`/`COLMI_SMARTHEALTH` catalog entries (the existing pairing carousel + `resolve()`
+> already *is* the "which app came with your ring?" disambiguation iOS built dedicated UI for — no new
+> pairing UI needed). Extended `WearableCoordinator` with an additive-only `bitmapGatedCapabilities`
+> (mirrors iOS's baseline-vs-bitmap-refined split — TK5 keeps HRV baseline since it was *observed
+> working* on real hardware, SmartHealth-Colmi gates HRV since its one known unit, an R99, denied it
+> four independent ways) and wired `RingBLEClient` to refine `activeCapabilities` on a decoded
+> `SupportFunctions` event (intersect-then-union, so a device can only ever gain a capability its
+> family already offers as gate-able, never lose a baseline one).
+>
+> **Two real, verified-against-the-decompiled-SDK BLE bugs fixed in the shared `RingBLEClient`** (not
+> ported from iOS, found by cross-checking the vendor's own `gatt/BleHelper.java`): (1) every CCCD
+> write hardcoded `ENABLE_NOTIFICATION_VALUE` — YCBT's stream characteristic (`be940003`) requires
+> `ENABLE_INDICATION_VALUE` per the vendor SDK, and the standard Blood Pressure/Glucose Measurement
+> characteristics are indicate-only too (BLE SIG spec) — fixed generically via the characteristic's
+> own `PROPERTY_INDICATE` flag, not a YCBT-specific special case. (2) the characteristic-discovery
+> loop used a `when` with mutually exclusive branches, so a characteristic matching both `writeUUID`
+> and `notifyUUIDs` (YCBT's `be940001`, simultaneously the write target and a notify source) would
+> get only the first match — silently dropping its CCCD subscription. No prior driver's write/notify
+> characteristics ever overlapped, so this never surfaced before.
+>
+> **Deliberately NOT changed**: `RingBLEClient`'s GATT connect/MTU/bonding *sequencing and timing*
+> (requestMtu-before-vs-after-discoverServices ordering, a ~200ms post-disconnect cooldown, ~5ms
+> pre-write pacing, 500ms chunk-write retry backoff — all observed in the vendor SDK's
+> `BleHelper.java`/`YCBTClientImpl.java`). These looked like they could be JieLi-chipset or
+> legacy-Android-stack-specific workarounds rather than universal requirements, and this shared code
+> path is what jring/Colmi already connect through successfully — changing it blind, with no real
+> YCBT ring to validate against, risked a regression to two working protocols to fix an unconfirmed
+> one. Flagging explicitly rather than silently deciding: **if a real TK5/SmartHealth-Colmi still
+> fails to connect/stream reliably**, re-read `BleHelper.java`'s connect sequence (this session's
+> recon of it is preserved in the `ios-sync-port-priority` memory) and consider whether any of this
+> timing needs to move from "vendor workaround" to "actually required."
+>
+> `:app:assembleDebug` + `:app:testDebugUnitTest` green (new `YCBTProtocolTest`/`YCBTHistoryTransferTest`/
+> `YCBTHealthRecordsTest` plus `PairingMatchingTest` additions for the two new coordinators/catalog
+> entries). **No TK5/SmartHealth-Colmi hardware in this environment** — verification stopped at a
+> clean app run on `emulator-5554` (no crash, existing seeded device/pairing flow unaffected), not a
+> live connect (same gap as #61c/#65b/#65d/#77). **Pushed to origin/iOS_sync_2026-07-16** (confirmed
+> with the user first — they wanted everything consolidated on this branch rather than left on a
+> separate Tier-4 feature branch).
+>
+> **▶ RESUME HERE (2026-07-19 session, cont'd yet again):** **#90 LuckRing/TK18 — DONE
+> (protocol-layer subset)** `57e1e23`, on `iOS_sync_2026-07-16` (not yet pushed to origin). Only Tier-4
+> item left after #82, so no AskUserQuestion pick was needed this time. Ground-truthed directly
+> against the decompiled vendor app already in this repo (`decompiled-coolring/`,
+> `com.kewo.coolring` / package `ce.com.cenewbluesdk`, internal family "K6") rather than transcribed
+> blind from iOS: `queue/b.java`'s `getSendData`/`Analysis` confirmed the exact 20-byte head/
+> continuation framing and app-ACK bytes byte-for-byte against the iOS port, and `CEBC.java`
+> confirmed every cmdType/dataType/sleep-status constant used. Ported: `LuckRingProtocol.kt`
+> (UUIDs/cmdType/dataType table/LE byte helpers/frame/packetizer/frame-assembler/MixInfo TLV),
+> `LuckRingEncoder.kt` (connect bundle + toggles + requests), `LuckRingDecoder.kt` (battery/firmware/
+> sport/sleep-session-segmentation/HR/SpO2/BP/HRV/temp/stress), `LuckRingHistorySync.kt` (the
+> time-settled history pager — this protocol has no transfer cursor or terminal marker, unlike YCBT,
+> so completion is inferred from a settle/stall timeout instead of a CRC'd terminal block),
+> `LuckRingDriver.kt` (ACK-before-decode) and `LuckRingSyncEngine.kt`. New
+> `RingDeviceType.LUCK_RING` + `WearableModel.LUCK_RING_TK18` catalog entry (no dedicated product art
+> yet, falls back to the generic ring like TK5) + `LuckRingCoordinator` registered ahead of
+> `TK5Coordinator` in `RingBLEClient.coordinators` (defensive ordering — LuckRing's signals are
+> family-exclusive and don't actually collide with TK5's today).
+>
+> **One real, verified-against-the-decompiled-SDK BLE bug fixed in the shared `RingBLEClient`**
+> (found by cross-checking the vendor's own `CEBlueTooth_5.java`/`queue/b.java`, and independently
+> confirmed by iOS's own equivalent fix on real TK18 hardware): `pumpOps()`'s `CommandWrite` branch
+> never set `BluetoothGattCharacteristic.writeType`, so every write went out as the framework default
+> `WRITE_TYPE_DEFAULT` (write-with-response) regardless of what the target characteristic actually
+> supports. The LuckRing/TK18's write characteristic (`B002`) is write-without-response only — a
+> write-with-response request against it has no `PROPERTY_WRITE` to answer over GATT, so it fails or
+> times out instead of ever reaching the ring. Fixed generically off the characteristic's own
+> `PROPERTY_WRITE` flag (mirrors the existing `cccdEnableValue` fix from #82, which did the same for
+> notify-vs-indicate) — a no-op for every other ring, whose write characteristics all advertise
+> `PROPERTY_WRITE`. Deliberately did **not** port LuckRing's "first pair" pairing-animation trigger
+> (`K6_DATA_TYPE_PAIR_FINISH`'s leading byte) — the ring/driver layer is intentionally Context-free
+> (no persisted-flag seam exists there, unlike `UserProfileValues`/`MeasurementSettings` which the
+> app layer seeds before `runStartup`), and the cosmetic cost of never showing the ring's one-time
+> pairing flash is far smaller than replaying it on every reconnect; see `LuckRingEncoder.
+> startupBundle`'s doc comment.
+>
+> `:app:assembleDebug` + `:app:testDebugUnitTest` green (612 tests; new `LuckRingProtocolTest`/
+> `LuckRingEncoderTest`/`LuckRingDecoderTest`/`LuckRingDriverTest`/`LuckRingHistorySyncTest` plus
+> `PairingMatchingTest` additions for the new coordinator/catalog entry — one pre-existing
+> `PairingMatchingTest` assertion enumerating registered coordinators needed updating for the new
+> family, same as every prior ring addition). **No TK18/LuckRing hardware in this environment** —
+> verification stopped at a clean app run on `emulator-5554` (no crash, existing seeded device/
+> pairing flow unaffected, `Settings → Wearable` screen for the already-paired demo Colmi ring still
+> renders fine), not a live connect — same gap as every other hardware-gated item in this ledger.
+>
+> **Prior (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
+> the port-queue row for full detail (new `ManualActivityService.create` shared by the screen and
+> the `create_activity_session_from_description` coach tool, fixing a real gap where the coach tool
+> never credited the daily rollup). **#57e post-workout vitals backfill/reconcile DONE** (`31d5835`)
+> — see the port-queue row for full detail (sync-triggered `ActivityAggregates.recompute` re-run for
+> recently-finished sessions; no per-sample link table needed on Android, unlike iOS).
+>
+> **#57c edit-workout DONE** (`f526fce`, 2026-07-19) — see the port-queue row for full detail
+> (`ActivityAggregates.applyEdit`/`recompute` shared with `LiveWorkoutManager.finish()`, the coach
+> executor's `applyUpdates`/`resolveUpdates` split, the new edit sheet UI, and a real
+> GPS-map-windowing bug found and fixed while runtime-verifying).
+>
+> **Prior state (still accurate below):** Tier 1 clear; **#61a** battery alerts DONE (`e5b68f6`), **#61b**
+> battery history + graph DONE (`b5fcbf4`), **#61c** coach-notification freshness DONE (`ce15582` +
+> `44351a4` dead-code cleanup) — all three runtime-verified on API-35 (each install exercised a real
+> schema-version upgrade over existing data, not a fresh create: v7→v8 for #61b, v8→v9 for #61c). All
+> landed as sequential commits on `iOS_sync_2026-07-16` — no separate branches, matching every prior
+> Tier-1 item — and **pushed to `origin/iOS_sync_2026-07-16`** (9 commits, `32379b1..9f24637`).
+> **#61f folded into #61c with no separate work** — turned out **Android already had a
+> background-BLE-sync worker** (`RingSyncWorker`, shipping since before this session) that #61c's
+> `ensureFreshData` could directly reuse the connect/`runStartup` pattern from, so the "background sync
+> is unreliable on Android" risk flagged during recon didn't fully materialize — it reuses proven,
+> already-shipped code. The await primitive also didn't need to live on `RingSyncCoordinator` as
+> originally planned: `CoachNotificationWorker` owns a private `RingBLEClient`, not the foreground
+> coordinator, so it awaits `PulseEvent.SyncProgress("done")` directly off `PulseEventBus` with a bounded
+> `withTimeoutOrNull`. **Only #65 remains in Tier 2** — coach transparency, re-scoped **L→XL** (Android
+> coach chat is in-memory, iOS persists to SwiftData; WeatherKit has no Android SDK) — needs a scope
+> decision (session-scoped usage/trace vs. a Room migration) before starting. Read the 2026-07-17 #61c
+> recon note below first.
+
+**Tier 1 — small, high-value (land on the current sync branch):**
+
+1. ~~**#35 Physiology settings screen**~~ ✅ **DONE** (2026-07-17, uncommitted). Screen + ApiKeyStore
+   persistence + `fromProfile` wiring + widget refresh. Glucose-unit picker also lands **#43 §3**.
+2. ~~**#43 §2 temp detail-chart unit conversion**~~ ✅ **DONE** (2026-07-17, uncommitted). Plus §3
+   glucose end-to-end on both dashboard card and detail chart.
+3. ~~**#75 Onboarding copy + finale**~~ ✅ **DONE** `ad2cc5b` — finale medallion + refreshed copy;
+   fit-to-viewport N/A.
+4. ~~**#61d Workout-history day grouping**~~ ✅ **DONE** `9c7fecb`. ~~**#61e sleep coach-card
+   position**~~ ✅ **ALREADY-HAVE** (Android renders it at the bottom already).
+
+**Tier 1 is now clear.** Next up is Tier 2 (below).
+
+**~~#61~~ RE-TRIAGED** (was a mis-scoped "S"): split into #61a–f (see port-queue rows). Battery
+alerts (#61a) + battery graph (#61b) + coach-notif (#61c) + sync-event/bugfix bundle (#61f) are each
+their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
+
+**Tier 2 — medium features:**
+
+5. ~~**#65 Coach transparency/context rehaul**~~ ✅ **DONE**, re-triaged into #65a–f (see the ledger
+   rows and the port-priority memory for full detail on each). Landed 2026-07-17/18: #65a `daed897`,
+   #65b `3b1808c`, #65c `34d0494`, #65d `d46e121`, #65f `a46882f`. #65e stays SKIPped (no Android
+   equivalent of the Apple on-device provider it gates).
+6. ~~**#61a Battery low/critical alerts**~~ ✅ **DONE** `e5b68f6`. `BatteryAlertEngine`
+   (pure, 8 iOS oracle tests ported green) + `BatteryAlertMonitor` (bus collector, per-day latch in
+   SharedPreferences) + `BatteryNotifications` (own "Ring Battery" channel, one-shot, POST_NOTIFICATIONS
+   guarded) + `ApiKeyStore.batteryAlertsEnabled` (default ON, coach-independent) + a Check-Ins toggle.
+7. ~~**#61b Battery history + drainage graph**~~ ✅ **DONE** `b5fcbf4`. `BatterySampleEntity`+DAO
+   (`MIGRATION_7_8`), throttled write in `EventPersistenceSubscriber`, 24h/7d `ZoneLineChart` in
+   `WearableSettingsScreen`. Migration + chart runtime-verified on a real v7→v8 upgrade.
+8. ~~**#61c Coach notification improvements**~~ ✅ **DONE** `ce15582` (+`44351a4` dead-code cleanup).
+   `DeviceEntity.lastFullSyncAt` (`MIGRATION_8_9`, v8→v9) stamped only on `SyncProgress("done")` in
+   `EventPersistenceSubscriber`; `NotificationContextBuilder`'s >12h staleness warning switched to it
+   from the looser `lastSyncAt`. `CoachNotificationWorker.ensureFreshData`: skips if the last completed
+   sync is <10 min old, else connects and waits up to 15s for `SyncProgress("done")` before proceeding
+   regardless (stale beats missed) — **reused `RingSyncWorker`'s existing connect/`runStartup` pattern**
+   rather than building new background-BLE infra, since Android already had one. Migration
+   runtime-verified on a real v8→v9 upgrade (schema + all data survived); the worker itself ran clean
+   via forced JobScheduler executions (zero crashes across multiple runs) but the BLE connect attempt
+   has no observable effect on the hardware-less emulator — needs a real ring to verify end-to-end.
+9. ~~**#61f Sync-event plumbing + misc bugfixes**~~ ✅ **RESOLVED, no standalone work.** Recon found
+   Android's Room-Flow + bucket-sum recompute + in-place self-heal already cover 7 of 10 items (done
+   signal, inflated/garbage migrations, formatter caching, tile autosize, future-ts). The two
+   worth-porting pieces — `lastFullSyncAt` and an await-completion primitive — both landed as part of
+   #61c above (the primitive lives inline in the worker, not as a `RingSyncCoordinator` method, since
+   the worker owns its own private `RingBLEClient` rather than using the foreground coordinator).
+   (Optional nits never addressed: source-side activity ceilings for indep. distance/calorie guards;
+   Compose value autosize — neither is an active bug.)
+
+**Tier 3 — large, focused work (own commits):**
+
+10. ~~**#57 Activity-recording redesign**~~ — **RE-TRIAGED into #57a–g, ALL DONE, fully cleared**
+    (see port-queue rows above and the 2026-07-18/19 session notes below). ~~**#57a**~~ finish
+    aggregates + rollup ✅ **DONE**. ~~**#57f**~~ HR-stream self-kill bug + decode robustness ✅
+    **DONE**. ~~**#57b**~~ RouteDistanceEngine ✅ **DONE**. ~~**#57c**~~ edit-workout ✅ **DONE**.
+    ~~**#57d**~~ Log Past Activity screen ✅ **DONE** `4bbfa7f`. ~~**#57e**~~ vitals backfill ✅
+    **DONE** `31d5835`. ~~**#57g**~~ finished-notification card ✅ **DONE** `bcfde92`.
+11. ~~**#77 jring protocol-parity**~~ ✅ **DONE (protocol-layer subset)** `160430a` — see the
+    2026-07-18 note below for what shipped vs. what's deferred.
+
+**Tier 4 — XL, dedicated branch each:**
+
+12. ~~**#82 YCBT (Yucheng) protocol rebuild**~~ — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT). **Protocol-layer subset DONE** `7a941a5`, pushed to `iOS_sync_2026-07-16` — no real hardware to verify a live connect; see the 2026-07-19 session note.
+13. ~~**#90 LuckRing/TK18**~~ — Coolwear "K6" / `0xFF64` protocol (XL, PORT). **Protocol-layer subset DONE** `57e1e23`, on `iOS_sync_2026-07-16` — no real TK18/LuckRing hardware to verify a live connect; see the 2026-07-19 session note.
+
+**Blocked / deferred:**
+
+- **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
+- ~~**#74 Measurement-Frequency relocation**~~ ✅ **DONE** `368a3f2` (2026-07-19) — see the session note below.
+
+### 2026-07-20 PR #28 review + fix pass (branch `iOS_sync_2026-07-16`)
+
+Full code review of the sync batch (two passes, 10 parallel agents total, cross-referenced
+against iOS `main` and the decompiled vendor apps) — findings live in
+`docs/pr28-review-findings.md` (52 items). All High-severity items plus the mechanical
+Mediums were fixed in 8 commits (`c93c687`..`eb803f4`), `:app:assembleDebug` +
+`:app:testDebugUnitTest` green (613 tests, incl. 8 ported `SpotMeasurementGateTests` oracles
+and 4 new `resolveDistanceMeters` cases). Headlines: Colmi never emitted
+`SyncProgress("done")` (dead-lettered #61c/#65f/#57e for the flagship family — now published
+in `ColmiSyncEngine.finishSync`); `restartWorkoutHeartRateIfActive()` ported + called from
+every spot-measurement cleanup (the #57f bug class fully closed, shape validated against the
+decompiled SmartHealth app); `SpotMeasurementGate` refusal fast-fail ported (iOS `c8969a4`
+riding #82); SpO2 window 40→60s; `ActivityAggregates.recompute` keeps manually-entered
+distance (`?? session.distanceMeters` restored); weather coords coarsened to ~1km on the wire;
+`ensureFreshData` BLE lifecycle/foreground-coordination/`hasRecentData` fixes; pause-accounting
+rework (one deliberate divergence — see upstream candidates); workout-notification actions
+routed through a new `WorkoutCommandBus`; per-type `ActivityMetricSet` (cycle = speed) ported.
+Still open (documented in the findings file): LuckRing first-pair byte, coach-card chat
+seeding, sleep-carousel a11y, workout-screen recovery/analytics sections (backlog), and the
+remaining Low items.
+
+### 2026-07-18 Tier 3 session — #57 re-triage + #57a/#57f (branch `iOS_sync_2026-07-16`)
+
+Pulled the real iOS diff for `8182d8d` (7 commits, 3676 ins/42 files across `PulseServices.swift`,
+new `WorkoutMetricsEngine.swift`/`RouteDistanceEngine.swift`/`WorkoutVitalsPlan.swift`, `RecordViews.swift`,
+new `LogPastActivityView.swift`, `ColmiDecoder.swift`, `RingSyncCoordinator.swift`, etc.) and re-triaged
+into **#57a–g**, same pattern as #61/#65. Ported the top two by value-for-effort.
+
+**#57a Finish-time aggregates + daily rollup credit — DONE.** New `WorkoutMetricsEngine.kt` (pure
+object: Keytel et al. 2005 HR-based kcal when profile complete + HR coverage ≥60% of workout
+minutes, else a per-type/speed-tiered MET table — ported 1:1 from the iOS engine, 5 oracle tests
+from `WorkoutMetricsEngineTests.swift` all green). `LiveWorkoutManager.finish()` now calls a new
+`recomputeSummary()` that queries the shared `measurements` table by `[startedAt, endedAt]` window
+for HR/SpO2 (kind `HEART_RATE`/`SPO2`, filtered `value > 0`) and populates
+`avgHeartRate`/`maxHeartRate`/`minHeartRate`/`avgSpO2`/`latestSpO2`/`calories` — previously every
+field but `distanceMeters` stayed permanently null, so `WorkoutSummaryScreen` showed "—" for
+calories on every single workout. **Deliberately did not port iOS's `ActivitySample`/`backfillSamples`/
+`linkSample` session-linking machinery** — Android has no per-session sample-link table and doesn't
+need one for this slice; a direct time-windowed query against the existing `measurements` table is
+simpler and sufficient (the session-linking complexity is what iOS needs for post-workout backfill
+reconciliation — that's #57e, not #57a). New `ActivityRollup.kt` (`credit`/`reverse`, mirroring
+`creditDailyRollup`/`reverseDailyRollup`) increments/decrements `ActivityDaily.activeMinutes` (and
+`distanceMeters` for GPS workouts) exactly once at finish, reversed at both delete sites (the
+`WorkoutSummaryScreen` trash-icon UI path and the coach `delete_activity_session` →
+`PendingActionExecutor` path — previously duplicated dead-end deletes with no rollup awareness at
+all, since Android had never credited anything to reverse before). **Runtime-verified on
+`emulator-5554`**: started a real "Gym" workout (no GPS) via the UI, waited ~48s, tapped Finish —
+summary screen showed **Calories: 4** (previously permanent "—") and **Active Min: 0** (correctly
+floored — 48s doesn't reach a full minute), confirmed via on-device `sqlite3`
+(`calories=4.6666...`, `statusRaw=finished`). AVG/MAX/MIN HR and SpO2 correctly stayed "—" (no ring
+connected in this environment, so no measurement rows existed in the window — expected, not a bug).
+Deleted the session afterward via the trash icon to exercise the reversal path — no crash. `distanceMeters`
+double-credit risk noted for future reference: `EventPersistenceSubscriber`'s ring-history bucket
+recompute (`applyActivityBucket`) only *overwrites* `distanceMeters` for **non-today** days; for
+today it ratchets (`maxOf`), so a workout's credited GPS distance survives same-day ring syncs. A
+workout that credits on one day and gets bucket-recomputed after midnight on a *later* sync could in
+principle have its credit overwritten — a narrow, pre-existing class of risk (the same ratchet-vs-
+overwrite split already exists for the live vs. history paths generally), not something this pass
+introduced or attempted to fully close.
+
+**#57f Fix workout HR realtime-stream self-kill bug — DONE**, plus a **newly-discovered, unrelated,
+currently-shipping crash fixed along the way** since it blocked runtime verification entirely.
+Tracing the workout HR data path (prompted by the ledger's stale "realtime-HR keepalive" framing —
+confirmed ALREADY-HAVE, landed independently via `c910942`) surfaced a real, live bug not in the
+original recon: `WorkoutSensorPollingService`'s ~60s HR spot-poll loop calls
+`RingSyncCoordinator.measureHR()`, whose `finally` block unconditionally calls
+`engine.stopHeartRate()` — which, per both `ColmiSyncEngine` and `JringDriver`, disables *any*
+active HR sensor mode, including the continuous realtime stream `LiveWorkoutManager.start()` had
+just enabled via `coordinator.startWorkoutHeartRate()`. Net effect: the workout's own live HR
+stream was silently torn down by its first spot-poll cycle, within about a minute of every workout,
+and nothing ever restarted it — this was shipping, undetected, on every recorded workout. Fixed by
+having `WorkoutSensorPollingService` skip its HR spot-poll entirely while
+`coordinator.workoutHRActive` is true (a continuous stream already feeds `latestHRValue`; no
+need to redundantly and destructively spot-poll on top of it). Also ported iOS's defensive
+`ColmiDecoder` fix for the `0x1e` realtime-HR reply: the real hardware layout was never confirmed,
+so the decoder now accepts either the documented errCode+bpm shape or the original legacy bpm-only
+shape (4 new test cases ported from `ColmiDecoderTests.swift`, all green). **Deliberately did not
+port** the full `WorkoutVitalsPlan` capability-driven stream/spot/ring-log abstraction (iOS's
+broader fix) — the narrow bug fix above is S-effort and directly addresses the actual defect;
+`WorkoutVitalsPlan` is a larger, separate abstraction whose value is unclear until this fix is
+observed stable, so it stays deferred.
+
+**Bundled crash fix, discovered while runtime-verifying #57a/#57f, not part of either's original
+scope:** starting *any* workout on the API-35 emulator crashed immediately with
+`SecurityException: Starting FGS with type health ... requires ... ACTIVITY_RECOGNITION,
+BODY_SENSORS, HIGH_SAMPLING_RATE_SENSORS`. `WorkoutForegroundService` has declared
+`foregroundServiceType="health"` since Phase 6, but the manifest only ever requested
+`FOREGROUND_SERVICE_HEALTH` — Android 14+ additionally requires holding one of those three sensor
+permissions for a "health" foreground service, and none were declared, so this has apparently
+crashed on every API 34+ workout start since the type was added, unrelated to anything in this PR.
+Added `<uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />` to the manifest
+plus a runtime permission-request gate in `ActivityScreen.kt` (mirrors the existing BLE-permission
+request pattern in `OnboardingScreen.kt`) before `LiveWorkoutManager.start()`. Confirmed fixed on
+`emulator-5554`: the system permission dialog now appears and, on Allow, the workout starts and
+records cleanly with zero crashes.
+
+`:app:assembleDebug` + `:app:testDebugUnitTest` green throughout (487 tests, 9 new: 5
+`WorkoutMetricsEngineTest` + 4 `ColmiDecoderTest` additions).
+
+### 2026-07-18 session (cont'd) — #57b RouteDistanceEngine (branch `iOS_sync_2026-07-16`)
+
+**#57b RouteDistanceEngine consolidation — DONE**, commit `933edc5`. Ported `RouteDistanceEngine` +
+`ActivityTrackingProfile` 1:1 from `RouteDistanceEngine.swift`: gap/speed-filtered segment distance,
+splits (moving-time-across-gap semantics), and an incremental `Accumulator` for O(1) live updates —
+one engine shared by the live tile, finish summary, and splits table so they can never disagree. 12
+oracle tests ported from `RouteDistanceEngineTests.swift` (straight-km, rejected-points-excluded,
+pause-teleport, speed-spike, unsorted-input, splits-across-gap, profile-fallback, 3×
+accumulator-matches-batch, out-of-order-skip, seed-matches-incremental), all green.
+
+**Real, previously-shipping bug found and fixed while wiring the engine in, not part of the
+original recon:** `activity_gps_points` had a fully-defined Room entity + DAO (`insert`/`forSession`)
+that **nothing ever called** — `GpsRouteRecorder` only tracked an in-memory unfiltered
+`List<Pair<lat,lon>>` (via a `DistanceUtils.totalDistance` helper, now deleted as dead code) and
+never persisted a single fix. `WorkoutSummaryScreen`'s GPS route map and splits table both read from
+that DAO, so they had been silently rendering empty for every GPS workout ever recorded on Android.
+Ported `GpsRouteRecorder.swift`'s per-fix `rejectionReason` gate (accuracy/staleness, then
+speed/minMove/course-delta/minInterval once a prior accepted fix exists) onto Android's
+`android.location.Location` (bearing instead of course, `distanceTo` instead of `CLLocation.distance`),
+persisting every fix — accepted or rejected, with its reason — via the existing DAO, and switched the
+live tile to `RouteDistanceEngine.Accumulator` fed only accepted fixes instead of the raw haversine
+sum. Also wired `LocationRequest.Builder.setMinUpdateDistanceMeters(profile.distanceFilterMeters)`,
+which the profile always had but nothing read. `LiveWorkoutManager.recomputeSummary` (from #57a) now
+re-derives `distanceMeters` from the persisted route via `RouteDistanceEngine.distanceMeters` at
+finish (instead of trusting the live accumulator's last value) and populates
+`gpsPointCount`/`rejectedGpsPointCount`/`lastGpsPointAt` — three more fields that existed on
+`ActivitySessionEntity` since it was first modeled but were never written. `WorkoutSummaryScreen`'s
+own local unfiltered `haversineMeters`/`kmSplitSeconds` (the "two independent implementations" the
+ledger row named) is replaced with `RouteDistanceEngine.splitSeconds`.
+
+**Runtime-verified on `emulator-5554`** via a real recorded walk, not synthetic DB rows: fed 13 GPS
+fixes through `adb emu geo fix` (northbound, ~15m/~4s apart) while a "Walking" session recorded live.
+All 13 persisted (`activity_gps_points` — previously always empty, confirmed via on-device
+`sqlite3`). The live tile settled at **0.09 mi**; independently hand-computing the same gap
+(30s)/speed(5 m/s) filter over the actual persisted lat/lon/timestamps in Python confirmed
+149.17 m = 0.0927 mi — the engine correctly dropped one genuine gap segment (a 36s pause from slow
+manual UI navigation before the loop started) and one borderline speed segment (15.08 m in 3.01 s =
+5.01 m/s, just over the walk profile's 5 m/s ceiling), exactly as designed. After Finish, the summary
+screen showed the **identical 0.09 mi** (live/finish agreement — the core invariant), the map
+rendered the real 13-point route for the first time ("15 m · 13 pts" scale label), and the session
+row confirmed `distanceMeters=149.17`, `gpsPointCount=13`, `rejectedGpsPointCount=0`,
+`lastGpsPointAt` matching the last fix, `calories=14.5` (from #57a's engine, now fed a real
+distance). Zero crashes/exceptions in logcat throughout. `:app:assembleDebug` +
+`:app:testDebugUnitTest` green (499 tests).
+
+**Deliberately out of scope, left for later items:** the "GPS coverage %" / "Dropped GPS points"
+data-quality rows from iOS's new `RecordSummaryViews.swift` are a separate, larger UI section not
+itemized in the #57a–g breakdown — `gpsPointCount`/`rejectedGpsPointCount` are now correctly
+populated and ready for it, but no summary-screen row was added this pass.
+
+**To resume:** continue Tier 3 at **#57c Edit-workout** (re-slice samples to a new time window,
+recompute aggregates/rollup via #57a's `recomputeSummary` + #57b's `RouteDistanceEngine`, small edit
+sheet UI) — M effort, depends on #57a+#57b (both done). Then #57d (Log Past Activity UI), #57e
+(vitals backfill), #57g (notification polish). Full detail in the port-queue rows above.
+
+### 2026-07-19 Tier 3 session — #57d (branch `iOS_sync_2026-07-16`)
+
+Ported iOS's `LogPastActivityView.swift` (net-new full-page form) and, along with it, the
+`ManualActivityService.swift` shared creation path it and the coach's
+`create_activity_session_from_description` tool both go through on iOS. Android had no equivalent
+service — its coach tool did a raw `ActivitySessionEntity` insert inline. Building the shared
+`ManualActivityService.create` (validate type/duration/future-end → `ActivityAggregates.recompute`
+→ upsert → `ActivityRollup.credit`, mirroring `LiveWorkoutManager.finish()`'s existing sequence) and
+switching the coach tool onto it surfaced a real, previously-invisible gap: **coach-logged manual
+sessions never credited the daily rollup** — `active minutes`/`distance` silently dropped for any
+workout the coach recorded from a description. Also ported iOS's future-clamp guard (an
+unspecified start time defaulting to same-day noon can land in the future for an early-morning
+"log today's run"; pull it back so it still ends by now instead of throwing).
+
+New `LogPastActivityScreen` (`ui/screens/LogPastActivityScreen.kt`): 2-column `ActivityMeta.ORDER`
+type grid, a past-only `DateTimeButton` for the start time (the exact same date-restricted picker
+#57c's edit sheet already built — widened from `private` to `internal` and reused as-is, along with
+`EditFieldRow`/`CircleIconButton`/`formatDateTime`/the UTC-midnight helpers), a computed read-only
+"Ends" row, and a +/-5min duration stepper with 15/30/45/60/90 quick chips — same shape as iOS's
+form. New entry card on `ActivityScreen` below the Record/History row (`clock.arrow.circlepath` →
+`Icons.Filled.History`), new `"log_past_activity"` nav route that replaces itself with
+`activity_detail/{id}` on save (mirrors iOS's `path.removeLast(); path.append(.activityDetail)`).
+
+`ManualActivityService.validate` pulled out pure (mirrors `ActivityAggregates.isValidEdit`'s
+existing pattern) for a real unit test (`ManualActivityServiceTest`, 4 cases ported from
+`ManualActivityServiceTests.swift`) — the DB-side recompute/credit half has no Android
+Room-in-memory test harness (same documented gap as #57a/#57c), so runtime verification covers it.
+
+Runtime-verified on `emulator-5554`: opened the new screen from the Activity tab, picked Running,
+kept the default 1hr-ago start, stepped duration to 45m via the quick chip (Ends label recomputed
+live to match), saved — landed on the workout summary showing Duration 45:00 / Active Min 45 /
+Calories 514 (MET engine, no HR samples in that historical window). Back on the Activity tab, the
+weekly-goal ring filled to 45 MIN and the TODAY list showed the new "Running · 45m" row, confirming
+`ActivityRollup.credit` ran (the fix the coach tool's refactor also gets for free, since it now
+shares this exact code path). `:app:assembleDebug` + `:app:testDebugUnitTest` green.
+
+**To resume:** continue Tier 3 at **#57e** (post-workout vitals backfill/reconcile — ring-log HR/
+SpO2 samples arriving after finish should still attach to the just-finished session's aggregates),
+then **#57g** (finished-workout notification card + Colmi decode robustness polish). Full detail in
+the port-queue rows above.
+
+### 2026-07-17 Tier 2 session — recon + #61a (branch `iOS_sync_2026-07-16`)
+
+Recon'd all five Tier 2 items against the real iOS diffs, then ported the cleanest (#61a). Re-scoped
+verdicts recorded in the tier list above: **#61f is mostly already-have** (Room Flows cover it; only
+`lastFullSyncAt`/`awaitSyncCompletion` survive, and both fold into #61c); **#61c** carries a
+background-BLE-sync risk; **#65 is L→XL**, not M (in-memory chat vs SwiftData; no WeatherKit on Android).
+
+**#61a Battery low/critical alerts — DONE `e5b68f6`.** Pure `BatteryAlertEngine` (thresholds 20/10,
+re-arm 25/15, most-severe latch, per-day `yyyy-MM-dd` reset, `1..100` guard) ported 1:1 from the Swift
+engine; all **8 iOS oracle tests** ported to `BatteryAlertEngineTest` and green. `BatteryAlertMonitor`
+collects `PulseEvent.BatteryLevel` off `PulseEventBus`, threads per-day latch state through
+SharedPreferences (`pulseloop.batteryalerts`), gated on `ApiKeyStore.batteryAlertsEnabled` (default ON,
+coach-independent — matches iOS "absent = enabled"). `BatteryNotifications` is a one-shot local
+notification on its own "Ring Battery" channel (id 2002, shared across severities so critical replaces a
+pending low), POST_NOTIFICATIONS-guarded (no-ops silently if ungranted — a background monitor can't
+prompt). Started from `PulseLoopApp` next to `persistence.start()`; channel created in `MainActivity`.
+Settings toggle added to `CheckInsSettingsScreen` as an independent card. `:app:assembleDebug` +
+`:app:testDebugUnitTest` green. **Runtime-verified on API-35 emulator:** app starts clean with the
+monitor wired (no crash/exception), the `ring_battery` notification channel is registered, and the
+"Ring battery alerts" card renders in Settings → Coach Check-Ins with its toggle **ON by default**
+(independent of the Daily-Check-in toggle, which was Off). Only unverified surface is the actual
+notification *delivery*, which needs a live ring `BatteryLevel` event. Files: `service/BatteryAlertEngine.kt`,
+`service/BatteryAlertMonitor.kt`, `notifications/BatteryNotifications.kt`, `settings/ApiKeyStore.kt`,
+`MainActivity.kt`, `ui/PulseLoopApp.kt`, `ui/screens/SettingsSubScreens.kt`,
+`test/.../service/BatteryAlertEngineTest.kt`.
+
+**#61b Battery history + drainage graph — DONE `b5fcbf4`.** `BatterySampleEntity` (id/percent/timestamp/
+createdAt, indexed on timestamp) + `BatterySampleDao.samplesBetween(start, end, limit)`; Room bumped
+v7→v8 with `MIGRATION_7_8` creating the table + index. `EventPersistenceSubscriber.recordBatterySample`
+throttles off the same `BatteryLevel` event that already updates `DeviceEntity` — in-memory
+`lastBatteryPercent`/`lastBatteryLogAt`, logs on change or a 30-min floor (first reading after each
+launch always logs, matching iOS). `BatteryHistorySection` composable in `WearableSettingsScreen`: a
+`SingleChoiceSegmentedButtonRow` 24h/7d picker over a fixed-`0.0..100.0` `ZoneLineChart`, zone-colored
+≤20 critical (red) / ≤50 low (amber) / else good (mint) — mirrors iOS `colorForValue` via `MetricZone`
+boundaries (`ZoneLineChart` matches `lower <= value < upper`, so cuts sit at 21/51). "Not enough data
+yet" text under 2 samples, matching `ZoneLineChart`'s own <2-sample no-op.
+**Runtime-verified on API-35, exercising the real migration path** (not just a fresh v8 create):
+installed the new build directly over an already-running v7 app/database (no uninstall), confirmed no
+crash and `PRAGMA user_version` = 8 with `battery_samples` present at the exact expected schema, and
+that pre-existing rows survived (`devices`=1, `measurements`=772 both intact). Seeded 8 synthetic
+`battery_samples` rows via on-device `sqlite3` (`run-as` + stdin, since `adb shell` re-parses quoted
+argv on the remote shell — piping the whole `run-as ... sqlite3` invocation as one `adb shell` string
+argument was what worked) spanning 82%→9%; the Wearable-settings chart rendered with correct zone
+coloring (mint dots >50, amber 21–50, a connected red segment for the last two <21 points within the
+90-min gap window) and the 24h/7d toggle switched without error. Files: `data/entity/CoreEntities.kt`,
+`data/dao/Daos.kt`, `data/PulseLoopDatabase.kt`, `service/EventPersistenceSubscriber.kt`,
+`ui/screens/SettingsSubScreens.kt`.
+
+**#61c Coach notification freshness — DONE `ce15582` (+`44351a4` dead-code cleanup).** Investigated
+`RingSyncCoordinator.kt` first: it already exposes a `syncProgress: StateFlow<Int?>` and the exact
+"await completion, bounded" pattern (`syncProgress.first { it == null || it >= 100 }` inside
+`withTimeoutOrNull`) is already used by `factoryResetRing`. But `CoachNotificationWorker` runs in a
+background `CoroutineWorker`, which doesn't share the foreground `RingSyncCoordinator` instance (that's
+`remember`-scoped to `PulseLoopApp`/Compose) — so the coordinator's `syncProgress` isn't reachable from
+a worker. Checked whether Android already had a *background* BLE-sync mechanism and found
+**`RingSyncWorker`** (`service/RingSyncWorker.kt`), a pre-existing periodic (30 min) WorkManager job that
+connects to the last-known ring and runs `engine.runStartup()` — exactly the primitive #61c needed,
+already shipped. `ensureFreshData()` in `CoachNotificationWorker` reuses that same connect/`runStartup`
+pattern directly (own private `RingBLEClient`, `bleClient.hasPermissions()` guard, `onConnected` callback
+wiring measurement settings + profile) and awaits `PulseEvent.SyncProgress(stage="done")` off the global
+`PulseEventBus` with `withTimeoutOrNull(15_000)` — 15s matching iOS's `syncWaitTimeout`. Skips the sync
+attempt entirely if `DeviceEntity.lastFullSyncAt` is under 10 min old (iOS `hasFreshFullSync`). Always
+proceeds to build+send afterward regardless of whether the sync completed — iOS's default
+`StaleDataPolicy.sendWithLastKnown`. **Deliberately did not port** iOS's hard "skip entirely if the store
+has zero measurements ever" guard: added a `MeasurementDao.hasAny()` for it, then decided Android's
+existing "always send a friendly fallback" behavior is arguably better UX than suppressing the
+first-run notification outright — removed the now-dead-code query in a follow-up commit rather than
+leave it unwired.
+
+The actual bug fix: `DeviceEntity.lastFullSyncAt` (`MIGRATION_8_9`, v8→v9), stamped **only** on
+`SyncProgress("done")` in `EventPersistenceSubscriber` (previously a no-op branch) — unlike `lastSyncAt`,
+which `RingSyncCoordinator` re-stamps on every bare `CONNECT` before any data streams (confirmed Android
+had the identical latent bug iOS fixed). `NotificationContextBuilder`'s >12h staleness warning switched
+from `lastSyncAt` to `lastFullSyncAt`.
+
+**Runtime-verified on API-35, real v8→v9 upgrade**: installed over the already-running v8 app (not a
+fresh install) — confirmed `PRAGMA user_version`=9, `devices` table has the new `lastFullSyncAt INTEGER`
+column via `.schema`, and every prior table's data survived (`devices`=1, `measurements`=772,
+`battery_samples`=8, including #61b's synthetic seed rows from the prior migration test). Exercised the
+worker itself by enabling the Check-Ins toggle (→ `CoachNotifications.schedule()`) and force-firing the
+underlying JobScheduler job via `adb shell cmd jobscheduler run -f com.pulseloop.debug <jobId>` — first
+with no API key (took the early scripted-fallback branch, posted successfully), then again after saving
+a dummy key via the AI Coach settings screen (routes through `ensureFreshData` + `NotificationContextBuilder`
++ the failed-AI-call → `scripted()` fallback). Zero crashes across 4 total forced executions. Confirmed
+`connectLastKnown()`'s `lastKnownIdentifier ?: return` guard explains the lack of observable BLE log
+output on this hardware-less emulator (safe no-op, not a bug) — the connect/timeout/disconnect sequence
+itself was not independently observed executing; needs a real ring to verify end-to-end. Files:
+`data/entity/CoreEntities.kt`, `data/dao/Daos.kt`, `data/PulseLoopDatabase.kt`,
+`service/EventPersistenceSubscriber.kt`, `notifications/NotificationContextBuilder.kt`,
+`notifications/CoachNotifications.kt`.
+
+**Adb/sqlite3 gotcha confirmed again this session:** `adb shell run-as ... sqlite3 dbfile "SQL"` still
+needs the whole invocation as one string passed to `adb shell "..."` — passing it as separate local
+double-quoted args (even correctly locally-quoted) gets re-split by the remote shell and fails with
+`syntax error: unexpected '('` or `Error: in prepare, incomplete input`.
+
+### 2026-07-17 port session (branch `iOS_sync_2026-07-16`)
+
+Worked Tier 1 high-value-first. Both landed items build clean (`:app:compileDebugKotlin`) and the
+full unit suite is green; 3 new tests added. Committed as `d760c24` (#35) and `09e9122` (#43).
+
+- **#35 Physiology settings screen — DONE** (`d760c24`). New `PhysiologySettingsScreen` (Settings → General →
+  Physiology): athlete-mode toggle, unit-aware altitude field, beta-blocker + lung-condition
+  tri-state segmented rows, glucose-unit picker. Persisted to **`ApiKeyStore`** (not Room) — matches
+  where `unitSystem` + calibration already live, so no migration. `UserPhysiologyProfile.fromProfile`
+  extended with the five inputs (defaulted → existing callers unaffected); a private
+  `ApiKeyStore?.physiologyProfile(age, sex)` extension wires the three build sites (Vitals/widget
+  `buildState`, `VitalDetailViewModel` init + refresh). Save republishes the widget snapshot.
+  Files: `ApiKeyStore.kt`, `service/VitalsZoneModel.kt`, `ui/viewmodels/ViewModels.kt`,
+  `ui/screens/SettingsSubScreens.kt`, `ui/screens/SettingsScreen.kt`, `ui/PulseLoopApp.kt`.
+- **#43 §2 + §3 — DONE** (`09e9122`). §3 dashboard glucose card was already unit-aware; #35's glucose-unit
+  wiring makes it live. Detail chart: `VitalDetailViewModel.convert()` now applies the mg/dL→mmol/L
+  unit (was offset-only); new `displayThresholds()` in Screens.kt converts the chart's zone
+  bands + y-axis for **temp (°F) and glucose (mmol/L)** so they match the plotted line (was the §2
+  bug: °F points on a °C axis); `zoneRangeText`/`formatStat` extended to glucose units. Shared
+  `GlucoseUnit.fromMgdl()` added. Tests: `VitalsZoneModelTest` (fromProfile passthrough + defaults,
+  glucose conversion).
+
+**⚠️ Triage correction — #61 is not a small item.** Pulling the diff for the "Activity UI
+sync-alerts bugfix" row revealed the PR (`39b611f`) is ~1188 insertions across 34 files bundling
+several unrelated features: a new **BatteryAlertMonitor** (+172 + 3 test files), a **battery-drainage
+history + graph**, a **sleep-page coach-card reposition**, coach-notification changes, and assorted
+bugfixes — the activity sync-alert fix is one slice. The ledger's "S / activity sync-alerts bugfix"
+under-describes it badly. **Re-triaged into #61a–f** (see port-queue rows): #61a battery alerts (M),
+#61b battery history + graph (M), #61c coach-notification improvements (M), #61d workout-history day
+grouping (S), #61e sleep coach-card position (S), #61f sync-event plumbing + misc bugfixes (M).
+Android has **no battery alerts/history at all** (#61a/#61b are net-new), its workout history isn't
+day-grouped yet (#61d), and its `SleepScreen` already has a coach card (#61e is a position check).
+Nothing from #61 ported yet — the M-sized pieces moved to Tier 2, the two S slices stay Tier 1.
+
+### 2026-07-16 triage (since `b3697c0` → `4dae095`, 48 commits / 9 first-parent)
+
+Nine PR merges. One new ring family (#90, XL), two sleep features (#83/#84 + #85 seed), a
+measurement robustness rework (#66), a reactivity bundle (#88), an onboarding polish (#75),
+plus iOS-26 glass (#89, skip) and one fix Android already shipped (#87). None depend on the
+sleep-sync reliability work; sequence them behind it as before.
+
+**Relevant → port:**
+
+- **#66 Measure HR/SpO₂ robust measurement** (`4dae095`, L) — the headline behavioral fix. iOS added
+  `HRSampleWindow`, which owns two rules a spot HR reading must pass: **(1) warm-up echo discard** —
+  the ring replies with its *last stored* bpm the instant the manual-HR command is sent, so everything
+  in the first **5 s** is dropped (else a measurement "succeeds" in two seconds on an hours-old number);
+  **(2) a consistency gate** — need ≥6 samples, and ≥60% must sit within ±8 bpm of the median, else it
+  reports **nothing** and asks for a retry (a plausible-but-untrustworthy HR is worse than an honest
+  retry). Plus a **contact-gap** abort (>3 s between samples = ring slipped) and `measurementReceivedReading`
+  distinguishing a fresh reading from the stale on-screen value. Android's "Measure Vitals" sweep
+  (recent `56ff` single-sweep work) almost certainly accepts the cached echo and doesn't gate on scatter
+  — **check `RingSyncCoordinator`/measurement path in the android/ repo and port these rules as Kotlin.**
+  The countdown-modal UI redesign (`MeasurementModal`/`MeasurementRingView`/`VitalsResultsView`) is the
+  ADAPT half — port the robustness first, the modal chrome can follow.
+- **#83 Multi-session sleep + Day carousel** (`2367d23`, L, ADAPT) — iOS now splits a *waking day's*
+  sleep into distinct sessions (main night vs. daytime naps) wherever there's a **≥60-min gap** between
+  stage blocks, then reconciles SwiftData rows with **stable identity** (match each segment to the
+  existing row whose prior range overlaps, so a nap syncing before its night doesn't reshuffle ids),
+  and pages them in a **Day carousel**. Pure logic lives in `SleepSegmentation.segment()`; the
+  SwiftData reconcile (`SleepService.reconcileWakingDay`, idempotent, no-op on unchanged days) is the
+  adapt target. **This changes Android's one-session-per-waking-day model** (the #15 port keys a single
+  session per waking day) — ADAPT the segmentation as a pure Kotlin function + a Room reconcile that
+  preserves session ids, and add the carousel to `SleepScreen` Day view.
+- **#84 Sleep Day navigation** (`8b86e5c`, M) — page between days on the Sleep › Day view (prev/next
+  day arrows). Android's Day view anchors on the 4 AM reference night but (verify) has no day paging.
+  Straightforward once #83's per-day session model is in place; can land independently for the single-
+  session case too.
+- **#85 Multi-session sleep seed** (`9093e9b`, S) — adds multi-session (night + nap) days to the demo
+  seed so the #83 carousel has something to show. Android's `DemoDataSeeder` is 1:1 with `SeedData.swift`,
+  so mirror it — but **only after #83** lands the segmentation/reconcile (the seeded blocks must split
+  the same way). Watch the demo-id hazard from the 2026-07-06 review (demo nights use `demo-sleep-<day>`
+  ids, must not collide with real synced sessions).
+- **#90 LuckRing/TK18 ring support** (`9d05481`, XL) — a whole new ring family on the **Coolwear "K6"
+  protocol** (company ID `0xFF64`, GATT service `f618`, notify `b001`/write `b002`, fixed **20-byte**
+  packets, CRC disabled, no crypto; binding via a MixInfo TLV bundle, dataType 110). New Swift surface:
+  `LuckRingProtocol/Decoder/Encoder/Driver/SyncEngine/HistorySync/Coordinator` + `WearableModel`
+  `luckring-tk18` (advertises `^TK18([ _-].*)?$`, family `.luckRing`, HR·SpO₂·HRV·Temp·BP·Sleep·Steps)
+  + product image + a big test suite. **Only TK18 is hardware-tested** in the whole `0xFF64` family, so
+  iOS marks it `.limited` (untested siblings still pair via strong-signal match with generic art) —
+  carry that caveat. PORT into Android's `WearableModel` catalog + a new sync engine if we want LuckRing
+  on Android; large, lower priority than the sleep/measure work. **Side note relevant to queued #82:**
+  this PR also promotes `colmiSmartHealth` from `.limited` → **`.full`** (the YCBT SmartHealth-Colmi is
+  now proven on real hardware), so #82's "unconfirmed on hardware" caveat is partly retired.
+- **#88 Data reactivity** (`e937a39`, S, ADAPT) — a bundle of "stale screen" fixes: **(a)** coach
+  activity edits (`ActionTools.applyUpdatesNow`) now route type/time changes through
+  `ActivityService.applyEdit` so duration/distance/calories aggregates + the sample window stay
+  consistent instead of the view keeping old values (was setting fields directly); **(b)** `TodayStore`
+  folds the **goal targets** into its summary signature so a goal edit refills the rings immediately;
+  **(c)** `MetricDetailView` observes `PulseDataChange` to re-fetch when a background sync lands while
+  open; **(d)** `GoalsSettingsView` fires `PulseDataChange.notify()` on save. **Verify each against the
+  android/ Kotlin** — Android's reactive `TodayViewModel`/Flow model may already cover some (e.g. Room
+  Flows auto-refresh the detail screen); the coach-edit-aggregates one (a) is the most likely real gap
+  (check Android's `PendingActionExecutor`/coach edit path recomputes aggregates).
+- **#75 Onboarding polish** (`5390a95`, S, PARTIAL) — **fit-to-viewport** (`OnboardingFittedBand`
+  measures height, scales content 0.80–1.06 so steps 1/2/5 never scroll or clip on SE/mini, falls back
+  to a ScrollView at accessibility Dynamic Type sizes) + **copy polish** + a **celebratory finale**.
+  The fit-to-viewport is iOS `GeometryReader` layout mechanics — Compose handles responsive sizing
+  natively, so that part is largely N/A. Port the **copy tweaks + the finale animation** into Android's
+  `OnboardingFlow` (from #48) if we want the polish; low priority.
+
+**Already have / no Android bug (verified):**
+
+- **#87 Colmi quarter-hour activity buckets** (`cfa8109`) — iOS bug: `ColmiDecoder` mapped the
+  quarter-of-day slot to `hour = q/4, minute = 0`, collapsing all four quarters of an hour onto `HH:00`
+  so three of every four buckets overwrote each other (up to ~75% step undercount). **Android already
+  fixed exactly this** — it's the "Activity history slices collapsed to hour granularity" entry in the
+  Android-originated fixes below (`hour = idx/4, minute = (idx%4)*15`). iOS has now caught up; nothing to
+  port. Validation that Android led here.
+
+**Skip (iOS-only / already-covered):**
+
+- **#89 iOS-26 Liquid Glass rendering** (`0a8ab4e`, +227) — Liquid Glass correctness (glass containers,
+  tile-flash-on-re-render fixes) + Dynamic Type accessibility. **SKIP as a visual language** (standing
+  policy — Android keeps its own surfaces). Two portable ideas already covered elsewhere: caching heavy
+  `buildTodaySummary` off the render path is an iOS SwiftUI `@Query` re-render problem (N/A to Compose,
+  which doesn't re-run the whole body on data change), and `ActivityView` now observing `PulseDataChange`
+  is the same reactivity theme as **#88** — fold any Activity-refresh gap into the #88 ADAPT.
+- **Local `0d1b965`** "seed: month of demo workouts + 30-day vitals series" — an *Android-side* / local
+  demo commit sitting on top of the pulled `4dae095`, not an upstream item. Not triaged.
+
+### 2026-07-16 port session (branch `iOS_sync_2026-07-16`)
+
+Worked the queue high-value-first, small/verified units. All commits build; full unit
+suite green (402 tests, 0 failures).
+
+- **#66** measure robustness → `36da8f2` (HRSampleWindow: warm-up echo discard, contact-gap
+  abort, median/majority gate; pure class + unit tests). Modal chrome redesign deferred.
+- **#54** MiniMax coach provider → `22d1ecc` (full provider: client, presets, store, resolver,
+  Settings row + tests).
+- **#42** Today coach-card dedup → `3e14fef`.
+- **#71** Colmi R08 + **#63** jring "HR" label → `be74a19`.
+- **#41** status pill, **#24** coach scheduler, **#88** reactivity → verified **no-op / already-have**
+  (see rows). **#74** deferred (cosmetic, doesn't map to Android's settings structure).
+
+Value-first second pass:
+- **#64 complete** (highest value): `8f51349` (stage 1 — prefs store + pure logic + 24 tests) +
+  `1075586` (stages 2–3 — reactive wiring into Today/Vitals + discrete edit-mode UI: a Customize
+  button enters edit mode, cards get a hide badge + up/down move controls over a tap-scrim, a
+  Hidden tray restores, a Done bar exits). Chose discrete move/hide over free-form drag (Compose
+  has no reorderable grid + no drag lib). **#70 subsumed** — the screens read the prefs StateFlow,
+  so a visibility/order change recomposes immediately with no summary-signature machinery.
+- **#43 partial**: live record pace/distance shipped `4075752`; **§2** temp detail-chart zone/axis
+  conversion + **§3** glucose mmol/L end-to-end remain (both narrow; mostly-already-done per triage).
+
+Still open: **#83/#84/#85** sleep now shipped (`0d7212c`). For the current ranked open queue see
+**[Port priority — open items](#port-priority--open-items-as-of-2026-07-16)** above (the single
+source of truth); this paragraph is retained as the historical end-of-session state.
+
+Note: #64's edit-mode UI was **runtime-verified on an API-35 arm64 emulator** (com.pulseloop.debug):
+Today + Vitals render through the new card-dispatch, and the full flow works — Customize enters edit
+mode, the "–" badge hides a card into the Hidden tray, "+" restores it to its saved position,
+up/down reorder (with correct first/last chevron gating), and Done persists the new order. No crashes.
+Also confirmed live: #42 (single top coach card) and #41 ("Disconnected" pill).
+
+### 2026-07-16 gap found: Physiology settings screen (retro-add to #35)
+
+Reviewing the #74 defer, found the **Physiology settings screen was never ported** — it's a
+distinct gap, not the cosmetic #74 relocation. Origin: iOS commit `78ca593`, a sub-surface of
+the **XL #35 vitals-dashboard redesign** (merged `f0a4aee`, 07-01). Android's #35 port took the
+*engine* — `service/VitalsZoneModel.kt#UserPhysiologyProfile` already carries all five inputs
+(`athleteMode`, `altitudeMeters`, `usesBetaBlockers`, `hasKnownLungCondition`, `preferredGlucoseUnit`)
+and `VitalsThresholdEngine` reads athlete-mode + altitude — but **not the Settings screen that
+feeds them**. Result: the fields are wired but permanently defaulted — every construction site is
+`UserPhysiologyProfile.fromProfile(age, sex)` (ViewModels.kt:597/792/950), which fills only age+sex,
+and `UserProfileEntity` has no columns for the rest. So athlete mode / altitude / beta-blockers /
+lung condition are unreachable, and glucose-unit selection is the still-open **#43 §3**.
+
+Why it hid: the ledger triages at PR granularity, and this screen arrived *inside* an XL PR
+rather than as its own row — "#35 dashboard = done" was true, but nothing tracked its Physiology
+sub-screen. #74's note ("Android has no Physiology route") then mistook the missing route for an
+intentional structural difference and deferred, instead of flagging the route itself as unported.
+**To port (S–M):** add the physiology columns to `UserProfileEntity` (+ migration), extend
+`fromProfile` to read them, and build a `PhysiologyScreen` under Settings → General. Folds in
+#43 §3 (glucose unit). Added as its own queue row above. **✅ Resolved 2026-07-17** — the screen
+persists to `ApiKeyStore` rather than Room `UserProfileEntity` (matching Android's existing
+units/calibration convention), so no migration was needed; see the 2026-07-17 port session.
+
+### 2026-07-14 triage (since `e00c24b` → `b3697c0`, 29 commits / 9 first-parent)
+
+Nine first-parent items: 7 PR merges + 2 direct doc commits. Two are substantial
+(#82 YCBT rings, #80 Apple Health); the rest are small fixes, docs, or CI.
+
+**Relevant → port:**
+
+- **#82 YCBT protocol rebuild** (`902c449`, XL) — the headline item. iOS rebuilt TK5 on the
+  **Yucheng YCBT** protocol (`be940` GATT service) and, on the same driver, added
+  **SmartHealth-app Colmi rings** (new model `colmi-r99`, advertises `R99 <4hex>`,
+  family `.colmiSmartHealth`). The design insight to port: **a Colmi ring ships with *either*
+  the QRing firmware (the Yawell/GadgetBridge protocol Android already speaks) or the
+  SmartHealth firmware (YCBT) — and the BLE name doesn't reliably say which.** So pairing now
+  asks the user which app the ring came with (`RingAppVariant` .qring/.smartHealth picker on
+  the model card), and a wrong pick surfaces a one-tap "try the other app" retry
+  (`RingAppVariant.other` + a targeted error message). New Swift surface: `YCBTProtocol`,
+  `YCBTDecoder/Encoder/Driver`, `YCBTHealthRecords`, `YCBTHistoryTransfer`, `YCBTSyncEngine`,
+  `YCBTSettingsEncoder`, plus `RingSyncCoordinator` (+244) and `WearableModel` (+213) app-variant
+  wiring, and a big test suite (YCBT*Tests replace the deleted `TK5DecoderTests`). **This
+  obsoletes queued #56** (the old SmartHealth-only TK5 approach) — port #82's YCBT architecture
+  instead of #56. ADAPT to Android's `WearableModel` catalog + `RingSyncCoordinator`; the
+  app-variant picker maps to the pairing carousel. Gauge value scales are still unconfirmed on
+  real TK5 hardware (iOS labels it "Limited support") — carry that caveat over.
+- **#79 Activity Year trends avg** (`952cf4f`, S) — for the in-progress current month, divide the
+  month's total by *elapsed* days (`day-of-month`), not the full 30/31, else the current month's
+  per-day bar + the headline average read low. Android has **no `ActivityTrends`/Year activity
+  view yet** (only Sleep has Day/Week/Month/Year), so there's nothing to fix today — **apply this
+  rule when the activity trends screen is built.** Its sibling, `dailyAverage`, is the same
+  elapsed-days idea.
+- **#70 Settings visibility reactivity** (`ac2b81a`, S) — Today/Vitals refresh signatures must
+  fold in the per-metric visibility + chart-resolution prefs so a Settings toggle rebuilds the
+  tab immediately instead of waiting for an unrelated sync to bump the signature. **BLOCKED:**
+  Android has no `hiddenMetrics`/`MetricPrefs`/per-metric visibility at all (confirmed — the
+  symbols don't exist), so this is a no-op until **#64 (long-press reorder/hide)** lands the
+  visibility store. Port #70's signature change *as part of* #64.
+
+**Already have / no Android bug (verified against the Kotlin source):**
+
+- **#68 coach weekly avg steps** (`8353227`) — iOS bug: `steps7d` is a zero-filled 7-slot
+  scaffold, so averaging over `.count` (always 7) understates; fix divides by `daysAvailable`.
+  Android's `CoachContextBuilder.build()` uses `activityDailyDao().recent(7)` — **only real rows,
+  not zero-filled** — and passes the raw `steps7d` list plus `daysAvailable` (days with steps>0)
+  to the packet rather than pre-averaging. The specific bug is absent. Nit to keep in mind: if a
+  downstream consumer ever averages `steps7d`, divide by `daysAvailable`, not `size`.
+- **#69 coach history recency** (`8837f8a`) — iOS bug: a `fetchLimit=40` ascending SwiftData
+  query capped replayed context at the *oldest* 40 messages, freezing the coach past message 40;
+  fix fetches newest-40 descending then re-sorts. Android's live `CoachViewModel.sendMessage`
+  builds `prior` from the **in-memory** `_state.value.messages` (full thread, no limit, already
+  chronological), so the bug can't occur on the send path. Note: Android *has since added*
+  persisted `coach_conversations`/`coach_messages` tables (`CoachMessageDao`, memory
+  "threads in-memory only" is now stale) — **if** a persisted-history browser ever replays via
+  `forConversation` with a `LIMIT`, sort **DESC then reverse**, per #69.
+
+**Skip (iOS-only / docs / CI):**
+
+- **#80 Apple Health sync** (`c1275ad`, +1,887) — HealthKit read/write with per-type toggles,
+  workout export, and profile import. **Intentional iOS-only divergence** (HealthKit-adjacent).
+  The Android analogue would be **Health Connect** — not queued, but if Android ever wants
+  wearable→platform sync, this PR is the reference design (per-type prefs store, workout
+  exporter, profile importer, sync publisher). SKIP for now.
+- **#81 contributors automation** (`32dfbe3`) — GitHub Action + `update_contributors.py` +
+  README/docs. Repo governance; the Android repo has its own. SKIP.
+- **`b3697c0`** (move YCBT spec out of docs site, add Discord to About) and **`0f500fc`**
+  (jring firmware URLs, drop stale TK5 protocol notes) — docs. SKIP.
 
 ### 2026-07-10 triage (since #44 / `80195a6` → `e00c24b`, 99 commits / 15 first-parent)
 
@@ -350,6 +1220,7 @@ main-thread access from a background worker, and Room calls on the right dispatc
 |--------|-------|------|
 | [#20](https://github.com/saksham2001/PulseLoopiOS/pull/20) `6fe428f` | Perf re-architecture (event bus, decoupled persistence, memoized today-summary) | Android already built this way: `PulseEventBus` (SharedFlow), `EventPersistenceSubscriber`, `RingSyncCoordinator`, reactive `TodayViewModel` |
 | [#32](https://github.com/saksham2001/PulseLoopiOS/pull/32) `3e855ac` | 56ff low-level protocol (user profile, BP calibration, bind handshake, combined measurement, keepalive/watchdog) | This was iOS porting **Android's** work upstream — Android is the origin |
+| [#87](https://github.com/saksham2001/PulseLoopiOS/pull/87) `cfa8109` | Colmi quarter-hour activity-bucket offset (up to ~75% step undercount) | iOS adopting **Android's** fix — Android decoded true 15-min slice starts first (see Android-originated fixes) |
 
 ## Skipped (iOS-only / docs / CI / release)
 
@@ -360,7 +1231,10 @@ main-thread access from a background worker, and Room calls on the right dispatc
 | [#47](https://github.com/saksham2001/PulseLoopiOS/pull/47) [#46](https://github.com/saksham2001/PulseLoopiOS/pull/46) [#39](https://github.com/saksham2001/PulseLoopiOS/pull/39) | Release-IPA CI workflow + fixes | iOS CI |
 | [#45](https://github.com/saksham2001/PulseLoopiOS/pull/45) [#37](https://github.com/saksham2001/PulseLoopiOS/pull/37) [#28](https://github.com/saksham2001/PulseLoopiOS/pull/28) [#23](https://github.com/saksham2001/PulseLoopiOS/pull/23) | Sideloading guide, iOS-vs-Android refresh, MkDocs site, README updates | Docs |
 | [#7](https://github.com/saksham2001/PulseLoopiOS/pull/7) `c9897c9` | OSS setup (templates, SwiftLint, CI) | Repo governance; Android repo has its own |
-| `25e49fd` `577c5f3` `35d1aa7` `ee42b10` | Direct commits: docs/screenshots/tagline | Docs |
+| [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | Apple Health sync (per-type toggles, workout export, profile import) | HealthKit — intentional iOS-only divergence. Android analogue is **Health Connect**; use this as the reference design if ever wanted |
+| [#81](https://github.com/saksham2001/PulseLoopiOS/pull/81) `32dfbe3` | Automated contributor recognition (Action + script + README) | Repo governance; Android repo has its own |
+| [#89](https://github.com/saksham2001/PulseLoopiOS/pull/89) `0a8ab4e` | iOS-26 Liquid Glass rendering correctness + Dynamic Type a11y | Glass is an iOS visual language (standing SKIP); portable reactivity bit folds into #88 |
+| `25e49fd` `577c5f3` `35d1aa7` `ee42b10` `b3697c0` `0f500fc` | Direct commits: docs/screenshots/tagline/YCBT-spec/Discord/jring-URLs | Docs |
 
 ---
 
@@ -417,6 +1291,15 @@ upstream — each entry says what changed here and whether iOS should look at it
   generic family label. Android now falls back to the stored value on null (DB side) and
   retains the pref when the previous model's family matches the connected device (BLE side).
   iOS #49's resolve has the same null path; check its persistence behavior.
+- **Finishing a paused workout counts the trailing pause as active time (fixed on Android
+  2026-07-20, `dc1513b`).** iOS's `totalPauseSeconds` only advances at *resume*
+  (`ActivityRecorderService.resume`), so finishing from a paused state leaves the pause→finish
+  span in the active duration, inflating duration/active-minutes/calories. Android's `finish()`
+  now banks that span (`pauseCarry`) before recomputing — deliberate divergence from iOS.
+- **An OpenRouter slug can leak into MiniMax requests (spotted in the PR #28 review, unfixed on
+  both).** iOS's `CoachSettings.minimaxModel` is computed over the single shared `model` string
+  (`CoachSettings.swift:202-205`), so a slug set for another provider reaches MiniMax. Android
+  persists a dedicated per-provider field and is not affected; no Android change needed.
 
 **Android-only (platform-specific, no iOS action expected):**
 

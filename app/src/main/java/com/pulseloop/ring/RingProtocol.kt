@@ -63,6 +63,39 @@ enum class RingCommandID(val code: UByte) {
 }
 
 /**
+ * Ported from [JringBandCapabilities] in RingProtocol.swift.
+ * The ring's self-reported feature bitmask (0x20 reply, vendor `getBandFunction`). The vendor app
+ * gates its history-sync chain on these bits.
+ *
+ * The *bit indices* are verified against the vendor app; the *bit ordering within each byte*
+ * (LSB-first assumed here) is inferred and must be confirmed against a real ring's reply before
+ * anything depends on it. Until then, an absent/misdecoded bitmask degrades to "no extra
+ * features", which is the safe direction.
+ */
+data class JringBandCapabilities(val bytes: ByteArray) {
+    fun bit(index: Int): Boolean {
+        val byte = index / 8
+        if (byte >= bytes.size) return false
+        return (bytes[byte].toInt() and (1 shl (index % 8))) != 0
+    }
+
+    val hasTemperature: Boolean get() = bit(10)
+
+    /** SpO₂ uses the dedicated 0x3E command rather than the 0x23 mode selector. */
+    val separateBloodOxygenMode: Boolean get() = bit(65)
+    val hasOxygenOfflineHistory: Boolean get() = bit(81)
+    val hasPressureHistory: Boolean get() = bit(83)
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JringBandCapabilities) return false
+        return bytes.contentEquals(other.bytes)
+    }
+
+    override fun hashCode(): Int = bytes.contentHashCode()
+}
+
+/**
  * Ported from [RingPacket] in RingProtocol.swift.
  * Fixed 20-byte packet: command ID byte + 19 payload bytes.
  */

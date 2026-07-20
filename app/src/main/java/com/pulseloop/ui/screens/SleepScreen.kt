@@ -6,9 +6,21 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.service.SleepBar
 import com.pulseloop.service.SleepFormat
@@ -64,7 +77,7 @@ fun SleepScreen(
         item {
             SleepRangeSelector(state.range) { viewModel?.setRange(it) }
         }
-        if (state.range == SleepRangeKey.DAY) dayItems(state, navController)
+        if (state.range == SleepRangeKey.DAY) dayItems(state, navController, viewModel)
         else aggregateItems(state, navController)
         item { Spacer(Modifier.height(64.dp)) }
     }
@@ -75,56 +88,39 @@ fun SleepScreen(
 private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
     state: SleepViewModel.SleepState,
     navController: androidx.navigation.NavController?,
+    viewModel: SleepViewModel?,
 ) {
-    val night = state.lastNight
-    if (night != null) {
-        item {
-            SleepHeroCard(
-                label = "Last Sleep",
-                value = SleepFormat.duration(night.totalMinutes),
-                support = "${clockTime(night.startAt)} to ${clockTime(night.endAt)}",
-                score = state.score?.score,
-                scoreLabel = state.score?.label?.let { qualityText(it) },
-            )
-        }
-        item {
-            VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
-                SleepHypnogram(
-                    blocks = state.lastNightBlocks,
-                    totalMin = night.totalMinutes,
-                    startTs = night.startAt,
-                )
-            }
-        }
-        item {
-            val byStage = state.lastNightBlocks.groupBy { it.stageRaw }
-                .mapValues { (_, blocks) -> blocks.sumOf { it.durationMinutes } }
-            SleepStageSummaryCards(
-                deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
-                light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
-                awake = SleepFormat.duration(byStage["AWAKE"] ?: 0),
-            )
-        }
-    } else {
-        val noData = SleepInsights.noDataState(SleepRangeKey.DAY)
-        item { SleepHeroCard(label = noData.label, value = noData.value, support = noData.support, score = null, scoreLabel = null, noData = true) }
-        item {
-            VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = false) {
-                Column(
-                    Modifier.fillMaxWidth().height(180.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text("No sleep recorded", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary)
-                    Text(
-                        "Wear your ring overnight to see your hypnogram here.",
-                        fontSize = 12.sp, color = PulseColors.textMuted,
-                    )
+    // Date stepper: ‹ older · date · newer › (iOS #84).
+    item { SleepDayNavHeader(state, viewModel) }
+
+    val sessions = state.daySessions
+    when {
+        sessions.isEmpty() -> {
+            val noData = SleepInsights.noDataState(SleepRangeKey.DAY)
+            item { SleepHeroCard(label = noData.label, value = noData.value, support = noData.support, score = null, scoreLabel = null, noData = true) }
+            item {
+                VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = false) {
+                    Column(
+                        Modifier.fillMaxWidth().height(180.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text("No sleep recorded", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary)
+                        Text(
+                            "Wear your ring overnight to see your hypnogram here.",
+                            fontSize = 12.sp, color = PulseColors.textMuted,
+                        )
+                    }
                 }
             }
+            item { SleepStageSummaryCards(deep = "—", light = "—", awake = "—") }
         }
-        item { SleepStageSummaryCards(deep = "—", light = "—", awake = "—") }
+        // Single session: render exactly as before, no carousel chrome.
+        sessions.size == 1 -> sessionPageItems(sessions[0], state.dayBlocks[sessions[0].id] ?: emptyList())
+        // Multiple sessions (night + naps): horizontal paged carousel with dot indicators.
+        else -> item { SleepCarousel(sessions, state.dayBlocks) }
     }
+
     item {
         val summary = state.daySummary
         val fallback = state.coach
@@ -134,6 +130,101 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
             chips = summary?.let { parseChipsJson(it.chipsJSON) } ?: fallback?.chips ?: emptyList(),
             onTap = { navController?.navigate("coach") },
         )
+    }
+}
+
+/** One session's card stack: hero + hypnogram + three stage cards. Emitted as separate LazyColumn
+ *  items so a single-session day scrolls identically to the pre-carousel layout. */
+private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
+    session: SleepSessionEntity,
+    blocks: List<SleepStageBlockEntity>,
+) {
+    item { SessionHero(session, blocks) }
+    item {
+        VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
+            SleepHypnogram(blocks = blocks, totalMin = session.totalMinutes, startTs = session.startAt)
+        }
+    }
+    item {
+        val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
+        SleepStageSummaryCards(
+            deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
+            light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
+            awake = SleepFormat.duration(byStage["AWAKE"] ?: 0),
+        )
+    }
+}
+
+/** Hero card for one session, with its score computed from that session's own blocks. */
+@Composable
+private fun SessionHero(session: SleepSessionEntity, blocks: List<SleepStageBlockEntity>) {
+    val score = remember(session.id, blocks) { com.pulseloop.service.SleepScore.calculate(session, blocks) }
+    SleepHeroCard(
+        label = "Last Sleep",
+        value = SleepFormat.duration(session.totalMinutes),
+        support = "${clockTime(session.startAt)} to ${clockTime(session.endAt)}",
+        score = score.score,
+        scoreLabel = qualityText(score.label),
+    )
+}
+
+/** Horizontal paged carousel across a day's sleep sessions, with a per-page header and dot row. */
+@Composable
+private fun SleepCarousel(
+    sessions: List<SleepSessionEntity>,
+    blocksBySession: Map<String, List<SleepStageBlockEntity>>,
+) {
+    // Reset to the first page whenever the day's session set changes (a different day / fewer
+    // pages): keying the composable recreates the pager state.
+    val sessionsKey = sessions.joinToString(",") { it.id }
+    androidx.compose.runtime.key(sessionsKey) {
+    val pagerState = rememberPagerState { sessions.size }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth().wrapContentHeight(),
+            verticalAlignment = Alignment.Top,
+            pageSpacing = 12.dp,
+        ) { page ->
+            val s = sessions[page]
+            val blocks = blocksBySession[s.id] ?: emptyList()
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(
+                    "${page + 1} of ${sessions.size} · ${clockTime(s.startAt)}–${clockTime(s.endAt)}".uppercase(),
+                    fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.8.sp, color = PulseColors.textSecondary,
+                )
+                SessionHero(s, blocks)
+                VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
+                    SleepHypnogram(blocks = blocks, totalMin = s.totalMinutes, startTs = s.startAt)
+                }
+                val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
+                SleepStageSummaryCards(
+                    deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
+                    light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
+                    awake = SleepFormat.duration(byStage["AWAKE"] ?: 0),
+                )
+            }
+        }
+        // Page indicator dots.
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            repeat(sessions.size) { i ->
+                Box(
+                    Modifier
+                        .padding(horizontal = 4.dp)
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (i == pagerState.currentPage) PulseColors.accent
+                            else PulseColors.textSecondary.copy(alpha = 0.3f),
+                        ),
+                )
+            }
+        }
+    }
     }
 }
 
@@ -536,6 +627,146 @@ private fun SleepDurationHistogram(
             }
         }
     }
+}
+
+// ─────────────────────────── Day navigation (iOS #84) ───────────────────────────
+
+/** ‹ older · [Today ▾] · newer › date stepper above the Day content. Horizontal swipe is owned by
+ *  the session carousel, so days move only via the chevrons or the date picker. */
+@Composable
+private fun SleepDayNavHeader(state: SleepViewModel.SleepState, viewModel: SleepViewModel?) {
+    var showPicker by remember { mutableStateOf(false) }
+    val canOlder = state.dayOffset < state.maxDayOffset
+    val canNewer = state.dayOffset > 0
+
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        NavChevron(Icons.Filled.ChevronLeft, "Previous day", canOlder) { viewModel?.stepDay(older = true) }
+        Column(
+            Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable { showPicker = true }
+                .padding(vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                dayLabel(state.shownDayMillis),
+                fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary,
+            )
+            val sub = daySubLabel(state.shownDayMillis)
+            Text(
+                sub.ifEmpty { " " },
+                fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                letterSpacing = 0.5.sp, color = PulseColors.textSecondary,
+            )
+        }
+        NavChevron(Icons.Filled.ChevronRight, "Next day", canNewer) { viewModel?.stepDay(older = false) }
+    }
+
+    if (showPicker) {
+        SleepDayPickerDialog(
+            shownDayMillis = state.shownDayMillis,
+            maxDayOffset = state.maxDayOffset,
+            onDismiss = { showPicker = false },
+            onPick = { viewModel?.jumpToDay(it); showPicker = false },
+        )
+    }
+}
+
+@Composable
+private fun NavChevron(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon, contentDescription = label,
+            tint = if (enabled) PulseColors.textPrimary else PulseColors.textMuted.copy(alpha = 0.4f),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SleepDayPickerDialog(
+    shownDayMillis: Long,
+    maxDayOffset: Int,
+    onDismiss: () -> Unit,
+    onPick: (Long) -> Unit,
+) {
+    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    val floor = today - maxDayOffset * 86_400_000L
+    // Material's DatePicker keys everything to UTC midnight, so the initial selection must be the
+    // shown day's calendar date expressed at UTC midnight (not its local-midnight epoch, which can
+    // fall on the previous UTC day west of Greenwich).
+    val state = rememberDatePickerState(
+        initialSelectedDateMillis = localDayKeyToUtcMillis(shownDayMillis),
+        selectableDates = object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean {
+                // Read the picker's UTC calendar date, map to that same date's local midnight, bound.
+                val local = utcMillisToLocalDayKey(utcTimeMillis)
+                return local in floor..today
+            }
+        },
+    )
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = {
+                state.selectedDateMillis?.let { onPick(utcMillisToLocalDayKey(it)) } ?: onDismiss()
+            }) { Text("Done") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    ) {
+        DatePicker(state = state, title = null)
+    }
+}
+
+/** The calendar date of a local-midnight key, expressed at UTC midnight (what DatePicker wants). */
+private fun localDayKeyToUtcMillis(localDayMillis: Long): Long {
+    val date = java.time.Instant.ofEpochMilli(localDayMillis).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+    return date.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+}
+
+/** The local-midnight key for the calendar date a DatePicker reports as UTC-midnight millis. */
+private fun utcMillisToLocalDayKey(utcMillis: Long): Long {
+    val date = java.time.Instant.ofEpochMilli(utcMillis).atZone(java.time.ZoneOffset.UTC).toLocalDate()
+    return date.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+}
+
+/** Primary header label: Today / Yesterday / weekday (< 7d) / abbreviated date. */
+private fun dayLabel(dayMillis: Long): String {
+    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
+    val date = java.time.Instant.ofEpochMilli(dayMillis).atZone(java.time.ZoneId.systemDefault())
+    return when {
+        daysAgo <= 0 -> "Today"
+        daysAgo == 1 -> "Yesterday"
+        daysAgo < 7 -> date.format(java.time.format.DateTimeFormatter.ofPattern("EEEE"))
+        date.year == java.time.Year.now().value -> date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d"))
+        else -> date.format(java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy"))
+    }
+}
+
+/** Secondary line: an absolute date when the primary line is relative, else empty. */
+private fun daySubLabel(dayMillis: Long): String {
+    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
+    if (daysAgo >= 7) return ""
+    val date = java.time.Instant.ofEpochMilli(dayMillis).atZone(java.time.ZoneId.systemDefault())
+    return date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d")).uppercase(java.util.Locale.ROOT)
 }
 
 // ─────────────────────────── Helpers ───────────────────────────

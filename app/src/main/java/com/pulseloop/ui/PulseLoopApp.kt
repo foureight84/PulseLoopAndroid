@@ -64,7 +64,7 @@ fun PulseLoopApp() {
         val bleClient = remember { RingBLEClient(context) }
         val apiKeyStore = remember { ApiKeyStore(context) }
         val coordinator = remember { RingSyncCoordinator(bleClient, db, apiKeyStore) }
-        val gpsRecorder = remember { GpsRouteRecorder(context) }
+        val gpsRecorder = remember { GpsRouteRecorder(context, db) }
         val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
         val persistence = remember {
             // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
@@ -73,6 +73,7 @@ fun PulseLoopApp() {
                 com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
             }
         }
+        val batteryAlerts = remember { com.pulseloop.service.BatteryAlertMonitor(context) }
         val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
 
@@ -98,6 +99,7 @@ fun PulseLoopApp() {
                             providerSettings, apiKeyStore.model,
                         ),
                         settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings),
+                        providerMode = providerSettings.providerMode,
                     )
                 },
                 toolContextFactory = { flags ->
@@ -115,10 +117,15 @@ fun PulseLoopApp() {
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
         val sleepVM = remember { SleepViewModel(db) }
         val activityVM = remember { ActivityViewModel(db) }
+        val weatherContextService = remember { com.pulseloop.coach.context.WeatherContextService(context) }
         val coachVM = remember {
-            CoachViewModel(db, coachOrchestrator, attachmentPayloads = { refs ->
-                com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
-            })
+            CoachViewModel(
+                db, coachOrchestrator,
+                attachmentPayloads = { refs ->
+                    com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
+                },
+                environmentSnapshot = { weatherContextService.snapshot() },
+            )
         }
 
         // ── Start services (one-shot on composition) ─────────────────────
@@ -143,6 +150,7 @@ fun PulseLoopApp() {
 
             // Start services
             persistence.start()
+            batteryAlerts.start()
             coordinator.start()
             summaryCoordinator.start()
 
@@ -326,7 +334,29 @@ fun PulseLoopApp() {
                             // Coach keeps its bespoke avatar header, rendered here as the same
                             // frosted glass bar the other tabs use so the chat scrolls under it
                             // (owner choice, issue #22).
-                            CoachHeader(onNewChat = { coachVM.newConversation() })
+                            var showCoachUsage by remember { mutableStateOf(false) }
+                            CoachHeader(
+                                onNewChat = { coachVM.newConversation() },
+                                onOpenUsage = { showCoachUsage = true },
+                            )
+                            if (showCoachUsage) {
+                                var usageData by remember {
+                                    mutableStateOf<Pair<com.pulseloop.data.entity.CoachConversationEntity, List<com.pulseloop.data.entity.CoachMessageEntity>>?>(null)
+                                }
+                                LaunchedEffect(Unit) { usageData = coachVM.usageSnapshot() }
+                                usageData?.let { (convo, messages) ->
+                                    val providerSettings = providerStore.snapshot()
+                                    com.pulseloop.ui.screens.CoachUsageSheet(
+                                        conversation = convo,
+                                        messages = messages,
+                                        fallbackModel = com.pulseloop.coach.config.CoachClientResolver.activeModel(
+                                            providerSettings, apiKeyStore.model,
+                                        ),
+                                        fallbackProviderMode = providerSettings.providerMode,
+                                        onDismiss = { showCoachUsage = false },
+                                    )
+                                }
+                            }
                         } else {
                             val ble by bleClient.state.collectAsState()
                             val storedDevice by db.deviceDao().currentFlow()
@@ -457,6 +487,16 @@ fun PulseLoopApp() {
                     val id = backStackEntry.arguments?.getString("id") ?: return@paddedComposable
                     WorkoutSummaryScreen(sessionId = id, onBack = { navController.popBackStack() })
                 }
+                paddedComposable("log_past_activity") {
+                    LogPastActivityScreen(
+                        onBack = { navController.popBackStack() },
+                        onSaved = { id ->
+                            navController.navigate("activity_detail/$id") {
+                                popUpTo("activity")
+                            }
+                        },
+                    )
+                }
                 // Coach draws full-bleed under the glass top/bottom bars (like the other tabs), so
                 // the chat frosts under its header and the composer can clear the keyboard itself.
                 composable("coach") {
@@ -488,6 +528,9 @@ fun PulseLoopApp() {
                 }
                 paddedComposable("settings/profile") {
                     ProfileSettingsScreen(coordinator, onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/physiology") {
+                    PhysiologySettingsScreen(onBack = { navController.popBackStack() })
                 }
                 paddedComposable("settings/calibration") {
                     CalibrationSettingsScreen(coordinator, onBack = { navController.popBackStack() })
@@ -531,6 +574,16 @@ fun PulseLoopApp() {
                 }
                 paddedComposable("record") {
                     val workoutState = liveWorkout.state.collectAsState().value
+                    // A finish from the notification action arrives through the command bus with
+                    // no button handler to navigate from — route to the summary off the state
+                    // signal instead (mirrors the onFinish path below).
+                    LaunchedEffect(workoutState.finishedSessionId) {
+                        workoutState.finishedSessionId?.let { id ->
+                            navController.navigate("activity_detail/$id") {
+                                popUpTo("record") { inclusive = true }
+                            }
+                        }
+                    }
                     RecordScreen(
                         activityName = workoutState.activeSession?.type ?: "Workout",
                         elapsedSeconds = workoutState.elapsedSeconds,
@@ -538,7 +591,9 @@ fun PulseLoopApp() {
                         heartRate = workoutState.latestHeartRate,
                         spO2 = workoutState.latestSpO2,
                         isPaused = workoutState.isPaused,
+                        useGps = workoutState.activeSession?.useGps ?: true,
                         hrZone = workoutState.hrZone,
+                        units = apiKeyStore.resolvedUnitSystem,
                         onPause = {
                             workoutState.activeSession?.let { kotlinx.coroutines.runBlocking { liveWorkout.pause(it) } }
                         },

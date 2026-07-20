@@ -254,6 +254,11 @@ class OpenRouterClient(
             body["provider"] = it
         }
 
+        // Ask OpenRouter to include the usage accounting (token counts + the exact
+        // upstream `cost` in USD) in the response, so the persisted cost matches
+        // OpenRouter's own Activity page rather than a catalog estimate.
+        body["usage"] = JsonObject(mapOf("include" to JsonPrimitive(true)))
+
         return JsonObject(body)
     }
 
@@ -393,6 +398,22 @@ class OpenRouterClient(
         if (outputItems.isEmpty()) throw ResponsesError.EmptyOutput
 
         storedAssistantMessage[responseId] = JsonObject(assistantMessage)
-        return OpenAIResponse(id = responseId, output = outputItems)
+        return OpenAIResponse(id = responseId, output = outputItems, usage = usage(root))
+    }
+
+    /** Maps OpenRouter's Chat Completions `usage` block. `cost` is the exact USD
+     *  OpenRouter billed for the call (requested via `usage.include` in the
+     *  body), so it's stored as the reported cost instead of a catalog estimate. */
+    private fun usage(root: JsonObject): com.pulseloop.coach.usage.CoachTokenUsage? {
+        val usage = root["usage"] as? JsonObject ?: return null
+        val cached = (usage["prompt_tokens_details"] as? JsonObject)
+            ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
+        val cost = (usage["cost"] as? JsonPrimitive)?.doubleOrNull
+        return com.pulseloop.coach.usage.CoachTokenUsage(
+            inputTokens = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+            outputTokens = usage["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+            cachedInputTokens = cached,
+            reportedCostUSD = cost,
+        )
     }
 }

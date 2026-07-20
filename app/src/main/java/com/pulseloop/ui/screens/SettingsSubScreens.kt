@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import com.pulseloop.coach.config.CoachProviderMode
 import com.pulseloop.coach.config.CoachProviderSettingsStore
 import com.pulseloop.coach.config.GeminiModel
+import com.pulseloop.coach.config.MiniMaxModel
 import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
@@ -43,12 +44,20 @@ import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.ring.RingConnectionState
+import com.pulseloop.service.GlucoseUnit
+import com.pulseloop.service.MetricZone
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.service.RingSyncWorker
+import com.pulseloop.service.VitalColorToken
+import com.pulseloop.service.VitalSample
+import com.pulseloop.service.ZoneSeverity
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.DeviceHeroStatus
+import com.pulseloop.ui.components.ZoneLineChart
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.wearables.WearableModel
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -119,7 +128,22 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
     var webSearch by remember { mutableStateOf(keyStore.webSearchEnabled) }
     var writeTools by remember { mutableStateOf(keyStore.writeToolsEnabled) }
     var liveMeasurements by remember { mutableStateOf(keyStore.liveMeasurementsEnabled) }
+    var environmentContext by remember { mutableStateOf(keyStore.enableEnvironmentContext) }
     var showMemory by remember { mutableStateOf(false) }
+
+    // Location & weather (iOS #65d) — opt-in, requests ACCESS_COARSE_LOCATION only when
+    // the user turns it on, mirroring CoachEnvironmentContextService.requestPermissionIfNeeded().
+    val environmentPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        // Granted or not, the toggle stays on — WeatherContextService degrades to city-only
+        // (or nothing) without a location fix rather than needing a second opt-out step.
+    }
+    fun setEnvironmentContext(enabled: Boolean) {
+        environmentContext = enabled
+        keyStore.enableEnvironmentContext = enabled
+        if (enabled) environmentPermLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+    }
 
     // "Enable Coach Check-Ins?" prompt state (iOS #49 CoachSettingsSection).
     var askEnableCheckIns by remember { mutableStateOf(false) }
@@ -203,8 +227,11 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     var geminiKeyVisible by remember { mutableStateOf(false) }
                     var orKey by remember { mutableStateOf(providerStore.openRouterApiKey) }
                     var orKeyVisible by remember { mutableStateOf(false) }
+                    var minimaxKey by remember { mutableStateOf(providerStore.minimaxApiKey) }
+                    var minimaxKeyVisible by remember { mutableStateOf(false) }
                     var geminiModel by remember { mutableStateOf(providerStore.geminiModel) }
                     var orModel by remember { mutableStateOf(providerStore.openRouterModel) }
+                    var minimaxModel by remember { mutableStateOf(providerStore.minimaxModel) }
                     var orPrivacy by remember { mutableStateOf(providerStore.orPrivacyRouting) }
                     var orSort by remember { mutableStateOf(providerStore.orProviderSort) }
                     var reasoningEffort by remember { mutableStateOf(providerStore.reasoningEffort) }
@@ -214,6 +241,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         CoachProviderMode.USER_OPENAI_KEY to "OpenAI",
                         CoachProviderMode.USER_GEMINI_KEY to "Google Gemini",
                         CoachProviderMode.USER_OPENROUTER_KEY to "OpenRouter (100+ models)",
+                        CoachProviderMode.USER_MINIMAX_KEY to "MiniMax",
                     )
                     val providerLabel = providerOptions.firstOrNull { it.first == providerMode }?.second ?: "OpenAI"
 
@@ -357,6 +385,18 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 listOf("auto" to "Balanced (default)", "price" to "Cheapest first", "throughput" to "Fastest first", "latency" to "Lowest latency first"),
                             ) { providerStore.orProviderSort = it.takeIf { s -> s != "auto" }; orSort = providerStore.orProviderSort }
                         }
+                        CoachProviderMode.USER_MINIMAX_KEY -> {
+                            ModelDropdown("Model", minimaxModel, MiniMaxModel.entries.map { it.slug to it.blurb }) {
+                                minimaxModel = it; providerStore.minimaxModel = it
+                            }
+                            KeyField(
+                                label = "MiniMax API Key", value = minimaxKey, visible = minimaxKeyVisible,
+                                saved = providerStore.hasMinimaxKey,
+                                onValue = { minimaxKey = it }, onVisibility = { minimaxKeyVisible = !minimaxKeyVisible },
+                                onSave = { providerStore.minimaxApiKey = minimaxKey },
+                                onRemove = { minimaxKey = ""; providerStore.minimaxApiKey = "" },
+                            )
+                        }
                         else -> {
                             // OpenAI (and legacy modes): the original model picker + key field.
                             ModelDropdown("Model", selectedModel, models.map { it to "" }) {
@@ -395,15 +435,18 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
 
                     HorizontalDivider()
 
-                    // Tool toggles
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Web Search")
-                            Text("Uses additional tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // Tool toggles. MiniMax's compat endpoint has no hosted web search, so hide
+                    // the toggle for it (the client drops the tool anyway — this is the UI half).
+                    if (providerMode != CoachProviderMode.USER_MINIMAX_KEY) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Web Search")
+                                Text("Uses additional tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = webSearch, onCheckedChange = {
+                                webSearch = it; keyStore.webSearchEnabled = it
+                            })
                         }
-                        Switch(checked = webSearch, onCheckedChange = {
-                            webSearch = it; keyStore.webSearchEnabled = it
-                        })
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -422,6 +465,13 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         Switch(checked = liveMeasurements, onCheckedChange = {
                             liveMeasurements = it; keyStore.liveMeasurementsEnabled = it
                         })
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Use location & weather")
+                            Text("Grounds suggestions in your city's current weather", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = environmentContext, onCheckedChange = { setEnvironmentContext(it) })
                     }
                 }
             }
@@ -518,6 +568,34 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
             keyStore.notificationsEnabled = true
             notifPermissionDenied = false
             CoachNotifications.schedule(context)
+        }
+    }
+
+    // Ring battery alerts (iOS #61a) — independent of the coach toggle, its own POST_NOTIFICATIONS
+    // gate. Default ON; delivery no-ops until the OS permission is granted.
+    var batteryAlertsEnabled by remember { mutableStateOf(keyStore.batteryAlertsEnabled) }
+    var batteryPermDenied by remember { mutableStateOf(false) }
+
+    val batteryPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        batteryAlertsEnabled = granted
+        keyStore.batteryAlertsEnabled = granted
+        batteryPermDenied = !granted
+    }
+
+    fun setBatteryAlerts(enabled: Boolean) {
+        if (!enabled) {
+            batteryAlertsEnabled = false
+            keyStore.batteryAlertsEnabled = false
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            batteryPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            batteryAlertsEnabled = true
+            keyStore.batteryAlertsEnabled = true
+            batteryPermDenied = false
         }
     }
 
@@ -619,6 +697,35 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
                 }
             }
         }
+
+        // Ring battery alerts — independent of the coach toggle (iOS #61a puts this in its own
+        // NotificationsSettingsView section): a local notification at <20% / <10%, once per day.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Ring battery alerts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Get notified when your ring drops below 20% and 10%, so tracking doesn't stop mid-day.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Low Battery Notifications")
+                    Switch(
+                        checked = batteryAlertsEnabled,
+                        onCheckedChange = { setBatteryAlerts(it) },
+                    )
+                }
+                if (batteryPermDenied) {
+                    Text(
+                        "Notifications are disabled for PulseLoop in Android Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PulseColors.danger,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -701,6 +808,152 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
             ) { Text("Save profile") }
             savedMsg?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+// MARK: - Physiology
+
+/**
+ * Physiology detail screen (iOS #35 PhysiologySettingsView): optional inputs that tune the vitals
+ * reference ranges (VitalsThresholdEngine). Everything is optional — the engine uses sensible
+ * defaults when unset. Persisted to [ApiKeyStore] alongside units/calibration (Android keeps these
+ * app-side prefs off the Room UserProfile). Saving republishes the widget snapshot so its zones
+ * re-interpret without a new measurement (the values feed [com.pulseloop.service.UserPhysiologyProfile]).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PhysiologySettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val keyStore = remember { ApiKeyStore(context) }
+    val imperial = keyStore.resolvedUnitSystem == UnitSystem.IMPERIAL
+
+    var athleteMode by remember { mutableStateOf(false) }
+    var altitudeText by remember { mutableStateOf("") }
+    var betaBlockers by remember { mutableStateOf<Boolean?>(null) }
+    var lungCondition by remember { mutableStateOf<Boolean?>(null) }
+    var glucoseUnit by remember { mutableStateOf(GlucoseUnit.MGDL) }
+    var savedMsg by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        athleteMode = keyStore.athleteMode
+        betaBlockers = keyStore.usesBetaBlockers
+        lungCondition = keyStore.hasKnownLungCondition
+        glucoseUnit = keyStore.preferredGlucoseUnit
+        keyStore.altitudeMeters?.let { m ->
+            // Stored canonical metres; show in the display unit (iOS enters ft, stores m).
+            altitudeText = (if (imperial) (m / 0.3048).roundToInt() else m.roundToInt()).toString()
+        }
+    }
+
+    SettingsSubScreen(title = "Physiology", onBack = onBack) {
+        Text(
+            "Optional refinements to how your vitals are interpreted. Leave anything unset and " +
+                "PulseLoop uses sensible defaults.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        PhysiologyCard(
+            title = "Fitness",
+            footer = "Treats a low resting heart rate as a sign of fitness rather than a concern, and relaxes the low-HR threshold.",
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Athlete mode", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Switch(checked = athleteMode, onCheckedChange = { athleteMode = it; savedMsg = null })
+            }
+        }
+
+        PhysiologyCard(
+            title = "Environment",
+            footer = "Above ~2000 m, normal blood-oxygen readings run lower. We use this to avoid false low-oxygen warnings.",
+        ) {
+            OutlinedTextField(
+                value = altitudeText,
+                onValueChange = { altitudeText = it.filter(Char::isDigit).take(5); savedMsg = null },
+                label = { Text(if (imperial) "Typical altitude (ft)" else "Typical altitude (m)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        PhysiologyCard(
+            title = "Health context",
+            footer = "Optional. Both can change what's expected for your heart rate or oxygen, so we adjust labels instead of alarming.",
+        ) {
+            TriStateRow("Beta-blockers", betaBlockers) { betaBlockers = it; savedMsg = null }
+            Spacer(Modifier.height(12.dp))
+            TriStateRow("Known lung condition", lungCondition) { lungCondition = it; savedMsg = null }
+        }
+
+        PhysiologyCard(title = "Units", footer = null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Glucose unit", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                SingleChoiceSegmentedButtonRow {
+                    GlucoseUnit.entries.forEachIndexed { i, u ->
+                        SegmentedButton(
+                            selected = glucoseUnit == u,
+                            onClick = { glucoseUnit = u; savedMsg = null },
+                            shape = SegmentedButtonDefaults.itemShape(i, GlucoseUnit.entries.size),
+                        ) { Text(u.label) }
+                    }
+                }
+            }
+        }
+
+        Button(
+            onClick = {
+                keyStore.athleteMode = athleteMode
+                keyStore.usesBetaBlockers = betaBlockers
+                keyStore.hasKnownLungCondition = lungCondition
+                keyStore.preferredGlucoseUnit = glucoseUnit
+                val entered = altitudeText.trim().toDoubleOrNull()
+                keyStore.altitudeMeters =
+                    if (entered != null && entered > 0) (if (imperial) entered * 0.3048 else entered) else null
+                // Physiology shifts the vitals reference zones the widgets render — republish.
+                com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
+                savedMsg = "Saved ✓"
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Save") }
+        savedMsg?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+/** A titled card with optional explanatory footer, matching iOS `SettingsGroup`. */
+@Composable
+private fun PhysiologyCard(title: String, footer: String?, content: @Composable ColumnScope.() -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            content()
+            if (footer != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(footer, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/** Not set / No / Yes segmented control over a nullable Boolean, mirroring iOS `TriState`. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TriStateRow(title: String, value: Boolean?, onChange: (Boolean?) -> Unit) {
+    val options = listOf<Pair<String, Boolean?>>("Not set" to null, "No" to false, "Yes" to true)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        SingleChoiceSegmentedButtonRow {
+            options.forEachIndexed { i, (label, v) ->
+                SegmentedButton(
+                    selected = value == v,
+                    onClick = { onChange(v) },
+                    shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                ) { Text(label) }
             }
         }
     }
@@ -1141,6 +1394,10 @@ fun WearableSettingsScreen(
         }
 
         if (device != null) {
+            BatteryHistorySection(db)
+        }
+
+        if (device != null) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Ring management", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1239,6 +1496,74 @@ fun WearableSettingsScreen(
                 TextButton(onClick = { showFactoryReset = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/** 24h/7d windows for the battery drainage chart (iOS #61b — only these two ranges). */
+private enum class BatteryHistoryRange(val label: String, val spanMs: Long) {
+    DAY("24h", 24 * 3600_000L),
+    WEEK("7d", 7 * 24 * 3600_000L),
+}
+
+/** Fixed 0–100 zone coloring for the battery line — mirrors iOS `colorForValue`
+ *  (≤20 danger, ≤50 warning, else success). Zone boundaries use an exclusive upper bound
+ *  (`ZoneLineChart` matches `lower <= value < upper`), so 21/51 sit just above each cut. */
+private val batteryZones = listOf(
+    MetricZone("critical", "Critical", null, 21.0, ZoneSeverity.CRITICAL, VitalColorToken.Red, "Battery critically low"),
+    MetricZone("low", "Low", 21.0, 51.0, ZoneSeverity.WATCH, VitalColorToken.Amber, "Battery low"),
+    MetricZone("good", "Good", 51.0, null, ZoneSeverity.OPTIMAL, VitalColorToken.Mint, "Battery healthy"),
+)
+
+/**
+ * Battery drainage history (iOS #61b `BatteryHistorySection`): a 24h/7d segmented range picker over
+ * a fixed 0–100 [ZoneLineChart]. Reads [com.pulseloop.data.entity.BatterySampleEntity] rows written by
+ * [com.pulseloop.service.EventPersistenceSubscriber]'s throttled battery log.
+ */
+@Composable
+private fun BatteryHistorySection(db: PulseLoopDatabase) {
+    var range by remember { mutableStateOf(BatteryHistoryRange.DAY) }
+    // Reactive on the device row so a fresh battery reading refetches the window without a manual pull.
+    val device by db.deviceDao().currentFlow().collectAsState(initial = null)
+    var samples by remember { mutableStateOf<List<VitalSample>>(emptyList()) }
+
+    LaunchedEffect(range, device?.batteryPercent, device?.updatedAt) {
+        val end = System.currentTimeMillis()
+        val start = end - range.spanMs
+        samples = db.batterySampleDao().samplesBetween(start, end)
+            .map { VitalSample(timestampMs = it.timestamp, value = it.percent.toDouble()) }
+    }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Battery history", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                SingleChoiceSegmentedButtonRow {
+                    BatteryHistoryRange.entries.forEachIndexed { i, r ->
+                        SegmentedButton(
+                            selected = range == r,
+                            onClick = { range = r },
+                            shape = SegmentedButtonDefaults.itemShape(i, BatteryHistoryRange.entries.size),
+                        ) { Text(r.label) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            if (samples.size < 2) {
+                Text(
+                    "Not enough data yet — battery history builds up as the ring reports its level.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                ZoneLineChart(
+                    samples = samples,
+                    zones = batteryZones,
+                    yDomain = 0.0..100.0,
+                    accent = PulseColors.success,
+                    height = 160.dp,
+                )
+            }
+        }
     }
 }
 

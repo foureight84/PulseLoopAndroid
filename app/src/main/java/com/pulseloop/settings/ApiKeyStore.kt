@@ -3,6 +3,7 @@ package com.pulseloop.settings
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import com.pulseloop.service.GlucoseUnit
 
 /**
  * Ported from OpenAIKeychainStore in the iOS app.
@@ -45,9 +46,21 @@ class ApiKeyStore(context: Context) {
         get() = prefs.getBoolean(KEY_LIVE_MEASUREMENTS, false)
         set(value) { prefs.edit().putBoolean(KEY_LIVE_MEASUREMENTS, value).apply() }
 
+    /** Opt-in city-level location + weather context for the coach (iOS #65d). Off by default —
+     *  turning it on triggers a location-permission request from the Settings toggle. */
+    var enableEnvironmentContext: Boolean
+        get() = prefs.getBoolean(KEY_ENVIRONMENT_CONTEXT, false)
+        set(value) { prefs.edit().putBoolean(KEY_ENVIRONMENT_CONTEXT, value).apply() }
+
     var notificationsEnabled: Boolean
         get() = prefs.getBoolean(KEY_NOTIFICATIONS, false)
         set(value) { prefs.edit().putBoolean(KEY_NOTIFICATIONS, value).apply() }
+
+    /** Fire a local notification when the ring battery crosses 20% / 10% (iOS #61a). Default ON —
+     *  matches iOS, where an absent key means enabled; independent of the coach master toggle. */
+    var batteryAlertsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_BATTERY_ALERTS, true)
+        set(value) { prefs.edit().putBoolean(KEY_BATTERY_ALERTS, value).apply() }
 
     var morningHour: Int
         get() = prefs.getInt(KEY_MORNING_HOUR, 8)
@@ -97,6 +110,51 @@ class ApiKeyStore(context: Context) {
         get() = prefs.getFloat(KEY_GLUCOSE_REF, 0f).toDouble()
         set(value) { prefs.edit().putFloat(KEY_GLUCOSE_REF, value.toFloat()).apply() }
 
+    // ── Physiology inputs (iOS #35 PhysiologySettingsView) ──
+    // Optional refinements that shift the vitals reference ranges via UserPhysiologyProfile →
+    // VitalsThresholdEngine. Stored here alongside the other app-side display/tuning prefs (units,
+    // glucose/BP calibration) rather than on the Room UserProfile, matching where `unitSystem` and
+    // the calibration offsets already live.
+
+    /** Treat a low resting HR as fitness rather than a concern (relaxes the low-HR threshold). */
+    var athleteMode: Boolean
+        get() = prefs.getBoolean(KEY_ATHLETE_MODE, false)
+        set(value) { prefs.edit().putBoolean(KEY_ATHLETE_MODE, value).apply() }
+
+    /** Typical/home altitude in metres; null = not set. Above ~2000 m relaxes low-SpO₂ warnings. */
+    var altitudeMeters: Double?
+        get() = if (prefs.contains(KEY_ALTITUDE_M)) prefs.getFloat(KEY_ALTITUDE_M, 0f).toDouble() else null
+        set(value) {
+            val e = prefs.edit()
+            if (value != null && value > 0) e.putFloat(KEY_ALTITUDE_M, value.toFloat()) else e.remove(KEY_ALTITUDE_M)
+            e.apply()
+        }
+
+    /** Beta-blocker use lowers resting HR. Tri-state: null = not specified (no adjustment). */
+    var usesBetaBlockers: Boolean?
+        get() = triState(KEY_BETA_BLOCKERS)
+        set(value) { setTriState(KEY_BETA_BLOCKERS, value) }
+
+    /** Known lung condition lowers expected SpO₂. Tri-state: null = not specified (no adjustment). */
+    var hasKnownLungCondition: Boolean?
+        get() = triState(KEY_LUNG_CONDITION)
+        set(value) { setTriState(KEY_LUNG_CONDITION, value) }
+
+    /** Preferred glucose display unit (iOS #43 §3). Defaults to mg/dL. */
+    var preferredGlucoseUnit: GlucoseUnit
+        get() = prefs.getString(KEY_GLUCOSE_UNIT, null)
+            ?.let { runCatching { GlucoseUnit.valueOf(it) }.getOrNull() } ?: GlucoseUnit.MGDL
+        set(value) { prefs.edit().putString(KEY_GLUCOSE_UNIT, value.name).apply() }
+
+    /** SharedPreferences has no nullable Boolean — an absent key means unspecified (null). */
+    private fun triState(key: String): Boolean? =
+        if (prefs.contains(key)) prefs.getBoolean(key, false) else null
+    private fun setTriState(key: String, value: Boolean?) {
+        val e = prefs.edit()
+        if (value != null) e.putBoolean(key, value) else e.remove(key)
+        e.apply()
+    }
+
     /** Stable per-install id sent to the ring (0x48 setAppId) so it streams data to us.
      *  Generated once and reused; ≤18 ASCII chars to fit the command payload. */
     val ringAppId: String
@@ -126,7 +184,9 @@ class ApiKeyStore(context: Context) {
         private const val KEY_WEB_SEARCH = "web_search_enabled"
         private const val KEY_WRITE_TOOLS = "write_tools_enabled"
         private const val KEY_LIVE_MEASUREMENTS = "live_measurements_enabled"
+        private const val KEY_ENVIRONMENT_CONTEXT = "environment_context_enabled"
         private const val KEY_NOTIFICATIONS = "notifications_enabled"
+        private const val KEY_BATTERY_ALERTS = "battery_alerts_enabled"
         private const val KEY_MORNING_HOUR = "morning_hour"
         private const val KEY_EVENING_HOUR = "evening_hour"
         private const val KEY_ONBOARDING = "onboarding_completed"
@@ -137,5 +197,10 @@ class ApiKeyStore(context: Context) {
         private const val KEY_GLUCOSE_OFFSET = "glucose_offset_mgdl"
         private const val KEY_GLUCOSE_REF = "glucose_ref_mgdl"
         private const val KEY_RING_APP_ID = "ring_app_id"
+        private const val KEY_ATHLETE_MODE = "athlete_mode"
+        private const val KEY_ALTITUDE_M = "altitude_meters"
+        private const val KEY_BETA_BLOCKERS = "uses_beta_blockers"
+        private const val KEY_LUNG_CONDITION = "has_known_lung_condition"
+        private const val KEY_GLUCOSE_UNIT = "preferred_glucose_unit"
     }
 }

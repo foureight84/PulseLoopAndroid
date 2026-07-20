@@ -1,6 +1,7 @@
 package com.pulseloop.coach.config
 
 import com.pulseloop.coach.gemini.GeminiClient
+import com.pulseloop.coach.minimax.MiniMaxClient
 import com.pulseloop.coach.openai.OpenAIResponse
 import com.pulseloop.coach.openai.ResponsesClient
 import com.pulseloop.coach.openrouter.OpenRouterClient
@@ -65,6 +66,26 @@ class CoachClientResolverTest {
     }
 
     @Test
+    fun testMiniMaxModeReturnsMiniMaxClient() {
+        val res = CoachClientResolver.resolve(
+            settings(CoachProviderMode.USER_MINIMAX_KEY),
+            openAIKey = "sk", geminiKey = null, openRouterKey = null, minimaxKey = "mm-key",
+        )
+        assertEquals("mm-key", res.key)
+        assertTrue(res.client is MiniMaxClient)
+    }
+
+    @Test
+    fun testMiniMaxMissingKeyYieldsNullSentinelButStillAClient() {
+        val res = CoachClientResolver.resolve(
+            settings(CoachProviderMode.USER_MINIMAX_KEY),
+            openAIKey = "sk", geminiKey = null, openRouterKey = null, minimaxKey = " ",
+        )
+        assertNull(res.key)
+        assertTrue(res.client is MiniMaxClient)
+    }
+
+    @Test
     fun testMissingKeyYieldsNullSentinelButStillAClient() {
         // A client is always returned; key == null signals "not ready" so the
         // feature-flags gate can degrade to scripted content.
@@ -91,10 +112,13 @@ class CoachClientResolverTest {
             providerMode = CoachProviderMode.USER_GEMINI_KEY,
             geminiModel = "gemini-2.5-pro",
             openRouterModel = "openai/gpt-5.5",
+            minimaxModel = "MiniMax-M2",
         )
         assertEquals("gemini-2.5-pro", CoachClientResolver.activeModel(s, "gpt-5.4"))
         assertEquals("openai/gpt-5.5", CoachClientResolver.activeModel(
             s.copy(providerMode = CoachProviderMode.USER_OPENROUTER_KEY), "gpt-5.4"))
+        assertEquals("MiniMax-M2", CoachClientResolver.activeModel(
+            s.copy(providerMode = CoachProviderMode.USER_MINIMAX_KEY), "gpt-5.4"))
         assertEquals("gpt-5.4", CoachClientResolver.activeModel(
             s.copy(providerMode = CoachProviderMode.USER_OPENAI_KEY), "gpt-5.4"))
         assertEquals(OpenAIModel.DEFAULT.slug, CoachClientResolver.activeModel(

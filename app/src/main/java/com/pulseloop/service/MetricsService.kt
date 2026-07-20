@@ -109,6 +109,9 @@ object MetricsService {
             MeasurementKind.TEMPERATURE -> caps.contains(WearableCapability.TEMPERATURE)
             MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> caps.contains(WearableCapability.BLOOD_PRESSURE)
             MeasurementKind.BLOOD_SUGAR -> caps.contains(WearableCapability.BLOOD_SUGAR)
+            // No dedicated capability gates these (YCBT history-only fields, no separate
+            // SupportFunction bit) — supported wherever the ring actually reports them.
+            MeasurementKind.RESPIRATORY_RATE, MeasurementKind.VO2MAX -> true
         }
     }
 
@@ -125,6 +128,8 @@ object MetricsService {
             MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> (110..130).random().toDouble()
             MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> (70..85).random().toDouble()
             MeasurementKind.BLOOD_SUGAR -> (80..140).random().toDouble()
+            MeasurementKind.RESPIRATORY_RATE -> (12..20).random().toDouble()
+            MeasurementKind.VO2MAX -> (30..55).random().toDouble()
         }
         val unit = when (kind) {
             MeasurementKind.HEART_RATE -> "bpm"

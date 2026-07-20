@@ -14,7 +14,11 @@ enum class MeasurementKind(val key: String, val unit: String) {
     TEMPERATURE("temp", "°C"),
     BLOOD_PRESSURE_SYSTOLIC("bp_sys", "mmHg"),
     BLOOD_PRESSURE_DIASTOLIC("bp_dia", "mmHg"),
-    BLOOD_SUGAR("glucose", "mg/dL");
+    BLOOD_SUGAR("glucose", "mg/dL"),
+    // YCBT/TK5 history metrics: respiratory rate rides the "All" record, VO2max the body-data
+    // record. Append only — raw values persisted.
+    RESPIRATORY_RATE("resp_rate", "breaths/min"),
+    VO2MAX("vo2max", "mL/kg/min");
 }
 
 /**
@@ -81,6 +85,11 @@ sealed class RingDecodedEvent {
         is CommandAck -> Instant.EPOCH
         is FirmwareVersion -> Instant.EPOCH
         is BindNotify -> Instant.EPOCH
+        is BandFunction -> Instant.EPOCH
+        is SupportFunctions -> Instant.EPOCH
+        is ChipScheme -> Instant.EPOCH
+        is WearingStatus -> this._timestamp
+        is MeasurementRejected -> Instant.EPOCH
         is Unknown -> Instant.EPOCH
     }
 
@@ -182,6 +191,68 @@ sealed class RingDecodedEvent {
         override val kind = "bind_notify"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"action":$action,"state":$state}"""
+    }
+
+    /** Capability bitmask reply (0x20). Consumed by `JringSyncEngine`; produces no `PulseEvent`. */
+    data class BandFunction(
+        val capabilities: JringBandCapabilities
+    ) : RingDecodedEvent() {
+        override val kind = "band_function"
+        override val confidence = DecodeConfidence.PARTIAL   // bit ordering unverified against hardware
+        override val debugJSON = """{"temp":${capabilities.hasTemperature},"spo2_separate":${capabilities.separateBloodOxygenMode},"spo2_offline":${capabilities.hasOxygenOfflineHistory},"pressure":${capabilities.hasPressureHistory}}"""
+    }
+
+    /**
+     * The device's own capability bitmap, already mapped onto [WearableCapability] (YCBT `02 01`;
+     * see `YCBTSupportFunction`). Consumed by `RingBLEClient` to refine the active capability set —
+     * the coordinator's baseline is what the *family* can do, this is what *this unit* claims.
+     * Produces no `PulseEvent`.
+     */
+    data class SupportFunctions(
+        val capabilities: Set<WearableCapability>
+    ) : RingDecodedEvent() {
+        override val kind = "support_functions"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"capabilities":"${capabilities.joinToString(",") { it.key }}"}"""
+    }
+
+    /**
+     * The chipset/OTA family (YCBT `02 1b`). Diagnostic only — produces no `PulseEvent`.
+     */
+    data class ChipScheme(
+        val value: Int
+    ) : RingDecodedEvent() {
+        override val kind = "chip_scheme"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"value":$value}"""
+    }
+
+    /**
+     * The ring reports it went on/off the finger (YCBT `06 13`). Debug-feed only — produces no
+     * `PulseEvent`, since nothing in the app gates on wear state yet.
+     */
+    data class WearingStatus(
+        val worn: Boolean,
+        val _timestamp: Instant
+    ) : RingDecodedEvent() {
+        override val kind = "wearing_status"
+        override val confidence = DecodeConfidence.PARTIAL   // polarity unverified against hardware
+        override val debugJSON = """{"worn":$worn}"""
+    }
+
+    /**
+     * The ring **refused** to start the spot measurement we asked for (YCBT `03 2f` answered with a
+     * non-zero status). `mode` is the measurement mode we started — the reply itself carries only a
+     * status byte, so the mode comes from the start `YCBTDriver` remembers sending. Produces no
+     * `PulseEvent`: it is a verdict on a command, not data — `RingSyncCoordinator` reads it off the
+     * raw-packet feed and aborts the matching in-flight measurement.
+     */
+    data class MeasurementRejected(
+        val mode: UByte
+    ) : RingDecodedEvent() {
+        override val kind = "measurement_rejected"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"mode":$mode}"""
     }
 
     data class StressSample(

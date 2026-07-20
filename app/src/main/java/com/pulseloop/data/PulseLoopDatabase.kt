@@ -37,8 +37,10 @@ import com.pulseloop.data.entity.*
         DerivedUpdateEntity::class,
         CoachSummaryEntity::class,
         WearableLogEntity::class,
+        BatterySampleEntity::class,
+        CoachNotificationRecordEntity::class,
     ],
-    version = 7,
+    version = 12,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -60,6 +62,8 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun coachSummaryDao(): CoachSummaryDao
     abstract fun wearableLogDao(): WearableLogDao
     abstract fun rawPacketDao(): RawPacketDao
+    abstract fun batterySampleDao(): BatterySampleDao
+    abstract fun coachNotificationRecordDao(): CoachNotificationRecordDao
 
     companion object {
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
@@ -128,6 +132,79 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v7 → v8: battery-level history for the Wearable-settings drainage chart (iOS #61b). */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `battery_samples` (
+                        `id` TEXT NOT NULL,
+                        `percent` INTEGER NOT NULL,
+                        `timestamp` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_battery_samples_timestamp` ON `battery_samples` (`timestamp`)")
+            }
+        }
+
+        /** v8 → v9: a device-level "sync actually completed" stamp, separate from [DeviceEntity.lastSyncAt]
+         *  (re-stamped on every bare CONNECT) — the coach-notification freshness gate (iOS #61c). */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `devices` ADD COLUMN `lastFullSyncAt` INTEGER")
+            }
+        }
+
+        /** v9 → v10: token/cost usage accounting on coach conversations + messages
+         *  (iOS #65b). Running totals on the conversation; per-turn tokens/cost/
+         *  model/provider on the message. */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `coach_conversations` ADD COLUMN `totalInputTokens` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `coach_conversations` ADD COLUMN `totalOutputTokens` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `coach_conversations` ADD COLUMN `totalCostUSD` REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `inputTokens` INTEGER")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `outputTokens` INTEGER")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `costUSD` REAL")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `modelUsed` TEXT")
+                db.execSQL("ALTER TABLE `coach_messages` ADD COLUMN `providerUsed` TEXT")
+            }
+        }
+
+        /** v10 → v11: tool-call trace metadata (iOS #65c). Friendly label,
+         *  success/error status, and turn-order sequence per tool call, plus an
+         *  index on messageId for the trace-disclosure UI query. */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `coach_tool_calls` ADD COLUMN `label` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `coach_tool_calls` ADD COLUMN `statusRaw` TEXT NOT NULL DEFAULT 'success'")
+                db.execSQL("ALTER TABLE `coach_tool_calls` ADD COLUMN `sequence` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_coach_tool_calls_messageId` ON `coach_tool_calls` (`messageId`)")
+            }
+        }
+
+        /** v11 → v12: persisted delivered check-ins, so the notification generator can
+         *  avoid repeating its own recent phrasing/openings (iOS #65 anti-repeat hint). */
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `coach_notification_records` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `body` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_coach_notification_records_createdAt` ON `coach_notification_records` (`createdAt`)")
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -135,7 +212,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
                     // coach conversation on any future version bump that misses a

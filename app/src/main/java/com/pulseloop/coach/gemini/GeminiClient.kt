@@ -413,7 +413,21 @@ class GeminiClient(
         if (outputItems.isEmpty()) throw ResponsesError.EmptyOutput
 
         storedModelParts[responseId] = modelParts
-        return OpenAIResponse(id = responseId, output = outputItems)
+        return OpenAIResponse(id = responseId, output = outputItems, usage = usage(root))
+    }
+
+    /** Maps Gemini's `usageMetadata` to the app's usage struct. Output tokens count
+     *  both the answer (`candidatesTokenCount`) and any thinking tokens
+     *  (`thoughtsTokenCount`); cached context is `cachedContentTokenCount`. */
+    private fun usage(root: JsonObject): com.pulseloop.coach.usage.CoachTokenUsage? {
+        val meta = root["usageMetadata"] as? JsonObject ?: return null
+        val output = (meta["candidatesTokenCount"]?.jsonPrimitive?.intOrNull ?: 0) +
+            (meta["thoughtsTokenCount"]?.jsonPrimitive?.intOrNull ?: 0)
+        return com.pulseloop.coach.usage.CoachTokenUsage(
+            inputTokens = meta["promptTokenCount"]?.jsonPrimitive?.intOrNull ?: 0,
+            outputTokens = output,
+            cachedInputTokens = meta["cachedContentTokenCount"]?.jsonPrimitive?.intOrNull ?: 0,
+        )
     }
 
     /** Extracts cited pages from a candidate's `groundingMetadata` as

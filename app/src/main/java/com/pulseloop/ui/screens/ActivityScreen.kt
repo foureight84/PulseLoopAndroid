@@ -1,5 +1,9 @@
 package com.pulseloop.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -8,7 +12,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -27,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
@@ -39,6 +46,10 @@ import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.ActivityViewModel
 import com.pulseloop.util.Formats
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Calendar
 
 private val weekLabels = listOf("M", "T", "W", "T", "F", "S", "S")
@@ -66,6 +77,37 @@ fun ActivityScreen(
     var pickerOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
     var goalsOpen by remember { mutableStateOf(false) }
+
+    // The workout foreground service is typed "health" (Android 14+), which requires holding
+    // ACTIVITY_RECOGNITION or startForeground() throws — request it right before starting rather
+    // than at app launch, since it's only needed for this one action.
+    var pendingStart by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    val activityRecognitionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val pending = pendingStart
+        pendingStart = null
+        if (granted && pending != null) {
+            val (type, useGps) = pending
+            scope.launch {
+                liveWorkout?.start(type, useGps)
+                navController?.navigate("record")
+            }
+        }
+    }
+    fun startWorkout(type: String, useGps: Boolean) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            scope.launch {
+                liveWorkout?.start(type, useGps)
+                navController?.navigate("record")
+            }
+        } else {
+            pendingStart = type to useGps
+            activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+    }
 
     val todayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
     val todayWorkouts = state.finishedWorkouts.filter { it.startedAt >= todayStart }
@@ -117,6 +159,33 @@ fun ActivityScreen(
         }
 
         item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(68.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(PulseColors.card)
+                    .border(1.dp, PulseColors.borderSubtle, RoundedCornerShape(20.dp))
+                    .clickable { navController?.navigate("log_past_activity") }
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(40.dp).clip(CircleShape).background(PulseColors.accentSoft),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.History, null, tint = PulseColors.accent, modifier = Modifier.size(20.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Log Past Activity", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+                    Text("Add a workout you forgot to record", fontSize = 12.sp, color = PulseColors.textMuted)
+                }
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = PulseColors.textMuted)
+            }
+        }
+
+        item {
             Text(
                 "TODAY",
                 fontSize = 11.sp, fontWeight = FontWeight.Medium,
@@ -156,10 +225,7 @@ fun ActivityScreen(
             onDismiss = { pickerOpen = false },
             onStart = { type, useGps ->
                 pickerOpen = false
-                scope.launch {
-                    liveWorkout?.start(type, useGps)
-                    navController?.navigate("record")
-                }
+                startWorkout(type, useGps)
             },
         )
     }
@@ -484,7 +550,9 @@ private fun RecordTypePickerDialog(onDismiss: () -> Unit, onStart: (String, Bool
     )
 }
 
-/** All finished workouts (WorkoutHistorySheet). */
+/** All finished workouts (WorkoutHistorySheet), grouped by day with TODAY/YESTERDAY/date headers
+ *  (iOS #61 ActivityView day grouping). Sessions arrive newest-first (recentFlow `startedAt DESC`),
+ *  so `groupBy` keeps each day's rows newest-first and the day keys sort descending. */
 @Composable
 private fun WorkoutHistoryDialog(
     sessions: List<ActivitySessionEntity>,
@@ -492,16 +560,45 @@ private fun WorkoutHistoryDialog(
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit,
 ) {
+    val zone = remember { ZoneId.systemDefault() }
+    val headerFmt = remember { DateTimeFormatter.ofPattern("EEEE, MMM d") }
+    val today = remember { LocalDate.now(zone) }
+    val groups = remember(sessions) {
+        sessions.groupBy { Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate() }
+            .toList().sortedByDescending { it.first }
+    }
+    fun header(day: LocalDate): String = when (day) {
+        today -> "TODAY"
+        today.minusDays(1) -> "YESTERDAY"
+        // Locale.ROOT: iOS's uppercased() is locale-insensitive; a Turkish locale would turn
+        // month-name i's into dotted İ otherwise.
+        else -> headerFmt.format(day).uppercase(java.util.Locale.ROOT)
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Workout history") },
         text = {
-            if (sessions.isEmpty()) {
+            if (groups.isEmpty()) {
                 Text("No workouts yet — recorded workouts will appear here.")
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.heightIn(max = 420.dp)) {
-                    items(sessions.size) { i ->
-                        ActivityWorkoutRow(sessions[i], units) { onSelect(sessions[i].id) }
+                    groups.forEachIndexed { index, (day, daySessions) ->
+                        item(key = "header-$day") {
+                            Text(
+                                header(day),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                letterSpacing = 1.4.sp,
+                                color = PulseColors.textMuted,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = if (index == 0) 0.dp else 8.dp),
+                            )
+                        }
+                        items(daySessions.size, key = { daySessions[it].id }) { i ->
+                            ActivityWorkoutRow(daySessions[i], units) { onSelect(daySessions[i].id) }
+                        }
                     }
                 }
             }

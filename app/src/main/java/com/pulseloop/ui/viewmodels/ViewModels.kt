@@ -182,11 +182,21 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
 class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
-        // Day view (also feeds the Today sleep tile)
+        // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
         val lastNight: SleepSessionEntity? = null,
         val lastNightBlocks: List<SleepStageBlockEntity> = emptyList(),
         val score: SleepScoreResult? = null,
+        // Sleep Day view — the currently *shown* day (may be a past day when navigating). A day can
+        // hold several sessions (main night + naps), rendered as a carousel.
+        val daySessions: List<SleepSessionEntity> = emptyList(),
+        val dayBlocks: Map<String, List<SleepStageBlockEntity>> = emptyMap(),
         val coach: SleepCoach? = null,
+        /** Day-view navigation: 0 = today's reference night, N = N days earlier. */
+        val dayOffset: Int = 0,
+        /** How far back the stepper may page (0 locks to today when there's no history). */
+        val maxDayOffset: Int = 0,
+        /** Local-midnight key of the shown day, for the nav header label. */
+        val shownDayMillis: Long = 0L,
         val recentSessions: List<SleepSessionEntity> = emptyList(),
         // Aggregate view (week/month/year)
         val rangeSessions: List<SleepSessionEntity> = emptyList(),
@@ -207,7 +217,8 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     val state: StateFlow<SleepState> = _state.asStateFlow()
 
     fun setRange(range: SleepRangeKey) {
-        _state.update { it.copy(range = range) }
+        // Returning to Day from an aggregate range always lands on today, not a stale offset.
+        _state.update { it.copy(range = range, dayOffset = if (range == SleepRangeKey.DAY) 0 else it.dayOffset) }
         viewModelScope.launch { try { rebuild(range) } catch (_: Exception) {} }
     }
 
@@ -227,15 +238,30 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             blocksCache.getOrPut(id) { db.sleepStageBlockDao().forSession(id) }
         // aggregateCoach/averageScore take a synchronous lookup; pre-warm the cache first.
         val goal = try { db.userGoalDao().get()?.sleepMinutes } catch (_: Exception) { null }
+        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
 
-        // ── Day view ──
-        val reference = dayReferenceNight()
-        val night = db.sleepSessionDao().byDay(reference)?.takeIf { it.totalMinutes > 0 }
+        // ── Today tile (never moves with Day-view navigation) ──
+        val todayReference = TimeUtil.referenceNightLocal()
+        val night = db.sleepSessionDao().byDay(todayReference)?.takeIf { it.totalMinutes > 0 }
         val nightBlocks = night?.let { blocksFor(it.id) } ?: emptyList()
         val scoreResult = night?.let { SleepScore.calculate(it, nightBlocks) }
-        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
-        val dayCoach = if (night != null) SleepInsights.dayCoach(night, nightBlocks, steps)
-            else SleepInsights.dayNoDataCoach
+
+        // ── Day view (the currently shown day; may be a past day when navigating) ──
+        val offset = _state.value.dayOffset
+        val shownNow = System.currentTimeMillis() - offset * 86_400_000L
+        val shownReference = TimeUtil.referenceNightLocal(shownNow)
+        // A day is either all-ring or all-demo (the seeder skips days with ring data); prefer ring.
+        val shownAll = db.sleepSessionDao().allByDay(shownReference).filter { it.totalMinutes > 0 }
+        val shownRing = shownAll.filter { it.sourceRaw != "demo" }
+        val daySessions = (if (shownRing.isNotEmpty()) shownRing else shownAll).sortedBy { it.startAt }
+        val dayBlocks = daySessions.associate { it.id to blocksFor(it.id) }
+        // The primary (longest) session drives the scripted day-level coach fallback.
+        val primary = daySessions.maxByOrNull { it.totalMinutes }
+        val dayCoach = if (primary != null)
+            SleepInsights.dayCoach(primary, dayBlocks[primary.id] ?: emptyList(), steps)
+        else SleepInsights.dayNoDataCoach
+        val earliest = try { db.sleepSessionDao().earliestDay() } catch (_: Exception) { null }
+        val maxOffset = maxDayOffset(earliest)
 
         // ── Aggregate ──
         val expected = when (range) {
@@ -244,27 +270,37 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             SleepRangeKey.MONTH -> 30
             SleepRangeKey.YEAR -> 365
         }
-        val anchor = if (range == SleepRangeKey.DAY) reference
+        val anchor = if (range == SleepRangeKey.DAY) shownReference
             else db.sleepSessionDao().recent(1).firstOrNull()?.let { TimeUtil.startOfDayLocal(it.date) }
                 ?: TimeUtil.startOfTodayLocal()
         val start = anchor - (expected - 1) * 86_400_000L
         val end = anchor + 86_400_000L - 1
         val sessions = db.sleepSessionDao().inRange(start, end)
-        val valid = SleepInsights.validSessions(sessions)
-        valid.forEach { blocksFor(it.id) }  // warm cache for the sync lambdas below
-        val lookup: (String) -> List<SleepStageBlockEntity> = { blocksCache[it] ?: emptyList() }
+        sessions.forEach { blocksFor(it.id) }  // warm cache for the collapse lookup below
+        val realLookup: (String) -> List<SleepStageBlockEntity> = { blocksCache[it] ?: emptyList() }
+        // Collapse each waking day (main night + naps) into one combined summary so a night plus
+        // naps counts as ONE tracked night, consistent with the "N of M nights" hero and averages.
+        val collapsed = SleepInsights.collapseByDay(sessions, realLookup)
+        val collapsedSessions = collapsed.map { it.session }
+        val collapsedBlocks = collapsed.associate { it.session.id to it.blocks }
+        val lookup: (String) -> List<SleepStageBlockEntity> = { collapsedBlocks[it] ?: emptyList() }
+        val valid = SleepInsights.validSessions(collapsedSessions)
         val stageAvg = if (valid.isEmpty()) null else Triple(
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / valid.size,
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / valid.size,
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "AWAKE" }.sumOf { b -> b.durationMinutes } } / valid.size,
         )
         val bars = when (range) {
-            SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, sessions, lookup)
-            else -> SleepInsights.buildNightAxis(start, end, sessions, lookup, range)
+            SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, collapsedSessions, lookup)
+            else -> SleepInsights.buildNightAxis(start, end, collapsedSessions, lookup, range)
         }
 
-        // LLM summaries (kind sleep_day / sleep_range_*), newest wins.
-        val daySummary = try { db.coachSummaryDao().latest(CoachSummaryKind.SLEEP_DAY.rawValue) } catch (_: Exception) { null }
+        // LLM summaries (kind sleep_day / sleep_range_*), newest wins. The day summary describes
+        // last night only, so surface it only while viewing today; a past day falls back to the
+        // scripted coach computed from that day's own primary session.
+        val daySummary = if (offset != 0) null else try {
+            db.coachSummaryDao().latest(CoachSummaryKind.SLEEP_DAY.rawValue)
+        } catch (_: Exception) { null }
         val rangeSummary = if (range == SleepRangeKey.DAY) null else try {
             db.coachSummaryDao().latest(CoachSummaryKind.sleepRange(range).rawValue)
         } catch (_: Exception) { null }
@@ -274,14 +310,18 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
                 lastNight = night,
                 lastNightBlocks = nightBlocks,
                 score = scoreResult,
+                daySessions = daySessions,
+                dayBlocks = dayBlocks,
                 coach = dayCoach,
-                rangeSessions = sessions,
+                maxDayOffset = maxOffset,
+                shownDayMillis = shownReference,
+                rangeSessions = collapsedSessions,
                 expectedNights = expected,
                 avgMinutes = SleepInsights.averageDuration(valid),
                 avgScore = SleepInsights.averageScore(valid, lookup),
                 stageAvg = stageAvg,
                 bars = bars,
-                aggregateCoach = SleepInsights.aggregateCoach(range, sessions, expected, goal, lookup),
+                aggregateCoach = SleepInsights.aggregateCoach(range, collapsedSessions, expected, goal, lookup),
                 goalMinutes = goal,
                 daySummary = daySummary,
                 rangeSummary = rangeSummary,
@@ -289,9 +329,38 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         }
     }
 
-    /** The night to show on the Day view: before 4 AM local, still last night (PulseServices).
-     *  Shared with the widget snapshot publisher via [TimeUtil.referenceNightLocal]. */
-    private fun dayReferenceNight(): Long = TimeUtil.referenceNightLocal()
+    /**
+     * How many days back the Day-view stepper may page: up to one week before the earliest recorded
+     * night, clamped to a 1-year floor. 0 (locked to today) when there's no data. Mirrors iOS
+     * SleepView.maxDayOffset.
+     */
+    private fun maxDayOffset(earliestDay: Long?): Int {
+        if (earliestDay == null) return 0
+        val today = TimeUtil.startOfTodayLocal()
+        val floor = maxOf(earliestDay - 7 * 86_400_000L, today - 365 * 86_400_000L)
+        return ((today - floor) / 86_400_000L).toInt().coerceAtLeast(0)
+    }
+
+    // ── Day navigation (iOS #84) ──
+
+    /** Step to an older (older = true) or newer day, clamped to [0, maxDayOffset]. */
+    fun stepDay(older: Boolean) = jumpToOffset(_state.value.dayOffset + if (older) 1 else -1)
+
+    /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
+    fun jumpToDay(dayMillis: Long) {
+        val today = TimeUtil.startOfTodayLocal()
+        jumpToOffset(((today - TimeUtil.startOfDayLocal(dayMillis)) / 86_400_000L).toInt())
+    }
+
+    /** Return the Day view to today (called when re-entering Day from an aggregate range). */
+    fun resetToToday() = jumpToOffset(0)
+
+    private fun jumpToOffset(target: Int) {
+        val clamped = target.coerceIn(0, _state.value.maxDayOffset)
+        if (clamped == _state.value.dayOffset) return
+        _state.update { it.copy(dayOffset = clamped) }
+        viewModelScope.launch { try { rebuild(_state.value.range) } catch (_: Exception) {} }
+    }
 }
 
 /**
@@ -525,7 +594,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             bpDiaSeries = bpDia.map { VitalSample(it.timestamp, it.value) },
             glucoseSeries = gluc.map { VitalSample(it.timestamp, it.value + glucoseOffset) },
             peakHr = hr.maxOfOrNull { it.value },
-            profile = UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex),
+            profile = apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex),
             // "Reference entered" ⇔ a non-zero calibration offset in Settings (0 = not set).
             hasBPReference = (apiKeyStore?.bpAdjustSystolic ?: 0) != 0 || (apiKeyStore?.bpAdjustDiastolic ?: 0) != 0,
             isGlucoseCalibrated = glucoseOffset != 0.0 || (apiKeyStore?.glucoseRefMgdl ?: 0.0) != 0.0,
@@ -542,6 +611,22 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
 
     }
 }
+
+/**
+ * Build the [UserPhysiologyProfile] from the stored age/sex plus the app-side physiology prefs
+ * (iOS #35). Nullable receiver so the (rare) no-store path still yields a sensible default profile.
+ * The tri-state Settings values (`Boolean?`) collapse to the engine's non-null flags: null/false
+ * both mean "no adjustment", only true tightens/relaxes a range.
+ */
+private fun ApiKeyStore?.physiologyProfile(age: Int?, sex: String?): UserPhysiologyProfile =
+    UserPhysiologyProfile.fromProfile(
+        age, sex,
+        athleteMode = this?.athleteMode ?: false,
+        altitudeMeters = this?.altitudeMeters,
+        usesBetaBlockers = this?.usesBetaBlockers == true,
+        hasKnownLungCondition = this?.hasKnownLungCondition == true,
+        preferredGlucoseUnit = this?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL,
+    )
 
 /**
  * The one [VitalsCardFactory.Inputs] construction from a [VitalsViewModel.VitalsState], shared by
@@ -576,6 +661,8 @@ class CoachViewModel(
     private val orchestrator: com.pulseloop.coach.orchestration.CoachOrchestrator,
     /** Resolves staged attachment refs to wire payloads (injected so the VM stays context-free). */
     private val attachmentPayloads: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> List<com.pulseloop.coach.attachments.CoachImagePayload> = { emptyList() },
+    /** Opt-in city + weather (iOS #65d), injected so the VM stays context-free like [attachmentPayloads]. */
+    private val environmentSnapshot: suspend () -> com.pulseloop.coach.context.EnvironmentContext? = { null },
 ) : ViewModel() {
     data class CoachState(
         val messages: List<ChatMessage> = emptyList(),
@@ -591,20 +678,76 @@ class CoachViewModel(
         /** A failed turn — render as a distinct error bubble showing the real provider error
          *  (code + reason) instead of the generic fallback. See [sendMessage]. */
         val isError: Boolean = false,
+        /** The persisted row's id, null for the client-side-only greeting. Lets
+         *  [CoachToolTraceDisclosure] (iOS #65c) query `coach_tool_calls` by messageId. */
+        val id: String? = null,
     )
 
-    private val _state = MutableStateFlow(CoachState(
-        messages = listOf(ChatMessage("assistant",
-            "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
-    ))
+    private val greeting = ChatMessage("assistant",
+        "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?")
+
+    private val _state = MutableStateFlow(CoachState(messages = listOf(greeting)))
     val state: StateFlow<CoachState> = _state.asStateFlow()
 
-    /** Reset to a fresh thread (iOS CoachView "+" button). In-memory only, like the thread itself. */
+    /** The thread every persisted message/tool-call is written under. Holds the full row (not just
+     *  the id) so bumping `updatedAt` in [sendMessage] can `.copy(...)` it without clobbering
+     *  `createdAt`/`title` back to their defaults. Populated by [loadOrCreateConversation]. */
+    private var currentConversation: CoachConversationEntity = CoachConversationEntity()
+
+    /** [sendMessage] joins this before writing anything, so a message insert can never race ahead
+     *  of its parent conversation row landing (the `coach_messages.conversationId` foreign key
+     *  would otherwise throw if the row isn't there yet). Reassigned by [newConversation] too. */
+    private var conversationReady: kotlinx.coroutines.Job =
+        viewModelScope.launch { loadOrCreateConversation() }
+
+    /** Resume the most recent conversation's persisted messages (iOS/SwiftData parity — chat
+     *  history now survives process death), or start a fresh persisted thread if there is none
+     *  yet / the most recent one is empty. The canned greeting is never persisted (client-side
+     *  placeholder only, mirrors iOS), so an existing-but-empty conversation still shows it. */
+    private suspend fun loadOrCreateConversation() {
+        val existing = db.coachConversationDao().recent(limit = 1).firstOrNull()
+        if (existing != null) {
+            currentConversation = existing
+            val messages = db.coachMessageDao().forConversation(existing.id)
+            if (messages.isNotEmpty()) {
+                _state.update { it.copy(messages = messages.map { m -> m.toChatMessage() }) }
+            }
+            return
+        }
+        currentConversation = CoachConversationEntity()
+        db.coachConversationDao().upsert(currentConversation)
+    }
+
+    /** The active thread's id, for the usage sheet — a one-shot fetch when the sheet opens rather
+     *  than a live Flow, since "usage so far" doesn't need to update while the sheet is open. */
+    fun currentConversationId(): String = currentConversation.id
+
+    /** Tool-call trace for one assistant/error bubble (iOS #65c CoachToolTraceDisclosure), ordered
+     *  by turn sequence. A live Flow (not one-shot) since the bubble can render before the trace
+     *  insert lands. */
+    fun toolCallsForMessage(messageId: String): Flow<List<CoachToolCallEntity>> =
+        db.coachToolCallDao().forMessageFlow(messageId)
+
+    /** Conversation + message rows for the usage sheet. [currentConversation] is always kept
+     *  fresh by [sendMessage]'s touch, so no extra DAO round-trip is needed for it. */
+    suspend fun usageSnapshot(): Pair<CoachConversationEntity, List<CoachMessageEntity>> =
+        currentConversation to db.coachMessageDao().forConversation(currentConversation.id)
+
+    private fun CoachMessageEntity.toChatMessage() = ChatMessage(
+        // Persisted role is "error" (not "assistant") for a failed turn (see sendMessage) —
+        // map back to an assistant bubble with isError set, matching the in-memory shape.
+        role = if (role == "error") "assistant" else role, text = body,
+        attachments = com.pulseloop.coach.attachments.CoachAttachmentRef.decode(attachmentsJson),
+        isError = role == "error",
+        id = id,
+    )
+
+    /** Reset to a fresh thread (iOS CoachView "+" button). Starts a NEW persisted conversation —
+     *  the old one's rows are left in Room untouched, not deleted. */
     fun newConversation() {
-        _state.value = CoachState(
-            messages = listOf(ChatMessage("assistant",
-                "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?"))
-        )
+        _state.value = CoachState(messages = listOf(greeting))
+        currentConversation = CoachConversationEntity()
+        conversationReady = viewModelScope.launch { db.coachConversationDao().upsert(currentConversation) }
     }
 
     fun sendMessage(
@@ -616,8 +759,18 @@ class CoachViewModel(
             isThinking = true, error = null,
         ) }
         viewModelScope.launch {
+            conversationReady.join()
+            // Captured once here: if the user starts a new thread ("+") while this turn is still
+            // in flight, the reply must still land on the conversation it was asked in, not
+            // whichever one is active by the time the provider responds.
+            val conversation = currentConversation
+            val conversationId = conversation.id
+            db.coachMessageDao().insert(CoachMessageEntity(
+                conversationId = conversationId, role = "user", body = userText,
+                attachmentsJson = com.pulseloop.coach.attachments.CoachAttachmentRef.encode(attachments),
+            ))
             try {
-                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db)
+                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db, environment = environmentSnapshot())
                 // Drop error bubbles: they're app-generated diagnostics (a provider HTTP error),
                 // not real assistant turns. Replaying them as assistant history would feed the
                 // model garbage like "Coach error · HTTP 404 …" as if it had said it.
@@ -641,10 +794,11 @@ class CoachViewModel(
                 // field a non-reasoning model rejects). Surface `result.error` instead so the
                 // user sees the actual provider code + reason and can act on it.
                 val turnError = result.error
+                val assistantMessageId = java.util.UUID.randomUUID().toString()
                 val reply = if (turnError != null) {
-                    ChatMessage("assistant", turnError.plainText, isError = true)
+                    ChatMessage("assistant", turnError.plainText, isError = true, id = assistantMessageId)
                 } else {
-                    ChatMessage("assistant", result.assistant.plainText)
+                    ChatMessage("assistant", result.assistant.plainText, id = assistantMessageId)
                 }
                 // The red error bubble (above) already carries the code + reason; don't also set
                 // `error`, or CoachScreen renders a duplicate "Error: <code>" footer for the same
@@ -654,6 +808,41 @@ class CoachViewModel(
                     messages = it.messages + reply,
                     isThinking = false,
                 ) }
+                // A failed turn still burned tokens, so it's persisted too (role "error", not
+                // "assistant") — the context-replay filter above keys off isError, not the
+                // persisted role, so this doesn't leak into future prompts.
+                val persistedRole = if (reply.isError) "error" else "assistant"
+                val usage = result.usage
+                // Cost prefers the provider-reported figure (OpenRouter); else the catalog
+                // estimate. Both are null when the model is unknown/on-device/no usage reported —
+                // the usage sheet shows "cost unavailable" rather than a wrong number.
+                val cost = usage?.reportedCostUSD
+                    ?: usage?.let { com.pulseloop.coach.usage.CoachPricingCatalog.cost(result.modelUsed, it) }
+                db.coachMessageDao().insert(CoachMessageEntity(
+                    id = assistantMessageId, conversationId = conversationId,
+                    role = persistedRole, body = reply.text,
+                    inputTokens = usage?.inputTokens, outputTokens = usage?.outputTokens,
+                    costUSD = cost,
+                    modelUsed = result.modelUsed.ifEmpty { null },
+                    providerUsed = result.providerUsed.ifEmpty { null },
+                ))
+                result.trace.forEachIndexed { index, call ->
+                    db.coachToolCallDao().insert(CoachToolCallEntity(
+                        conversationId = conversationId, messageId = assistantMessageId,
+                        toolName = call.toolName, outputJSON = call.resultSummary,
+                        label = call.label, statusRaw = call.status, sequence = index,
+                    ))
+                }
+                val touched = conversation.copy(
+                    updatedAt = System.currentTimeMillis(),
+                    totalInputTokens = conversation.totalInputTokens + (usage?.inputTokens ?: 0),
+                    totalOutputTokens = conversation.totalOutputTokens + (usage?.outputTokens ?: 0),
+                    totalCostUSD = conversation.totalCostUSD + (cost ?: 0.0),
+                )
+                db.coachConversationDao().upsert(touched)
+                // Only refresh the in-memory cache if this is still the active thread — a
+                // "+" tap mid-turn already moved `currentConversation` on to a newer one.
+                if (currentConversation.id == conversationId) currentConversation = touched
             } catch (e: Exception) {
                 _state.update { it.copy(
                     messages = it.messages + ChatMessage("assistant", "Sorry, something went wrong: ${e.message}"),
@@ -720,7 +909,7 @@ class VitalDetailViewModel(
         viewModelScope.launch {
             try {
                 val userProfile = db.userProfileDao().get()
-                val physiology = UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex)
+                val physiology = apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex)
                 engineThresholds(metric, physiology)?.let { engine ->
                     _state.update { it.copy(thresholds = engine) }
                 }
@@ -878,7 +1067,7 @@ class VitalDetailViewModel(
         // baseline-relative zones from the window's samples further below.
         val physiology = try {
             val userProfile = db.userProfileDao().get()
-            UserPhysiologyProfile.fromProfile(userProfile?.age, userProfile?.sex)
+            apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex)
         } catch (_: Exception) { UserPhysiologyProfile.UNKNOWN }
 
         if (metric == "bp") {
@@ -914,9 +1103,13 @@ class VitalDetailViewModel(
             val kind = primaryKind ?: return
             val kindName = kind.name
             val glucoseOffset = apiKeyStore?.glucoseOffsetMgdl ?: 0.0
+            val glucoseUnit = apiKeyStore?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL
 
+            // Convert each reading to its display unit so the chart, stats, and trend all agree:
+            // glucose gets the calibration offset then the mg/dL→mmol/L unit (iOS #43 §3); temp
+            // gets °C→°F. Reference zones/axis are converted at the display layer (Screens.kt).
             fun convert(v: Double): Double = when (kind) {
-                MeasurementKind.BLOOD_SUGAR -> v + glucoseOffset
+                MeasurementKind.BLOOD_SUGAR -> glucoseUnit.fromMgdl(v + glucoseOffset)
                 MeasurementKind.TEMPERATURE -> UnitConverter.temperature(v, unitSystem)
                 else -> v
             }

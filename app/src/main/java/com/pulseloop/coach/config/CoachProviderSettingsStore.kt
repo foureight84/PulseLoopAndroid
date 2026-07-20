@@ -39,6 +39,12 @@ class CoachProviderSettingsStore(context: Context) {
 
     val hasOpenRouterKey: Boolean get() = openRouterApiKey.isNotBlank()
 
+    var minimaxApiKey: String
+        get() = prefs.getString(KEY_MINIMAX_API_KEY, "") ?: ""
+        set(value) { prefs.edit().putString(KEY_MINIMAX_API_KEY, value).apply() }
+
+    val hasMinimaxKey: Boolean get() = minimaxApiKey.isNotBlank()
+
     /** Gemini model slug (see [GeminiModel] presets). Retired 2.x slugs are remapped to the
      *  current rolling alias on read so no one stays stuck on a deprecated model (issue #22). */
     var geminiModel: String
@@ -50,6 +56,11 @@ class CoachProviderSettingsStore(context: Context) {
     var openRouterModel: String
         get() = prefs.getString(KEY_OPENROUTER_MODEL, OpenRouterModel.DEFAULT.slug) ?: OpenRouterModel.DEFAULT.slug
         set(value) { prefs.edit().putString(KEY_OPENROUTER_MODEL, value).apply() }
+
+    /** MiniMax model slug (see [MiniMaxModel] presets). */
+    var minimaxModel: String
+        get() = prefs.getString(KEY_MINIMAX_MODEL, MiniMaxModel.DEFAULT.slug) ?: MiniMaxModel.DEFAULT.slug
+        set(value) { prefs.edit().putString(KEY_MINIMAX_MODEL, value).apply() }
 
     /** OpenRouter-only: exclude providers that log/train on prompts. */
     var orPrivacyRouting: Boolean
@@ -82,6 +93,7 @@ class CoachProviderSettingsStore(context: Context) {
         providerMode = providerMode,
         geminiModel = geminiModel,
         openRouterModel = openRouterModel,
+        minimaxModel = minimaxModel,
         orPrivacyRouting = orPrivacyRouting,
         orProviderSort = orProviderSort,
         reasoningEffort = reasoningEffort,
@@ -92,8 +104,10 @@ class CoachProviderSettingsStore(context: Context) {
         private const val KEY_PROVIDER_MODE = "coach_provider_mode"
         private const val KEY_GEMINI_API_KEY = "gemini_api_key"
         private const val KEY_OPENROUTER_API_KEY = "openrouter_api_key"
+        private const val KEY_MINIMAX_API_KEY = "minimax_api_key"
         private const val KEY_GEMINI_MODEL = "gemini_model"
         private const val KEY_OPENROUTER_MODEL = "openrouter_model"
+        private const val KEY_MINIMAX_MODEL = "minimax_model"
         private const val KEY_OR_PRIVACY_ROUTING = "openrouter_privacy_routing"
         private const val KEY_OR_PROVIDER_SORT = "openrouter_provider_sort"
         private const val KEY_REASONING_EFFORT = "coach_reasoning_effort"

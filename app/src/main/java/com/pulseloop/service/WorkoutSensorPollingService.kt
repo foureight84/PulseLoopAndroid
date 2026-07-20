@@ -42,7 +42,12 @@ class WorkoutSensorPollingService(
             while (isActive) {
                 val now = System.currentTimeMillis()
 
-                if (!isPolling && now >= nextHRPoll) {
+                // A continuous realtime stream is already feeding coordinator.latestHRValue —
+                // don't spot-poll on top of it. measureHR()'s cleanup unconditionally disables
+                // the ring's HR sensor (coordinator.stopWorkoutHeartRate() is the only thing that
+                // should stop it), so spot-polling here would silently kill the workout's own
+                // stream within one poll cycle (iOS #57f).
+                if (!isPolling && now >= nextHRPoll && !coordinator.workoutHRActive) {
                     val didRead = poll("hr") { coordinator.measureHR() }
                     nextHRPoll = System.currentTimeMillis() + if (didRead) hrIntervalMs else disconnectedRetryMs
                 }

@@ -50,6 +50,11 @@ interface MeasurementDao {
     @Query("SELECT value FROM measurements WHERE kindRaw = :kind AND timestamp <= :before ORDER BY timestamp DESC LIMIT 1")
     suspend fun latest(kind: String, before: Long = System.currentTimeMillis()): Double?
 
+    /** Newest measurement of any kind — iOS `latestMeasurementTimestamp()`, the live-data leg of
+     *  the coach check-in's hasRecentData freshness fallback. */
+    @Query("SELECT MAX(timestamp) FROM measurements")
+    suspend fun latestTimestamp(): Long?
+
     /** Whether any demo-seeded row exists for a kind — mirrors iOS `hasMockMeasurement(kind:)`,
      *  which switches chart fetches from the range window to full history in demo mode. */
     @Query("SELECT EXISTS(SELECT 1 FROM measurements WHERE kindRaw = :kind AND sourceRaw = 'demo')")
@@ -57,6 +62,17 @@ interface MeasurementDao {
 
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
+
+    /** Look up an already-persisted history row at an exact timestamp — the identity a ring's
+     *  history replay is deduped on (a ring re-sends the same log every re-sync, with
+     *  deterministic per-record epochs). */
+    @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND timestamp = :timestamp AND sourceRaw = 'history' LIMIT 1")
+    suspend fun findHistoryAt(kind: String, timestamp: Long): MeasurementEntity?
+
+    /** Update a row's value in place — used when a re-synced history sample revises an existing
+     *  one (the ring can refine an averaged block) without creating a duplicate row. */
+    @Query("UPDATE measurements SET value = :value WHERE id = :id")
+    suspend fun updateValue(id: String, value: Double)
 
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
@@ -127,6 +143,15 @@ interface ActivityBucketDao {
 }
 
 @Dao
+interface BatterySampleDao {
+    @Query("SELECT * FROM battery_samples WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC LIMIT :limit")
+    suspend fun samplesBetween(start: Long, end: Long, limit: Int = 1000): List<BatterySampleEntity>
+
+    @Insert
+    suspend fun insert(sample: BatterySampleEntity)
+}
+
+@Dao
 interface DeviceMeasurementConfigDao {
     @Query("SELECT * FROM device_measurement_configs WHERE deviceId = :deviceId LIMIT 1")
     suspend fun byDevice(deviceId: String): DeviceMeasurementConfigEntity?
@@ -155,6 +180,11 @@ interface ActivitySessionDao {
     @Query("SELECT * FROM activity_sessions ORDER BY startedAt DESC LIMIT :limit")
     fun recentFlow(limit: Int = 10): Flow<List<ActivitySessionEntity>>
 
+    // iOS #57e post-workout vitals backfill: sessions still eligible to have late ring-log
+    // HR/SpO2 history re-attach after finish (see ActivityAggregates.backfillWindowMillis).
+    @Query("SELECT * FROM activity_sessions WHERE statusRaw = 'finished' AND endedAt >= :cutoff")
+    suspend fun finishedSince(cutoff: Long): List<ActivitySessionEntity>
+
     @Upsert
     suspend fun upsert(session: ActivitySessionEntity)
 }
@@ -170,14 +200,24 @@ interface ActivityGpsPointDao {
 
 @Dao
 interface SleepSessionDao {
-    // Ring sessions outrank demo ones if both ever exist for a day (the seeder skips days that
-    // have a ring session, so this is defensive).
-    @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY (sourceRaw = 'demo') ASC LIMIT 1")
+    // A day can now hold several sessions (main night + daytime naps, split by SleepSegmentation).
+    // Single-session callers (Today tile, widget, coach) want the *main* sleep, so surface the
+    // longest. Ring sessions still outrank demo ones (the seeder skips days that have a ring
+    // session, so the sourceRaw tiebreak is defensive). Mirrors iOS `sleepForDate` (PR #83).
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY (sourceRaw = 'demo') ASC, totalMinutes DESC LIMIT 1")
     suspend fun byDay(day: Long): SleepSessionEntity?
 
-    /** The synced (non-demo) session for a day — the sync path's upsert target. */
+    /** All sessions for a day, earliest first — feeds the Day-view carousel. */
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY startAt ASC")
+    suspend fun allByDay(day: Long): List<SleepSessionEntity>
+
+    /** The synced (non-demo) session for a day — the seeder's "already has ring data" guard. */
     @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' LIMIT 1")
     suspend fun ringByDay(day: Long): SleepSessionEntity?
+
+    /** All synced (non-demo) sessions for a waking day, earliest first — the reconcile target. */
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' ORDER BY startAt ASC")
+    suspend fun ringAllByDay(day: Long): List<SleepSessionEntity>
 
     @Query("SELECT * FROM sleep_sessions ORDER BY date DESC LIMIT :limit")
     suspend fun recent(limit: Int = 7): List<SleepSessionEntity>
@@ -188,8 +228,16 @@ interface SleepSessionDao {
     @Query("SELECT * FROM sleep_sessions WHERE date BETWEEN :start AND :end ORDER BY date ASC")
     suspend fun inRange(start: Long, end: Long): List<SleepSessionEntity>
 
+    /** Earliest tracked day key (local midnight millis) — bounds how far Day navigation can page back. */
+    @Query("SELECT MIN(date) FROM sleep_sessions WHERE totalMinutes > 0")
+    suspend fun earliestDay(): Long?
+
     @Upsert
     suspend fun upsert(session: SleepSessionEntity)
+
+    /** Delete one session by id; its stage blocks cascade. Used to drop rows the reconcile emptied. */
+    @Query("DELETE FROM sleep_sessions WHERE id = :id")
+    suspend fun deleteById(id: String)
 
     @Query("DELETE FROM sleep_sessions")
     suspend fun clear()
@@ -202,6 +250,10 @@ interface SleepSessionDao {
 interface SleepStageBlockDao {
     @Query("SELECT * FROM sleep_stage_blocks WHERE sessionId = :sessionId ORDER BY startAt ASC")
     suspend fun forSession(sessionId: String): List<SleepStageBlockEntity>
+
+    /** Blocks across several sessions (a waking day's rows) — feeds the reconcile's block merge. */
+    @Query("SELECT * FROM sleep_stage_blocks WHERE sessionId IN (:sessionIds) ORDER BY startAt ASC")
+    suspend fun forSessions(sessionIds: List<String>): List<SleepStageBlockEntity>
 
     @Insert
     suspend fun insert(block: SleepStageBlockEntity)
@@ -267,6 +319,9 @@ interface CoachToolCallDao {
     @Query("SELECT * FROM coach_tool_calls WHERE conversationId = :convId ORDER BY createdAt ASC")
     suspend fun forConversation(convId: String): List<CoachToolCallEntity>
 
+    @Query("SELECT * FROM coach_tool_calls WHERE messageId = :messageId ORDER BY sequence ASC, createdAt ASC")
+    fun forMessageFlow(messageId: String): Flow<List<CoachToolCallEntity>>
+
     @Insert
     suspend fun insert(call: CoachToolCallEntity)
 }
@@ -321,6 +376,10 @@ interface CoachSummaryDao {
     @Query("SELECT * FROM coach_summaries WHERE kind = :kind ORDER BY updatedAt DESC LIMIT 1")
     suspend fun latest(kind: String): CoachSummaryEntity?
 
+    /** Most recent cards of a kind, newest first — feeds the anti-repeat prompt hint (iOS #65). */
+    @Query("SELECT * FROM coach_summaries WHERE kind = :kind ORDER BY updatedAt DESC LIMIT :limit")
+    suspend fun recent(kind: String, limit: Int): List<CoachSummaryEntity>
+
     @Query("SELECT * FROM coach_summaries WHERE kind = :kind AND scopeKey = :scopeKey LIMIT 1")
     fun getFlow(kind: String, scopeKey: String): Flow<CoachSummaryEntity?>
 
@@ -329,4 +388,17 @@ interface CoachSummaryDao {
 
     @Query("DELETE FROM coach_summaries WHERE kind = :kind AND scopeKey = :scopeKey")
     suspend fun delete(kind: String, scopeKey: String)
+}
+
+@Dao
+interface CoachNotificationRecordDao {
+    @Insert
+    suspend fun insert(record: CoachNotificationRecordEntity)
+
+    /** Most recent delivered check-ins, newest first — anti-repeat prompt hint (iOS #65). */
+    @Query("SELECT * FROM coach_notification_records ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun recent(limit: Int = 6): List<CoachNotificationRecordEntity>
+
+    @Query("DELETE FROM coach_notification_records")
+    suspend fun clear()
 }
