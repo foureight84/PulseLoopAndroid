@@ -107,7 +107,8 @@ object RingEventBridge {
             emptyList() // Debug-feed only; nothing gates on wear state yet
 
         is RingDecodedEvent.MeasurementRejected ->
-            emptyList() // RingSyncCoordinator reads this off the raw-packet feed to abort a spot measurement
+            emptyList() // A verdict on a command, not data — RingSyncCoordinator reads it off the
+                        // raw-packet feed (SpotMeasurementGate) to fast-fail the named measurement
     }
 
     /** Shared plausibility window: within the last ~8 days (the history horizon) and no more

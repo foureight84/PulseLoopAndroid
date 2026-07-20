@@ -65,6 +65,9 @@ class RingSyncCoordinator(
     /** The samples of the HR measurement in flight, and the rule for whether they settled — see
      *  [HRSampleWindow], which owns the warm-up echo and the consistency gate (iOS #66). */
     private val hrWindow = HRSampleWindow()
+    /** The refusal fast-fail gate for spot measurements (iOS `c8969a4`) — the ring's `03 2f`
+     *  verdict can only ever abort the measurement it names, while it is actually running. */
+    private val spot = SpotMeasurementGate()
     /** True once the current measurement has produced a real (post-warm-up) bpm; keeps a stale
      *  [latestHRValue] from passing for a fresh reading. */
     val measurementReceivedReading: Boolean get() = hrWindow.receivedReading
@@ -81,14 +84,16 @@ class RingSyncCoordinator(
         const val COMBINED_MEASURE_SECONDS = 45
         /** Window for the live-HR leg of a spot measurement. */
         const val HR_MEASURE_SECONDS = 30
-        /** Extra settle time after the first HR reading, letting the value converge. */
-        const val HR_SETTLE_SECONDS = 4
-        /** Window for the live-SpO₂ leg of a spot measurement. */
-        const val SPO2_MEASURE_SECONDS = 40
+        /** Window for the live-SpO₂ leg of a spot measurement. iOS raised this 40 → 60
+         *  (`c8969a4`): the R99's successful sweep took 38s while another attempt ran past 41s
+         *  with no result — at 40s the outcome is a coin toss where the user watches the ring's
+         *  red LED work and gets an error anyway. */
+        const val SPO2_MEASURE_SECONDS = 60
         /** Upper-bound for a sequential HR+SpO₂ spot measurement; drives the UI countdown.
-         *  Derived from the legs so the countdown can't desync when one is tuned. Each leg
-         *  returns early once it gets a reading, so it usually finishes well sooner. */
-        const val SPOT_MEASURE_SECONDS = HR_MEASURE_SECONDS + HR_SETTLE_SECONDS + SPO2_MEASURE_SECONDS + 1
+         *  Derived from the legs so the countdown can't desync when one is tuned. Post-#66 the
+         *  HR leg samples its full window by design (no early exit), so this is a real bound,
+         *  not slack. */
+        const val SPOT_MEASURE_SECONDS = HR_MEASURE_SECONDS + SPO2_MEASURE_SECONDS + 1
         /** Max time to wait for the pre-factory-reset history sync before resetting anyway. */
         const val SYNC_BEFORE_RESET_TIMEOUT_MS = 30_000L
     }
@@ -250,6 +255,21 @@ class RingSyncCoordinator(
         workoutHRActive = false
     }
 
+    /**
+     * Ported from iOS's `restartWorkoutHeartRateIfActive()` (RingSyncCoordinator.swift:418).
+     * A spot read's stop also tears down the realtime stream (Colmi stops both 0x69 and 0x1e),
+     * so if a workout stream is supposed to be running, bring it straight back — the same shape
+     * the SmartHealth vendor app uses (it re-issues the identical enable after every
+     * interruption: reconnect, sync-end, resume — no delay, no special opcode). The engine's
+     * `startHeartRate()` is idempotent (re-arms the keepalive), so this is safe to call
+     * liberally; without it the keepalive only sends the *continue* frame, which can't revive a
+     * mode the ring already dropped.
+     */
+    fun restartWorkoutHeartRateIfActive() {
+        if (!workoutHRActive || !isConnected) return
+        engine?.startHeartRate()
+    }
+
     fun querySleep() {
         if (!isConnected) return
         engine?.runStartup()
@@ -349,6 +369,7 @@ class RingSyncCoordinator(
         hrNoReadingReported = false
         hrWindow.begin()
 
+        val spotToken = spot.begin(YCBTMeasurementMode.HEART_RATE)
         engine?.measureHeartRateSpot()
         var result: Int? = null
         try {
@@ -360,7 +381,7 @@ class RingSyncCoordinator(
             val steps = (hrMeasureSeconds * 2).toInt()   // 0.5s granularity
             for (i in 0 until steps) {
                 // The ring reported "worn incorrectly", or refused the measurement outright.
-                if (hrNoReadingReported) { aborted = true; break }
+                if (hrNoReadingReported || spot.isRejected(spotToken)) { aborted = true; break }
                 // Ring removed / BLE dropped mid-measure → fail rather than settle a truncated window.
                 if (!isConnected) { aborted = true; break }
                 // Contact lost after readings began (ring slipped / hand moved).
@@ -369,9 +390,12 @@ class RingSyncCoordinator(
             }
             result = if (aborted) null else hrWindow.stableValue
         } finally {
+            spot.end(spotToken)
             // Always switch the optical sensor off — even if the caller's coroutine is
             // cancelled (e.g. the user navigates away mid-measurement) — or the ring keeps pulsing.
             engine?.stopHeartRate()
+            // The stop also tears down the workout's realtime stream; bring it straight back.
+            restartWorkoutHeartRateIfActive()
             hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
         }
         return result
@@ -383,14 +407,17 @@ class RingSyncCoordinator(
         spo2State = MeasureState.MEASURING
         latestSpO2Value = null
         spo2NoReadingReported = false
+        val spotToken = spot.begin(YCBTMeasurementMode.SPO2)
         engine?.startSpO2()
         var result: Int? = null
         try {
             // Abort early when the ring reports the run ended with an error (finger off,
-            // ring not worn) instead of idling out the full window.
-            result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { spo2NoReadingReported })
+            // ring not worn) or refused the start, instead of idling out the full window.
+            result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { spo2NoReadingReported || spot.isRejected(spotToken) })
         } finally {
+            spot.end(spotToken)
             engine?.stopSpO2()   // stop the sensor even on cancellation (see measureHR)
+            restartWorkoutHeartRateIfActive()   // the stop preempts the workout's HR stream
             spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
         }
         return result
@@ -411,6 +438,7 @@ class RingSyncCoordinator(
             repeat(combinedMeasureSeconds.toInt()) { delay(1000) }
         } finally {
             engine?.stopCombinedMeasurement()   // stop even on cancellation (see measureHR)
+            restartWorkoutHeartRateIfActive()   // the stop preempts the workout's HR stream
             combinedState = MeasureState.DONE
         }
     }
@@ -457,6 +485,15 @@ class RingSyncCoordinator(
                     RingConnectionState.FAILED,
                     RingConnectionState.IDLE -> clearSyncProgress()
                     else -> {}
+                }
+            }
+            // `MeasurementRejected` has no PulseEvent of its own — it is a verdict on a command,
+            // not data — so the raw-packet feed (which carries every decoded frame) is where a
+            // measurement hears the ring say no (iOS `c8969a4`).
+            is PulseEvent.RawPacket -> {
+                val decoded = event.decoded
+                if (event.direction == PacketDirection.INCOMING && decoded is RingDecodedEvent.MeasurementRejected) {
+                    spot.noteRejected(decoded.mode)
                 }
             }
             // History records stream in oldest→newest; advance the progress bar by mapping
