@@ -766,7 +766,7 @@ private fun daySubLabel(dayMillis: Long): String {
     val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
     if (daysAgo >= 7) return ""
     val date = java.time.Instant.ofEpochMilli(dayMillis).atZone(java.time.ZoneId.systemDefault())
-    return date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d")).uppercase()
+    return date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d")).uppercase(java.util.Locale.ROOT)
 }
 
 // ─────────────────────────── Helpers ───────────────────────────

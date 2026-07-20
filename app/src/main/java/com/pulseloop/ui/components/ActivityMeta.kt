@@ -61,8 +61,30 @@ object ActivityMeta {
         else -> Icons.Filled.Star
     }
 
-    /** Whether the type records a GPS route (dance/yoga/gym are indoor — iOS #11). */
-    fun gpsCapable(type: String): Boolean = type in setOf("walk", "run", "cycle", "hike")
+    /** Whether the type records a GPS route (dance/yoga/gym are indoor — iOS #11; sport is
+     *  GPS-capable on iOS — Components.swift `"sport": ActivityKind(..., gpsCapable: true)`). */
+    fun gpsCapable(type: String): Boolean = type in setOf("walk", "run", "cycle", "hike", "sport")
+
+    /**
+     * Ported from ActivityMetricSet (WorkoutMetricsEngine.swift): which stats a workout of a
+     * given type surfaces, live and in the summary — pace for foot activities, speed for
+     * cycling ("min/km reads oddly on a bike"), neither for court/studio workouts.
+     */
+    data class ActivityMetricSet(
+        val showsDistance: Boolean,
+        val showsPace: Boolean,
+        val showsSpeed: Boolean,
+        val showsElevation: Boolean,
+        val showsSplits: Boolean,
+    )
+
+    fun metricSet(type: String): ActivityMetricSet = when (type) {
+        "walk" -> ActivityMetricSet(showsDistance = true, showsPace = true, showsSpeed = false, showsElevation = false, showsSplits = true)
+        "run", "hike" -> ActivityMetricSet(showsDistance = true, showsPace = true, showsSpeed = false, showsElevation = true, showsSplits = true)
+        "cycle" -> ActivityMetricSet(showsDistance = true, showsPace = false, showsSpeed = true, showsElevation = true, showsSplits = true)
+        "sport" -> ActivityMetricSet(showsDistance = true, showsPace = false, showsSpeed = false, showsElevation = false, showsSplits = false)
+        else -> ActivityMetricSet(showsDistance = false, showsPace = false, showsSpeed = false, showsElevation = false, showsSplits = false)
+    }
 
     /** "38:00" or "1:02:10" from seconds. */
     fun duration(seconds: Int): String {
@@ -86,4 +108,20 @@ object ActivityMeta {
     }
 
     fun paceUnit(units: UnitSystem): String = if (units == UnitSystem.IMPERIAL) "/mi" else "/km"
+
+    /**
+     * Average speed for cycling (iOS LivePaceTile / RecordSummaryComponents hero), or null when
+     * there's not enough data — iOS requires distance ≥ 50m and a positive elapsed, same floor
+     * as its pace/distance display.
+     */
+    fun speed(distanceMeters: Double?, durationSeconds: Int?, units: UnitSystem): String? =
+        speedParts(distanceMeters, durationSeconds, units)?.let { "${it.first} ${it.second.lowercase()}" }
+
+    /** [speed] split into value and label parts ("8.1" to "MPH") for hero-style display. */
+    fun speedParts(distanceMeters: Double?, durationSeconds: Int?, units: UnitSystem): Pair<String, String>? {
+        if (distanceMeters == null || durationSeconds == null || durationSeconds <= 0 || distanceMeters < 50) return null
+        val mps = distanceMeters / durationSeconds
+        return if (units == UnitSystem.IMPERIAL) "%.1f".format(mps * 2.23694) to "MPH"
+        else "%.1f".format(mps * 3.6) to "KM/H"
+    }
 }

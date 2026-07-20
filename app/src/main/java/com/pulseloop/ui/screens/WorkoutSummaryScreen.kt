@@ -134,7 +134,10 @@ fun WorkoutSummaryScreen(
         item { StatsGrid(s) }
         if (s.useGps) {
             item { WorkoutMapView(points = points) }
-            item { SplitsCard(points, units, s.type) }
+            // Splits follow iOS's ActivityMetricSet — shown for pace/speed activities, not sport.
+            if (ActivityMeta.metricSet(s.type).showsSplits) {
+                item { SplitsCard(points, units, s.type) }
+            }
         }
         item { Spacer(Modifier.height(48.dp)) }
     }
@@ -329,7 +332,8 @@ internal fun DateTimeButton(valueMillis: Long, onChange: (Long) -> Unit) {
         val timeState = rememberTimePickerState(
             initialHour = cal.get(Calendar.HOUR_OF_DAY),
             initialMinute = cal.get(Calendar.MINUTE),
-            is24Hour = false,
+            // Honor the device's 12/24-hour preference like iOS's locale-aware picker.
+            is24Hour = android.text.format.DateFormat.is24HourFormat(LocalContext.current),
         )
         AlertDialog(
             onDismissRequest = { showTime = false },
@@ -402,18 +406,29 @@ private fun dateRange(s: ActivitySessionEntity): String {
     return "$day · $start – $end"
 }
 
-/** Three large headline stats: GPS → distance/duration/pace; indoor → duration/active/calories. */
+/** Three large headline stats: GPS → distance/duration/pace-or-speed (calories for sport);
+ *  indoor → duration/active/calories. The third GPS metric follows iOS's ActivityMetricSet:
+ *  pace for foot activities, speed for cycling, calories when neither applies. */
 @Composable
 private fun SummaryHeroBand(s: ActivitySessionEntity, durationSec: Int?, units: UnitSystem) {
     data class M(val value: String, val label: String, val tint: Color)
     val dur = durationSec?.let { ActivityMeta.duration(it) } ?: "—"
     val metrics = if (s.useGps) {
+        val metricSet = ActivityMeta.metricSet(s.type)
         val dist = s.distanceMeters?.let { "%.2f".format(UnitConverter.distance(it, units)) }
-        val paceUnit = ActivityMeta.paceUnit(units)
+        val third = when {
+            metricSet.showsPace ->
+                M(ActivityMeta.pace(s.distanceMeters, durationSec, units) ?: "—", "PACE ${ActivityMeta.paceUnit(units)}", PulseColors.accent)
+            metricSet.showsSpeed -> {
+                val parts = ActivityMeta.speedParts(s.distanceMeters, durationSec, units)
+                M(parts?.first ?: "—", parts?.second ?: "SPEED", PulseColors.accent)
+            }
+            else -> M(s.calories?.let { "${it.toInt()}" } ?: "—", "CALORIES", PulseColors.calories)
+        }
         listOf(
-            M(dist ?: "—", UnitConverter.distanceUnit(units).uppercase(), PulseColors.distance),
+            M(dist ?: "—", UnitConverter.distanceUnit(units).uppercase(java.util.Locale.ROOT), PulseColors.distance),
             M(dur, "DURATION", PulseColors.textPrimary),
-            M(ActivityMeta.pace(s.distanceMeters, durationSec, units) ?: "—", "PACE $paceUnit", PulseColors.accent),
+            third,
         )
     } else {
         listOf(

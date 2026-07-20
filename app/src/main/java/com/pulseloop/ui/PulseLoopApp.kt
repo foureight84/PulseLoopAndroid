@@ -581,6 +581,7 @@ fun PulseLoopApp() {
                         heartRate = workoutState.latestHeartRate,
                         spO2 = workoutState.latestSpO2,
                         isPaused = workoutState.isPaused,
+                        useGps = workoutState.activeSession?.useGps ?: true,
                         hrZone = workoutState.hrZone,
                         units = apiKeyStore.resolvedUnitSystem,
                         onPause = {

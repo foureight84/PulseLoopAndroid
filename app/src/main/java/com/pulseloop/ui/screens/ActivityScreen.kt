@@ -570,7 +570,9 @@ private fun WorkoutHistoryDialog(
     fun header(day: LocalDate): String = when (day) {
         today -> "TODAY"
         today.minusDays(1) -> "YESTERDAY"
-        else -> headerFmt.format(day).uppercase()
+        // Locale.ROOT: iOS's uppercased() is locale-insensitive; a Turkish locale would turn
+        // month-name i's into dotted İ otherwise.
+        else -> headerFmt.format(day).uppercase(java.util.Locale.ROOT)
     }
 
     AlertDialog(
