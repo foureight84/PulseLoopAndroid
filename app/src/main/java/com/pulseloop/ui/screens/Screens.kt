@@ -61,6 +61,10 @@ fun VitalsScreen(
     val scope = rememberCoroutineScope()
     var measuring by remember { mutableStateOf(false) }
     var remaining by remember { mutableStateOf(0) }
+    // Set when a spot measurement finishes with every leg FAILED — iOS #66's "an honest retry":
+    // the refusal gate keeps bad values off screen, and this surfaces the failure with iOS's
+    // per-kind copy instead of silently re-enabling the button (second-pass finding #30).
+    var measureFailed by remember { mutableStateOf(false) }
     // Two measurement flavours:
     //  • combined (56ff/Jring): one 0x23 packet → BP + SpO₂ + stress + fatigue + blood sugar
     //  • spot (Colmi): sequential live HR + SpO₂ via the real-time command (0x69)
@@ -251,6 +255,7 @@ fun VitalsScreen(
                         enabled = !measuring,
                         onClick = {
                             measuring = true
+                            measureFailed = false
                             remaining = measureSeconds
                             scope.launch {
                                 val ticker = launch {
@@ -262,6 +267,12 @@ fun VitalsScreen(
                                     ticker.cancel()
                                     remaining = 0
                                     measuring = false
+                                    if (!combinedMode &&
+                                        (coordinator.hrState == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED ||
+                                            coordinator.spo2State == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED)
+                                    ) {
+                                        measureFailed = true
+                                    }
                                     viewModel?.refreshNow()  // show the new reading immediately
                                 }
                             }
@@ -287,6 +298,17 @@ fun VitalsScreen(
                         "Keep still — measuring heart rate & SpO₂…",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            if (measureFailed && !measuring) {
+                Spacer(Modifier.height(8.dp))
+                // iOS MeasurementKindPresentation failure copy ("…Keep the ring snug and your
+                // hand still, then try again."), shown until the next attempt.
+                Text(
+                    "Couldn't get a steady reading. Keep the ring snug and your hand still, then try again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
