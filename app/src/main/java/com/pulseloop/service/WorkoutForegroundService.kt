@@ -93,7 +93,11 @@ class WorkoutForegroundService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(COMPLETE_NOTIFICATION_TAG, NOTIFICATION_ID,
             buildFinishedNotification(name, elapsed, distance, calories, avgHeartRate, sessionId))
-        stopForeground(STOP_FOREGROUND_DETACH)
+        // REMOVE, not DETACH: the summary card is posted under its own tag, so the tag-less
+        // ongoing tracker card is a *distinct* notification that DETACH would leave posted —
+        // a stale "recording" card sitting next to the "complete" one (found in emulator
+        // verification). REMOVE takes the ongoing card down with the service.
+        stopForeground(STOP_FOREGROUND_REMOVE)
         scheduleDismiss()
         stopSelf()
     }

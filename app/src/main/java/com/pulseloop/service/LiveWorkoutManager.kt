@@ -29,6 +29,10 @@ class LiveWorkoutManager(
         val latestHeartRate: Int? = null,
         val latestSpO2: Int? = null,
         val hrZone: HeartRateZones.Zone = HeartRateZones.Zone.REST,
+        /** Set when a finish completes — the record route observes this to navigate to the
+         *  summary, since a finish from the notification action has no button handler to do it
+         *  (iOS routes off state the same way after an App Group command). */
+        val finishedSessionId: String? = null,
     )
 
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(WorkoutState())
@@ -78,7 +82,8 @@ class LiveWorkoutManager(
         startForegroundService(session.type)
 
         startTick(session)
-        _state.value = _state.value.copy(isRecording = true, activeSession = session)
+        // Fresh state (not copy): clears any previous workout's finishedSessionId/paused flags.
+        _state.value = WorkoutState(isRecording = true, activeSession = session)
         return session
     }
 
@@ -142,7 +147,7 @@ class LiveWorkoutManager(
         ActivityRollup.credit(db, summarized)
         coordinator.stopWorkoutHeartRate()
         finishForegroundService(summarized)
-        _state.value = WorkoutState()
+        _state.value = WorkoutState(finishedSessionId = summarized.id)
     }
 
     suspend fun cancel(session: ActivitySessionEntity) {

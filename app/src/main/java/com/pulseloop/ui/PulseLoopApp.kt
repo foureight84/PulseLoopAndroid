@@ -574,6 +574,16 @@ fun PulseLoopApp() {
                 }
                 paddedComposable("record") {
                     val workoutState = liveWorkout.state.collectAsState().value
+                    // A finish from the notification action arrives through the command bus with
+                    // no button handler to navigate from — route to the summary off the state
+                    // signal instead (mirrors the onFinish path below).
+                    LaunchedEffect(workoutState.finishedSessionId) {
+                        workoutState.finishedSessionId?.let { id ->
+                            navController.navigate("activity_detail/$id") {
+                                popUpTo("record") { inclusive = true }
+                            }
+                        }
+                    }
                     RecordScreen(
                         activityName = workoutState.activeSession?.type ?: "Workout",
                         elapsedSeconds = workoutState.elapsedSeconds,
