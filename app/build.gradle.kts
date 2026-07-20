@@ -17,10 +17,11 @@ android {
         minSdk = 26
         targetSdk = 35
         // versionCode/versionName are overridable from Gradle properties so the release CI
-        // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
-        // Local builds fall back to the literals below.
+        // can drive them straight from the git tag (e.g. -PappVersionCode=15 -PappVersionName=1.0).
+        // Local builds fall back to the literals below. versionName matches the iOS app's
+        // MARKETING_VERSION (1.0); versionCode is Android's own monotonic build number.
         versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 15
-        versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
+        versionName = (project.findProperty("appVersionName") as String?) ?: "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Repo the self-updater polls for new releases.
