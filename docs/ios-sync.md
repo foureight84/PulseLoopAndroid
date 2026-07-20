@@ -81,7 +81,7 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 | ☑ | [#63](https://github.com/saksham2001/PulseLoopiOS/pull/63) `748e79f` | 07-08 | Label jring HR capability as "HR" | **PORT** | S | `be74a19` |
 | ☑ | [#42](https://github.com/saksham2001/PulseLoopiOS/pull/42) `9633fe3` | 07-08 | Coach summary owns top card, no Today duplicate | **PARTIAL** | S | `3e14fef` |
 | ☑ | [#74](https://github.com/saksham2001/PulseLoopiOS/pull/74) `ea3e22d` | 07-10 | Move Measurement Frequency into General → Physiology | **ADAPT** | S | `368a3f2` |
-| ☐ | [#82](https://github.com/saksham2001/PulseLoopiOS/pull/82) `902c449` | 07-11 | YCBT (Yucheng) protocol rebuild: TK5 + **SmartHealth-app Colmi rings** + pairing app-variant picker (**supersedes #56**) | **PORT** | XL | |
+| ☐ | [#82](https://github.com/saksham2001/PulseLoopiOS/pull/82) `902c449` | 07-11 | YCBT (Yucheng) protocol rebuild: TK5 + **SmartHealth-app Colmi rings** + pairing app-variant picker (**supersedes #56**) | **PORT** | XL | `7a941a5` (protocol-layer subset, see 2026-07-19 session note) |
 | ☐ | [#79](https://github.com/saksham2001/PulseLoopiOS/pull/79) `952cf4f` | 07-12 | Activity Year trends: divide in-progress current month by elapsed days, not full 30/31 | **PORT-when-built** | S | |
 | ☑ | [#70](https://github.com/saksham2001/PulseLoopiOS/pull/70) `ac2b81a` | 07-12 | Today/Vitals apply Settings visibility + chart-detail changes immediately | **BLOCKED (behind #64)** | S | subsumed by #64 — Today/Vitals read the prefs StateFlow directly, so a visibility/order change recomposes immediately (no signature needed). Chart-detail resolution N/A on Android |
 | ☑ | [#66](https://github.com/saksham2001/PulseLoopiOS/pull/66) `4dae095` | 07-16 | Measure HR/SpO₂ countdown redesign + **robust measurement** (warm-up echo discard, contact-gap, median/majority gate) | **PORT** | L | `36da8f2` (robustness; modal chrome deferred) |
@@ -192,6 +192,65 @@ wins first, XL ring rebuilds last on their own branches, blocked/deferred at the
 > data). Next: **Tier 4** (#82 YCBT/TK5+SmartHealth ring rebuild or #90 LuckRing/TK18, both XL — pick
 > via AskUserQuestion) or #79 (still blocked on no Activity-trends screen).
 >
+> **▶ RESUME HERE (2026-07-19 session, cont'd again):** **#82 YCBT/TK5+SmartHealth-Colmi — DONE
+> (protocol-layer subset)** `7a941a5` on a **new dedicated branch `ios_82_ycbt_tk5_smarthealth`**
+> (branched off `iOS_sync_2026-07-16`, per Tier 4's "own branch" convention — not yet merged/pushed).
+> User picked #82 over #90 via AskUserQuestion, with explicit guidance: for a BLE protocol rebuild,
+> reference the **official vendor Android app's actual behavior**, not iOS's CoreBluetooth calls,
+> since Android's BLE stack differs (pairing/bonding, MTU, connection sequencing) and past
+> iOS-sequencing ports caused real pairing/data bugs. Decompiled the SmartHealth APK
+> (`com.zhuoting.healthyucheng`, user-provided, already in `apk/`) with jadx into
+> `decompiled-smarthealth/` at the PulseLoop repo root — confirmed it contains the exact
+> `com.yucheng.ycbtsdk` v4.0.10 package iOS's own `docs/YCBT-Protocol.md` cites as ground truth, so
+> the byte-level protocol (frame format, CRC16, command catalog, record layouts) ported directly
+> from iOS's Swift is trustworthy — it was already built from decompiling this same Android SDK, not
+> derived from CoreBluetooth. Ported: `YCBTProtocol.kt` (UUIDs/frame/CRC/byte-epoch helpers/groups/
+> commands/history-type table/measurement modes/frame-assembler/SupportFunction bitmap parser),
+> `YCBTSettingsEncoder.kt`/`YCBTEncoder.kt` (connect handshake), `YCBTDecoder.kt`, `YCBTHealthRecords.kt`
+> (all 9 history record types incl. the variable-length sleep-session walk with tag-masking + start-time
+> dedup), `YCBTHistoryTransfer.kt` (request→header→data→terminal-CRC→ACK state machine with stall
+> watchdog + one-retry-then-skip), `YCBTDriver.kt`/`YCBTSyncEngine.kt` (`WearableDriver`/`RingSyncEngine`
+> impls), `TK5Coordinator`/`ColmiSmartHealthCoordinator` in new `YCBTCoordinators.kt`. New
+> `WearableModel.TK5`/`COLMI_SMARTHEALTH` catalog entries (the existing pairing carousel + `resolve()`
+> already *is* the "which app came with your ring?" disambiguation iOS built dedicated UI for — no new
+> pairing UI needed). Extended `WearableCoordinator` with an additive-only `bitmapGatedCapabilities`
+> (mirrors iOS's baseline-vs-bitmap-refined split — TK5 keeps HRV baseline since it was *observed
+> working* on real hardware, SmartHealth-Colmi gates HRV since its one known unit, an R99, denied it
+> four independent ways) and wired `RingBLEClient` to refine `activeCapabilities` on a decoded
+> `SupportFunctions` event (intersect-then-union, so a device can only ever gain a capability its
+> family already offers as gate-able, never lose a baseline one).
+>
+> **Two real, verified-against-the-decompiled-SDK BLE bugs fixed in the shared `RingBLEClient`** (not
+> ported from iOS, found by cross-checking the vendor's own `gatt/BleHelper.java`): (1) every CCCD
+> write hardcoded `ENABLE_NOTIFICATION_VALUE` — YCBT's stream characteristic (`be940003`) requires
+> `ENABLE_INDICATION_VALUE` per the vendor SDK, and the standard Blood Pressure/Glucose Measurement
+> characteristics are indicate-only too (BLE SIG spec) — fixed generically via the characteristic's
+> own `PROPERTY_INDICATE` flag, not a YCBT-specific special case. (2) the characteristic-discovery
+> loop used a `when` with mutually exclusive branches, so a characteristic matching both `writeUUID`
+> and `notifyUUIDs` (YCBT's `be940001`, simultaneously the write target and a notify source) would
+> get only the first match — silently dropping its CCCD subscription. No prior driver's write/notify
+> characteristics ever overlapped, so this never surfaced before.
+>
+> **Deliberately NOT changed**: `RingBLEClient`'s GATT connect/MTU/bonding *sequencing and timing*
+> (requestMtu-before-vs-after-discoverServices ordering, a ~200ms post-disconnect cooldown, ~5ms
+> pre-write pacing, 500ms chunk-write retry backoff — all observed in the vendor SDK's
+> `BleHelper.java`/`YCBTClientImpl.java`). These looked like they could be JieLi-chipset or
+> legacy-Android-stack-specific workarounds rather than universal requirements, and this shared code
+> path is what jring/Colmi already connect through successfully — changing it blind, with no real
+> YCBT ring to validate against, risked a regression to two working protocols to fix an unconfirmed
+> one. Flagging explicitly rather than silently deciding: **if a real TK5/SmartHealth-Colmi still
+> fails to connect/stream reliably**, re-read `BleHelper.java`'s connect sequence (this session's
+> recon of it is preserved in the `ios-sync-port-priority` memory) and consider whether any of this
+> timing needs to move from "vendor workaround" to "actually required."
+>
+> `:app:assembleDebug` + `:app:testDebugUnitTest` green (new `YCBTProtocolTest`/`YCBTHistoryTransferTest`/
+> `YCBTHealthRecordsTest` plus `PairingMatchingTest` additions for the two new coordinators/catalog
+> entries). **No TK5/SmartHealth-Colmi hardware in this environment** — verification stopped at a
+> clean app run on `emulator-5554` (no crash, existing seeded device/pairing flow unaffected), not a
+> live connect (same gap as #61c/#65b/#65d/#77). **Not yet pushed** — this is mid-XL-item work on its
+> own branch, ask the user before pushing/merging once further along or considered a good stopping
+> point.
+>
 > **Prior (2026-07-19 session):** **#57d Log Past Activity screen DONE** (`4bbfa7f`) — see
 > the port-queue row for full detail (new `ManualActivityService.create` shared by the screen and
 > the `create_activity_session_from_description` coach tool, fixing a real gap where the coach tool
@@ -284,7 +343,7 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 **Tier 4 — XL, dedicated branch each:**
 
-12. **#82 YCBT (Yucheng) protocol rebuild** — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT).
+12. ~~**#82 YCBT (Yucheng) protocol rebuild**~~ — TK5 + SmartHealth-app Colmi rings + pairing app-variant picker (XL, PORT). **Protocol-layer subset DONE** `7a941a5` on branch `ios_82_ycbt_tk5_smarthealth` (not yet merged) — no real hardware to verify a live connect; see the 2026-07-19 session note.
 13. **#90 LuckRing/TK18** — Coolwear "K6" / `0xFF64` protocol (XL, PORT).
 
 **Blocked / deferred:**
