@@ -11,10 +11,18 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` triaged, deferred (reason note
 
 > **2026-07-20 fix pass:** all 7 first-pass blockers (#1–#5 minus none; #1–#5) and the
 > second-pass Highs + mechanical Mediums landed as 8 commits on `iOS_sync_2026-07-16`
-> (`c93c687`..`eb803f4`), build + 613 unit tests green. Fixed: #1, #2, #3, #4, #5, #22–#30,
-> #32–#35, #37, #44; partial: #39, #46. Still open: first-pass #6–#19 and second-pass #31,
-> #36, #38, #40–#43, #45, #47–#50. One deliberate iOS divergence introduced: finish-from-paused
-> banks the trailing pause span (iOS counts it as active — added to upstream candidates).
+> (`c93c687`..`eb803f4`), build + 613 unit tests green — **plus one follow-up commit
+> (`0ba168e`) for two issues caught by emulator verification of the fixes** (stale ongoing
+> notification left by DETACH once the summary card moved to its own tag; no navigation to the
+> summary after a notification-side Finish). Runtime-verified on `emulator-5554` (API 35):
+> pause span 20.032s vs 20s wall; resume continues from the frozen clock; notification
+> Pause/Resume/Finish drive the real manager via the command bus; complete card shows
+> pause-excluded duration; a force-run stale dismiss worker leaves a new workout's ongoing
+> card untouched (tag-scoped cancel) and cancels exactly the complete card. Fixed: #1, #2, #3,
+> #4, #5, #22–#30, #32–#35, #37, #44; partial: #39, #46. Still open: first-pass #6–#19 and
+> second-pass #31, #36, #38, #40–#43, #45, #47–#50. One deliberate iOS divergence introduced:
+> finish-from-paused banks the trailing pause span (iOS counts it as active — added to
+> upstream candidates).
 >
 > **2026-07-20 second pass:** a continuation review (5 more agents, every new High claim
 > independently re-verified against source) found **31 additional findings (#22–#52)** in areas the
