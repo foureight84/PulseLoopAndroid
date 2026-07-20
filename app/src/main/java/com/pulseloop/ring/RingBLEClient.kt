@@ -485,15 +485,15 @@ class RingBLEClient(private val context: Context) {
      * User-initiated Disconnect (the Settings button). Unlike the transient [disconnect] used by
      * the background worker and lifecycle, this makes the disconnect STICK: it sets a persisted
      * flag that suppresses every auto-reconnect path until the user reconnects ([userConnect]) or
-     * pairs a new ring. If this ring is currently OS-bonded (see [bondActiveDevice]) it also
-     * removes the bond, since a bonded link can otherwise be held connected by the OS — the ring
+     * pairs a new ring. For a model we OS-bond (see [activeModelRequiresBond]) it also removes
+     * the bond, since a bonded link can otherwise be held connected by the OS — the ring
      * re-bonds (with the OS prompt) on the next user reconnect. Non-bonded rings just drop the
      * link, matching the iOS "Disconnect" experience. The stored ring identity is kept either
      * way, so the ring stays listed and one tap reconnects it; use [forget] to remove it entirely.
      */
     fun userDisconnect() {
         prefs.edit().putBoolean(USER_DISCONNECTED_KEY, true).apply()
-        if (hasPermissions()) {
+        if (activeModelRequiresBond() && hasPermissions()) {
             try {
                 bluetoothGatt?.device?.let { dev ->
                     if (dev.bondState != BluetoothDevice.BOND_NONE) {
@@ -670,16 +670,24 @@ class RingBLEClient(private val context: Context) {
         }
     }
 
+    /** True only when the connected model is one we deliberately OS-bond (currently the R09 and
+     *  the R11/Yawell R11). See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
+    private fun activeModelRequiresBond(): Boolean =
+        com.pulseloop.wearables.WearableModel.model(_state.value.activeWearableModelID)
+            ?.requiresOsBond == true
+
     /**
      * Create an OS-level bond with the connected ring — invoked by the sync engine only when
-     * the ring's device-support reply advertises `supportBlePair`. This now matches the official
-     * QRing app exactly: it bonds *every* ring that reports the bit, with no per-model
-     * allowlist (confirmed against the decompiled QRing sources, `DeviceCmdInit.init` —
-     * `if (deviceSupportFunctionRsp.supportBlePair) { ...; bleCreateBond() }`, unconditional on
-     * model). PulseLoop previously narrowed this to just the Colmi R09 (the one model it had
-     * confirmed needed it), which left other `supportBlePair` rings — e.g. the R11 — connecting
-     * GATT-only and, per user reports, stuck on "Connecting" with no stable link. Connecting
-     * GATT-only (no bond) is what left PulseLoop's users stuck cycling Bluetooth to recover.
+     * the ring's device-support reply advertises `supportBlePair` *and* the resolved model is on
+     * the [activeModelRequiresBond] allowlist (currently the R09 and R11/Yawell R11 — the models
+     * with demonstrated GATT-only fragility, R09 can't re-sync after the first connect, R11 gets
+     * stuck on "Connecting", issue #29). The official QRing app bonds *every* ring reporting the
+     * bit, with no per-model check at all (confirmed against the decompiled sources,
+     * `DeviceCmdInit.init` — `if (deviceSupportFunctionRsp.supportBlePair) { ...; bleCreateBond()
+     * }`). We deliberately don't copy that blanket behavior: it makes the OS pairing dialog pop
+     * for every `supportBlePair` model, including the R10, which doesn't need a bond to hold a
+     * stable link and where the prompt is a pure UX regression — see docs/qring-ble-adoption.md
+     * §5a. Expand the allowlist only when a specific model is shown to need it.
      *
      * Idempotent: skipped when already bonded/bonding, so it fires at most once per ring. Runs
      * after service discovery (the reply that triggers it arrives post-CONNECTED), so it does
@@ -695,6 +703,10 @@ class RingBLEClient(private val context: Context) {
      */
     private fun bondActiveDevice() {
         if (!hasPermissions()) return
+        if (!activeModelRequiresBond()) {
+            Log.i("RingBLEClient", "Ring reports supportBlePair but this model works GATT-only — skipping bond")
+            return
+        }
         scope.launch {
             awaitOpsFlushed()
             // The link may have dropped while we waited for the queue to settle.
