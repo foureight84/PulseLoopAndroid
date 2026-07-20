@@ -45,8 +45,6 @@ class WeatherContextService(private val context: Context) {
     private val fusedClient = LocationServices.getFusedLocationProviderClient(context)
     private val http = OkHttpClient()
 
-    private var lastWeatherFailureAtMs: Long? = null
-
     fun hasLocationPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -149,8 +147,14 @@ class WeatherContextService(private val context: Context) {
     private suspend fun fetchWeather(
         coordinate: Pair<Double, Double>, place: WeatherContextStore.Place?, nowMs: Long,
     ): EnvironmentContext = withContext(Dispatchers.IO) {
+        // Privacy (first-pass finding #1): the precise fix (~100m at BALANCED_POWER_ACCURACY) must
+        // never leave the device bound for a third party — iOS requests at 3km accuracy and sends
+        // only to first-party WeatherKit. The full-precision fix is still used on-device for the
+        // Geocoder city lookup and the cache-nearness check; only the wire value is coarsened.
+        val lat = roundForWire(coordinate.first)
+        val lon = roundForWire(coordinate.second)
         val url = "https://api.open-meteo.com/v1/forecast" +
-            "?latitude=${coordinate.first}&longitude=${coordinate.second}" +
+            "?latitude=$lat&longitude=$lon" +
             "&current=temperature_2m,weather_code" +
             "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset" +
             "&timezone=auto&forecast_days=1"
@@ -207,5 +211,15 @@ class WeatherContextService(private val context: Context) {
         /** After a failed fetch, don't retry weather for this long — avoids hammering Open-Meteo
          *  on a persistent failure (e.g. no network) on every coach turn / notification build. */
         private const val WEATHER_RETRY_COOLDOWN_MS = 5 * 60_000L
+
+        /** Process-wide like iOS's `CoachEnvironmentContextService.shared`: the notification
+         *  worker builds a fresh service per call, so an instance field here would reset the
+         *  retry cooldown on every background check-in and defeat it (first-pass finding #4). */
+        @Volatile
+        private var lastWeatherFailureAtMs: Long? = null
+
+        /** The wire granularity for coordinates sent to Open-Meteo: 2 decimals ≈ 1.1km, matching
+         *  [WeatherContextStore.isNear]'s 0.01 cache-hit threshold. */
+        internal fun roundForWire(degrees: Double): Double = kotlin.math.round(degrees * 100.0) / 100.0
     }
 }
