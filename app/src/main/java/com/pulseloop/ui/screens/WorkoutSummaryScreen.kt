@@ -100,7 +100,9 @@ fun WorkoutSummaryScreen(
         Box(Modifier.fillMaxSize().background(PulseColors.background))
         return
     }
-    val durationSec = s.endedAt?.let { ((it - s.startedAt) / 1000 - s.totalPauseSeconds).toInt() }
+    // Duration excludes pauses and is clamped at 0 (iOS clamps in ActivityMeta.duration's
+    // caller) — an over-long pause total must never render a negative hero.
+    val durationSec = s.endedAt?.let { maxOf(0, ((it - s.startedAt) / 1000.0 - s.totalPauseSeconds).toInt()) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(PulseColors.background),

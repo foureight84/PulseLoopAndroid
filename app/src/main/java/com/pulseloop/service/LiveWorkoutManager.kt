@@ -2,8 +2,10 @@ package com.pulseloop.service
 
 import android.content.Context
 import android.content.Intent
+import androidx.work.WorkManager
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.ActivitySessionEntity
+import com.pulseloop.ui.components.ActivityMeta
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -41,11 +43,28 @@ class LiveWorkoutManager(
 
     init {
         polling.onPollCompleted = { refreshNotification() }
+        // Notification actions (pause/resume/finish) arrive through the bus — the service has no
+        // access to the real workout logic, so it posts and we apply (iOS App Group pattern).
+        scope.launch {
+            WorkoutCommandBus.commands.collect { command ->
+                val s = _state.value.activeSession ?: return@collect
+                when (command) {
+                    WorkoutCommandBus.COMMAND_PAUSE -> if (s.statusRaw == "recording") pause(s)
+                    WorkoutCommandBus.COMMAND_RESUME -> if (s.statusRaw == "paused") resume(s)
+                    WorkoutCommandBus.COMMAND_FINISH ->
+                        if (s.statusRaw == "recording" || s.statusRaw == "paused") finish(s)
+                }
+            }
+        }
     }
 
     // MARK: - Lifecycle
 
     suspend fun start(type: String, useGps: Boolean): ActivitySessionEntity {
+        // A stale "workout complete" dismiss worker from a just-finished workout shares the
+        // ongoing notification's id — cancel it before it can fire into this workout's card
+        // (second-pass finding #25).
+        WorkManager.getInstance(context).cancelUniqueWork(WorkoutForegroundService.DISMISS_WORK_NAME)
         val session = ActivitySessionEntity(
             type = type,
             startedAt = System.currentTimeMillis(),
@@ -65,10 +84,14 @@ class LiveWorkoutManager(
 
     suspend fun pause(session: ActivitySessionEntity) {
         val now = System.currentTimeMillis()
+        // endedAt doubles as the pausedAt marker — resume() turns it into a pause span and
+        // clears it. iOS keeps a `paused` ActivityEvent instead; the marker column is the
+        // Android equivalent since there is no event table here. Do NOT add to
+        // totalPauseSeconds here: the pause span isn't known until resume/finish, and the old
+        // code added the entire elapsed-since-start, corrupting every downstream duration.
         val updated = session.copy(
             statusRaw = "paused",
             endedAt = now,
-            totalPauseSeconds = session.totalPauseSeconds + ((now - session.startedAt) / 1000.0),
             updatedAt = now,
         )
         db.activitySessionDao().upsert(updated)
@@ -80,7 +103,15 @@ class LiveWorkoutManager(
     }
 
     suspend fun resume(session: ActivitySessionEntity) {
-        val updated = session.copy(statusRaw = "recording", updatedAt = System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        // Only the actual pause span joins the total (iOS: `now - lastPause.timestamp` at resume).
+        val pausedAt = session.endedAt ?: now
+        val updated = session.copy(
+            statusRaw = "recording",
+            endedAt = null,
+            totalPauseSeconds = session.totalPauseSeconds + maxOf(0.0, (now - pausedAt) / 1000.0),
+            updatedAt = now,
+        )
         db.activitySessionDao().upsert(updated)
         if (updated.useGps) gps.start(updated.id, updated.type)
         polling.resume()
@@ -94,7 +125,18 @@ class LiveWorkoutManager(
         polling.stop()
         tickJob?.cancel()
         val now = System.currentTimeMillis()
-        val finished = session.copy(statusRaw = "finished", endedAt = now, updatedAt = now)
+        // Finishing from a paused state: the trailing pause span (pause → finish) is not active
+        // time. iOS currently counts it as active (its pause total only advances at resume) —
+        // deliberate divergence, noted as an upstream-iOS candidate in docs/ios-sync.md.
+        val pauseCarry = if (session.statusRaw == "paused") {
+            maxOf(0.0, (now - (session.endedAt ?: now)) / 1000.0)
+        } else 0.0
+        val finished = session.copy(
+            statusRaw = "finished",
+            endedAt = now,
+            totalPauseSeconds = session.totalPauseSeconds + pauseCarry,
+            updatedAt = now,
+        )
         val summarized = ActivityAggregates.recompute(db, finished)
         db.activitySessionDao().upsert(summarized)
         ActivityRollup.credit(db, summarized)
@@ -122,7 +164,11 @@ class LiveWorkoutManager(
         tickJob = scope.launch {
             while (isActive) {
                 val now = System.currentTimeMillis()
-                val elapsed = ((now - session.startedAt) / 1000).toInt()
+                // The live clock shows *active* time — wall time minus completed pauses (iOS
+                // RecordViews: `now - startedAt - totalPauseSeconds`). Pauses cancel this tick,
+                // and resume restarts it with the updated session, so the captured total is
+                // always current.
+                val elapsed = maxOf(0, ((now - session.startedAt) / 1000.0 - session.totalPauseSeconds).toInt())
                 val distance = gps.state.value.totalDistance
                 val hr = coordinator.latestHRValue
                 val zone = hr?.let { HeartRateZones.zoneFor(it) } ?: HeartRateZones.Zone.REST
@@ -146,7 +192,7 @@ class LiveWorkoutManager(
         serviceIntent.apply {
             val s = _state.value
             val notification = Intent(context, WorkoutForegroundService::class.java).apply {
-                putExtra("activityName", s.activeSession?.type ?: "Workout")
+                putExtra("activityName", s.activeSession?.let { ActivityMeta.label(it.type) } ?: "Workout")
                 putExtra("status", if (s.isPaused) "paused" else "recording")
                 putExtra("elapsedSeconds", s.elapsedSeconds)
                 putExtra("distanceMeters", s.distanceMeters)
@@ -172,10 +218,16 @@ class LiveWorkoutManager(
     // lingers for a while before auto-dismissing, instead of vanishing immediately (mirrors iOS
     // Live Activity's `.after(.now + 10*60)` dismissal policy vs. `.immediate` on cancel/discard).
     private fun finishForegroundService(session: ActivitySessionEntity) {
-        val elapsedSeconds = (((session.endedAt ?: System.currentTimeMillis()) - session.startedAt) / 1000).toInt()
+        // Duration excludes paused spans (iOS `finishedState`), clamped at 0 — with pauses
+        // longer than the wall span an unclamped value renders as negative.
+        val elapsedSeconds = maxOf(
+            0,
+            (((session.endedAt ?: System.currentTimeMillis()) - session.startedAt) / 1000.0 - session.totalPauseSeconds).toInt(),
+        )
         val intent = Intent(context, WorkoutForegroundService::class.java).apply {
             action = WorkoutForegroundService.ACTION_FINISH
-            putExtra("activityName", session.type)
+            putExtra("activityName", ActivityMeta.label(session.type))
+            putExtra("sessionId", session.id)
             putExtra("elapsedSeconds", elapsedSeconds)
             putExtra("distanceMeters", session.distanceMeters ?: 0.0)
             session.calories?.let { putExtra("calories", it) }
