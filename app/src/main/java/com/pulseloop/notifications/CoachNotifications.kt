@@ -150,6 +150,9 @@ class CoachNotificationWorker(
         private const val SYNC_WAIT_TIMEOUT_MS = 15_000L
         /** iOS #61c `hasFreshFullSync` — a completed sync within this window skips a new one. */
         private const val FRESH_SYNC_WINDOW_MS = 10 * 60_000L
+        /** iOS `freshnessWindow` (3h) — a live measurement this recent counts as fresh data even
+         *  without a completed full sync (covers rings that stream continuously). */
+        private const val RECENT_DATA_WINDOW_MS = 3 * 60 * 60_000L
     }
 
     override suspend fun doWork(): Result {
@@ -244,8 +247,31 @@ class CoachNotificationWorker(
         val fresh = device.lastFullSyncAt?.let { now - it < FRESH_SYNC_WINDOW_MS } ?: false
         if (fresh) return
 
+        // iOS `hasRecentData`: a fresh *live* measurement is as good as a completed sync (covers
+        // jring, which streams samples continuously rather than running a paged history sync) —
+        // skip the forced connect + full runStartup iOS deliberately avoids paying at every
+        // check-in.
+        val latestMeasurementAt = db.measurementDao().latestTimestamp()
+        if (latestMeasurementAt != null && now - latestMeasurementAt < RECENT_DATA_WINDOW_MS) return
+
+        // iOS branches on the app's *shared* coordinator and never opens a second client: when
+        // the ring is already connected (the foreground app holding the link — its CONNECTED
+        // event is what stamps this state), just give any in-flight sync a bounded chance to
+        // land. Opening our own GATT here would wipe the sleep tables under the user (the
+        // CONNECTED event rebuilds them), duplicate every decode into the shared bus, and
+        // interleave two sync engines' history commands on one link.
+        if (device.stateRaw == "CONNECTED") {
+            awaitSyncDone()
+            return
+        }
+
         val bleClient = RingBLEClient(applicationContext)
-        if (!bleClient.hasPermissions()) return
+        if (!bleClient.hasPermissions()) {
+            // destroy(), not just drop the reference: the client's init-started connection
+            // watchdog would otherwise keep firing into permission-less connect attempts.
+            bleClient.destroy()
+            return
+        }
 
         val measurementSettings = loadPersistedMeasurementSettings(db)
         val profileValues = loadPersistedUserProfile(db, ApiKeyStore(applicationContext))
@@ -265,7 +291,17 @@ class CoachNotificationWorker(
                 doneSignal.await()
             }
         } finally {
-            bleClient.disconnect()
+            // destroy(), not disconnect(): the client's connection watchdog (started in init)
+            // survives disconnect() and re-attaches the ring ~15s after the worker exits —
+            // re-firing onConnected → a full runStartup, then holding the ring with no UI.
+            bleClient.destroy()
+        }
+    }
+
+    /** Give an in-flight sync (driven by whoever owns the live link) a bounded chance to finish. */
+    private suspend fun awaitSyncDone() {
+        withTimeoutOrNull(SYNC_WAIT_TIMEOUT_MS) {
+            PulseEventBus.events.filterIsInstance<PulseEvent.SyncProgress>().first { it.stage == "done" }
         }
     }
 

@@ -50,6 +50,11 @@ interface MeasurementDao {
     @Query("SELECT value FROM measurements WHERE kindRaw = :kind AND timestamp <= :before ORDER BY timestamp DESC LIMIT 1")
     suspend fun latest(kind: String, before: Long = System.currentTimeMillis()): Double?
 
+    /** Newest measurement of any kind — iOS `latestMeasurementTimestamp()`, the live-data leg of
+     *  the coach check-in's hasRecentData freshness fallback. */
+    @Query("SELECT MAX(timestamp) FROM measurements")
+    suspend fun latestTimestamp(): Long?
+
     /** Whether any demo-seeded row exists for a kind — mirrors iOS `hasMockMeasurement(kind:)`,
      *  which switches chart fetches from the range window to full history in demo mode. */
     @Query("SELECT EXISTS(SELECT 1 FROM measurements WHERE kindRaw = :kind AND sourceRaw = 'demo')")
