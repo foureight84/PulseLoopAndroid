@@ -41,7 +41,12 @@ data class DeviceEntity(
  */
 @Entity(
     tableName = "measurements",
-    indices = [Index("timestamp"), Index("activitySessionId"), Index("kindRaw")],
+    indices = [
+        Index("timestamp"),
+        Index("activitySessionId"),
+        Index("kindRaw"),
+        Index(value = ["kindRaw", "timestamp", "sourceRaw"], unique = true),
+    ],
 )
 data class MeasurementEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),

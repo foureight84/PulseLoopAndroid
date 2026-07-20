@@ -112,13 +112,17 @@ class YCBTSettingsEncoder {
 class YCBTEncoder {
     private val settings = YCBTSettingsEncoder()
 
-    fun setTime(date: Instant = Instant.now()): ByteArray = settings.setTime(date)
+    fun setTime(
+        date: Instant = Instant.now(),
+        timeZone: TimeZone = TimeZone.getDefault(),
+    ): ByteArray = settings.setTime(date, timeZone)
 
     fun startupSequence(
         measurement: MeasurementSettings = MeasurementSettings.ALL_ON_DEFAULT,
         profile: UserProfileValues = UserProfileValues(metric = true, gender = 0x02u, age = 25u, heightCm = 175u, weightKg = 70u),
         languageCode: Int = 0,
         is24Hour: Boolean = true,
+        capabilities: Set<WearableCapability> = YCBTCoordinator.capabilities,
     ): List<ByteArray> {
         val seq = mutableListOf<ByteArray>()
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, byteArrayOf(0x47, 0x43)))
@@ -129,7 +133,7 @@ class YCBTEncoder {
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_USER_CONFIG, byteArrayOf(0x43, 0x46)))
         seq.add(settings.language(languageCode))
         seq.add(settings.units(metric = profile.metric, is24Hour = is24Hour))
-        seq.addAll(settings.monitorCommands(measurement))
+        seq.addAll(monitorCommands(measurement, capabilities))
         seq.add(settings.userInfo(profile))
         seq.add(enableLiveStatus())
         return seq
@@ -139,8 +143,18 @@ class YCBTEncoder {
     fun postSubscriptionHandshake(date: Instant = Instant.now()): List<ByteArray> =
         listOf(deviceNameRequest(), setTime(date))
 
-    fun monitorCommands(measurement: MeasurementSettings): List<ByteArray> =
-        settings.monitorCommands(measurement)
+    fun monitorCommands(
+        measurement: MeasurementSettings,
+        capabilities: Set<WearableCapability> = YCBTCoordinator.capabilities,
+    ): List<ByteArray> = settings.monitorCommands(measurement).filter { command ->
+        when (command[1].toInt() and 0xFF) {
+            YCBTSettingKey.HEART_MONITOR -> WearableCapability.HEART_RATE in capabilities
+            YCBTSettingKey.TEMPERATURE_MONITOR -> WearableCapability.TEMPERATURE in capabilities
+            YCBTSettingKey.BLOOD_OXYGEN_MONITOR -> WearableCapability.SPO2 in capabilities
+            YCBTSettingKey.HRV_MONITOR -> WearableCapability.HRV in capabilities
+            else -> false
+        }
+    }
 
     fun userInfo(profile: UserProfileValues): ByteArray = settings.userInfo(profile)
 

@@ -14,25 +14,56 @@ class YCBTSyncEngine(
     private var measurementSettings = MeasurementSettings.ALL_ON_DEFAULT
     private var userProfile = UserProfileValues(metric = true, gender = 0x02u, age = 25u, heightCm = 175u, weightKg = 70u)
     private var requestActivityAfterStartupHistory = false
+    private var historyCapabilities = YCBTCoordinator.capabilities
 
     companion object {
         private val HISTORY_TYPES: List<YCBTHistoryType> = listOf(
             YCBTHistoryType.SPORT, YCBTHistoryType.SLEEP, YCBTHistoryType.HEART,
-            YCBTHistoryType.BLOOD, YCBTHistoryType.ALL, YCBTHistoryType.SPO2,
+            YCBTHistoryType.BLOOD, YCBTHistoryType.ALL,
             YCBTHistoryType.TEMPERATURE, YCBTHistoryType.COMPREHENSIVE, YCBTHistoryType.BODY_DATA,
         )
-        private val VITALS_TYPES: List<YCBTHistoryType> = listOf(YCBTHistoryType.HEART, YCBTHistoryType.ALL, YCBTHistoryType.SPO2)
+        private val VITALS_TYPES: List<YCBTHistoryType> = listOf(YCBTHistoryType.HEART, YCBTHistoryType.ALL)
     }
 
+    @Synchronized
     override fun runStartup() {
         requestActivityAfterStartupHistory = true
-        for (command in encoder.startupSequence(measurement = measurementSettings, profile = userProfile)) {
+        for (command in encoder.startupSequence(
+            measurement = measurementSettings,
+            profile = userProfile,
+            capabilities = historyCapabilities,
+        )) {
             writer?.enqueue(command)
         }
-        transfer.start(types = HISTORY_TYPES)
+        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES))
     }
 
+    @Synchronized
     override fun handle(event: RingDecodedEvent) {
+        if (event is RingDecodedEvent.SupportFunctions) {
+            val previousTypes = supportedHistoryTypes(HISTORY_TYPES).toSet()
+            val previousCapabilities = historyCapabilities
+            historyCapabilities = YCBTCoordinator.capabilities +
+                event.capabilities.intersect(YCBTCoordinator.bitmapGatedCapabilities)
+            for (command in encoder.monitorCommands(measurementSettings, historyCapabilities - previousCapabilities)) {
+                writer?.enqueue(command)
+            }
+            val addedCapabilities = historyCapabilities - previousCapabilities
+            val newlySupported = supportedHistoryTypes(HISTORY_TYPES)
+                .filterNot(previousTypes::contains)
+                .toMutableList()
+            // ALL carries optional fields as well as baseline SpO2. If capability discovery lands
+            // after its first pass, fetch it once more so newly accepted values are not lost.
+            if (addedCapabilities.any {
+                    it == WearableCapability.BLOOD_PRESSURE ||
+                        it == WearableCapability.HRV ||
+                        it == WearableCapability.TEMPERATURE ||
+                        it == WearableCapability.BLOOD_SUGAR
+                }) {
+                newlySupported.add(YCBTHistoryType.ALL)
+            }
+            transfer.append(newlySupported)
+        }
         // The early startup command enables live status while the ring is still processing its
         // connect handshake. Some R10M firmware acknowledges it without immediately publishing
         // the current cumulative activity. Ask once more after the startup history walk, when the
@@ -43,24 +74,46 @@ class YCBTSyncEngine(
         }
     }
 
+    @Synchronized
     override fun refresh() {
         // Ask for current cumulative activity before the slower multi-type history walk. Without
         // this, pull-to-refresh can leave steps stale until an unsolicited live push arrives.
         writer?.enqueue(encoder.enableLiveStatus())
-        transfer.start(types = HISTORY_TYPES)
+        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES))
     }
 
+    @Synchronized
     override fun querySleep() {
-        transfer.start(types = listOf(YCBTHistoryType.SLEEP))
+        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)))
     }
 
+    @Synchronized
     override fun syncVitalsHistory() {
-        transfer.start(types = VITALS_TYPES)
+        transfer.start(types = supportedHistoryTypes(VITALS_TYPES))
     }
 
+    @Synchronized
     override fun syncSleepNow() {
-        transfer.start(types = listOf(YCBTHistoryType.SLEEP))
+        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)))
     }
+
+    private fun supportedHistoryTypes(types: List<YCBTHistoryType>): List<YCBTHistoryType> =
+        types.filter { type ->
+            when (type) {
+                YCBTHistoryType.SPORT -> WearableCapability.STEPS in historyCapabilities
+                YCBTHistoryType.SLEEP -> WearableCapability.SLEEP in historyCapabilities
+                YCBTHistoryType.HEART -> WearableCapability.HEART_RATE in historyCapabilities
+                YCBTHistoryType.BLOOD -> WearableCapability.BLOOD_PRESSURE in historyCapabilities
+                YCBTHistoryType.ALL -> true
+                YCBTHistoryType.SPO2 -> WearableCapability.SPO2_HISTORY in historyCapabilities
+                YCBTHistoryType.TEMPERATURE -> WearableCapability.TEMPERATURE in historyCapabilities
+                YCBTHistoryType.COMPREHENSIVE -> WearableCapability.BLOOD_SUGAR in historyCapabilities
+                YCBTHistoryType.BODY_DATA ->
+                    WearableCapability.STRESS in historyCapabilities ||
+                        WearableCapability.FATIGUE in historyCapabilities
+                else -> false
+            }
+        }
 
     override fun setMeasurementSettings(settings: MeasurementSettings?) {
         if (settings != null) measurementSettings = settings
@@ -68,7 +121,7 @@ class YCBTSyncEngine(
 
     override fun applyMeasurementSettings(settings: MeasurementSettings) {
         measurementSettings = settings
-        for (command in encoder.monitorCommands(settings)) {
+        for (command in encoder.monitorCommands(settings, historyCapabilities)) {
             writer?.enqueue(command)
         }
     }

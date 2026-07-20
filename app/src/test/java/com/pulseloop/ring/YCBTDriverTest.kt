@@ -152,6 +152,22 @@ class YCBTDriverTest {
     }
 
     @Test
+    fun `measurement data clears a lost start reply before the next command`() {
+        val driver = YCBTDriver(RingCommandWriter { })
+
+        driver.frame(byteArrayOf(0x03, 0x2f, 0x01, YCBTMeasurementMode.HEART_RATE.toByte()))
+        driver.ingest(
+            YCBTFrame.frame(byteArrayOf(0x04, 0x13, YCBTMeasurementMode.HEART_RATE.toByte(), 0, 72)),
+            streamUUID,
+        )
+        driver.frame(byteArrayOf(0x03, 0x2f, 0x01, YCBTMeasurementMode.SPO2.toByte()))
+
+        val refusal = driver.ingest(YCBTFrame.frame(byteArrayOf(0x03, 0x2f, 0x01)), streamUUID)
+
+        assertEquals(YCBTMeasurementMode.SPO2, (refusal.single() as RingDecodedEvent.MeasurementRejected).mode)
+    }
+
+    @Test
     fun `pending measurement replies preserve deterministic FIFO pairing`() {
         val replies = PendingMeasurementReplies()
         replies.record(YCBTMeasurementMode.HEART_RATE)
@@ -179,5 +195,45 @@ class YCBTDriverTest {
         val required = YCBTDriver(RingCommandWriter { }).requiredSubscriptionsBeforeConnected
         assertEquals(setOf(YCBTUUIDs.COMMAND, YCBTUUIDs.STREAM), required.map { it.uuid }.toSet())
         assertTrue(required.all { it.mode == SubscriptionMode.INDICATION })
+    }
+
+    @Test
+    fun `optional live values are discarded until support function declares them`() {
+        val driver = YCBTDriver(RingCommandWriter { })
+        val liveVitals = YCBTFrame.frame(byteArrayOf(0x06, 0x03, 120, 80, 70, 42, 98, 36, 5))
+
+        val beforeSupport = driver.ingest(liveVitals, streamUUID)
+
+        assertTrue(beforeSupport.none { it is RingDecodedEvent.BloodPressureSample })
+        assertTrue(beforeSupport.none { it is RingDecodedEvent.HrvSample })
+        assertTrue(beforeSupport.none { it is RingDecodedEvent.TemperatureSample })
+        assertTrue(beforeSupport.any { it is RingDecodedEvent.HeartRateSample })
+        assertTrue(beforeSupport.any { it is RingDecodedEvent.Spo2Result })
+
+        val support = ByteArray(24).apply {
+            this[0] = 0x01 // blood pressure
+            this[1] = 0x02 // HRV
+        }
+        driver.ingest(YCBTFrame.frame(byteArrayOf(0x02, 0x01) + support), streamUUID)
+
+        val afterSupport = driver.ingest(liveVitals, streamUUID)
+        assertTrue(afterSupport.any { it is RingDecodedEvent.BloodPressureSample })
+        assertTrue(afterSupport.any { it is RingDecodedEvent.HrvSample })
+        assertTrue(afterSupport.none { it is RingDecodedEvent.TemperatureSample })
+    }
+
+    @Test
+    fun `reconnect forgets optional capabilities learned on the old link`() {
+        val driver = YCBTDriver(RingCommandWriter { })
+        val support = ByteArray(14).apply { this[0] = 0x01 }
+        val bloodPressure = YCBTFrame.frame(byteArrayOf(0x04, 0x13, 0x01, 0x00, 120, 80))
+
+        driver.ingest(YCBTFrame.frame(byteArrayOf(0x02, 0x01) + support), streamUUID)
+        assertTrue(driver.ingest(bloodPressure, streamUUID).any { it is RingDecodedEvent.BloodPressureSample })
+
+        driver.connectionDidEnd()
+        driver.connectionDidStart()
+
+        assertTrue(driver.ingest(bloodPressure, streamUUID).none { it is RingDecodedEvent.BloodPressureSample })
     }
 }

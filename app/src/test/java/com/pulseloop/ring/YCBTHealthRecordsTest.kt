@@ -64,9 +64,10 @@ class YCBTHealthRecordsTest {
         val events = YCBTHealthRecords.combinedVitals(capturedAllRecords)
         assertEquals(listOf(98.0, 97.0, 97.0, 96.0, 97.0, 96.0, 97.0, 95.0), values(MeasurementKind.SPO2, events))
         assertEquals(listOf(52.0, 43.0, 177.0, 95.0, 33.0, 33.0, 61.0, 128.0), values(MeasurementKind.HRV, events))
-        assertEquals(listOf(115.0, 112.0, 112.0, 109.0, 111.0, 111.0, 110.0, 106.0), values(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, events))
-        assertEquals(70.0, values(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, events).last(), 0.001)
-        assertFalse(events.any { it is RingDecodedEvent.BloodPressureSample })
+        val bloodPressure = events.filterIsInstance<RingDecodedEvent.BloodPressureSample>()
+        assertEquals(listOf(115, 112, 112, 109, 111, 111, 110, 106), bloodPressure.map { it.systolic })
+        assertEquals(70, bloodPressure.last().diastolic)
+        assertTrue(bloodPressure.all { it.isHistory })
         assertFalse(events.any { it is RingDecodedEvent.ActivityUpdate })
     }
 
@@ -112,6 +113,7 @@ class YCBTHealthRecordsTest {
         assertTrue(kotlin.math.abs(249 - light) <= 3)
         assertTrue(kotlin.math.abs(130 - rem) <= 3)
         assertFalse(event.stages.contains(SleepStage.AWAKE))
+        assertTrue(event.completeSession)
     }
 
     @Test
@@ -138,6 +140,15 @@ class YCBTHealthRecordsTest {
         val session = sleepSession(listOf(0xf2 to 72_000))
         val event = YCBTHealthRecords.sleep(session).first() as RingDecodedEvent.SleepTimeline
         assertEquals(1200, event.stages.size)
+    }
+
+    @Test
+    fun `malformed sleep durations are bounded to one day`() {
+        val session = sleepSession(listOf(0xf2 to 0xFFFFFF, 0xf1 to 60 * 60))
+        val event = YCBTHealthRecords.sleep(session).first() as RingDecodedEvent.SleepTimeline
+
+        assertEquals(24 * 60, event.stages.size)
+        assertTrue(event.stages.all { it == SleepStage.LIGHT })
     }
 
     @Test
@@ -170,10 +181,11 @@ class YCBTHealthRecordsTest {
     @Test
     fun `blood pressure records decode`() {
         val events = YCBTHealthRecords.bloodPressure(bytes("1cf0de3101764f401afede3100000000"))
-        assertEquals(listOf(118.0), values(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, events))
-        assertEquals(listOf(79.0), values(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, events))
+        val bloodPressure = events.filterIsInstance<RingDecodedEvent.BloodPressureSample>()
+        assertEquals(listOf(118), bloodPressure.map { it.systolic })
+        assertEquals(listOf(79), bloodPressure.map { it.diastolic })
         assertEquals(listOf(64.0), values(MeasurementKind.HEART_RATE, events))
-        assertFalse(events.any { it is RingDecodedEvent.BloodPressureSample })
+        assertTrue(bloodPressure.all { it.isHistory })
         assertEquals(YCBTBytes.date(836_694_044), timestamps(events).first())
     }
 
@@ -248,11 +260,11 @@ class YCBTHealthRecordsTest {
         val temperature = bytes("1cf0de310024051afede31002419260cdf3100000f")
 
         assertEquals(2, YCBTHealthRecords.decode(spo2, YCBTHistoryType.SPO2).size)
-        assertEquals(3, YCBTHealthRecords.decode(blood, YCBTHistoryType.BLOOD).size)
+        assertEquals(2, YCBTHealthRecords.decode(blood, YCBTHistoryType.BLOOD).size)
         assertEquals(1, YCBTHealthRecords.decode(sport, YCBTHistoryType.SPORT).size)
         assertEquals(2, YCBTHealthRecords.decode(temperature, YCBTHistoryType.TEMPERATURE).size)
         assertEquals(4, YCBTHealthRecords.decode(capturedBodyRecord, YCBTHistoryType.BODY_DATA).size)
-        assertEquals(8 * 5, YCBTHealthRecords.decode(capturedAllRecords, YCBTHistoryType.ALL).size)
+        assertEquals(8 * 4, YCBTHealthRecords.decode(capturedAllRecords, YCBTHistoryType.ALL).size)
         assertFalse(YCBTHealthRecords.decode(capturedNight, YCBTHistoryType.SLEEP).isEmpty())
         assertFalse(YCBTHealthRecords.decode(capturedHeartRecords, YCBTHistoryType.HEART).isEmpty())
     }

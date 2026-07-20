@@ -161,7 +161,9 @@ sealed class RingDecodedEvent {
 
     data class SleepTimeline(
         val _timestamp: Instant,
-        val stages: List<SleepStage>
+        val stages: List<SleepStage>,
+        /** True when this event is the ring's complete authoritative session, not one packet. */
+        val completeSession: Boolean = false,
     ) : RingDecodedEvent() {
         override val kind = "sleep_timeline"
         override val confidence = DecodeConfidence.KNOWN
@@ -314,6 +316,7 @@ sealed class RingDecodedEvent {
         val systolic: Int,
         val diastolic: Int,
         val _timestamp: Instant,
+        val isHistory: Boolean = false,
     ) : RingDecodedEvent() {
         override val kind = "blood_pressure_sample"
         override val confidence = DecodeConfidence.KNOWN

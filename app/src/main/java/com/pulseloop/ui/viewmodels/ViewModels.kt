@@ -35,7 +35,8 @@ import java.time.ZoneId
 class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
     // Local midnight, not UTC — the Today dashboard rolls over at the device's local
     // midnight so daily stats line up with how the rest of the app keys per-day rows.
-    private val todayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
+    private val todayDate = MutableStateFlow(java.time.LocalDate.now().toString())
 
     data class TodayState(
         val steps: Int? = null,
@@ -70,9 +71,14 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
     private val _state = MutableStateFlow(TodayState())
     val state: StateFlow<TodayState> = _state.asStateFlow()
 
+    fun refreshCurrentDay() {
+        todayStart.value = TimeUtil.startOfTodayLocal()
+        todayDate.value = java.time.LocalDate.now().toString()
+    }
+
     init {
         viewModelScope.launch {
-            db.activityDailyDao().byDayFlow(todayStart).collect { activity ->
+            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { activity ->
                 _state.update { it.copy(
                     steps = activity?.steps,
                     calories = activity?.calories,
@@ -102,9 +108,10 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         }
         // Today's coach summary card (kind="today", scopeKey=local date).
         viewModelScope.launch {
-            db.coachSummaryDao()
-                .getFlow(com.pulseloop.coach.summaries.CoachSummaryKind.TODAY.rawValue, java.time.LocalDate.now().toString())
-                .collect { summary -> _state.update { it.copy(coachSummary = summary) } }
+            currentDayValues(todayDate) { date ->
+                db.coachSummaryDao()
+                    .getFlow(com.pulseloop.coach.summaries.CoachSummaryKind.TODAY.rawValue, date)
+            }.collect { summary -> _state.update { it.copy(coachSummary = summary) } }
         }
         viewModelScope.launch {
             db.deviceDao().currentFlow().collect { device ->
@@ -211,6 +218,10 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         viewModelScope.launch { try { rebuild(range) } catch (_: Exception) {} }
     }
 
+    fun refreshReferenceNight() {
+        viewModelScope.launch { try { rebuild(_state.value.range) } catch (_: Exception) {} }
+    }
+
     init {
         // Any sleep-table change retriggers a rebuild of the selected range.
         viewModelScope.launch {
@@ -313,8 +324,13 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
 
     private val _state = MutableStateFlow(ActivityState())
     val state: StateFlow<ActivityState> = _state.asStateFlow()
+    private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
 
     private val db = db
+
+    fun refreshCurrentDay() {
+        todayStart.value = TimeUtil.startOfTodayLocal()
+    }
 
     init {
         viewModelScope.launch {
@@ -323,7 +339,7 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
             }
         }
         viewModelScope.launch {
-            db.activityDailyDao().byDayFlow(TimeUtil.startOfTodayLocal()).collect { day ->
+            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { day ->
                 _state.update { it.copy(today = day) }
             }
         }

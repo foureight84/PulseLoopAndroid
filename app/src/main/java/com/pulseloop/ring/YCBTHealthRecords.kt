@@ -9,6 +9,7 @@ import java.time.Instant
 
 object YCBTHealthRecords {
     private const val TEMPERATURE_FILLER: Int = 15
+    private const val MAX_SLEEP_SESSION_MINUTES = 24 * 60
 
     fun decode(buffer: ByteArray, type: YCBTHistoryType): List<RingDecodedEvent> {
         return when (type) {
@@ -185,11 +186,19 @@ object YCBTHealthRecords {
                 if (!seenStarts.add(segmentStart)) continue
                 val segmentSeconds = YCBTBytes.u24(buffer, offset + 5)
                 if (sessionStart == null) sessionStart = YCBTBytes.date(segmentStart)
-                val minutes = maxOf(1, kotlin.math.round(segmentSeconds / 60.0).toInt())
+                val remaining = MAX_SLEEP_SESSION_MINUTES - stages.size
+                if (remaining <= 0) break
+                val minutes = kotlin.math.round(segmentSeconds / 60.0).toInt().coerceIn(1, remaining)
                 repeat(minutes) { stages.add(stage) }
             }
             if (sessionStart != null && stages.isNotEmpty()) {
-                events.add(RingDecodedEvent.SleepTimeline(_timestamp = sessionStart, stages = stages))
+                events.add(
+                    RingDecodedEvent.SleepTimeline(
+                        _timestamp = sessionStart,
+                        stages = stages,
+                        completeSession = true,
+                    )
+                )
             }
             cursor = segmentsStart + segmentCount * segmentLength
         }
@@ -212,8 +221,12 @@ object YCBTHealthRecords {
     private fun bloodPressureEvents(systolic: Int, diastolic: Int, timestamp: Instant): List<RingDecodedEvent> {
         if (systolic <= 0 || diastolic <= 0) return emptyList()
         return listOf(
-            RingDecodedEvent.HistoryMeasurement(kind_field = MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, value = systolic.toDouble(), _timestamp = timestamp),
-            RingDecodedEvent.HistoryMeasurement(kind_field = MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, value = diastolic.toDouble(), _timestamp = timestamp),
+            RingDecodedEvent.BloodPressureSample(
+                systolic = systolic,
+                diastolic = diastolic,
+                _timestamp = timestamp,
+                isHistory = true,
+            ),
         )
     }
 

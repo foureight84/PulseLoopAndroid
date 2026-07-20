@@ -9,8 +9,13 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
     private val decoder = YCBTDecoder()
     private val encoder = YCBTEncoder()
     private val assembler = YCBTFrameAssembler()
-    private val transfer: YCBTHistoryTransfer = YCBTHistoryTransfer(writer = writer)
+    private var syncEngine: RingSyncEngine? = null
+    private val transfer: YCBTHistoryTransfer = YCBTHistoryTransfer(
+        writer = writer,
+        onOutOfBandEvents = ::handleOutOfBandEvents,
+    )
     private val pendingMeasurementReplies = PendingMeasurementReplies()
+    private var capabilities = YCBTCoordinator.capabilities
 
     override val serviceUUIDs = listOf(YCBTUUIDs.SERVICE)
     override val writeUUID = YCBTUUIDs.COMMAND
@@ -48,12 +53,14 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
         assembler.reset()
         transfer.cancel()
         pendingMeasurementReplies.clear()
+        capabilities = YCBTCoordinator.capabilities
     }
 
     override fun connectionDidEnd() {
         assembler.reset()
         transfer.cancel()
         pendingMeasurementReplies.clear()
+        capabilities = YCBTCoordinator.capabilities
     }
 
     override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> {
@@ -64,22 +71,31 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
                 events.add(RingDecodedEvent.Unknown(commandId = logical.firstOrNull()?.toUByte() ?: 0u, raw = logical))
                 continue
             }
-            when (frame.type) {
+            val decoded = when (frame.type) {
                 YCBTGroup.HEALTH -> {
-                    events.addAll(transfer.handle(cmd = frame.cmd, payload = frame.payload))
+                    transfer.handle(cmd = frame.cmd, payload = frame.payload)
                 }
                 YCBTGroup.DEV_CONTROL -> {
                     acknowledgePush(frame)
-                    events.addAll(decoder.decode(frame))
+                    decoder.decode(frame).also { decoded ->
+                        // A real measurement value proves a start succeeded even if its command
+                        // reply was lost. Drop stale FIFO correlation before the next command.
+                        if (frame.cmd == YCBTDevControl.MEASUREMENT_STATUS &&
+                            decoded.any { it !is RingDecodedEvent.CommandAck }) {
+                            pendingMeasurementReplies.clear()
+                        }
+                    }
                 }
                 YCBTGroup.APP_CONTROL -> if (frame.cmd == YCBTCommand.LIVE_MEASUREMENT) {
                     val startedMode = pendingMeasurementReplies.consume()?.startedMode
-                    events.addAll(decoder.decode(frame, startedMode = startedMode))
+                    decoder.decode(frame, startedMode = startedMode)
                 } else {
-                    events.addAll(decoder.decode(frame))
+                    decoder.decode(frame)
                 }
-                else -> events.addAll(decoder.decode(frame))
+                else -> decoder.decode(frame)
             }
+            updateCapabilities(decoded)
+            events.addAll(decoded.filter(::isSupported))
         }
         return events
     }
@@ -90,7 +106,42 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
     }
 
     override fun makeSyncEngine(): RingSyncEngine {
-        return YCBTSyncEngine(writer = writer, transfer = transfer)
+        return YCBTSyncEngine(writer = writer, transfer = transfer).also { syncEngine = it }
+    }
+
+    private fun updateCapabilities(events: List<RingDecodedEvent>) {
+        val support = events.filterIsInstance<RingDecodedEvent.SupportFunctions>().lastOrNull() ?: return
+        capabilities = YCBTCoordinator.capabilities +
+            support.capabilities.intersect(YCBTCoordinator.bitmapGatedCapabilities)
+    }
+
+    private fun isSupported(event: RingDecodedEvent): Boolean = when (event) {
+        is RingDecodedEvent.BloodPressureSample -> WearableCapability.BLOOD_PRESSURE in capabilities
+        is RingDecodedEvent.BloodSugarSample -> WearableCapability.BLOOD_SUGAR in capabilities
+        is RingDecodedEvent.HrvSample -> WearableCapability.HRV in capabilities
+        is RingDecodedEvent.StressSample -> WearableCapability.STRESS in capabilities
+        is RingDecodedEvent.TemperatureSample -> WearableCapability.TEMPERATURE in capabilities
+        is RingDecodedEvent.HistoryMeasurement -> when (event.kind_field) {
+            MeasurementKind.HEART_RATE, MeasurementKind.SPO2 -> true
+            MeasurementKind.BLOOD_PRESSURE_SYSTOLIC,
+            MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> WearableCapability.BLOOD_PRESSURE in capabilities
+            MeasurementKind.BLOOD_SUGAR -> WearableCapability.BLOOD_SUGAR in capabilities
+            MeasurementKind.HRV -> WearableCapability.HRV in capabilities
+            MeasurementKind.STRESS -> WearableCapability.STRESS in capabilities
+            MeasurementKind.FATIGUE -> WearableCapability.FATIGUE in capabilities
+            MeasurementKind.TEMPERATURE -> WearableCapability.TEMPERATURE in capabilities
+            MeasurementKind.RESPIRATORY_RATE, MeasurementKind.VO2MAX -> false
+        }
+        else -> true
+    }
+
+    private fun handleOutOfBandEvents(events: List<RingDecodedEvent>) {
+        for (event in events.filter(::isSupported)) {
+            syncEngine?.handle(event)
+            for (pulseEvent in RingEventBridge.eventsFor(event)) {
+                PulseEventBus.publishBlocking(pulseEvent)
+            }
+        }
     }
 }
 

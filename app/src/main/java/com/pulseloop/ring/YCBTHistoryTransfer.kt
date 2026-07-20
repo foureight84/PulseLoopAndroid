@@ -12,6 +12,13 @@ class YCBTHistoryTransfer(
     private val writer: RingCommandWriter?,
     private val inactivitySeconds: Double = 10.0,
     private val absoluteCapSeconds: Double = 30.0,
+    private val onOutOfBandEvents: (List<RingDecodedEvent>) -> Unit = { events ->
+        for (event in events) {
+            for (pulseEvent in RingEventBridge.eventsFor(event)) {
+                PulseEventBus.publishBlocking(pulseEvent)
+            }
+        }
+    },
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -26,6 +33,8 @@ class YCBTHistoryTransfer(
     private var retriedCurrentType = false
     private var unsupported: MutableSet<Int> = mutableSetOf()
     private var bufferCap = DEFAULT_BUFFER_CAP
+    private var expectedPackets: Int? = null
+    private var expectedBytes: Int? = null
     private var watchdogJob: Job? = null
     private var typeDeadline: Long? = null
 
@@ -44,10 +53,26 @@ class YCBTHistoryTransfer(
         advance()
     }
 
+    /** Add newly discovered capability-gated types without disturbing an active block. */
+    @Synchronized
+    fun append(types: List<YCBTHistoryType>) {
+        val additions = types.distinct().filter { type ->
+            !unsupported.contains(type.queryKey) && type != currentType && type !in queue
+        }
+        if (additions.isEmpty()) return
+        if (state == State.IDLE) {
+            queue = additions.toMutableList()
+            advance()
+        } else {
+            queue.addAll(additions)
+        }
+    }
+
     @Synchronized
     fun cancel() {
         cancelWatchdog()
         state = State.IDLE
+        currentType = null
         queue.clear()
         buffer = ByteArray(0)
     }
@@ -55,10 +80,13 @@ class YCBTHistoryTransfer(
     private fun advance(): List<RingDecodedEvent> {
         cancelWatchdog()
         buffer = ByteArray(0)
+        expectedPackets = null
+        expectedBytes = null
         bufferCap = DEFAULT_BUFFER_CAP
         retriedCurrentType = false
         if (queue.isEmpty()) {
             state = State.IDLE
+            currentType = null
             return listOf(RingDecodedEvent.HistorySyncFinished)
         }
         val next = queue.removeAt(0)
@@ -77,6 +105,7 @@ class YCBTHistoryTransfer(
     /** Feed every validated Health-group (type == 0x05) frame here. */
     @Synchronized
     fun handle(cmd: Int, payload: ByteArray): List<RingDecodedEvent> {
+        if (state == State.IDLE) return emptyList()
         val type = currentType ?: return emptyList()
 
         YCBTFrameError.detect(payload)?.let { error ->
@@ -98,7 +127,9 @@ class YCBTHistoryTransfer(
 
     private fun handleHeader(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
         if (payload.size < YCBTHealth.HEADER_PAYLOAD_LENGTH) return advance()
+        expectedPackets = YCBTBytes.u16(payload, 2)
         val totalBytes = YCBTBytes.u32(payload, 6)
+        expectedBytes = totalBytes
         buffer = ByteArray(0)
         bufferCap = totalBytes.coerceIn(0, MAX_BUFFER_CAP)
         state = State.RECEIVING
@@ -115,6 +146,11 @@ class YCBTHistoryTransfer(
     private fun handleTerminal(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
         if (state == State.REQUEST_SENT && buffer.isEmpty()) return emptyList()
         if (payload.size < YCBTHealth.TERMINAL_PAYLOAD_LENGTH) return advance()
+        val packets = YCBTBytes.u16(payload, 0)
+        val bytes = YCBTBytes.u16(payload, 2)
+        if (packets != expectedPackets || bytes != expectedBytes || bytes != buffer.size) {
+            return emptyList()
+        }
         val expected = YCBTBytes.u16(payload, 4)
         val matches = YCBTFrame.crc16(buffer) == expected
 
@@ -158,8 +194,6 @@ class YCBTHistoryTransfer(
     }
 
     private fun publishOutOfBand(events: List<RingDecodedEvent>) {
-        if (events.any { it is RingDecodedEvent.HistorySyncFinished }) {
-            PulseEventBus.publishBlocking(PulseEvent.SyncProgress("done"))
-        }
+        onOutOfBandEvents(events)
     }
 }

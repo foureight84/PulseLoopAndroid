@@ -45,6 +45,20 @@ class YCBTHistoryTransferTest {
         }
     }
 
+    private fun drainNoData(writer: FakeWriter, transfer: YCBTHistoryTransfer): List<Int> {
+        val requested = mutableListOf<Int>()
+        while (true) {
+            val query = writer.sent.firstOrNull {
+                it.size == 2 && it[0] == YCBTGroup.HEALTH.toByte()
+            } ?: break
+            writer.sent.clear()
+            val key = query[1].toInt() and 0xFF
+            requested += key
+            transfer.handle(cmd = key, payload = byteArrayOf(0x00))
+        }
+        return requested
+    }
+
     @Test
     fun `full cycle acks and advances to next type`() {
         val writer = FakeWriter()
@@ -138,24 +152,43 @@ class YCBTHistoryTransferTest {
     }
 
     @Test
-    fun `engine requests every history type in order`() {
+    fun `late terminal from skipped type cannot corrupt the next transfer`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+        val allBuffer = ByteArray(20) { it.toByte() }
+
+        transfer.start(types = listOf(YCBTHistoryType.HEART, YCBTHistoryType.ALL))
+        transfer.handle(cmd = 0x06, payload = byteArrayOf(0xfc.toByte()))
+        transfer.handle(cmd = 0x09, payload = header(records = 1, packets = 2, bytes = allBuffer.size))
+        transfer.handle(cmd = 0x18, payload = allBuffer)
+        writer.sent.clear()
+
+        val events = transfer.handle(cmd = 0x80, payload = terminal(packets = 1, buffer = heartBuffer))
+
+        assertTrue(events.isEmpty())
+        assertTrue(writer.sent.isEmpty())
+        assertTrue(transfer.isActive)
+    }
+
+    @Test
+    fun `startup requests only baseline history until capabilities arrive`() {
         val writer = FakeWriter()
         val transfer = YCBTHistoryTransfer(writer = writer)
         val engine = YCBTSyncEngine(writer = writer, transfer = transfer)
         engine.runStartup()
 
         val requested = mutableListOf<Int>()
-        for (i in 0 until YCBTHistoryType.CATALOG.size) {
+        repeat(4) {
             val query = writer.sent.lastOrNull { it.size == 2 && it[0] == 0x05.toByte() }
-            if (query == null) break
+            if (query == null) return@repeat
             requested.add(query[1].toInt() and 0xFF)
             transfer.handle(cmd = query[1].toInt() and 0xFF, payload = byteArrayOf(0x00))
         }
-        assertEquals(listOf(0x02, 0x04, 0x06, 0x08, 0x09, 0x1a, 0x1e, 0x2f, 0x33), requested)
+        assertEquals(listOf(0x02, 0x04, 0x06, 0x09), requested)
     }
 
     @Test
-    fun `sync vitals history queues only the three vitals types`() {
+    fun `sync vitals history uses heart and combined records`() {
         val writer = FakeWriter()
         val transfer = YCBTHistoryTransfer(writer = writer)
         val engine = YCBTSyncEngine(writer = writer, transfer = transfer)
@@ -168,7 +201,7 @@ class YCBTHistoryTransferTest {
             writer.sent.clear()
             transfer.handle(cmd = query[1].toInt() and 0xFF, payload = byteArrayOf(0x00))
         }
-        assertEquals(listOf(0x06, 0x09, 0x1a), requested)
+        assertEquals(listOf(0x06, 0x09), requested)
     }
 
     @Test
@@ -204,12 +237,77 @@ class YCBTHistoryTransferTest {
     }
 
     @Test
+    fun `append preserves the active transfer and adds new types once`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+
+        transfer.start(types = listOf(YCBTHistoryType.HEART, YCBTHistoryType.ALL))
+        writer.sent.clear()
+        transfer.append(
+            listOf(
+                YCBTHistoryType.HEART,
+                YCBTHistoryType.ALL,
+                YCBTHistoryType.SLEEP,
+                YCBTHistoryType.SLEEP,
+            ),
+        )
+        assertTrue(writer.sent.isEmpty())
+
+        transfer.handle(cmd = 0x06, payload = byteArrayOf(0x00))
+        assertEquals(listOf(0x09, 0x04), drainNoData(writer, transfer))
+    }
+
+    @Test
+    fun `append while idle starts the added history`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+
+        transfer.append(listOf(YCBTHistoryType.SLEEP))
+
+        assertArrayEquals(byteArrayOf(0x05, 0x04), writer.sent.single())
+        assertTrue(transfer.isActive)
+    }
+
+    @Test
     fun `frames while idle are ignored`() {
         val writer = FakeWriter()
         val transfer = YCBTHistoryTransfer(writer = writer)
         assertTrue(transfer.handle(cmd = 0x15, payload = heartBuffer).isEmpty())
         assertTrue(transfer.handle(cmd = 0x80, payload = terminal(packets = 1, buffer = byteArrayOf())).isEmpty())
         assertTrue(writer.sent.isEmpty())
+    }
+
+    @Test
+    fun `duplicate final terminal after completion is ignored`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+        val done = terminal(packets = 1, buffer = heartBuffer)
+
+        transfer.start(types = listOf(YCBTHistoryType.HEART))
+        transfer.handle(cmd = 0x06, payload = header(records = 2, packets = 1, bytes = heartBuffer.size))
+        transfer.handle(cmd = 0x15, payload = heartBuffer)
+        transfer.handle(cmd = 0x80, payload = done)
+
+        writer.sent.clear()
+        assertTrue(transfer.handle(cmd = 0x80, payload = done).isEmpty())
+        assertTrue(writer.sent.isEmpty())
+        assertFalse(transfer.isActive)
+    }
+
+    @Test
+    fun `terminal after cancel is ignored`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+
+        transfer.start(types = listOf(YCBTHistoryType.HEART))
+        transfer.handle(cmd = 0x06, payload = header(records = 2, packets = 1, bytes = heartBuffer.size))
+        transfer.handle(cmd = 0x15, payload = heartBuffer)
+        transfer.cancel()
+
+        writer.sent.clear()
+        assertTrue(transfer.handle(cmd = 0x80, payload = terminal(packets = 1, buffer = heartBuffer)).isEmpty())
+        assertTrue(writer.sent.isEmpty())
+        assertFalse(transfer.isActive)
     }
 
     @Test
@@ -255,6 +353,24 @@ class YCBTHistoryTransferTest {
 
         delay(300)
         assertTrue(writer.sent.isEmpty())
+        assertFalse(transfer.isActive)
+    }
+
+    @Test
+    fun `final watchdog completion is emitted through the out of band event sink`() = runBlocking {
+        val writer = FakeWriter()
+        val emitted = mutableListOf<RingDecodedEvent>()
+        val transfer = YCBTHistoryTransfer(
+            writer = writer,
+            inactivitySeconds = 0.05,
+            absoluteCapSeconds = 0.1,
+            onOutOfBandEvents = { emitted.addAll(it) },
+        )
+
+        transfer.start(types = listOf(YCBTHistoryType.HEART))
+        delay(200)
+
+        assertEquals(listOf(RingDecodedEvent.HistorySyncFinished), emitted)
         assertFalse(transfer.isActive)
     }
 }

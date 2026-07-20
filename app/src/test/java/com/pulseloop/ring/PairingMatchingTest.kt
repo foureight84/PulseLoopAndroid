@@ -82,6 +82,13 @@ class PairingMatchingTest {
     }
 
     @Test
+    fun `YCBT find device is enabled only by the support bitmap`() {
+        assertFalse(YCBTCoordinator.capabilities.contains(WearableCapability.FIND_DEVICE))
+        assertTrue(YCBTCoordinator.bitmapGatedCapabilities.contains(WearableCapability.FIND_DEVICE))
+        assertFalse(YCBTCoordinator.capabilities.contains(WearableCapability.SPO2_HISTORY))
+    }
+
+    @Test
     fun `YCBT manufacturer marker does not override QRing service`() {
         val manufacturer = byteArrayOf(0x10, 0x78)
         assertFalse(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(emptyList(), manufacturer)))

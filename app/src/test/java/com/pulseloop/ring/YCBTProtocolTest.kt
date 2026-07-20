@@ -114,6 +114,28 @@ class YCBTProtocolTest {
         assertTrue(assembler.append(whole.copyOfRange(10, whole.size), streamUUID).isEmpty())
     }
 
+    @Test
+    fun `find device capability follows its support bit`() {
+        val withoutFind = ByteArray(14)
+        val withFind = withoutFind.copyOf().apply {
+            this[6] = (1 shl 4).toByte()
+        }
+
+        assertFalse(YCBTSupportFunction.capabilities(withoutFind).contains(WearableCapability.FIND_DEVICE))
+        assertTrue(YCBTSupportFunction.capabilities(withFind).contains(WearableCapability.FIND_DEVICE))
+    }
+
+    @Test
+    fun `pressure support bit enables both body-data scores`() {
+        val payload = ByteArray(23).apply {
+            this[22] = (1 shl 6).toByte()
+        }
+        val capabilities = YCBTSupportFunction.capabilities(payload)
+
+        assertTrue(capabilities.contains(WearableCapability.STRESS))
+        assertTrue(capabilities.contains(WearableCapability.FATIGUE))
+    }
+
     private fun hexToBytes(hex: String): ByteArray {
         val clean = hex.replace(" ", "")
         require(clean.length % 2 == 0)

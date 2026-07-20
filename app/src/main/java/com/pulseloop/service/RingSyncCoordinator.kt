@@ -295,6 +295,7 @@ class RingSyncCoordinator(
 
     fun findRing() {
         if (!isConnected) return
+        if (!client.state.value.activeCapabilities.contains(WearableCapability.FIND_DEVICE)) return
         engine?.findDevice()
     }
 
@@ -312,7 +313,6 @@ class RingSyncCoordinator(
         // OS bond, and clears the stored peripheral. That is the whole forget.
         scope.launch {
             client.forget()
-            stop()
             onCleared()
         }
     }
@@ -343,7 +343,6 @@ class RingSyncCoordinator(
                 client.awaitOpsFlushed()
             }
             client.forget()
-            stop()
             onCleared()
         }
     }

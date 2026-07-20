@@ -96,7 +96,7 @@ data class WearableModel(
             @DrawableRes imageRes: Int?,
         ) = WearableModel(
             id = id, displayName = name, brand = brand, family = RingDeviceType.YCBT,
-            tint = PulseColors.hrv, blurb = "HR · SpO₂ · BP · HRV · Temp · Sleep · Stress",
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · BP · Sleep",
             advertisedNamePatterns = listOf(pattern),
             imageRes = imageRes,
         )

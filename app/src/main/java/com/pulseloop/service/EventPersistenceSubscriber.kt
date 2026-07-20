@@ -50,6 +50,7 @@ class EventPersistenceSubscriber(
         is PulseEvent.StressSample,
         is PulseEvent.HrvSample,
         is PulseEvent.BloodPressureSample,
+        is PulseEvent.BloodSugarSample,
         is PulseEvent.TemperatureSample,
         is PulseEvent.ActivityUpdate,
         is PulseEvent.ActivityBucket,
@@ -151,7 +152,8 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.HistoryMeasurement -> {
-                db.measurementDao().insert(MeasurementEntity(
+                db.measurementDao().upsertByIdentity(MeasurementEntity(
+                    id = historyMeasurementId(event.kind, event.timestamp.toEpochMilli()),
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
                     timestamp = event.timestamp.toEpochMilli(),
@@ -171,19 +173,42 @@ class EventPersistenceSubscriber(
                     kindRaw = MeasurementKind.HRV.name,
                     value = event.value.toDouble(), unit = "ms",
                     timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "colmi",
+                    sourceRaw = "live",
                 ))
             }
             is PulseEvent.BloodPressureSample -> {
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name,
-                    value = event.systolic.toDouble(), unit = "mmHg",
-                    timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
-                ))
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name,
-                    value = event.diastolic.toDouble(), unit = "mmHg",
+                db.withTransaction {
+                    val systolic = MeasurementEntity(
+                        id = if (event.isHistory) {
+                            historyMeasurementId(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, event.timestamp.toEpochMilli())
+                        } else {
+                            java.util.UUID.randomUUID().toString()
+                        },
+                        kindRaw = MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name,
+                        value = event.systolic.toDouble(), unit = "mmHg",
+                        timestamp = event.timestamp.toEpochMilli(),
+                        sourceRaw = if (event.isHistory) "history" else "live",
+                    )
+                    val diastolic = MeasurementEntity(
+                        id = if (event.isHistory) {
+                            historyMeasurementId(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, event.timestamp.toEpochMilli())
+                        } else {
+                            java.util.UUID.randomUUID().toString()
+                        },
+                        kindRaw = MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name,
+                        value = event.diastolic.toDouble(), unit = "mmHg",
+                        timestamp = event.timestamp.toEpochMilli(),
+                        sourceRaw = if (event.isHistory) "history" else "live",
+                    )
+                    db.measurementDao().upsertByIdentity(systolic)
+                    db.measurementDao().upsertByIdentity(diastolic)
+                }
+            }
+            is PulseEvent.BloodSugarSample -> {
+                db.measurementDao().upsertByIdentity(MeasurementEntity(
+                    kindRaw = MeasurementKind.BLOOD_SUGAR.name,
+                    value = event.mgdl,
+                    unit = MeasurementKind.BLOOD_SUGAR.unit,
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 ))
@@ -193,7 +218,7 @@ class EventPersistenceSubscriber(
                     kindRaw = MeasurementKind.TEMPERATURE.name,
                     value = event.celsius, unit = "°C",
                     timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "colmi",
+                    sourceRaw = "live",
                 ))
             }
             is PulseEvent.ActivityUpdate -> {
@@ -207,7 +232,7 @@ class EventPersistenceSubscriber(
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.SleepTimeline -> {
-                upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)
+                upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
             }
             is PulseEvent.SyncProgress -> {} // UI feedback, no persistence needed
             is PulseEvent.HeartRateComplete -> {}
@@ -269,6 +294,10 @@ class EventPersistenceSubscriber(
      * iOS (the GadgetBridge model). Calories intentionally untouched (unverified ring field).
      */
     private suspend fun applyActivityBucket(ts: Long, steps: Int, distanceM: Double) {
+        db.withTransaction { applyActivityBucketAtomic(ts, steps, distanceM) }
+    }
+
+    private suspend fun applyActivityBucketAtomic(ts: Long, steps: Int, distanceM: Double) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         db.activityBucketDao().upsert(ActivityBucketEntity(
             startEpoch = ts,
@@ -302,37 +331,59 @@ class EventPersistenceSubscriber(
         )
     }
 
-    private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>) {
-        if (stages.isEmpty()) return
-        db.withTransaction { upsertSleepSessionAtomic(ts, stages) }
+    private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
+        if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
+        db.withTransaction { upsertSleepSessionAtomic(ts, stages, completeSession) }
     }
 
-    private suspend fun upsertSleepSessionAtomic(ts: Long, stages: List<SleepStage>) {
+    private suspend fun upsertSleepSessionAtomic(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
         // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
         // a night that starts before midnight lands under the morning of waking instead of being
         // split into two sessions at midnight. Matches the iOS reference
         // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
         val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
         val sessionId = "sleep-$dayStart"
+        val existingSession = db.sleepSessionDao().ringByDay(dayStart)
+        if (completeSession && existingSession != null && !shouldReplaceCompleteSleep(
+                existingStart = existingSession.startAt,
+                existingMinutes = existingSession.totalMinutes,
+                incomingStart = ts,
+                incomingMinutes = stages.size,
+            )) return
 
-        // The ring streams a night as many 15-minute 0x11 packets that must be STITCHED,
-        // not overwritten. Accumulate this packet's blocks with those already stored for the
-        // night, de-duplicating by absolute start time so re-syncs don't double-count.
-        // Matches the iOS reference (PulseEventBus.persistSleepTimeline).
-        val byStart = LinkedHashMap<Long, SleepStageBlockEntity>()
-        for (b in db.sleepStageBlockDao().forSession(sessionId)) byStart[b.startAt] = b
-        for (b in buildStageBlocks(sessionId, ts, stages)) byStart.putIfAbsent(b.startAt, b)
-
-        val merged = byStart.values.sortedBy { it.startAt }
+        val packetEnd = ts + stages.size * 60_000L
+        val replacements = buildStageBlocks(sessionId, ts, stages)
+        val merged = if (completeSession) {
+            // YCBT sends an authoritative whole-session record. Remove legacy midnight-split
+            // parents that overlap it, then replace every block so shortened revisions cannot
+            // retain a stale tail.
+            for (legacy in db.sleepSessionDao().ringOverlapping(ts, packetEnd)) {
+                if (legacy.id != sessionId) {
+                    db.sleepStageBlockDao().deleteBySession(legacy.id)
+                    db.sleepSessionDao().deleteById(legacy.id)
+                }
+            }
+            replacements
+        } else {
+            // Other families stream a night as packets. Replace only the packet interval while
+            // preserving and splitting unaffected portions of existing stage runs.
+            replaceOverlappingSleepBlocks(
+                existing = db.sleepStageBlockDao().forSession(sessionId),
+                replacements = replacements,
+                replacementStart = ts,
+                replacementEnd = packetEnd,
+            )
+        }
         val sessionStart = merged.first().startAt
         val sessionEnd = merged.maxOf { it.startAt + it.durationMinutes * 60_000L }
+        if (sessionEnd - sessionStart > MAX_SLEEP_TIMELINE_MINUTES * 60_000L) return
         val totalMin = ((sessionEnd - sessionStart) / 60_000L).toInt().coerceAtLeast(0)
         val deepMin = merged.filter { it.stageRaw == SleepStage.DEEP.name }.sumOf { it.durationMinutes }
         val score = computeSleepScore(deepMin, totalMin)
 
         // Upsert the parent session BEFORE its stage blocks. sleep_stage_blocks has a foreign key
         // to sleep_sessions(id), so a newly discovered night needs its parent first.
-        val existing = db.sleepSessionDao().ringByDay(dayStart)
+        val existing = existingSession
         db.sleepSessionDao().upsert(
             (existing ?: SleepSessionEntity(id = sessionId, date = dayStart, startAt = sessionStart, endAt = sessionEnd, totalMinutes = totalMin, score = score)).copy(
                 startAt = sessionStart,
@@ -407,6 +458,50 @@ class EventPersistenceSubscriber(
             else -> 40
         }
     }
+
+    private companion object {
+        const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+    }
+}
+
+internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
+    "history:${kind.key}:$timestamp"
+
+internal fun shouldReplaceCompleteSleep(
+    existingStart: Long,
+    existingMinutes: Int,
+    incomingStart: Long,
+    incomingMinutes: Int,
+): Boolean = existingStart == incomingStart || incomingMinutes > existingMinutes
+
+internal fun replaceOverlappingSleepBlocks(
+    existing: List<SleepStageBlockEntity>,
+    replacements: List<SleepStageBlockEntity>,
+    replacementStart: Long,
+    replacementEnd: Long,
+): List<SleepStageBlockEntity> {
+    val byStart = LinkedHashMap<Long, SleepStageBlockEntity>()
+    for (block in existing) {
+        val blockEnd = block.startAt + block.durationMinutes * 60_000L
+        if (blockEnd <= replacementStart || block.startAt >= replacementEnd) {
+            byStart[block.startAt] = block
+            continue
+        }
+        if (block.startAt < replacementStart) {
+            byStart[block.startAt] = block.copy(
+                durationMinutes = ((replacementStart - block.startAt) / 60_000L).toInt(),
+            )
+        }
+        if (blockEnd > replacementEnd) {
+            byStart[replacementEnd] = block.copy(
+                id = "${block.id}:$replacementEnd",
+                startAt = replacementEnd,
+                durationMinutes = ((blockEnd - replacementEnd) / 60_000L).toInt(),
+            )
+        }
+    }
+    for (block in replacements) byStart[block.startAt] = block
+    return byStart.values.sortedBy { it.startAt }
 }
 
 // Extension for Set<WearableCapability> CSV from WearableCapability.kt

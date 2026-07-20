@@ -291,4 +291,30 @@ class RingEventBridgeTest {
         assertFalse(hrv is PulseEvent.HrvSample)
     }
 
+    @Test
+    fun `implausible historical measurements are dropped`() {
+        assertTrue(
+            RingEventBridge.eventsFor(
+                RingDecodedEvent.HistoryMeasurement(MeasurementKind.SPO2, 255.0, now), now
+            ).isEmpty()
+        )
+        assertTrue(
+            RingEventBridge.eventsFor(
+                RingDecodedEvent.HistoryMeasurement(MeasurementKind.TEMPERATURE, 255.0, now), now
+            ).isEmpty()
+        )
+        assertTrue(
+            RingEventBridge.eventsFor(
+                RingDecodedEvent.BloodPressureSample(255, 255, now, isHistory = true), now
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun `live blood sugar keeps live event identity`() {
+        val events = RingEventBridge.eventsFor(RingDecodedEvent.BloodSugarSample(99.0, now), now)
+
+        assertEquals(listOf(PulseEvent.BloodSugarSample(99.0, now)), events)
+    }
+
 }

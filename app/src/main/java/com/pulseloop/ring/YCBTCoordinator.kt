@@ -37,7 +37,6 @@ object YCBTCoordinator : WearableCoordinator {
     override val capabilities = setOf(
         WearableCapability.HEART_RATE,
         WearableCapability.SPO2,
-        WearableCapability.SPO2_HISTORY,
         WearableCapability.STEPS,
         WearableCapability.SLEEP,
         WearableCapability.REM_SLEEP,
@@ -46,7 +45,6 @@ object YCBTCoordinator : WearableCoordinator {
         WearableCapability.MANUAL_SPO2,
         WearableCapability.REALTIME_HEART_RATE,
         WearableCapability.REALTIME_STEPS,
-        WearableCapability.FIND_DEVICE,
         WearableCapability.MEASUREMENT_INTERVAL,
     )
 
@@ -59,6 +57,7 @@ object YCBTCoordinator : WearableCoordinator {
         WearableCapability.BLOOD_SUGAR,
         WearableCapability.HRV,
         WearableCapability.MANUAL_HRV,
+        WearableCapability.FIND_DEVICE,
     )
 
     override val iconSystemName = "circle.circle.fill"

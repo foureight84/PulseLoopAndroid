@@ -14,7 +14,7 @@ class YCBTEncoderTest {
         calendar.set(2026, java.util.Calendar.JULY, 6, 12, 34, 14)
         for (offset in 0..6) {
             val date = Instant.ofEpochMilli(calendar.timeInMillis + offset * 86_400_000L)
-            val command = encoder.setTime(date)
+            val command = encoder.setTime(date, timeZone = calendar.timeZone)
             assertEquals(offset.toByte(), command.last())
         }
     }
@@ -32,7 +32,7 @@ class YCBTEncoderTest {
         val calendar = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC"))
         calendar.set(2026, java.util.Calendar.JULY, 6, 12, 34, 14)
         val date = Instant.ofEpochMilli(calendar.timeInMillis)
-        val command = encoder.setTime(date)
+        val command = encoder.setTime(date, timeZone = calendar.timeZone)
         assertArrayEquals(byteArrayOf(0x01, 0x00, 0xea.toByte(), 0x07, 0x07, 0x06, 0x0c, 0x22, 0x0e, 0x00), command)
     }
 
@@ -42,13 +42,12 @@ class YCBTEncoderTest {
             hrEnabled = true, hrIntervalMinutes = 5,
             spo2Enabled = true, stressEnabled = true, hrvEnabled = true, temperatureEnabled = true,
         )
-        val commands = encoder.monitorCommands(settings)
-        assertEquals(5, commands.size)
+        val commands = encoder.monitorCommands(settings, allMonitorCapabilities)
+        assertEquals(4, commands.size)
         assertArrayEquals(byteArrayOf(0x01, 0x0c, 0x01, 30), commands[0])
-        assertArrayEquals(byteArrayOf(0x01, 0x1c, 0x01, 30), commands[1])
-        assertArrayEquals(byteArrayOf(0x01, 0x20, 0x01, 30), commands[2])
-        assertArrayEquals(byteArrayOf(0x01, 0x26, 0x01, 30), commands[3])
-        assertArrayEquals(byteArrayOf(0x01, 0x45, 0x01, 30, 0, 0, 0), commands[4])
+        assertArrayEquals(byteArrayOf(0x01, 0x20, 0x01, 30), commands[1])
+        assertArrayEquals(byteArrayOf(0x01, 0x26, 0x01, 30), commands[2])
+        assertArrayEquals(byteArrayOf(0x01, 0x45, 0x01, 30, 0, 0, 0), commands[3])
     }
 
     @Test
@@ -57,12 +56,11 @@ class YCBTEncoderTest {
             hrEnabled = true, hrIntervalMinutes = 60,
             spo2Enabled = false, stressEnabled = false, hrvEnabled = false, temperatureEnabled = false,
         )
-        val commands = encoder.monitorCommands(settings)
+        val commands = encoder.monitorCommands(settings, allMonitorCapabilities)
         assertArrayEquals(byteArrayOf(0x01, 0x0c, 0x01, 60), commands[0])
-        assertArrayEquals(byteArrayOf(0x01, 0x1c, 0x01, 60), commands[1])
-        assertArrayEquals(byteArrayOf(0x01, 0x20, 0x00, 60), commands[2])
-        assertArrayEquals(byteArrayOf(0x01, 0x26, 0x00, 60), commands[3])
-        assertArrayEquals(byteArrayOf(0x01, 0x45, 0x00, 60, 0, 0, 0), commands[4])
+        assertArrayEquals(byteArrayOf(0x01, 0x20, 0x00, 60), commands[1])
+        assertArrayEquals(byteArrayOf(0x01, 0x26, 0x00, 60), commands[2])
+        assertArrayEquals(byteArrayOf(0x01, 0x45, 0x00, 60, 0, 0, 0), commands[3])
     }
 
     @Test
@@ -104,14 +102,21 @@ class YCBTEncoderTest {
             byteArrayOf(0x01, 0x12),
             byteArrayOf(0x01, 0x04),
             byteArrayOf(0x01, 0x0c),
-            byteArrayOf(0x01, 0x1c),
-            byteArrayOf(0x01, 0x20),
             byteArrayOf(0x01, 0x26),
-            byteArrayOf(0x01, 0x45),
             byteArrayOf(0x01, 0x03),
             byteArrayOf(0x03, 0x09),
         )
         assertEquals(expectedSettings.map { it.toList() }, settings.map { it.toList() })
+    }
+
+    @Test
+    fun `monitor commands include only declared sensors`() {
+        val commands = encoder.monitorCommands(
+            MeasurementSettings.ALL_ON_DEFAULT,
+            setOf(WearableCapability.HEART_RATE, WearableCapability.SPO2, WearableCapability.BLOOD_PRESSURE),
+        )
+
+        assertEquals(listOf(0x0c, 0x26), commands.map { it[1].toInt() and 0xFF })
     }
 
     @Test
@@ -154,5 +159,15 @@ class YCBTEncoderTest {
     fun `findDevice uses AppControl not DevControl ack`() {
         assertArrayEquals(byteArrayOf(0x03, 0x00, 0x01, 0x05, 0x02), encoder.findDevice())
         assertNotEquals(0x04.toByte(), encoder.findDevice()[0])
+    }
+
+    companion object {
+        private val allMonitorCapabilities = setOf(
+            WearableCapability.HEART_RATE,
+            WearableCapability.BLOOD_PRESSURE,
+            WearableCapability.TEMPERATURE,
+            WearableCapability.SPO2,
+            WearableCapability.HRV,
+        )
     }
 }

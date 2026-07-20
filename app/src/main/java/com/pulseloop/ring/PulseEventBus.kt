@@ -1,8 +1,13 @@
 package com.pulseloop.ring
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
 
 /**
  * Ported from [PulseEvent] in PulseEventBus.swift.
@@ -39,12 +44,22 @@ sealed class PulseEvent {
     data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()
     /** A live measurement command was refused (not worn, sensor busy, unsupported). */
     data class MeasurementRejected(val mode: Int) : PulseEvent()
-    data class BloodPressureSample(val systolic: Int, val diastolic: Int, val timestamp: java.time.Instant) : PulseEvent()
+    data class BloodPressureSample(
+        val systolic: Int,
+        val diastolic: Int,
+        val timestamp: java.time.Instant,
+        val isHistory: Boolean = false,
+    ) : PulseEvent()
+    data class BloodSugarSample(val mgdl: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class HistoryMeasurement(val kind: MeasurementKind, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class StressSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class TemperatureSample(val celsius: Double, val timestamp: java.time.Instant) : PulseEvent()
-    data class SleepTimeline(val timestamp: java.time.Instant, val stages: List<SleepStage>) : PulseEvent()
+    data class SleepTimeline(
+        val timestamp: java.time.Instant,
+        val stages: List<SleepStage>,
+        val completeSession: Boolean = false,
+    ) : PulseEvent()
     data class SyncProgress(val stage: String) : PulseEvent()
     data class FirmwareVersion(val version: Int?) : PulseEvent()
 }
@@ -60,13 +75,21 @@ enum class PacketDirection { INCOMING, OUTGOING }
 object PulseEventBus {
     private val _events = MutableSharedFlow<PulseEvent>(replay = 0, extraBufferCapacity = 256)
     val events: SharedFlow<PulseEvent> = _events.asSharedFlow()
+    private val pending = Channel<PulseEvent>(capacity = Channel.UNLIMITED)
+    private val dispatchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    init {
+        dispatchScope.launch {
+            for (event in pending) _events.emit(event)
+        }
+    }
 
     suspend fun publish(event: PulseEvent) {
-        _events.emit(event)
+        pending.send(event)
     }
 
     /** Non-suspending publish for use from non-coroutine contexts (callbacks). */
     fun publishBlocking(event: PulseEvent) {
-        _events.tryEmit(event)
+        check(pending.trySend(event).isSuccess) { "Pulse event queue is closed" }
     }
 }

@@ -62,6 +62,41 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertByIdentity(measurement: MeasurementEntity): Long
+
+    @Query("""
+        UPDATE measurements
+        SET value = :value, unit = :unit, confidenceRaw = :confidenceRaw,
+            activitySessionId = :activitySessionId, rawPacketId = :rawPacketId
+        WHERE kindRaw = :kindRaw AND timestamp = :timestamp AND sourceRaw = :sourceRaw
+    """)
+    suspend fun updateByIdentity(
+        kindRaw: String,
+        timestamp: Long,
+        sourceRaw: String,
+        value: Double,
+        unit: String,
+        confidenceRaw: String,
+        activitySessionId: String?,
+        rawPacketId: String?,
+    ): Int
+
+    @Transaction
+    suspend fun upsertByIdentity(measurement: MeasurementEntity) {
+        val updated = updateByIdentity(
+            kindRaw = measurement.kindRaw,
+            timestamp = measurement.timestamp,
+            sourceRaw = measurement.sourceRaw,
+            value = measurement.value,
+            unit = measurement.unit,
+            confidenceRaw = measurement.confidenceRaw,
+            activitySessionId = measurement.activitySessionId,
+            rawPacketId = measurement.rawPacketId,
+        )
+        if (updated == 0) insertByIdentity(measurement)
+    }
+
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
 
@@ -183,6 +218,9 @@ interface SleepSessionDao {
     @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' LIMIT 1")
     suspend fun ringByDay(day: Long): SleepSessionEntity?
 
+    @Query("SELECT * FROM sleep_sessions WHERE sourceRaw != 'demo' AND startAt < :end AND endAt > :start")
+    suspend fun ringOverlapping(start: Long, end: Long): List<SleepSessionEntity>
+
     @Query("SELECT * FROM sleep_sessions ORDER BY date DESC LIMIT :limit")
     suspend fun recent(limit: Int = 7): List<SleepSessionEntity>
 
@@ -194,6 +232,9 @@ interface SleepSessionDao {
 
     @Upsert
     suspend fun upsert(session: SleepSessionEntity)
+
+    @Query("DELETE FROM sleep_sessions WHERE id = :id")
+    suspend fun deleteById(id: String)
 
     @Query("DELETE FROM sleep_sessions")
     suspend fun clear()

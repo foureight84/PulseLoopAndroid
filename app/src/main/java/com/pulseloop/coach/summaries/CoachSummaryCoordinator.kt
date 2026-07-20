@@ -49,6 +49,7 @@ class CoachSummaryCoordinator(
             is PulseEvent.ActivityUpdate,
             is PulseEvent.HeartRateSample,
             is PulseEvent.Spo2Result,
+            is PulseEvent.BloodSugarSample,
             is PulseEvent.HistoryMeasurement -> {
                 pendingToday = true
                 scheduleRefresh()

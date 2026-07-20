@@ -1,5 +1,6 @@
 package com.pulseloop.util
 
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
@@ -21,6 +22,16 @@ object TimeUtil {
     /** Local midnight for the current day, as epoch millis. */
     fun startOfTodayLocal(zone: ZoneId = ZoneId.systemDefault()): Long =
         startOfDayLocal(System.currentTimeMillis(), zone)
+
+    /** Delay from [nowMs] until the next local midnight, accounting for 23/25-hour DST days. */
+    fun millisUntilNextLocalDay(
+        nowMs: Long = System.currentTimeMillis(),
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): Long {
+        val now = Instant.ofEpochMilli(nowMs).atZone(zone)
+        val nextDay = now.toLocalDate().plusDays(1).atStartOfDay(zone)
+        return Duration.between(now, nextDay).toMillis().coerceAtLeast(1L)
+    }
 
     /**
      * Hour-of-day boundary between "belongs to last night" and "belongs to the coming night."

@@ -23,8 +23,9 @@ object DataRepairs {
      * window are additionally self-healed by `applyActivityBucket` on the next sync. Today's
      * row is out of scope — the live cumulative total re-ratchets on the next update.
      *
-     * Sleep is repaired independently by idempotent waking-day upserts. Connection events must
-     * not clear real sleep: replacement history is asynchronous and may be empty or consumed.
+     * Complete ring sleep records independently replace their waking-day session and remove any
+     * overlapping legacy midnight-split parents. Connection events must not clear real sleep:
+     * replacement history is asynchronous and may be empty or consumed.
      */
     suspend fun runIfNeeded(context: Context, db: PulseLoopDatabase = PulseLoopDatabase.getInstance(context)) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -15,6 +15,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.UUID
 
 /**
@@ -112,7 +113,9 @@ class RingBLEClient(private val context: Context) {
     private var activeAdvertisedName: String? = null
 
     // Set while a "Forget" is waiting for the ring's UNBOND_ACK (0x4B) before teardown.
-    private var forgetPending = false
+    private val forgetLock = Any()
+    @Volatile private var forgetPending = false
+    @Volatile private var forgetFinalizing = false
     private var forgetJob: Job? = null
 
     // MARK: GATT operation serialization
@@ -433,6 +436,7 @@ class RingBLEClient(private val context: Context) {
     private fun failConnectAttempt(reason: String) {
         val gatt = bluetoothGatt
         bluetoothGatt = null
+        activeDriver?.connectionDidEnd()
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         subscriptionGate = null
         resetOpQueue()
@@ -460,6 +464,7 @@ class RingBLEClient(private val context: Context) {
         scanner?.stopScan(scanCallback)
         val gatt = bluetoothGatt
         bluetoothGatt = null
+        activeDriver?.connectionDidEnd()
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         resetOpQueue()
         if (gatt != null) {
@@ -534,12 +539,15 @@ class RingBLEClient(private val context: Context) {
         val gatt = bluetoothGatt
         if (gatt != null && writeChar != null &&
             _state.value.connectionState == RingConnectionState.CONNECTED) {
-            forgetPending = true
+            synchronized(forgetLock) {
+                forgetPending = true
+                forgetFinalizing = false
+            }
             enqueueWrite(RingEncoder.makeUnbindCommand())  // 0x4B 05 00 01
             forgetJob?.cancel()
             forgetJob = scope.launch {
                 delay(UNBIND_ACK_TIMEOUT_MS)
-                if (forgetPending) {
+                if (synchronized(forgetLock) { forgetPending && !forgetFinalizing }) {
                     Log.w("RingBLEClient", "Unbind ACK not received in ${UNBIND_ACK_TIMEOUT_MS}ms — forcing teardown")
                     finalizeForget()
                 }
@@ -551,10 +559,14 @@ class RingBLEClient(private val context: Context) {
 
     /** Tear down the link: clear the GATT cache, remove any OS bond, close the GATT. */
     private fun finalizeForget() {
-        forgetPending = false
+        synchronized(forgetLock) {
+            if (forgetFinalizing) return
+            forgetFinalizing = true
+        }
         forgetJob?.cancel(); forgetJob = null
         stopKeepalive()
         scanner?.stopScan(scanCallback)
+        activeDriver?.connectionDidEnd()
         bluetoothGatt?.let { gatt ->
             try { gatt::class.java.getMethod("refresh").invoke(gatt) } catch (_: Exception) {}
             try { gatt.device::class.java.getMethod("removeBond").invoke(gatt.device) } catch (_: Exception) {}
@@ -580,6 +592,10 @@ class RingBLEClient(private val context: Context) {
             )
         }
         PulseEventBus.publishBlocking(PulseEvent.DeviceForgotten)
+        synchronized(forgetLock) {
+            forgetPending = false
+            forgetFinalizing = false
+        }
     }
 
     fun enqueueWrite(data: ByteArray) {
@@ -923,10 +939,22 @@ class RingBLEClient(private val context: Context) {
             // characteristic that went away). Retry a couple of times after a short
             // pause before giving up — dropping outright could lose a CCCD write that
             // gates CONNECTED, or a queued factory-reset/unbind command.
-            synchronized(opLock) { if (inFlightOp === op) inFlightOp = null }
-            if (op.attempts < MAX_OP_ATTEMPTS - 1) {
-                op.attempts++
-                synchronized(opLock) { opQueue.addFirst(op) }
+            var retrying = false
+            val stillCurrent = synchronized(opLock) {
+                if (inFlightOp !== op || bluetoothGatt !== gatt) {
+                    false
+                } else {
+                    inFlightOp = null
+                    if (op.attempts < MAX_OP_ATTEMPTS - 1) {
+                        op.attempts++
+                        opQueue.addFirst(op)
+                        retrying = true
+                    }
+                    true
+                }
+            }
+            if (!stillCurrent) return
+            if (retrying) {
                 Log.w("RingBLEClient", "GATT op rejected at issue — retrying (${op.attempts}/$MAX_OP_ATTEMPTS): ${opLabel(op)}")
                 scope.launch {
                     delay(OP_RETRY_DELAY_MS)
@@ -971,14 +999,15 @@ class RingBLEClient(private val context: Context) {
     }
 
     private inline fun updateState(crossinline update: BLEState.() -> BLEState) {
-        _state.value = _state.value.update()
+        _state.update { it.update() }
     }
 
     @Synchronized
     private fun recordDiagnostic(message: String) {
         Log.i("RingBLEClient", message)
-        val current = _state.value
-        _state.value = current.copy(diagnostics = (current.diagnostics + message).takeLast(6))
+        _state.update { current ->
+            current.copy(diagnostics = (current.diagnostics + message).takeLast(6))
+        }
     }
 
     // MARK: Scan callback
@@ -1101,23 +1130,7 @@ class RingBLEClient(private val context: Context) {
             val serviceUuids = gatt.services.map { it.uuid.toString() }
             android.util.Log.i("RingBLEClient", "Services: ${serviceUuids.joinToString(", ")}")
 
-            // Store service list in a log event for export
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val db = com.pulseloop.data.PulseLoopDatabase.getInstance(context.applicationContext)
-                    val device = db.deviceDao().current()
-                    if (device != null) {
-                        // Replace (never append) the diagnostic suffix: appending once per
-                        // discovery grew the row by one "|services:…" per reconnect — a
-                        // user export showed ~98 of them.
-                        db.deviceDao().upsert(device.copy(
-                            capabilitiesRaw = device.capabilitiesRaw.substringBefore("|services:") +
-                                "|services:" + serviceUuids.joinToString(","),
-                            updatedAt = System.currentTimeMillis()
-                        ))
-                    }
-                } catch (_: Exception) {}
-            }
+            recordDiagnostic("services ${serviceUuids.joinToString(",")}")
 
             val driver = activeDriver ?: return
 
@@ -1257,31 +1270,38 @@ class RingBLEClient(private val context: Context) {
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic
         ) {
+            if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // inbound notify — link is alive
             val value = characteristic.value ?: return
             val uuid = characteristic.uuid.toString()
 
             // Standard BLE health services — read before the ring-service guard
             if (uuid.startsWith("00002a35")) {
-                // Blood Pressure Measurement — IEEE 11073 SFLOAT
-                if (value.size >= 7) {
-                    val systolic = decodeSFLOAT(value[1], value[2])
-                    val diastolic = decodeSFLOAT(value[3], value[4])
-                    PulseEventBus.publishBlocking(
-                        PulseEvent.BloodPressureSample(
-                            systolic = systolic.toInt(),
-                            diastolic = diastolic.toInt(),
-                            timestamp = java.time.Instant.now(),
+                synchronized(forgetLock) {
+                    if (forgetPending) return
+                    // Blood Pressure Measurement — IEEE 11073 SFLOAT
+                    if (value.size >= 7) {
+                        val systolic = decodeSFLOAT(value[1], value[2])
+                        val diastolic = decodeSFLOAT(value[3], value[4])
+                        PulseEventBus.publishBlocking(
+                            PulseEvent.BloodPressureSample(
+                                systolic = systolic.toInt(),
+                                diastolic = diastolic.toInt(),
+                                timestamp = java.time.Instant.now(),
+                            )
                         )
-                    )
+                    }
                 }
                 return
             }
             if (uuid.startsWith("00002a18")) {
-                // Glucose Measurement — IEEE 11073 SFLOAT in kg/L → mg/dL
-                if (value.size >= 12) {
-                    val glucoseKgL = decodeSFLOAT(value[10], value[11])
-                    PulseEventBus.publishBlocking(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_SUGAR, glucoseKgL * 100000.0, java.time.Instant.now()))
+                synchronized(forgetLock) {
+                    if (forgetPending) return
+                    // Glucose Measurement — IEEE 11073 SFLOAT in kg/L → mg/dL
+                    if (value.size >= 12) {
+                        val glucoseKgL = decodeSFLOAT(value[10], value[11])
+                        PulseEventBus.publishBlocking(PulseEvent.HistoryMeasurement(MeasurementKind.BLOOD_SUGAR, glucoseKgL * 100000.0, java.time.Instant.now()))
+                    }
                 }
                 return
             }
@@ -1289,45 +1309,55 @@ class RingBLEClient(private val context: Context) {
             val driver = activeDriver ?: return
             if (!driver.notifyUUIDs.any { it == characteristic.uuid.toString() }) return
 
-            // Raw seam: reply payloads the decoded-event stream doesn't carry
-            // (e.g. Colmi pref-read replies seeding the measurement config).
-            if (!forgetPending) activeSyncEngine?.handleRawNotify(value)
+            var shouldFinalizeForget = false
+            synchronized(forgetLock) {
+                // Raw seam: reply payloads the decoded-event stream doesn't carry
+                // (e.g. Colmi pref-read replies seeding the measurement config).
+                if (!forgetPending) activeSyncEngine?.handleRawNotify(value)
 
-            val decodedEvents = driver.ingest(value, characteristic.uuid.toString())
-            for (decoded in decodedEvents) {
-                // A forget is in flight: don't persist any more data or re-publish a
-                // "connected" device state (which would re-create the row we're clearing).
-                // Just watch for the ring's unbind ack (6 = UNBOND_ACK, 3 = ACK_CANCEL).
-                if (forgetPending) {
-                    if (decoded is RingDecodedEvent.BindNotify &&
-                        (decoded.action == 6 || decoded.action == 3)) {
-                        finalizeForget()
-                    }
-                    continue
+                val decodedEvents = driver.ingest(value, characteristic.uuid.toString())
+                if (!forgetPending) {
+                    val diagnostic = decodedEvents.firstOrNull() ?: RingDecodedEvent.Unknown(
+                        commandId = value.firstOrNull()?.toUByte() ?: 0u,
+                        raw = value,
+                    )
+                    PulseEventBus.publishBlocking(
+                        PulseEvent.RawPacket(PacketDirection.INCOMING, value, diagnostic)
+                    )
                 }
-                if (decoded is RingDecodedEvent.SupportFunctions) {
-                    activeCoordinator?.let { coordinator ->
-                        val dynamic = decoded.capabilities.intersect(coordinator.bitmapGatedCapabilities)
-                        val merged = coordinator.capabilities + dynamic
-                        updateState { copy(activeCapabilities = merged) }
-                        PulseEventBus.publishBlocking(
-                            PulseEvent.DeviceIdentified(
-                                deviceType = coordinator.deviceType,
-                                wearableModelID = _state.value.activeWearableModelID,
-                                advertisedName = activeAdvertisedName ?: connectingName,
-                                capabilities = merged,
+                for (decoded in decodedEvents) {
+                    // A forget is in flight: don't persist any more data or re-publish a
+                    // "connected" device state (which would re-create the row we're clearing).
+                    // Just watch for the ring's unbind ack (6 = UNBOND_ACK, 3 = ACK_CANCEL).
+                    if (forgetPending) {
+                        if (decoded is RingDecodedEvent.BindNotify &&
+                            (decoded.action == 6 || decoded.action == 3)) {
+                            shouldFinalizeForget = true
+                        }
+                        continue
+                    }
+                    if (decoded is RingDecodedEvent.SupportFunctions) {
+                        activeCoordinator?.let { coordinator ->
+                            val dynamic = decoded.capabilities.intersect(coordinator.bitmapGatedCapabilities)
+                            val merged = coordinator.capabilities + dynamic
+                            updateState { copy(activeCapabilities = merged) }
+                            PulseEventBus.publishBlocking(
+                                PulseEvent.DeviceIdentified(
+                                    deviceType = coordinator.deviceType,
+                                    wearableModelID = _state.value.activeWearableModelID,
+                                    advertisedName = activeAdvertisedName ?: connectingName,
+                                    capabilities = merged,
+                                )
                             )
-                        )
+                        }
                     }
+                    for (event in RingEventBridge.eventsFor(decoded)) {
+                        PulseEventBus.publishBlocking(event)
+                    }
+                    activeSyncEngine?.handle(decoded)
                 }
-                PulseEventBus.publishBlocking(
-                    PulseEvent.RawPacket(PacketDirection.INCOMING, value, decoded)
-                )
-                for (event in RingEventBridge.eventsFor(decoded)) {
-                    PulseEventBus.publishBlocking(event)
-                }
-                activeSyncEngine?.handle(decoded)
             }
+            if (shouldFinalizeForget) finalizeForget()
 
         }
 
@@ -1502,10 +1532,10 @@ class RingBLEClient(private val context: Context) {
         watchdogJob?.cancel()
         stopKeepalive()
         scanner?.stopScan(scanCallback)
+        activeDriver?.connectionDidEnd()
         // The scope is about to die, so the graceful delayed close in disconnect()
         // would never run — tear the GATT down synchronously instead.
         bluetoothGatt?.let { gatt ->
-            activeDriver?.connectionDidEnd()
             try { gatt.disconnect() } catch (_: Exception) {}
             closeGattQuietly(gatt)
         }

@@ -38,7 +38,7 @@ import com.pulseloop.data.entity.*
         CoachSummaryEntity::class,
         WearableLogEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -128,6 +128,26 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v7 → v8: make sensor history reconnect-safe and remove already duplicated rows. */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    DELETE FROM `measurements`
+                    WHERE rowid NOT IN (
+                        SELECT MIN(rowid)
+                        FROM `measurements`
+                        GROUP BY `kindRaw`, `timestamp`, `sourceRaw`
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_measurements_kindRaw_timestamp_sourceRaw` " +
+                        "ON `measurements` (`kindRaw`, `timestamp`, `sourceRaw`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -135,7 +155,14 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8,
+                    )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
                     // coach conversation on any future version bump that misses a
