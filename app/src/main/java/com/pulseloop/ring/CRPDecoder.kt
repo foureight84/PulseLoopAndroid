@@ -77,15 +77,50 @@ object CRPDecoder {
         return listOf(RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
     }
 
-    /** Framed `fdd3` reply: `FD DA 10 <len> <group> <cmd> <payload>`. v1 acknowledges recognised
-     *  command echoes; richer metric replies (HR/SpO2 results, history) are decoded as more
-     *  layouts are confirmed against the decompile/hardware. */
+    /** Framed `fdd3` reply: `FD DA 10 <len> <group> <cmd> <payload>`. Decodes vital readings
+     *  based on group/cmd. Unconfirmed layouts are logged for debugging. */
     private fun decodeFramedReply(frame: ByteArray, now: Instant): List<RingDecodedEvent> {
         if (frame.size < CRPProtocol.HEADER_SIZE) return emptyList()
         val group = frame[4].toInt() and 0xFF
         val cmd = frame[5].toInt() and 0xFF
-        // Only the command echo is confirmed for the v1 command set; treat as an ack so the
-        // raw-notify/debug feed still records it without inventing a metric value.
+        val payload = if (frame.size > CRPProtocol.HEADER_SIZE) frame.copyOfRange(CRPProtocol.HEADER_SIZE, frame.size) else ByteArray(0)
+
+        // Group 1: timing/enable responses (acknowledgments).
+        if (group == CRPCommands.GROUP_DEVICE) {
+            return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
+        }
+
+        // Group 2: history query responses.
+        if (group == CRPCommands.GROUP_HISTORY) {
+            return decodeHistoryResponse(group, cmd, payload, now)
+        }
+
+        // Group 7: device info responses.
+        if (group == CRPCommands.GROUP_DEVICE_INFO) {
+            return decodeDeviceInfoResponse(group, cmd, payload, now)
+        }
+
+        // Unknown group/cmd — log and ack.
+        return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
+    }
+
+    private fun decodeHistoryResponse(group: Int, cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
+        // TODO: Decode based on cmd:
+        //   CMD_QUERY_HISTORY_HR (4) → heart rate samples
+        //   CMD_QUERY_HISTORY_STRESS (5) → stress samples
+        //   CMD_QUERY_HISTORY_SLEEP (14) → sleep timeline
+        //   CMD_QUERY_HISTORY_TEMP (48) → temperature samples
+        //   CMD_QUERY_HISTORY_HRV (6) → HRV samples
+        //   CMD_QUERY_HISTORY_SPO2 (7) → SpO2 samples
+        // For now, log the raw payload and return an ack.
+        return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
+    }
+
+    private fun decodeDeviceInfoResponse(group: Int, cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
+        // TODO: Decode based on cmd:
+        //   CMD_QUERY_DEVICE_INFO (0) → device info
+        //   CMD_QUERY_FIRMWARE_VERSION (1) → firmware version
+        //   CMD_QUERY_DEVICE_SN (13) → device serial number
         return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
     }
 

@@ -17,11 +17,27 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     private var profile: UserProfileValues? = null
 
+    /** User-chosen all-day measurement config. Applied in the connect handshake and updatable
+     *  live via [applyMeasurementSettings]. `null` ⇒ the user has never saved one, so the engine
+     *  skips the vital enable commands (the ring's own settings are the source of truth). */
+    private var measurementSettings: MeasurementSettings? = null
+
     override fun runStartup() {
         // Set the device clock first (matches the vendor's connect handshake), then user info so
         // the ring's step/calorie algorithm has real inputs.
         send(CRPProtocol.setTime())
         profile?.let { send(userInfoFrame(it)) }
+        // Enable vital monitoring only when the user has configured it (mirrors the vendor app's
+        // connect flow). Uses the user's polling interval for all vital types — the CRP protocol
+        // takes a single interval byte per enable command, and MeasurementSettings only exposes
+        // hrIntervalMinutes (no per-vital intervals), so we share it across the board.
+        measurementSettings?.let { settings ->
+            if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
+            if (settings.hrvEnabled) send(CRPProtocol.enableTimingHRV(settings.hrIntervalMinutes))
+            if (settings.stressEnabled) send(CRPProtocol.enableTimingStress(settings.hrIntervalMinutes))
+            if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
+            if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
+        }
     }
 
     override fun handle(event: RingDecodedEvent) {
@@ -55,6 +71,25 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     override fun applyUserProfile(profile: UserProfileValues) {
         this.profile = profile
         send(userInfoFrame(profile))
+    }
+
+    override fun setMeasurementSettings(settings: MeasurementSettings?) {
+        measurementSettings = settings
+    }
+
+    override fun applyMeasurementSettings(settings: MeasurementSettings) {
+        measurementSettings = settings
+        // Re-send vital enable commands with the updated settings.
+        if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingHeartRate())
+        if (settings.hrvEnabled) send(CRPProtocol.enableTimingHRV(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingHRV())
+        if (settings.stressEnabled) send(CRPProtocol.enableTimingStress(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingStress())
+        if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingSpO2())
+        if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
+        else send(CRPProtocol.disableTimingTemp())
     }
 
     override fun resyncTime() { send(CRPProtocol.setTime()) }

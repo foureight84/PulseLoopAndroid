@@ -54,6 +54,33 @@ object CRPCommands {
     const val CMD_MEASURE_HR = 9        // b1/t.d: [enable] — start(1)/stop(0) continuous HR
     const val CMD_MEASURE_SPO2 = 11     // b1/h.d: [enable] — start(1)/stop(0) SpO2
 
+    // Group 1 — timing/enable controls (decompiled b1 package).
+    const val CMD_ENABLE_TIMING_HR = 7        // b1/t.a: group1/cmd7
+    const val CMD_DISABLE_TIMING_HR = 8       // b1/t.b: group1/cmd8
+    const val CMD_ENABLE_TIMING_HRV = 9       // b1/u.a: group1/cmd9
+    const val CMD_DISABLE_TIMING_HRV = 10     // b1/u.b: group1/cmd10
+    const val CMD_ENABLE_TIMING_SPO2 = 11     // b1/h.a: group1/cmd11
+    const val CMD_DISABLE_TIMING_SPO2 = 12    // b1/h.b: group1/cmd12
+    const val CMD_ENABLE_TIMING_STRESS = 13   // b1/h0.a: group1/cmd13
+    const val CMD_DISABLE_TIMING_STRESS = 14  // b1/h0.b: group1/cmd14
+    const val CMD_ENABLE_TIMING_TEMP = 15     // b1/i0.a: group1/cmd15
+    const val CMD_DISABLE_TIMING_TEMP = 16    // b1/i0.b: group1/cmd16
+
+    // Group 2 — history queries (decompiled b1/e0).
+    const val GROUP_HISTORY = 2
+    const val CMD_QUERY_HISTORY_HR = 4        // b1/e0.a: group2/cmd4
+    const val CMD_QUERY_HISTORY_STRESS = 5    // b1/e0.b: group2/cmd5
+    const val CMD_QUERY_HISTORY_SLEEP = 14    // b1/e0.c: group2/cmd14 (CRPHistoryDay)
+    const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: group2/cmd48
+    const val CMD_QUERY_HISTORY_HRV = 6       // b1/e0.e: group2/cmd6
+    const val CMD_QUERY_HISTORY_SPO2 = 7      // b1/e0.f: group2/cmd7
+
+    // Group 7 — device info / support.
+    const val GROUP_DEVICE_INFO = 7
+    const val CMD_QUERY_DEVICE_INFO = 0       // b1/r.a: group7/cmd0
+    const val CMD_QUERY_FIRMWARE_VERSION = 1  // b1/r.b: group7/cmd1
+    const val CMD_QUERY_DEVICE_SN = 13        // b1/r.c: group7/cmd13
+
     // Group 3 — power control.
     const val GROUP_POWER = 3
     const val CMD_FACTORY_RESET = 0     // b1/l.v: q.b(3,0)
@@ -140,4 +167,69 @@ object CRPProtocol {
         frame(CRPCommands.GROUP_ACTION, CRPCommands.CMD_FIND_DEVICE, byteArrayOf(if (enable) 1 else 0))
 
     fun factoryReset(): ByteArray = frame(CRPCommands.GROUP_POWER, CRPCommands.CMD_FACTORY_RESET)
+
+    // ---- Timing/enable commands (group 1) ----
+    // The vendor app always sends an interval byte when enabling vital timing. We default to 5
+    // minutes (common for Colmi/Moyoung rings) — verify against hardware and adjust if needed.
+
+    fun enableTimingHeartRate(intervalMinutes: Int = 5): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_HR, byteArrayOf(intervalMinutes.toByte()))
+
+    fun disableTimingHeartRate(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_HR)
+
+    fun enableTimingHRV(intervalMinutes: Int = 5): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_HRV, byteArrayOf(intervalMinutes.toByte()))
+
+    fun disableTimingHRV(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_HRV)
+
+    fun enableTimingSpO2(intervalMinutes: Int = 5): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_SPO2, byteArrayOf(intervalMinutes.toByte()))
+
+    fun disableTimingSpO2(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_SPO2)
+
+    fun enableTimingStress(intervalMinutes: Int = 5): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_STRESS, byteArrayOf(intervalMinutes.toByte()))
+
+    fun disableTimingStress(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_STRESS)
+
+    fun enableTimingTemp(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_TEMP)
+
+    fun disableTimingTemp(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_TEMP)
+
+    // ---- History query commands (group 2) ----
+
+    fun queryHistoryHeartRate(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_HR)
+
+    fun queryHistoryStress(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_STRESS)
+
+    fun queryHistorySleep(daysAgo: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(daysAgo.toByte()))
+
+    fun queryHistoryTemp(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_TEMP)
+
+    fun queryHistoryHRV(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_HRV)
+
+    fun queryHistorySpO2(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SPO2)
+
+    // ---- Device info queries (group 7) ----
+
+    fun queryDeviceInfo(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_DEVICE_INFO)
+
+    fun queryFirmwareVersion(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_FIRMWARE_VERSION)
+
+    fun queryDeviceSN(): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_DEVICE_SN)
 }
