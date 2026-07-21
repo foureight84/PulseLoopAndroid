@@ -70,5 +70,10 @@ enum class RingDeviceType(val displayName: String) {
     COLMI_SMART_HEALTH("Colmi / Yawell ring (SmartHealth)"),
     // LuckRing / TK18 family (the "K6" vendor SDK, company ID 0xFF64). Sold under simsonlab and
     // other brands; TK18 is the hardware-tested unit. See LuckRingCoordinator.
-    LUCK_RING("LuckRing");
+    LUCK_RING("LuckRing"),
+    // CRP ("crrepa"/CRPsmart) family — the proprietary `fdda`-profile rings whose official app is
+    // Moyoung "Da Rings" (com.moyoung.ring). Notably the CRP-firmware Colmi R11: it advertises the
+    // generic "SMART_RING" name with no service UUID, so it's classified JRING at scan and only
+    // reveals its `fdda` service post-connect (issue #29, zaggash's ring). See CRPCoordinator.
+    CRP("Colmi / Moyoung ring (CRP)");
 }

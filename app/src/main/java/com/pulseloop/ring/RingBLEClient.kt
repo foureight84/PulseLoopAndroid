@@ -47,6 +47,10 @@ class RingBLEClient(private val context: Context) {
         ColmiSmartHealthCoordinator,
         LuckRingCoordinator,
         TK5Coordinator,
+        // CRP matches only its family-exclusive `fdda` service (or an explicit CRP carousel pick),
+        // so its position is not load-bearing. Like the CRP R11, it's usually reached by the
+        // post-connect re-route below rather than by a scan match.
+        CRPCoordinator,
     )
 
     // MARK: Observable state
@@ -1135,6 +1139,38 @@ class RingBLEClient(private val context: Context) {
                     selectedModelID = _state.value.activeWearableModelID,
                     family = RingDeviceType.COLMI_R02,
                 )?.id ?: com.pulseloop.wearables.WearableModel.COLMI_R02.id
+                updateState { copy(activeWearableModelID = remodel) }
+            }
+
+            // Post-connect re-route (issue #29), CRP-firmware sibling of the Colmi case above: the
+            // *other* "SMART_RING" R11 firmware exposes a proprietary `fdda` profile (Moyoung
+            // "Da Rings" app), not the Colmi UART — so the Colmi check above misses it and it stays
+            // on the wrong driver, whose characteristics don't exist on this ring, and the connect
+            // hangs (zaggash's ring). The `fdda` service is only visible post-connect.
+            //
+            // A CRP ring exposes `fdda` and NOT the Colmi UART, so that pair is an unambiguous CRP
+            // signature — re-route to the CRP coordinator whenever we see it under either of the two
+            // "SMART_RING"-ambiguous drivers: the JRING fallback (user tapped the device) *or* the
+            // Colmi driver (user explicitly picked a Colmi-family R11 in the carousel, which
+            // honorSelection would have routed to Colmi). YCBT/TK5/LuckRing are left untouched, and
+            // a real Colmi-UART ring is excluded by the `!hasColmiService` guard. Unlike the Colmi
+            // R11, the CRP ring connects GATT-only (the vendor app performs no bond in its connect
+            // path), so no OS bond is triggered here.
+            val hasCrpService = gatt.services.any {
+                it.uuid.toString().equals(CRPUUIDs.SERVICE, ignoreCase = true)
+            }
+            val crpReroutable = activeCoordinator?.deviceType.let {
+                it == RingDeviceType.JRING || it == RingDeviceType.COLMI_R02
+            }
+            if (hasCrpService && !hasColmiService && crpReroutable) {
+                Log.i("RingBLEClient", "Discovered CRP (fdda) service under the " +
+                    "${activeCoordinator?.deviceType} driver — re-routing to the CRP driver")
+                installDriver(CRPCoordinator)
+                val remodel = com.pulseloop.wearables.WearableModel.resolve(
+                    advertisedName = activeAdvertisedName,
+                    selectedModelID = _state.value.activeWearableModelID,
+                    family = RingDeviceType.CRP,
+                )?.id ?: com.pulseloop.wearables.WearableModel.COLMI_R11_CRP.id
                 updateState { copy(activeWearableModelID = remodel) }
             }
 
