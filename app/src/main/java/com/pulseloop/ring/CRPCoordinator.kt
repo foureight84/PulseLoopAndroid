@@ -27,16 +27,19 @@ object CRPCoordinator : WearableCoordinator {
     }
 
     /**
-     * v1 baseline — only capabilities backed by a decode path confirmed from the decompile:
-     * current-steps push (`fdd1`), the standard HR stream (`2a37`) with its start/stop command,
-     * the standard battery read, plus find-device and factory-reset commands. Sleep / SpO2 / HRV /
-     * stress / temperature and history sync are deferred until their CRP reply layouts are
-     * confirmed against hardware — deliberately not promised here so the product UI hides them.
+     * Real-time vital capabilities backed by decoded group-1 replies (`g1/a.java` lines 664–712):
+     * HR (cmd 9), HRV (cmd 10), SpO2 (cmd 11), stress (cmd 14), temperature (cmd 32).
+     * History sync and sleep are still deferred — their group-7 reply layouts aren't confirmed
+     * against hardware yet. Steps push (`fdd1`), battery (`2a19`), find-device and factory-reset
+     * also confirmed. Note: HR does NOT use the standard `2a37` characteristic on CRP rings —
+     * all vital results come back as framed replies on `fdd3` group 1.
      */
     override val capabilities = setOf(
         WearableCapability.STEPS, WearableCapability.REALTIME_STEPS,
         WearableCapability.HEART_RATE, WearableCapability.REALTIME_HEART_RATE,
         WearableCapability.MANUAL_HEART_RATE,
+        WearableCapability.SPO2, WearableCapability.STRESS, WearableCapability.HRV,
+        WearableCapability.TEMPERATURE,
         WearableCapability.BATTERY,
         WearableCapability.FIND_DEVICE, WearableCapability.FACTORY_RESET,
     )

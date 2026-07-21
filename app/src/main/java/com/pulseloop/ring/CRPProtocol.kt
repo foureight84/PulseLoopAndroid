@@ -55,31 +55,26 @@ object CRPCommands {
     const val CMD_MEASURE_SPO2 = 11     // b1/h.d: [enable] — start(1)/stop(0) SpO2
 
     // Group 1 — timing/enable controls (decompiled b1 package).
-    const val CMD_ENABLE_TIMING_HR = 7        // b1/t.a: group1/cmd7
-    const val CMD_DISABLE_TIMING_HR = 8       // b1/t.b: group1/cmd8
-    const val CMD_ENABLE_TIMING_HRV = 9       // b1/u.a: group1/cmd9
-    const val CMD_DISABLE_TIMING_HRV = 10     // b1/u.b: group1/cmd10
-    const val CMD_ENABLE_TIMING_SPO2 = 11     // b1/h.a: group1/cmd11
-    const val CMD_DISABLE_TIMING_SPO2 = 12    // b1/h.b: group1/cmd12
-    const val CMD_ENABLE_TIMING_STRESS = 13   // b1/h0.a: group1/cmd13
-    const val CMD_DISABLE_TIMING_STRESS = 14  // b1/h0.b: group1/cmd14
-    const val CMD_ENABLE_TIMING_TEMP = 15     // b1/i0.a: group1/cmd15
-    const val CMD_DISABLE_TIMING_TEMP = 16    // b1/i0.b: group1/cmd16
+    // Disable: HR/HRV/SpO2/Stress use enable with interval=0. Temp uses a separate cmd.
+    const val CMD_ENABLE_TIMING_HR = 6        // b1/t.c: q.c(1,6, [interval])
+    const val CMD_ENABLE_TIMING_HRV = 7       // b1/u.c: q.c(1,7, [interval])
+    const val CMD_ENABLE_TIMING_SPO2 = 8      // b1/h.c: q.c(1,8, [interval])
+    const val CMD_ENABLE_TIMING_STRESS = 39   // b1/h0.c: q.c(1,39, [interval])
+    const val CMD_ENABLE_TIMING_TEMP = 13     // b1/i0.c: q.c(1,13, [true])
+    const val CMD_DISABLE_TIMING_TEMP = 32    // b1/i0.d: q.c(1,32, [false]) — vendor uses this for temp disable
 
-    // Group 2 — history queries (decompiled b1/e0).
-    const val GROUP_HISTORY = 2
-    const val CMD_QUERY_HISTORY_HR = 4        // b1/e0.a: group2/cmd4
-    const val CMD_QUERY_HISTORY_STRESS = 5    // b1/e0.b: group2/cmd5
-    const val CMD_QUERY_HISTORY_SLEEP = 14    // b1/e0.c: group2/cmd14 (CRPHistoryDay)
-    const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: group2/cmd48
-    const val CMD_QUERY_HISTORY_HRV = 6       // b1/e0.e: group2/cmd6
-    const val CMD_QUERY_HISTORY_SPO2 = 7      // b1/e0.f: group2/cmd7
-
-    // Group 7 — device info / support.
+    // Group 7 — history queries + device info (decompiled b1/e0 + b1/r).
+    // NOTE: History queries are group 7, NOT group 2 (the b1/e0 builders use q.b(7,…) and q.c(7,…)).
     const val GROUP_DEVICE_INFO = 7
-    const val CMD_QUERY_DEVICE_INFO = 0       // b1/r.a: group7/cmd0
-    const val CMD_QUERY_FIRMWARE_VERSION = 1  // b1/r.b: group7/cmd1
-    const val CMD_QUERY_DEVICE_SN = 13        // b1/r.c: group7/cmd13
+    const val CMD_QUERY_DEVICE_INFO = 0       // b1/r.a: q.b(7,0)
+    const val CMD_QUERY_FIRMWARE_VERSION = 1  // b1/r.b: q.b(7,1)
+    const val CMD_QUERY_DEVICE_SN = 13        // b1/r.c: q.b(7,13)
+    const val CMD_QUERY_HISTORY_HR = 4        // b1/e0.a: q.b(7,4)
+    const val CMD_QUERY_HISTORY_STRESS = 5    // b1/e0.b: q.c(7,5, [interval])
+    const val CMD_QUERY_HISTORY_HRV = 6       // b1/e0.e: q.c(7,6, [interval])
+    const val CMD_QUERY_HISTORY_SPO2 = 7      // b1/e0.f: q.b(7,7)
+    const val CMD_QUERY_HISTORY_SLEEP = 14    // b1/e0.c: q.c(2,14, [CRPHistoryDay])
+    const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: q.b(7,48)
 
     // Group 3 — power control.
     const val GROUP_POWER = 3
@@ -169,32 +164,33 @@ object CRPProtocol {
     fun factoryReset(): ByteArray = frame(CRPCommands.GROUP_POWER, CRPCommands.CMD_FACTORY_RESET)
 
     // ---- Timing/enable commands (group 1) ----
-    // The vendor app always sends an interval byte when enabling vital timing. We default to 5
-    // minutes (common for Colmi/Moyoung rings) — verify against hardware and adjust if needed.
+    // HR/HRV/SpO2/Stress disable by sending enable with interval=0 (per d1/b.java disable* methods).
+    // Temp disable uses a separate cmd (32) with [false] (per b1/i0.d and d1/b.java disableTimingTemp).
+    // The vendor app always sends an interval byte when enabling vital timing.
 
-    fun enableTimingHeartRate(intervalMinutes: Int = 5): ByteArray =
+    fun enableTimingHeartRate(intervalMinutes: Int): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_HR, byteArrayOf(intervalMinutes.toByte()))
 
     fun disableTimingHeartRate(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_HR)
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_HR, byteArrayOf(0))
 
-    fun enableTimingHRV(intervalMinutes: Int = 5): ByteArray =
+    fun enableTimingHRV(intervalMinutes: Int): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_HRV, byteArrayOf(intervalMinutes.toByte()))
 
     fun disableTimingHRV(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_HRV)
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_HRV, byteArrayOf(0))
 
-    fun enableTimingSpO2(intervalMinutes: Int = 5): ByteArray =
+    fun enableTimingSpO2(intervalMinutes: Int): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_SPO2, byteArrayOf(intervalMinutes.toByte()))
 
     fun disableTimingSpO2(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_SPO2)
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_SPO2, byteArrayOf(0))
 
-    fun enableTimingStress(intervalMinutes: Int = 5): ByteArray =
+    fun enableTimingStress(intervalMinutes: Int): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_STRESS, byteArrayOf(intervalMinutes.toByte()))
 
     fun disableTimingStress(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_STRESS)
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_STRESS, byteArrayOf(0))
 
     fun enableTimingTemp(): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_TEMP)

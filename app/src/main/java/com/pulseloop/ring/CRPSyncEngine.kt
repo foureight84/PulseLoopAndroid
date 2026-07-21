@@ -26,6 +26,8 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // Set the device clock first (matches the vendor's connect handshake), then user info so
         // the ring's step/calorie algorithm has real inputs.
         send(CRPProtocol.setTime())
+        // Query firmware version so the UI doesn't show "Firmware: reading" (zaggash's report).
+        send(CRPProtocol.queryFirmwareVersion())
         profile?.let { send(userInfoFrame(it)) }
         // Enable vital monitoring only when the user has configured it (mirrors the vendor app's
         // connect flow). Uses the user's polling interval for all vital types — the CRP protocol
@@ -79,7 +81,7 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     override fun applyMeasurementSettings(settings: MeasurementSettings) {
         measurementSettings = settings
-        // Re-send vital enable commands with the updated settings.
+        // Re-send vital enable/disable commands with the updated settings.
         if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
         else send(CRPProtocol.disableTimingHeartRate())
         if (settings.hrvEnabled) send(CRPProtocol.enableTimingHRV(settings.hrIntervalMinutes))
