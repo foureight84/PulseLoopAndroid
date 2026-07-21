@@ -64,6 +64,21 @@ class PairingMatchingTest {
     }
 
     @Test
+    fun `jring does not claim SMART_RING when the device also advertises a colmi service (issue 29)`() {
+        // Some Colmi/Yawell R11 units advertise the generic factory name "SMART_RING" while
+        // still exposing Colmi's own GATT service UUIDs. JringCoordinator must defer to
+        // ColmiCoordinator for those instead of claiming the device by name alone.
+        val colmiV1 = AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V1), null)
+        val colmiV2 = AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V2), null)
+        assertFalse(JringCoordinator.matches("SMART_RING", colmiV1))
+        assertFalse(JringCoordinator.matches("SMART_RING", colmiV2))
+        assertTrue(ColmiCoordinator.matches("SMART_RING", colmiV1))
+        assertTrue(ColmiCoordinator.matches("SMART_RING", colmiV2))
+        // A genuine Jring device (no Colmi service present) is unaffected.
+        assertTrue(JringCoordinator.matches("SMART_RING", noAdv))
+    }
+
+    @Test
     fun `catalog families all have a registered coordinator`() {
         val registeredTypes = setOf(
             JringCoordinator.deviceType, ColmiCoordinator.deviceType,

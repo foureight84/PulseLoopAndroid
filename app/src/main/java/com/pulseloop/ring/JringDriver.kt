@@ -12,7 +12,13 @@ object JringCoordinator : WearableCoordinator {
     private const val MANUFACTURER_HEX_NEEDLE = "41422ec75b6a"
 
     override fun matches(name: String?, advertisement: AdvertisementInfo): Boolean {
-        if (name == ADVERTISED_NAME) return true
+        // "SMART_RING" isn't exclusive to real Jring hardware — some Colmi/Yawell R11 units
+        // (issue #29) advertise this same generic factory name while still exposing Colmi's own
+        // GATT service UUIDs. Don't let the bare name win over a device that already identifies
+        // itself as Colmi/Yawell via service UUID; ColmiCoordinator gets first claim on those.
+        val advertisesColmiService = advertisement.serviceUUIDs.contains(ColmiUUIDs.SERVICE_V1) ||
+            advertisement.serviceUUIDs.contains(ColmiUUIDs.SERVICE_V2)
+        if (name == ADVERTISED_NAME && !advertisesColmiService) return true
         if (advertisement.serviceUUIDs.contains(RingUUIDs.SERVICE)) return true
         advertisement.manufacturerData?.let { mfg ->
             if (mfg.toHexString().contains(MANUFACTURER_HEX_NEEDLE)) return true
