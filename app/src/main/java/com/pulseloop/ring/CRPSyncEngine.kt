@@ -39,6 +39,25 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
             if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
             if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
         }
+        // Pull the day's stored all-day timeline. runStartup() IS the poll pass (RingSyncWorker's
+        // ~30-min background sync and the foreground syncNow() both re-invoke it), so this runs at
+        // the app's configured polling cadence; the ring samples at hrIntervalMinutes (above).
+        // The ring only emits history replies once asked — so this also produces the group-7/2
+        // reply frames in a diagnostic capture, which is what we need to finish decoding them.
+        // NOTE: the replies are currently acknowledged, not yet parsed into samples
+        // (CRPDecoder.decodeHistoryOrDeviceInfoResponse is a TODO pending that capture).
+        queryAllHistory()
+    }
+
+    /** Request the stored all-day timelines the ring has accumulated (group 7 for HR/stress/HRV/
+     *  SpO2, group 2 for sleep/temp). Vendor `u3/g1.java` fires the same set on its sync pass. */
+    private fun queryAllHistory() {
+        send(CRPProtocol.queryHistoryHeartRate())
+        send(CRPProtocol.queryHistorySpO2())
+        send(CRPProtocol.queryHistoryHRV())
+        send(CRPProtocol.queryHistoryStress())
+        send(CRPProtocol.queryHistoryTemp())
+        send(CRPProtocol.queryHistorySleep())
     }
 
     override fun handle(event: RingDecodedEvent) {
