@@ -1,5 +1,6 @@
 package com.pulseloop.service
 
+import androidx.room.withTransaction
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
@@ -398,18 +399,26 @@ class EventPersistenceSubscriber(
      * change signal: Room's reactive Flows (SleepViewModel observes `recentFlow`) already refresh
      * the UI on any sleep-table write, and sleep is cleared + rebuilt from the ring on every connect
      * anyway — there is no unchanged-day re-sync to optimize away.
+     *
+     * Wrapped in one transaction: the body below deletes every existing row's blocks up front, then
+     * re-upserts sessions and re-inserts blocks per segment one write at a time. Without a
+     * transaction, each per-segment session upsert fires `recentFlow` mid-reconcile, and
+     * SleepViewModel re-reads blocks for a session that's only partially rewritten — the sleep
+     * architecture chart transiently renders with just the first few (chronologically-earliest)
+     * blocks before the rest land. `db.withTransaction` defers the Flow's invalidation until commit,
+     * so observers only ever see the fully-reconciled state (matches DemoDataSeeder's usage).
      */
     private suspend fun reconcileWakingDay(
         dayStart: Long,
         existing: List<SleepSessionEntity>,
         dayBlocks: List<SleepStageBlockEntity>,
-    ) {
+    ) = db.withTransaction {
         val groups = SleepSegmentation.segment(dayBlocks)
 
         // No blocks left on this day — drop the empty rows entirely (their blocks cascade).
         if (groups.isEmpty()) {
             existing.forEach { db.sleepSessionDao().deleteById(it.id) }
-            return
+            return@withTransaction
         }
 
         data class Segment(val blocks: List<SleepStageBlockEntity>, val start: Long, val end: Long)
