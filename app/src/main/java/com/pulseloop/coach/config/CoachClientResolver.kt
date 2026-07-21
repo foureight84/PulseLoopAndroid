@@ -1,6 +1,7 @@
 package com.pulseloop.coach.config
 
 import com.pulseloop.coach.gemini.GeminiClient
+import com.pulseloop.coach.minimax.MiniMaxClient
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.openai.ResponsesClient
 import com.pulseloop.coach.openrouter.OpenRouterClient
@@ -28,6 +29,7 @@ object CoachClientResolver {
         openAIKey: String?,
         geminiKey: String?,
         openRouterKey: String?,
+        minimaxKey: String? = null,
         openAIClientFactory: (String) -> ResponsesClient = { OpenAIResponsesClient(it) },
     ): Resolution = when (settings.providerMode) {
         CoachProviderMode.USER_GEMINI_KEY -> {
@@ -41,6 +43,10 @@ object CoachClientResolver {
                 model = settings.resolvedOpenRouterModel,
                 privacyRouting = settings.orPrivacyRouting,
                 providerSort = settings.orProviderSort))
+        }
+        CoachProviderMode.USER_MINIMAX_KEY -> {
+            val key = minimaxKey?.takeIf { it.isNotBlank() }
+            Resolution(key, MiniMaxClient(apiKey = key ?: "", model = settings.resolvedMinimaxModel))
         }
         else -> {
             // USER_OPENAI_KEY / OFFLINE_STUB / BACKEND_PROXY all use the OpenAI
@@ -60,6 +66,7 @@ object CoachClientResolver {
         openAIKey = apiKeyStore.apiKey,
         geminiKey = store.geminiApiKey,
         openRouterKey = store.openRouterApiKey,
+        minimaxKey = store.minimaxApiKey,
         openAIClientFactory = openAIClientFactory,
     )
 
@@ -93,6 +100,7 @@ object CoachClientResolver {
         when (settings.providerMode) {
             CoachProviderMode.USER_GEMINI_KEY -> settings.geminiModel
             CoachProviderMode.USER_OPENROUTER_KEY -> settings.resolvedOpenRouterModel
+            CoachProviderMode.USER_MINIMAX_KEY -> settings.resolvedMinimaxModel
             else -> openAIModel.ifEmpty { OpenAIModel.DEFAULT.slug }
         }
 }

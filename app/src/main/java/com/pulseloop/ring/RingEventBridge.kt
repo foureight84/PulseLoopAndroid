@@ -41,6 +41,11 @@ object RingEventBridge {
 
         is RingDecodedEvent.HistoryMeasurement -> {
             if (!isPlausibleHistoryMeasurement(decoded.kind_field, decoded.value)) emptyList()
+            // A ring's on-device log can still hold records stamped under a previous clock — e.g.
+            // a jring that logged against a UTC RTC before the app started setting it to local
+            // time. Those decode hours into the future. Drop anything outside the history horizon
+            // rather than persisting a sample that poisons "today", peak HR and the 24h trends.
+            else if (!isWithinHistoryWindow(decoded._timestamp, now)) emptyList()
             else listOf(PulseEvent.HistoryMeasurement(decoded.kind_field, decoded.value, decoded._timestamp))
         }
 
@@ -66,7 +71,7 @@ object RingEventBridge {
             listOf(PulseEvent.SyncProgress("done"))
 
         is RingDecodedEvent.SleepTimeline -> {
-            if (!isPlausibleSleepStart(decoded._timestamp, now) || decoded.stages.isEmpty()) emptyList()
+            if (!isWithinHistoryWindow(decoded._timestamp, now) || decoded.stages.isEmpty()) emptyList()
             else listOf(PulseEvent.SleepTimeline(decoded._timestamp, decoded.stages, decoded.completeSession))
         }
 
@@ -96,7 +101,7 @@ object RingEventBridge {
         is RingDecodedEvent.MeasurementRejected ->
             listOf(PulseEvent.MeasurementRejected(decoded.mode))
 
-
+        is RingDecodedEvent.BandFunction,
         is RingDecodedEvent.WearingStatus,
         is RingDecodedEvent.SupportFunctions,
         is RingDecodedEvent.ChipScheme ->
@@ -137,9 +142,11 @@ object RingEventBridge {
         }
     }
 
-    private fun isPlausibleSleepStart(start: Instant, now: Instant): Boolean {
+    /** Shared plausibility window: within the last ~8 days (the history horizon) and no more
+     *  than an hour into the future. A timestamp outside it indicates a misdecoded frame. */
+    private fun isWithinHistoryWindow(date: Instant, now: Instant): Boolean {
         val lower = now.minus(8, ChronoUnit.DAYS)
         val upper = now.plus(1, ChronoUnit.HOURS)
-        return !start.isBefore(lower) && !start.isAfter(upper)
+        return !date.isBefore(lower) && !date.isAfter(upper)
     }
 }

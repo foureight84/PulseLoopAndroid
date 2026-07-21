@@ -8,8 +8,16 @@ import java.time.Instant
  * All byte offsets and decoding logic match the official app's SXR KeepFit SDK
  * as documented in Gadgetbridge's [KeepFitDeviceSupport.java].
  * Multi-byte integers are little-endian.
+ *
+ * [clock] is the offset the ring's RTC was set to. Ring-stamped history timestamps are local
+ * wall-clock epochs and must have it subtracted off; `null` (the debug/legacy-test path)
+ * subtracts 0. One instance is shared per connection with [JringSyncEngine] — see [JringClock].
  */
-object RingDecoder {
+class RingDecoder(private val clock: JringClock? = null) {
+
+    /** Convert a ring-stamped epoch (local wall-clock seconds) into a true [Instant]. */
+    private fun ringDate(rawEpochSeconds: Long): Instant =
+        clock?.date(rawEpochSeconds) ?: Instant.ofEpochSecond(rawEpochSeconds)
 
     fun decode(data: ByteArray): List<RingDecodedEvent> {
         return try {
@@ -43,6 +51,7 @@ object RingDecoder {
             0x11 -> listOf(decodeSleepTimeline(bytes))
             0x14 -> listOf(decodeLiveHeartRate(bytes, now))
             0x16 -> decodeHeartRateHistory(bytes)  // multi-packet protocol
+            0x20 -> listOf(decodeBandFunction(bytes))
             0x24 -> decodeCombinedSensor(bytes, now)  // 5 metrics in one packet
             0x27 -> listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
             0x28 -> listOf(RingDecodedEvent.Spo2Complete(_timestamp = now))
@@ -58,7 +67,7 @@ object RingDecoder {
     private fun decodeActivity(bytes: ByteArray): RingDecodedEvent {
         if (bytes.size < 17) return unknown(0x03, bytes)
         return RingDecodedEvent.ActivityUpdate(
-            _timestamp = Instant.ofEpochSecond(u32le(bytes, 1).toLong()),
+            _timestamp = ringDate(u32le(bytes, 1).toLong()),
             steps = u32le(bytes, 5).toInt(),
             distanceMeters = u32le(bytes, 9).toInt(),
             calories = u32le(bytes, 13).toInt(),
@@ -118,7 +127,7 @@ object RingDecoder {
     private fun decodeSleepTimeline(bytes: ByteArray): RingDecodedEvent {
         if (bytes.size < 20) return unknown(0x11, bytes)
         return RingDecodedEvent.SleepTimeline(
-            _timestamp = Instant.ofEpochSecond(u32le(bytes, 1).toLong()),
+            _timestamp = ringDate(u32le(bytes, 1).toLong()),
             stages = bytes.slice(5..19).map { SleepStage.fromByte(it.toUByte()) }
         )
     }
@@ -164,7 +173,7 @@ object RingDecoder {
             else -> {
                 // Legacy fallback: try to extract a single HR value
                 if (bytes.size >= 9) {
-                    val ts = Instant.ofEpochSecond(u32le(bytes, 2).toLong())
+                    val ts = ringDate(u32le(bytes, 2).toLong())
                     val v = bytes.drop(8).firstOrNull { it != 0.toByte() }
                     if (v != null) listOf(RingDecodedEvent.HistoryMeasurement(
                         kind_field = MeasurementKind.HEART_RATE,
@@ -182,7 +191,7 @@ object RingDecoder {
      */
     private fun decodeHrDataBlock(bytes: ByteArray): List<RingDecodedEvent> {
         if (bytes.size < 20) return listOf(unknown(0x16, bytes))
-        val baseTimestamp = Instant.ofEpochSecond(u32le(bytes, 2).toLong())
+        val baseTimestamp = ringDate(u32le(bytes, 2).toLong())
 
         return buildList {
             // First 6 samples → 1 averaged HR at baseTimestamp
@@ -300,10 +309,17 @@ object RingDecoder {
     private fun decodeTimeSync(bytes: ByteArray): RingDecodedEvent {
         if (bytes.size >= 6) {
             return RingDecodedEvent.TimeSyncAck(
-                _timestamp = Instant.ofEpochSecond(u32le(bytes, 1).toLong())
+                _timestamp = ringDate(u32le(bytes, 1).toLong())
             )
         }
         return unknown(0x01, bytes)
+    }
+
+    // ── 0x20: Capability Bitmask ─────────────────────────────────────────
+
+    private fun decodeBandFunction(bytes: ByteArray): RingDecodedEvent {
+        if (bytes.size < 2) return unknown(0x20, bytes)
+        return RingDecodedEvent.BandFunction(JringBandCapabilities(bytes.copyOfRange(1, bytes.size)))
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

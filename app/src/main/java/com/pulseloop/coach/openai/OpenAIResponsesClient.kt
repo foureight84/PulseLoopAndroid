@@ -198,10 +198,12 @@ object OpenAIRequestBuilder {
  * Ported from [OpenAIResponse] in ResponsesTypes.swift.
  * Parsed from the Responses API JSON.
  */
-@Serializable
 data class OpenAIResponse(
     val id: String = "",
     val output: List<ResponseOutputItem> = emptyList(),
+    /** Token usage for this call, when the provider reports it. `null` for turns
+     *  that omit the usage block. */
+    val usage: com.pulseloop.coach.usage.CoachTokenUsage? = null,
 ) {
     /** The final assistant message text. */
     val outputText: String
@@ -217,13 +219,70 @@ data class OpenAIResponse(
         get() = output.filterIsInstance<WebSearchCall>().map { it.id }
 
     companion object {
+        /**
+         * Parses the raw Responses API JSON by hand (matching iOS's manual
+         * `[String: Any]` walk in `OpenAIResponse.parse`), NOT via automatic
+         * kotlinx.serialization decode. `output` is a heterogeneous array keyed
+         * by a `"type"` discriminator ("message" / "function_call" /
+         * "web_search_call" / others like "reasoning" for reasoning-effort
+         * models) — that shape needs a sealed+`@Serializable` interface with
+         * matching `@SerialName`s to auto-decode, which this codebase never had
+         * (`ResponseOutputItem` was a bare marker interface), so any real
+         * response with non-empty `output` threw "Serializer for subclass
+         * '<type>' is not found in the polymorphic scope". Manual parsing also
+         * lets unrecognized item types be skipped instead of failing the whole
+         * turn.
+         */
         fun parse(json: String): OpenAIResponse {
             return try {
-                kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-                    .decodeFromString<OpenAIResponse>(json)
+                val root = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                    .parseToJsonElement(json).jsonObject
+                val id = root["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                val output = (root["output"] as? JsonArray)
+                    ?.mapNotNull { (it as? JsonObject)?.let(::parseOutputItem) }
+                    ?: emptyList()
+                OpenAIResponse(id = id, output = output, usage = parseUsage(root["usage"] as? JsonObject))
             } catch (e: Exception) {
                 throw ResponsesError.Decoding(e.message ?: "unknown")
             }
+        }
+
+        private fun parseOutputItem(item: JsonObject): ResponseOutputItem? =
+            when ((item["type"] as? JsonPrimitive)?.contentOrNull) {
+                "message" -> MessageOutput(
+                    role = (item["role"] as? JsonPrimitive)?.contentOrNull ?: "assistant",
+                    content = (item["content"] as? JsonArray)?.mapNotNull { c ->
+                        val obj = c as? JsonObject ?: return@mapNotNull null
+                        if ((obj["type"] as? JsonPrimitive)?.contentOrNull == "output_text") {
+                            TextContent((obj["text"] as? JsonPrimitive)?.contentOrNull ?: "")
+                        } else null
+                    } ?: emptyList(),
+                )
+                "function_call" -> FunctionCallOutput(
+                    id = (item["id"] as? JsonPrimitive)?.contentOrNull ?: "",
+                    callId = (item["call_id"] as? JsonPrimitive)?.contentOrNull ?: "",
+                    name = (item["name"] as? JsonPrimitive)?.contentOrNull ?: "",
+                    arguments = (item["arguments"] as? JsonPrimitive)?.contentOrNull ?: "",
+                    status = (item["status"] as? JsonPrimitive)?.contentOrNull ?: "",
+                )
+                "web_search_call" -> WebSearchCall(id = (item["id"] as? JsonPrimitive)?.contentOrNull ?: "")
+                // "reasoning" and any future item types carry nothing this app
+                // reads — skip rather than fail the turn.
+                else -> null
+            }
+
+        /** Reads the Responses-API `usage` block: `input_tokens` / `output_tokens`,
+         *  with cached input under `input_tokens_details.cached_tokens`. Returns
+         *  `null` when the block is absent so callers keep their default. */
+        private fun parseUsage(usage: JsonObject?): com.pulseloop.coach.usage.CoachTokenUsage? {
+            if (usage == null) return null
+            val cached = (usage["input_tokens_details"] as? JsonObject)
+                ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
+            return com.pulseloop.coach.usage.CoachTokenUsage(
+                inputTokens = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                outputTokens = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                cachedInputTokens = cached,
+            )
         }
     }
 }

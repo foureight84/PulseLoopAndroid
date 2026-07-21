@@ -39,7 +39,10 @@ enum class WearableCapability(val key: String) {
     // Configurable all-day measurement: the device exposes a settable HR sampling interval and
     // per-vital monitoring toggles (Colmi `0x16` + prefs). The generic jring has no such control,
     // so it never declares this and the Measurement settings section stays hidden for it.
-    MEASUREMENT_INTERVAL("measurementInterval");
+    MEASUREMENT_INTERVAL("measurementInterval"),
+
+    // YCBT history-only metric.
+    VO2MAX("vo2max");
 
     companion object {
         fun fromCsv(csv: String): Set<WearableCapability> =
@@ -59,6 +62,18 @@ enum class RingDeviceType(val displayName: String) {
     // One protocol family covering the whole Colmi/Yawell line — the exact model comes from
     // WearableModel (iOS #49), so the family label stays honest about the ambiguity.
     COLMI_R02("Colmi / Yawell ring"),
-    // Yucheng YCBT protocol family (SmartHealth app): TK5, R10M, and other SmartHealth-branded rings.
+    // Both speak the Yucheng YCBT protocol (see YCBTProtocol.kt) via the shared YCBTDriver —
+    // two families only because they need distinct advertisement-matching + capability sets.
+    TK5("TK5"),
+    COLMI_SMART_HEALTH("Colmi / Yawell ring (SmartHealth)"),
+    // LuckRing / TK18 family (the "K6" vendor SDK, company ID 0xFF64). Sold under simsonlab and
+    // other brands; TK18 is the hardware-tested unit. See LuckRingCoordinator.
+    LUCK_RING("LuckRing"),
+    // CRP ("crrepa"/CRPsmart) family — the proprietary `fdda`-profile rings whose official app is
+    // Moyoung "Da Rings" (com.moyoung.ring). Notably the CRP-firmware Colmi R11: it advertises the
+    // generic "SMART_RING" name with no service UUID, so it's classified JRING at scan and only
+    // reveals its `fdda` service post-connect (issue #29, zaggash's ring). See CRPCoordinator.
+    CRP("Colmi / Moyoung ring (CRP)"),
+    // Hardware-validated SmartHealth R10M path, kept separate from the broader YCBT families.
     YCBT("YCBT / SmartHealth ring");
 }

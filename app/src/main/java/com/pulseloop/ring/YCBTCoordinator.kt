@@ -63,7 +63,13 @@ object YCBTCoordinator : WearableCoordinator {
     override val iconSystemName = "circle.circle.fill"
 
     override fun makeDriver(writer: RingCommandWriter): WearableDriver {
-        return YCBTDriver(writer)
+        return YCBTDriver(
+            writer,
+            YCBTFamilyProfile(
+                baselineCapabilities = capabilities,
+                bitmapGatedCapabilities = bitmapGatedCapabilities,
+            ),
+        )
     }
 }
 

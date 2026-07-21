@@ -8,19 +8,24 @@ package com.pulseloop.ring
 class YCBTSyncEngine(
     private var writer: RingCommandWriter?,
     private val transfer: YCBTHistoryTransfer,
+    private val profile: YCBTFamilyProfile = YCBTFamilyProfile(
+        baselineCapabilities = YCBTCoordinator.capabilities,
+        bitmapGatedCapabilities = YCBTCoordinator.bitmapGatedCapabilities,
+    ),
 ) : RingSyncEngine {
     private val encoder = YCBTEncoder()
 
     private var measurementSettings = MeasurementSettings.ALL_ON_DEFAULT
     private var userProfile = UserProfileValues(metric = true, gender = 0x02u, age = 25u, heightCm = 175u, weightKg = 70u)
     private var requestActivityAfterStartupHistory = false
-    private var historyCapabilities = YCBTCoordinator.capabilities
+    private var historyCapabilities = profile.baselineCapabilities
 
     companion object {
         private val HISTORY_TYPES: List<YCBTHistoryType> = listOf(
             YCBTHistoryType.SPORT, YCBTHistoryType.SLEEP, YCBTHistoryType.HEART,
             YCBTHistoryType.BLOOD, YCBTHistoryType.ALL,
-            YCBTHistoryType.TEMPERATURE, YCBTHistoryType.COMPREHENSIVE, YCBTHistoryType.BODY_DATA,
+            YCBTHistoryType.SPO2, YCBTHistoryType.TEMPERATURE,
+            YCBTHistoryType.COMPREHENSIVE, YCBTHistoryType.BODY_DATA,
         )
         private val VITALS_TYPES: List<YCBTHistoryType> = listOf(YCBTHistoryType.HEART, YCBTHistoryType.ALL)
     }
@@ -32,6 +37,8 @@ class YCBTSyncEngine(
             measurement = measurementSettings,
             profile = userProfile,
             capabilities = historyCapabilities,
+            queryChipScheme = profile.queryChipSchemeAtStartup,
+            supportsBloodPressureMonitor = profile.supportsBloodPressureMonitor,
         )) {
             writer?.enqueue(command)
         }
@@ -43,9 +50,13 @@ class YCBTSyncEngine(
         if (event is RingDecodedEvent.SupportFunctions) {
             val previousTypes = supportedHistoryTypes(HISTORY_TYPES).toSet()
             val previousCapabilities = historyCapabilities
-            historyCapabilities = YCBTCoordinator.capabilities +
-                event.capabilities.intersect(YCBTCoordinator.bitmapGatedCapabilities)
-            for (command in encoder.monitorCommands(measurementSettings, historyCapabilities - previousCapabilities)) {
+            historyCapabilities = profile.baselineCapabilities +
+                event.capabilities.intersect(profile.bitmapGatedCapabilities)
+            for (command in encoder.monitorCommands(
+                measurementSettings,
+                historyCapabilities - previousCapabilities,
+                profile.supportsBloodPressureMonitor,
+            )) {
                 writer?.enqueue(command)
             }
             val addedCapabilities = historyCapabilities - previousCapabilities
@@ -109,7 +120,8 @@ class YCBTSyncEngine(
                 YCBTHistoryType.TEMPERATURE -> WearableCapability.TEMPERATURE in historyCapabilities
                 YCBTHistoryType.COMPREHENSIVE -> WearableCapability.BLOOD_SUGAR in historyCapabilities
                 YCBTHistoryType.BODY_DATA ->
-                    WearableCapability.STRESS in historyCapabilities ||
+                    WearableCapability.HRV in historyCapabilities ||
+                        WearableCapability.STRESS in historyCapabilities ||
                         WearableCapability.FATIGUE in historyCapabilities
                 else -> false
             }
@@ -121,7 +133,11 @@ class YCBTSyncEngine(
 
     override fun applyMeasurementSettings(settings: MeasurementSettings) {
         measurementSettings = settings
-        for (command in encoder.monitorCommands(settings, historyCapabilities)) {
+        for (command in encoder.monitorCommands(
+            settings,
+            historyCapabilities,
+            profile.supportsBloodPressureMonitor,
+        )) {
             writer?.enqueue(command)
         }
     }
@@ -177,8 +193,12 @@ class YCBTSyncEngine(
 
     override fun powerOff() {}
     override fun factoryReset() {}
-    override fun startCombinedMeasurement() {}
-    override fun stopCombinedMeasurement() {}
+    override fun startCombinedMeasurement() = startBloodPressure()
+    override fun stopCombinedMeasurement() = stopBloodPressure()
+
+    override fun resyncTime() {
+        writer?.enqueue(encoder.setTime())
+    }
     override fun setUserInfo(ageYears: Int, isMale: Boolean, heightCm: Int, weightKg: Int) {}
     override fun setBloodPressureAdjust(systolic: Int, diastolic: Int) {}
     override fun setAppId(appId: String) {}

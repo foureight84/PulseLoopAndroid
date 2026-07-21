@@ -123,17 +123,20 @@ class YCBTEncoder {
         languageCode: Int = 0,
         is24Hour: Boolean = true,
         capabilities: Set<WearableCapability> = YCBTCoordinator.capabilities,
+        queryChipScheme: Boolean = false,
+        supportsBloodPressureMonitor: Boolean = false,
     ): List<ByteArray> {
         val seq = mutableListOf<ByteArray>()
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, byteArrayOf(0x47, 0x43)))
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_SUPPORT_FUNCTION, byteArrayOf(0x47, 0x46)))
-        // Do not query GetChipScheme (02 1B) during startup. The TK5 accepts it, but the
-        // R10M closes an otherwise healthy connection with HCI 0x13 immediately on receipt.
-        // Chip-scheme metadata is informational and no Android feature depends on it.
+        // R10M closes an otherwise healthy connection with HCI 0x13 on this informational query.
+        if (queryChipScheme) {
+            seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_CHIP_SCHEME, byteArrayOf()))
+        }
         seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_USER_CONFIG, byteArrayOf(0x43, 0x46)))
         seq.add(settings.language(languageCode))
         seq.add(settings.units(metric = profile.metric, is24Hour = is24Hour))
-        seq.addAll(monitorCommands(measurement, capabilities))
+        seq.addAll(monitorCommands(measurement, capabilities, supportsBloodPressureMonitor))
         seq.add(settings.userInfo(profile))
         seq.add(enableLiveStatus())
         return seq
@@ -146,9 +149,12 @@ class YCBTEncoder {
     fun monitorCommands(
         measurement: MeasurementSettings,
         capabilities: Set<WearableCapability> = YCBTCoordinator.capabilities,
+        supportsBloodPressureMonitor: Boolean = false,
     ): List<ByteArray> = settings.monitorCommands(measurement).filter { command ->
         when (command[1].toInt() and 0xFF) {
             YCBTSettingKey.HEART_MONITOR -> WearableCapability.HEART_RATE in capabilities
+            YCBTSettingKey.BLOOD_PRESSURE_MONITOR ->
+                supportsBloodPressureMonitor && WearableCapability.BLOOD_PRESSURE in capabilities
             YCBTSettingKey.TEMPERATURE_MONITOR -> WearableCapability.TEMPERATURE in capabilities
             YCBTSettingKey.BLOOD_OXYGEN_MONITOR -> WearableCapability.SPO2 in capabilities
             YCBTSettingKey.HRV_MONITOR -> WearableCapability.HRV in capabilities

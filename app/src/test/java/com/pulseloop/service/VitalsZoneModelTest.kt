@@ -75,6 +75,41 @@ class VitalsZoneModelTest {
         assertEquals(BiologicalSex.UNSPECIFIED, BiologicalSex.fromProfileSex(null))
     }
 
+    @Test
+    fun fromProfileDefaultsPhysiologyToNoAdjustment() {
+        // Existing callers pass only age/sex — the physiology refinements (iOS #35) must default off.
+        val p = UserPhysiologyProfile.fromProfile(age = 30, sex = "male")
+        assertFalse(p.athleteMode)
+        assertNull(p.altitudeMeters)
+        assertFalse(p.usesBetaBlockers)
+        assertFalse(p.hasKnownLungCondition)
+        assertEquals(GlucoseUnit.MGDL, p.preferredGlucoseUnit)
+    }
+
+    @Test
+    fun fromProfilePassesThroughPhysiologyInputs() {
+        val p = UserPhysiologyProfile.fromProfile(
+            age = 40, sex = "female",
+            athleteMode = true,
+            altitudeMeters = 2500.0,
+            usesBetaBlockers = true,
+            hasKnownLungCondition = true,
+            preferredGlucoseUnit = GlucoseUnit.MMOL,
+        )
+        assertTrue(p.athleteMode)
+        assertEquals(2500.0, p.altitudeMeters!!, 1e-9)
+        assertTrue(p.usesBetaBlockers)
+        assertTrue(p.hasKnownLungCondition)
+        assertEquals(GlucoseUnit.MMOL, p.preferredGlucoseUnit)
+    }
+
+    @Test
+    fun glucoseUnitConvertsFromMgdl() {
+        // mg/dL is identity; mmol/L = mg/dL ÷ 18.0182 (iOS #43 §3).
+        assertEquals(99.0, GlucoseUnit.MGDL.fromMgdl(99.0), 1e-9)
+        assertEquals(5.494, GlucoseUnit.MMOL.fromMgdl(99.0), 1e-3)
+    }
+
     // ── BaselineStats ────────────────────────────────────────────────────
 
     private fun samples(values: List<Double>, stepMs: Long = 3_600_000L): List<VitalSample> =

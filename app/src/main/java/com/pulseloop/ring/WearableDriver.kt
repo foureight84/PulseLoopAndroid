@@ -182,6 +182,11 @@ interface RingSyncEngine {
      *  [android.bluetooth.BluetoothDevice.createBond] call. No-op if unsupported. */
     fun setOnBondRequested(callback: () -> Unit) {}
 
+    /** Re-push the device clock after the phone's timezone or wall clock changes. Only rings
+     *  whose firmware keys behaviour off their own RTC need this (jring's sleep detection and
+     *  day-indexed history do). Default no-op. */
+    fun resyncTime() {}
+
     /** Store the user's profile *without* sending — the connect handshake sends it. No-op if unsupported. */
     fun setUserProfile(profile: UserProfileValues) {}
 
@@ -213,8 +218,19 @@ data class AdvertisementInfo(
  */
 interface WearableCoordinator {
     val deviceType: RingDeviceType
+    /** The floor: what every unit of this family does. An unconditional promise — see
+     *  [bitmapGatedCapabilities] for capabilities a *specific* unit may or may not have. */
     val capabilities: Set<WearableCapability>
-    /** Capabilities that are advertised statically but must be confirmed from a device bitmap. */
+    /**
+     * Per-SKU capabilities offered only if the connected unit's own reported bitmap claims them
+     * (YCBT `02 01` SupportFunction; see `YCBTSupportFunction`). Empty for families with no such
+     * bitmap (jring, QRing-Colmi) — their [capabilities] set is the whole story.
+     *
+     * Refinement is **additive-only**: [RingBLEClient] unions this (intersected with what the
+     * device actually reports) into [capabilities] once connected. The device's own reply can
+     * only ever *add* a capability the family already offers as gate-able, never take one away
+     * from [capabilities].
+     */
     val bitmapGatedCapabilities: Set<WearableCapability> get() = emptySet()
     val iconSystemName: String
     val displayName: String get() = deviceType.displayName

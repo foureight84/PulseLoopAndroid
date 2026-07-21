@@ -5,7 +5,20 @@ package com.pulseloop.ring
  * YCBT driver. Owns the length-prefixed CRC16 framing and the split-channel topology.
  */
 
-class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
+data class YCBTFamilyProfile(
+    val baselineCapabilities: Set<WearableCapability>,
+    val bitmapGatedCapabilities: Set<WearableCapability>,
+    val queryChipSchemeAtStartup: Boolean = false,
+    val supportsBloodPressureMonitor: Boolean = false,
+)
+
+class YCBTDriver(
+    private val writer: RingCommandWriter,
+    private val profile: YCBTFamilyProfile = YCBTFamilyProfile(
+        baselineCapabilities = YCBTCoordinator.capabilities,
+        bitmapGatedCapabilities = YCBTCoordinator.bitmapGatedCapabilities,
+    ),
+) : WearableDriver {
     private val decoder = YCBTDecoder()
     private val encoder = YCBTEncoder()
     private val assembler = YCBTFrameAssembler()
@@ -15,7 +28,7 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
         onOutOfBandEvents = ::handleOutOfBandEvents,
     )
     private val pendingMeasurementReplies = PendingMeasurementReplies()
-    private var capabilities = YCBTCoordinator.capabilities
+    private var capabilities = profile.baselineCapabilities
 
     override val serviceUUIDs = listOf(YCBTUUIDs.SERVICE)
     override val writeUUID = YCBTUUIDs.COMMAND
@@ -53,14 +66,14 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
         assembler.reset()
         transfer.cancel()
         pendingMeasurementReplies.clear()
-        capabilities = YCBTCoordinator.capabilities
+        capabilities = profile.baselineCapabilities
     }
 
     override fun connectionDidEnd() {
         assembler.reset()
         transfer.cancel()
         pendingMeasurementReplies.clear()
-        capabilities = YCBTCoordinator.capabilities
+        capabilities = profile.baselineCapabilities
     }
 
     override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> {
@@ -106,13 +119,13 @@ class YCBTDriver(private val writer: RingCommandWriter) : WearableDriver {
     }
 
     override fun makeSyncEngine(): RingSyncEngine {
-        return YCBTSyncEngine(writer = writer, transfer = transfer).also { syncEngine = it }
+        return YCBTSyncEngine(writer = writer, transfer = transfer, profile = profile).also { syncEngine = it }
     }
 
     private fun updateCapabilities(events: List<RingDecodedEvent>) {
         val support = events.filterIsInstance<RingDecodedEvent.SupportFunctions>().lastOrNull() ?: return
-        capabilities = YCBTCoordinator.capabilities +
-            support.capabilities.intersect(YCBTCoordinator.bitmapGatedCapabilities)
+        capabilities = profile.baselineCapabilities +
+            support.capabilities.intersect(profile.bitmapGatedCapabilities)
     }
 
     private fun isSupported(event: RingDecodedEvent): Boolean = when (event) {

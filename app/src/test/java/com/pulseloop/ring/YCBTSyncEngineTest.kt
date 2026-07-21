@@ -135,7 +135,7 @@ class YCBTSyncEngineTest {
     }
 
     @Test
-    fun `late optional capability requeues the combined history source`() {
+    fun `late HRV capability requeues body data and combined history sources`() {
         val writer = FakeWriter()
         val transfer = YCBTHistoryTransfer(writer)
         val engine = YCBTSyncEngine(writer, transfer)
@@ -146,7 +146,7 @@ class YCBTSyncEngineTest {
 
         engine.handle(RingDecodedEvent.SupportFunctions(setOf(WearableCapability.HRV)))
 
-        assertEquals(listOf(0x09), drainNoData(writer, transfer))
+        assertEquals(listOf(0x33, 0x09), drainNoData(writer, transfer))
     }
 
     @Test

@@ -26,6 +26,10 @@ data class DeviceEntity(
     val lastConnectedAt: Long? = null,
     val lastDisconnectedAt: Long? = null,
     val lastSyncAt: Long? = null,
+    /** Stamped only when a history sync actually completes (`SyncProgress("done")`) — unlike
+     *  [lastSyncAt], which the ring re-stamps on every bare CONNECT before any data streams.
+     *  The coach-notification freshness gate reads this one (iOS #61c). */
+    val lastFullSyncAt: Long? = null,
     val firmwareVersion: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
@@ -101,6 +105,23 @@ data class ActivityBucketEntity(
     val distanceMeters: Double = 0.0,
     val source: String = "ring_history",
     val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * Ported from [BatterySample] in PulseModels.swift (iOS #61b). A throttled log of the ring's
+ * battery level over time, feeding the Wearable-settings drainage chart. Written by
+ * [com.pulseloop.service.EventPersistenceSubscriber] on change or a 30-min floor — not every
+ * `BatteryLevel` event, so the table stays a few dozen rows/day.
+ */
+@Entity(
+    tableName = "battery_samples",
+    indices = [Index("timestamp")],
+)
+data class BatterySampleEntity(
+    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
+    val percent: Int,
+    val timestamp: Long,            // epoch millis
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 /**

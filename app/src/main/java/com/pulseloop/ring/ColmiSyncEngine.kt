@@ -526,6 +526,12 @@ class ColmiSyncEngine(
         stage = Stage.DONE
         watchdogJob?.cancel()
         watchdogJob = null
+        // iOS publishes `.syncProgress("done")` here — it is the ONLY signal that stamps
+        // `DeviceEntity.lastFullSyncAt`, and without it every freshness consumer silently
+        // degrades for Colmi rings: the coach check-in skip gate and done-wait (#61c), the
+        // >12h staleness warning, the morning sleep-sync gate (#65f), the summary
+        // coordinator's sync recheck, and the post-workout vitals reconcile (#57e).
+        PulseEventBus.publishBlocking(PulseEvent.SyncProgress("done"))
     }
 
     // MARK: Measurement actions

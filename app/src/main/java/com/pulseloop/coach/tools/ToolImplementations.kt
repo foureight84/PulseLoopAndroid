@@ -769,22 +769,31 @@ object ActionTools {
         val notes = params["notes"]?.jsonPrimitive?.content ?: ""
         val startTime = params["start_time"]?.jsonPrimitive?.contentOrNull
 
-        val startTs = startTime?.let { CoachDataAccess.parseLocalDate(it) }
+        val now = System.currentTimeMillis()
+        var startTs = startTime?.let { CoachDataAccess.parseLocalDate(it) }
             ?: CoachDataAccess.parseLocalDate(date)?.plus(12 * 3600_000L)
-            ?: System.currentTimeMillis()
-        val endTs = startTs + (durMin * 60_000).toLong()
+            ?: now
+        // The same-day noon default can land in the future (logging "today" in the morning) and
+        // ManualActivityService rejects future-ending sessions; pull an unspecified start back so
+        // the session ends by now (mirrors ActionTools.swift's createActivitySession).
+        if (startTime == null && startTs + (durMin * 60_000).toLong() > now) {
+            startTs = now - (durMin * 60_000).toLong()
+        }
 
-        val session = com.pulseloop.data.entity.ActivitySessionEntity(
-            type = activityType,
-            statusRaw = "finished",
-            startedAt = startTs,
-            endedAt = endTs,
-            distanceMeters = distKm?.times(1000),
-            notes = notes.ifEmpty { null },
-            useGps = false,
-        )
-        kotlinx.coroutines.runBlocking {
-            db.activitySessionDao().upsert(session)
+        val session = try {
+            kotlinx.coroutines.runBlocking {
+                com.pulseloop.service.ManualActivityService.create(
+                    db = db,
+                    type = activityType,
+                    startedAt = startTs,
+                    durationMinutes = durMin,
+                    distanceMeters = distKm?.times(1000),
+                    notes = notes,
+                    now = now,
+                )
+            }
+        } catch (e: com.pulseloop.service.ManualActivityError) {
+            return@CoachToolDef ToolResult("""{"error":"${e.message}"}""", isError = true)
         }
         ToolResult("""{"ok":true,"created":true,"activity_id":"${session.id}","type":"$activityType","duration_min":$durMin}""")
     }
@@ -834,8 +843,9 @@ object ActionTools {
         val isToday = session.startedAt >= todayStart
 
         if (isToday) {
-            val updated = com.pulseloop.coach.orchestration.PendingActionExecutor.applyUpdates(updates, session)
-            kotlinx.coroutines.runBlocking { db.activitySessionDao().upsert(updated) }
+            kotlinx.coroutines.runBlocking {
+                com.pulseloop.coach.orchestration.PendingActionExecutor.applyUpdates(db, updates, session)
+            }
             ToolResult("""{"ok":true,"updated":true,"activity_id":"$activityId"}""")
         } else {
             ctx.pendingActions.add(com.pulseloop.coach.orchestration.PendingAction(

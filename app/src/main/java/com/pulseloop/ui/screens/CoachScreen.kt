@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -87,7 +88,7 @@ fun CoachScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(state.messages.size) { idx ->
-                MessageBubble(state.messages[idx])
+                MessageBubble(state.messages[idx], viewModel)
             }
             if (state.isThinking) {
                 item {
@@ -130,7 +131,7 @@ fun CoachScreen(
  * chat then scrolls under it.
  */
 @Composable
-fun CoachHeader(onNewChat: () -> Unit) {
+fun CoachHeader(onNewChat: () -> Unit, onOpenUsage: (() -> Unit)? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -157,6 +158,19 @@ fun CoachHeader(onNewChat: () -> Unit) {
             Text("PulseLoop Coach", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
             Text("Using your latest ring sync", fontSize = 12.sp, color = PulseColors.textMuted)
         }
+        if (onOpenUsage != null) {
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(PulseColors.card)
+                    .border(1.dp, PulseColors.borderSubtle, CircleShape)
+                    .clickable(onClick = onOpenUsage),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Info, "Usage & cost", tint = PulseColors.textSecondary, modifier = Modifier.size(16.dp))
+            }
+        }
         Box(
             Modifier
                 .size(36.dp)
@@ -174,7 +188,7 @@ fun CoachHeader(onNewChat: () -> Unit) {
 // ─────────────────────────── Bubbles ───────────────────────────
 
 @Composable
-private fun MessageBubble(msg: CoachViewModel.ChatMessage) {
+private fun MessageBubble(msg: CoachViewModel.ChatMessage, viewModel: CoachViewModel?) {
     val isUser = msg.role == "user"
     val ctx = LocalContext.current
     Column(
@@ -218,6 +232,11 @@ private fun MessageBubble(msg: CoachViewModel.ChatMessage) {
                     msg.isError -> Text(msg.text, fontSize = 14.sp, lineHeight = 20.sp, color = errorColor)
                     else -> MarkdownLite(msg.text)
                 }
+            }
+        }
+        if (!isUser && msg.id != null) {
+            Box(Modifier.widthIn(max = 360.dp).padding(top = 4.dp, start = 4.dp, end = 4.dp)) {
+                com.pulseloop.coach.schema.CoachToolTraceDisclosure(msg.id, viewModel)
             }
         }
     }

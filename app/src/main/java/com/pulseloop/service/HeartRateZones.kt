@@ -43,30 +43,3 @@ object HeartRateZones {
         return sorted[idx]
     }
 }
-
-/**
- * Ported from haversine distance in LiveWorkoutManager.swift.
- */
-object DistanceUtils {
-    private const val R = 6_371_000.0  // Earth radius in meters
-
-    fun haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val p1 = lat1 * Math.PI / 180; val p2 = lat2 * Math.PI / 180
-        val dPhi = (lat2 - lat1) * Math.PI / 180
-        val dLambda = (lon2 - lon1) * Math.PI / 180
-        val h = Math.sin(dPhi / 2).let { it * it } +
-            Math.cos(p1) * Math.cos(p2) * Math.sin(dLambda / 2).let { it * it }
-        return 2 * R * Math.asin(minOf(1.0, Math.sqrt(h)))
-    }
-
-    fun paceSecondsPerKm(distanceMeters: Double, durationSeconds: Int): Double? {
-        if (distanceMeters < 50 || durationSeconds <= 0) return null
-        return durationSeconds.toDouble() / (distanceMeters / 1000.0)
-    }
-
-    /** Cumulative distance from a list of (lat, lon) points. */
-    fun totalDistance(points: List<Pair<Double, Double>>): Double {
-        if (points.size < 2) return 0.0
-        return points.zipWithNext().sumOf { (a, b) -> haversine(a.first, a.second, b.first, b.second) }
-    }
-}

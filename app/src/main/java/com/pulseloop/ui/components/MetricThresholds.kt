@@ -44,6 +44,7 @@ object MetricThresholdTable {
         MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> bloodPressure
         MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> bloodPressure
         MeasurementKind.BLOOD_SUGAR -> bloodSugar
+        // YCBT history-only fields (respiratory rate / VO2max) have no dedicated zone chart yet.
         MeasurementKind.RESPIRATORY_RATE, MeasurementKind.VO2MAX -> null
     }
 

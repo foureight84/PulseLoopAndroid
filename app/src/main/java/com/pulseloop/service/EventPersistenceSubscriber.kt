@@ -22,6 +22,13 @@ class EventPersistenceSubscriber(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
+    // Battery-history throttle (iOS #61b) — in-memory, so the first reading after each (re)launch
+    // always records; a change or a 30-min floor logs a fresh row otherwise, keeping the table to a
+    // few dozen rows/day instead of one per BLE battery read.
+    private var lastBatteryPercent: Int? = null
+    private var lastBatteryLogAt: Long? = null
+    private val batteryMinIntervalMs = 30 * 60_000L
+
     fun start() {
         if (job != null) return
         job = scope.launch {
@@ -102,6 +109,7 @@ class EventPersistenceSubscriber(
                     // 0x0C device-info already gives the complete "<CID><DID>V<version>" string.
                     firmwareVersion = event.firmware ?: device.firmwareVersion,
                     lastConnectedAt = if (state == "CONNECTED") System.currentTimeMillis() else device.lastConnectedAt,
+                    lastSyncAt = if (state == "CONNECTED") System.currentTimeMillis() else device.lastSyncAt,
                     updatedAt = System.currentTimeMillis(),
                 ))
             }
@@ -130,10 +138,12 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.BatteryLevel -> {
                 val device = db.deviceDao().currentReal() ?: DeviceEntity()
+                val now = System.currentTimeMillis()
                 db.deviceDao().upsert(device.copy(
                     batteryPercent = event.percent,
-                    updatedAt = System.currentTimeMillis(),
+                    updatedAt = now,
                 ))
+                recordBatterySample(event.percent, now)
             }
             is PulseEvent.HeartRateSample -> {
                 db.measurementDao().insert(MeasurementEntity(
@@ -234,7 +244,18 @@ class EventPersistenceSubscriber(
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
             }
-            is PulseEvent.SyncProgress -> {} // UI feedback, no persistence needed
+            is PulseEvent.SyncProgress -> {
+                // Only "done" (a history sync actually completed) stamps lastFullSyncAt — the
+                // coach-notification freshness gate (iOS #61c). Bare CONNECT already re-stamps
+                // the looser lastSyncAt elsewhere and must not touch this one.
+                if (event.stage == "done") {
+                    val device = db.deviceDao().currentReal()
+                    if (device != null) {
+                        db.deviceDao().upsert(device.copy(lastFullSyncAt = System.currentTimeMillis()))
+                    }
+                    reconcileRecentlyFinishedWorkouts()
+                }
+            }
             is PulseEvent.HeartRateComplete -> {}
             is PulseEvent.Spo2Complete -> {}
             is PulseEvent.MeasurementRejected -> {} // Product orchestration only; no persistence.
@@ -259,6 +280,33 @@ class EventPersistenceSubscriber(
                 // 0xF6 is never needed here. Kept as a decoded event purely for diagnostics.
             }
         }
+    }
+
+    /**
+     * Post-workout vitals backfill (iOS #57e): a ring's own HR/SpO2 log often only reaches the
+     * phone on the *next* sync — a reconnect right after finishing, or a delayed history flush —
+     * so a session can finish before its window's ring-log samples have landed. Every completed
+     * sync re-derives aggregates for sessions that finished within [ActivityAggregates.backfillWindowMillis],
+     * picking up whatever now sits in `[startedAt, endedAt]`. [ActivityAggregates.recompute] never
+     * touches [ActivityRollup] (minutes/distance credited once at finish), so re-running it here is
+     * idempotent and safe to call on every sync, not just the first one after finish.
+     */
+    private suspend fun reconcileRecentlyFinishedWorkouts() {
+        val cutoff = System.currentTimeMillis() - ActivityAggregates.backfillWindowMillis
+        for (session in db.activitySessionDao().finishedSince(cutoff)) {
+            db.activitySessionDao().upsert(ActivityAggregates.recompute(db, session))
+        }
+    }
+
+    /** Throttled battery-history write (iOS #61b): only on change or a 30-min floor. */
+    private suspend fun recordBatterySample(percent: Int, now: Long) {
+        if (percent !in 0..100) return
+        val changed = percent != lastBatteryPercent
+        val elapsed = lastBatteryLogAt?.let { now - it } ?: Long.MAX_VALUE
+        if (!changed && elapsed < batteryMinIntervalMs) return
+        lastBatteryPercent = percent
+        lastBatteryLogAt = now
+        db.batterySampleDao().insert(BatterySampleEntity(percent = percent, timestamp = now))
     }
 
     private suspend fun upsertActivityDaily(ts: Long, steps: Int, calories: Double, distanceM: Double) {
@@ -342,64 +390,134 @@ class EventPersistenceSubscriber(
         // split into two sessions at midnight. Matches the iOS reference
         // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
         val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
-        val sessionId = "sleep-$dayStart"
-        val existingSession = db.sleepSessionDao().ringByDay(dayStart)
-        if (completeSession && existingSession != null && !shouldReplaceCompleteSleep(
-                existingStart = existingSession.startAt,
-                existingMinutes = existingSession.totalMinutes,
-                incomingStart = ts,
-                incomingMinutes = stages.size,
-            )) return
-
         val packetEnd = ts + stages.size * 60_000L
-        val replacements = buildStageBlocks(sessionId, ts, stages)
-        val merged = if (completeSession) {
-            // YCBT sends an authoritative whole-session record. Remove legacy midnight-split
-            // parents that overlap it, then replace every block so shortened revisions cannot
-            // retain a stale tail.
-            for (legacy in db.sleepSessionDao().ringOverlapping(ts, packetEnd)) {
-                if (legacy.id != sessionId) {
-                    db.sleepStageBlockDao().deleteBySession(legacy.id)
-                    db.sleepSessionDao().deleteById(legacy.id)
-                }
-            }
-            replacements
-        } else {
-            // Other families stream a night as packets. Replace only the packet interval while
-            // preserving and splitting unaffected portions of existing stage runs.
-            replaceOverlappingSleepBlocks(
-                existing = db.sleepStageBlockDao().forSession(sessionId),
-                replacements = replacements,
-                replacementStart = ts,
-                replacementEnd = packetEnd,
-            )
-        }
-        val sessionStart = merged.first().startAt
-        val sessionEnd = merged.maxOf { it.startAt + it.durationMinutes * 60_000L }
-        if (sessionEnd - sessionStart > MAX_SLEEP_TIMELINE_MINUTES * 60_000L) return
-        val totalMin = ((sessionEnd - sessionStart) / 60_000L).toInt().coerceAtLeast(0)
-        val deepMin = merged.filter { it.stageRaw == SleepStage.DEEP.name }.sumOf { it.durationMinutes }
-        val score = computeSleepScore(deepMin, totalMin)
+        // Include legacy rows keyed to the wrong day if they overlap this packet. Reconciliation
+        // re-points their surviving blocks to the correct waking day.
+        val overlapping = db.sleepSessionDao().ringOverlapping(ts, packetEnd)
+        val existing = (db.sleepSessionDao().ringAllByDay(dayStart) + overlapping).distinctBy { it.id }
+        val existingBlocks =
+            if (existing.isEmpty()) emptyList()
+            else db.sleepStageBlockDao().forSessions(existing.map { it.id })
 
-        // Upsert the parent session BEFORE its stage blocks. sleep_stage_blocks has a foreign key
-        // to sleep_sessions(id), so a newly discovered night needs its parent first.
-        val existing = existingSession
-        db.sleepSessionDao().upsert(
-            (existing ?: SleepSessionEntity(id = sessionId, date = dayStart, startAt = sessionStart, endAt = sessionEnd, totalMinutes = totalMin, score = score)).copy(
-                startAt = sessionStart,
-                endAt = sessionEnd,
-                totalMinutes = totalMin,
-                score = score,
-                syncedAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis(),
-            )
+        // YCBT complete records are authoritative for their interval, including shortened
+        // revisions. Packet-based families replace only the packet interval. In both cases the
+        // unaffected blocks remain available for SleepSegmentation to preserve separate naps.
+        val replacements = buildStageBlocks("", ts, stages)
+        val dayBlocks = replaceOverlappingSleepBlocks(
+            existing = if (completeSession) {
+                val replacedSessionIds = overlapping.mapTo(mutableSetOf()) { it.id }
+                existingBlocks.filterNot { it.sessionId in replacedSessionIds }
+            } else {
+                existingBlocks
+            },
+            replacements = replacements,
+            replacementStart = ts,
+            replacementEnd = packetEnd,
         )
 
-        // Rewrite the full accumulated set with start minutes relative to the night start.
-        db.sleepStageBlockDao().deleteBySession(sessionId)
-        merged.forEach {
-            db.sleepStageBlockDao().insert(it.copy(startMinute = ((it.startAt - sessionStart) / 60_000L).toInt()))
+        reconcileWakingDay(dayStart, existing, dayBlocks)
+    }
+
+    /**
+     * Re-derive one waking day's sessions from its raw stage blocks: split by [SleepSegmentation],
+     * then reconcile the Room rows — match each segment to the existing session whose prior
+     * time-range overlaps it (so identity is stable even when a nap syncs before the night it
+     * precedes), insert rows for unmatched segments, delete leftover empty rows, re-point every
+     * block to its segment, and recompute bounds/score. Idempotent.
+     *
+     * Ported from iOS `SleepService.reconcileWakingDay`. Unlike iOS this emits no DerivedUpdateRow
+     * change signal: Room's reactive Flows (SleepViewModel observes `recentFlow`) already refresh
+     * the UI on any sleep-table write, and sleep is cleared + rebuilt from the ring on every connect
+     * anyway — there is no unchanged-day re-sync to optimize away.
+     *
+     * Wrapped in one transaction: the body below deletes every existing row's blocks up front, then
+     * re-upserts sessions and re-inserts blocks per segment one write at a time. Without a
+     * transaction, each per-segment session upsert fires `recentFlow` mid-reconcile, and
+     * SleepViewModel re-reads blocks for a session that's only partially rewritten — the sleep
+     * architecture chart transiently renders with just the first few (chronologically-earliest)
+     * blocks before the rest land. `db.withTransaction` defers the Flow's invalidation until commit,
+     * so observers only ever see the fully-reconciled state (matches DemoDataSeeder's usage).
+     */
+    private suspend fun reconcileWakingDay(
+        dayStart: Long,
+        existing: List<SleepSessionEntity>,
+        dayBlocks: List<SleepStageBlockEntity>,
+    ) = db.withTransaction {
+        val groups = SleepSegmentation.segment(dayBlocks)
+
+        // No blocks left on this day — drop the empty rows entirely (their blocks cascade).
+        if (groups.isEmpty()) {
+            existing.forEach { db.sleepSessionDao().deleteById(it.id) }
+            return@withTransaction
         }
+
+        data class Segment(val blocks: List<SleepStageBlockEntity>, val start: Long, val end: Long)
+        val segments = groups.map { g ->
+            val sorted = g.sortedBy { it.startAt }
+            val start = sorted.first().startAt
+            val end = sorted.maxOf { it.startAt + it.durationMinutes * 60_000L }
+            Segment(sorted, start, end)
+        }
+
+        fun overlap(a0: Long, a1: Long, b0: Long, b1: Long): Long =
+            maxOf(0L, minOf(a1, b1) - maxOf(a0, b0))
+
+        // Greedily match each segment to the best-overlapping unused row; a row also matches when it
+        // contains the segment's start (covers a freshly-created zero-length container row). The
+        // rows' pre-mutation bounds are the match key — `existing` is read before any write below.
+        val available = existing.toMutableList()
+        val matched: List<Pair<Segment, SleepSessionEntity?>> = segments.map { seg ->
+            val best = available.maxByOrNull { overlap(seg.start, seg.end, it.startAt, it.endAt) }
+            if (best != null && (overlap(seg.start, seg.end, best.startAt, best.endAt) > 0L ||
+                    best.startAt in seg.start..seg.end)) {
+                available.remove(best)
+                seg to best
+            } else {
+                seg to null
+            }
+        }
+
+        // Clear every existing row's blocks up front so re-pointing a block between sessions can't
+        // leave a transient duplicate keyed to two sessions at once.
+        existing.forEach { db.sleepStageBlockDao().deleteBySession(it.id) }
+
+        val now = System.currentTimeMillis()
+        for ((seg, row) in matched) {
+            val id = row?.id ?: "sleep-$dayStart-${seg.start}"
+            val totalMin = ((seg.end - seg.start) / 60_000L).toInt().coerceAtLeast(0)
+            val deepMin = seg.blocks
+                .filter { it.stageRaw == SleepStage.DEEP.name }
+                .sumOf { it.durationMinutes }
+            val score = computeSleepScore(deepMin, totalMin)
+
+            // Parent session BEFORE its blocks (FK sleep_stage_blocks -> sleep_sessions.id).
+            db.sleepSessionDao().upsert(
+                (row ?: SleepSessionEntity(
+                    id = id, date = dayStart, startAt = seg.start, endAt = seg.end,
+                    totalMinutes = totalMin, score = score,
+                )).copy(
+                    date = dayStart,
+                    startAt = seg.start,
+                    endAt = seg.end,
+                    totalMinutes = totalMin,
+                    score = score,
+                    syncedAt = now,
+                    updatedAt = now,
+                )
+            )
+            seg.blocks.forEach {
+                db.sleepStageBlockDao().insert(
+                    it.copy(
+                        id = java.util.UUID.randomUUID().toString(),
+                        sessionId = id,
+                        startMinute = ((it.startAt - seg.start) / 60_000L).toInt().coerceAtLeast(0),
+                    )
+                )
+            }
+        }
+
+        // Rows not matched to any segment had all their blocks re-pointed away — delete them.
+        available.forEach { db.sleepSessionDao().deleteById(it.id) }
     }
 
     /**

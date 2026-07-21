@@ -2,6 +2,8 @@ package com.pulseloop.coach.summaries
 
 import com.pulseloop.coach.config.CoachClientResolver
 import com.pulseloop.coach.config.CoachProviderSettingsStore
+import com.pulseloop.coach.config.CoachSleepSyncGate
+import com.pulseloop.coach.config.CoachVarietyHints
 import com.pulseloop.coach.tools.CoachFeatureFlags
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.CoachSummaryEntity
@@ -51,11 +53,20 @@ class CoachSummaryService(
         generateAndUpsert(CoachSummaryKind.TODAY, built, existing)
     }
 
-    suspend fun refreshSleepDayIfNeeded() {
+    suspend fun refreshSleepDayIfNeeded(now: Long = System.currentTimeMillis()) {
         val built = CoachSummaryContextBuilder.sleepDay(db) ?: return
+        val endAt = built.sleepSessionEnd ?: return
+        val lastFullSyncAt = db.deviceDao().current()?.lastFullSyncAt
+        if (!CoachSleepSyncGate.sleepDaySafeToSummarize(endAt, lastFullSyncAt, now)) return
+
+        // Signature-based upsert: regenerate only when the signature differs AND the
+        // existing row is older than the minInterval floor — allows one corrective pass
+        // if a late sync grows the night, without churning.
         val existing = db.coachSummaryDao().get(CoachSummaryKind.SLEEP_DAY.rawValue, built.scopeKey)
-        // Once per night: only when not yet summarized
-        if (existing != null) return
+        if (existing != null) {
+            if (existing.dataSignature == built.signature) return
+            if (now - existing.updatedAt < minIntervalMs) return
+        }
         generateAndUpsert(CoachSummaryKind.SLEEP_DAY, built, existing)
     }
 
@@ -80,8 +91,11 @@ class CoachSummaryService(
             model = model,
             settings = CoachClientResolver.coachSettings(snapshot),
         )
+        val angle = CoachVarietyHints.angle(built.scopeKey + kind.rawValue)
+        val recentTexts = recentSummaryTexts(kind, excludeId = existing?.id)
         val content = CoachSummaryGenerator.generate(
             kind, built.contextJson, built.fallback, flags, apiKey, resolution?.client,
+            angle = angle, recentTexts = recentTexts,
         )
         val now = System.currentTimeMillis()
         if (existing != null) {
@@ -110,5 +124,13 @@ class CoachSummaryService(
                 updatedAt = now,
             ))
         }
+    }
+
+    /** The last few cards of this kind (title — body) so the generator can avoid
+     *  repeating their phrasing/openings. Newest first; the row being regenerated
+     *  is excluded. */
+    private suspend fun recentSummaryTexts(kind: CoachSummaryKind, excludeId: String?, limit: Int = 5): List<String> {
+        val rows = db.coachSummaryDao().recent(kind.rawValue, limit + 1)
+        return rows.filter { it.id != excludeId }.take(limit).map { "${it.title} — ${it.body}" }
     }
 }

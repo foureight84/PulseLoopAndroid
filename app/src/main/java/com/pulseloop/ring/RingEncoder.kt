@@ -44,21 +44,35 @@ object RingEncoder {
     fun makeHeartRateStartCommand(): ByteArray = hexToBytes("14b4000000000000000000000000000000000000")
     fun makeHeartRateStopCommand(): ByteArray = hexToBytes("1500000000000000000000000000000000000000")
     /**
-     * Start combined measurement (0x23): triggers HR + systolic + diastolic + SpO₂ + stress.
-     * byte[1] = 1 to start, 0 to stop.
-     * Response arrives as 0x24 notification with 5 metrics.
+     * One-shot combined-sensor measurement (0x23). byte[1] is a *mode* selector, not a generic
+     * start flag (vendor `setBloodPressureMode`/`setSpoMode` write 0x23 with a different byte[1]):
+     * mode 1 = blood pressure, mode 2 = SpO₂. Confirmed on hardware that mode 2 already returns a
+     * full 0x24 reply carrying HR + systolic + diastolic + SpO₂ + fatigue + stress + blood sugar
+     * together — the mode byte selects the ring's primary algorithm, not which sensor runs, on
+     * firmware without a "separate BP/SpO₂ mode" capability bit. Combined measurement therefore
+     * rides the same command as [makeSpO2StartCommand].
      */
-    fun makeCombinedMeasurementStart(): ByteArray = hexToBytes("2301000000000000000000000000000000000000")
-    fun makeCombinedMeasurementStop(): ByteArray = hexToBytes("2300000000000000000000000000000000000000")
+    fun makeCombinedMeasurementStart(): ByteArray = makeSpO2StartCommand()
+    fun makeCombinedMeasurementStop(): ByteArray = makeSpO2StopCommand()
 
     /**
-     * SpO₂-only toggle (0x3E). byte[1] = 1 to start, 0 to stop.
-     * Response arrives as 0x3F notification.
+     * Spot SpO₂ (0x23 mode 2, matching the vendor's `setSpoMode`). Mode 1 is *blood pressure* —
+     * sending byte[1] = 1 here silently ran a BP measurement instead, which is what this used to
+     * do via the unrelated 0x3E toggle. The vendor app never sends 0x3E for SpO₂; every reading
+     * goes through 0x23, and the result arrives in the 0x24 combined packet, not a 0x3F reply.
      */
-    fun makeSpO2StartCommand(): ByteArray = hexToBytes("3e01000000000000000000000000000000000000")
-    fun makeSpO2StopCommand(): ByteArray = hexToBytes("3e00000000000000000000000000000000000000")
+    fun makeSpO2StartCommand(): ByteArray = hexToBytes("2302000000000000000000000000000000000000")
+    fun makeSpO2StopCommand(): ByteArray = hexToBytes("2300000000000000000000000000000000000000")
 
     fun makeFindRingCommand(): ByteArray = hexToBytes("040a000000000000000000000000000000000000")
+
+    /**
+     * Capability bitmask query (0x20, vendor `getBandFunction`). The ring replies with a bit
+     * array (see [JringBandCapabilities]) describing which sensors and offline history streams it
+     * supports. Nothing branches on the reply yet — queried on connect so it's available once the
+     * bit ordering is confirmed against real hardware.
+     */
+    fun makeBandFunctionCommand(): ByteArray = hexToBytes("2000000000000000000000000000000000000000")
 
     /**
      * App identity (0x48). The ring binds to the appId of the connecting phone/app and
@@ -170,8 +184,12 @@ object RingEncoder {
     }
 
     /**
-     * Automatic background heart-rate schedule (0x19).
-     * Window 00:00–23:59, enable flag, cadence in minutes, mode 0x02.
+     * Automatic background heart-rate schedule (0x19) — the command that arms the ring's
+     * continuous background sensor logging; without it the ring records almost nothing on
+     * connect. Window 00:00–23:59, enable flag, cadence in minutes.
+     *
+     * byte[7] is a constant 0x01: the vendor SDK hardcodes it and ignores the caller's 7th
+     * argument (the app's own `snooze` value, 2 — the source of an earlier 0x02 here).
      */
     fun makeAutomaticHeartRateCommand(
         enabled: Boolean,
@@ -185,24 +203,29 @@ object RingEncoder {
         cmd[4] = 0x3B   // end MM (59)
         cmd[5] = if (enabled) 0x01 else 0x00
         cmd[6] = maxOf(1, cadenceMinutes).toByte()
-        cmd[7] = 0x02
+        cmd[7] = 0x01
         return cmd
     }
 
     /**
-     * Time sync command (0x01).
-     * Payload: u32le epoch seconds + i8 timezone offset hours.
+     * Set the ring's clock (0x01). Payload: u32le epoch seconds holding **local wall-clock**
+     * seconds (`utcEpoch + utcOffset`, matching the vendor SDK) + i8 offset in whole hours. The
+     * ring's RTC therefore runs on local time, which its own wall-clock-keyed firmware logic
+     * (day-indexed history queries, sleep/night-window detection) expects. Every ring-stamped
+     * history timestamp must have the same offset subtracted back off on the way in — see
+     * [JringClock.date], the matched half of this contract. Changing this without updating the
+     * decoder shifts all history by the offset.
      */
-    fun makeTimeSyncCommand(instant: Instant = Instant.now()): ByteArray {
+    fun makeTimeSyncCommand(instant: Instant = Instant.now(), timeZone: TimeZone = TimeZone.getDefault()): ByteArray {
         val cmd = ByteArray(20)
         cmd[0] = 0x01
-        val ts = instant.epochSecond.toUInt()
+        val offsetSeconds = timeZone.getOffset(instant.toEpochMilli()) / 1000
+        val ts = (instant.epochSecond + offsetSeconds).toUInt()
         cmd[1] = (ts and 0xFFu).toByte()
         cmd[2] = ((ts shr 8) and 0xFFu).toByte()
         cmd[3] = ((ts shr 16) and 0xFFu).toByte()
         cmd[4] = ((ts shr 24) and 0xFFu).toByte()
-        val offsetHours = TimeZone.getDefault().getOffset(instant.toEpochMilli()).toInt() / 3_600_000
-        cmd[5] = offsetHours.toByte()
+        cmd[5] = (offsetSeconds / 3600).toByte()
         return cmd
     }
 

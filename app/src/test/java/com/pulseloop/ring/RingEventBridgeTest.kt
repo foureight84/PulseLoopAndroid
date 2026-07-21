@@ -131,6 +131,28 @@ class RingEventBridgeTest {
         assertEquals(1, RingEventBridge.eventsFor(hm, now).size)
     }
 
+    @Test
+    fun `history measurement older than 8 days is dropped`() {
+        // A ring that logged under a stale clock (e.g. a pre-JringClock UTC RTC) can decode
+        // history hours or days into the future or past a plausible window.
+        val hm = RingDecodedEvent.HistoryMeasurement(
+            kind_field = MeasurementKind.SPO2,
+            value = 97.0,
+            _timestamp = now.minus(10, ChronoUnit.DAYS),
+        )
+        assertTrue(RingEventBridge.eventsFor(hm, now).isEmpty())
+    }
+
+    @Test
+    fun `history measurement in the future is dropped`() {
+        val hm = RingDecodedEvent.HistoryMeasurement(
+            kind_field = MeasurementKind.FATIGUE,
+            value = 40.0,
+            _timestamp = now.plus(2, ChronoUnit.HOURS),
+        )
+        assertTrue(RingEventBridge.eventsFor(hm, now).isEmpty())
+    }
+
     // ── Stress Gating ───────────────────────────────────────────────────
 
     @Test
@@ -317,4 +339,9 @@ class RingEventBridgeTest {
         assertEquals(listOf(PulseEvent.BloodSugarSample(99.0, now)), events)
     }
 
+    @Test
+    fun `band function reply produces no output`() {
+        val bf = RingDecodedEvent.BandFunction(JringBandCapabilities(byteArrayOf(0, 0, 0)))
+        assertTrue(RingEventBridge.eventsFor(bf, now).isEmpty())
+    }
 }

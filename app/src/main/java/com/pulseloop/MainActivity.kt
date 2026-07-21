@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         CoachNotifications.createChannel(this)
+        com.pulseloop.notifications.BatteryNotifications.createChannel(this)
         requestAllPermissions()
 
         setContent {

@@ -24,13 +24,27 @@ Rules:
 - `chips` is up to 3 short follow-up questions the user might tap to dig in (e.g. "Why is my deep sleep low?", "How do I compare to last week?"). Phrase them as the user would ask the coach.
 - Be warm, specific, and genuinely useful — not generic. Ground every claim in the provided data; if data is thin, say so lightly and never invent numbers.
 - No medical diagnosis or alarming language. Wellness tone. At most one emoji, only if it fits.
+- A coaching angle and your recent cards are provided — vary your voice and structure; never open two cards the same way.
 """.trimIndent()
     }
 
-    fun developerMessage(contextJSON: String): String = """
-Data for this card:
-$contextJSON
-
-Write the card now as {"title","body","chips"}.
-""".trimIndent()
+    fun developerMessage(
+        contextJSON: String,
+        angle: String = "",
+        recentTexts: List<String> = emptyList(),
+    ): String = buildString {
+        appendLine("Data for this card:")
+        appendLine(contextJSON)
+        if (angle.isNotEmpty()) {
+            appendLine()
+            appendLine("Coaching angle for this check-in (take it unless the data makes it a poor fit): $angle")
+        }
+        if (recentTexts.isNotEmpty()) {
+            appendLine()
+            appendLine("Your most recent check-ins — do NOT repeat their phrasing, openings, or structure:")
+            recentTexts.forEach { appendLine("- $it") }
+        }
+        appendLine()
+        appendLine("Write the card now as {\"title\",\"body\",\"chips\"}.")
+    }
 }
