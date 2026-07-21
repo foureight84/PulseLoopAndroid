@@ -37,7 +37,7 @@ object CRPCoordinator : WearableCoordinator {
     override val capabilities = setOf(
         WearableCapability.STEPS, WearableCapability.REALTIME_STEPS,
         WearableCapability.HEART_RATE, WearableCapability.REALTIME_HEART_RATE,
-        WearableCapability.MANUAL_HEART_RATE,
+        WearableCapability.MANUAL_HEART_RATE, WearableCapability.MANUAL_SPO2,
         WearableCapability.SPO2, WearableCapability.STRESS, WearableCapability.HRV,
         WearableCapability.TEMPERATURE,
         WearableCapability.BATTERY,

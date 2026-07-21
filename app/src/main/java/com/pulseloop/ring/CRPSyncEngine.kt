@@ -4,14 +4,13 @@ package com.pulseloop.ring
  * Per-connection orchestration for a CRP ("crrepa") ring. Ported in spirit from the Moyoung
  * "Da Rings" connect flow (`d1/b.java` + `b1` package builders): after the link is up the app sets the
  * clock and pushes user anthropometrics, then the ring streams current steps (`fdd1`) on its own
- * and answers measurement commands. There is no bulk history state machine in v1, so most of the
- * [RingSyncEngine] surface is left as the interface's no-op defaults.
+ * and answers measurement commands. The bulk-history state machine stays deferred for now.
  *
- * v1 scope: clock + user-info handshake, live/manual heart rate, find-device, factory reset.
- * Steps and battery arrive as autonomous pushes/reads (see [CRPDriver]) and need no command here.
- * Sleep / SpO2 / HRV / stress / temperature and history sync are deliberately deferred — their
- * reply layouts aren't yet confirmed against the decompile, and [CRPCoordinator] doesn't advertise
- * those capabilities, so nothing calls the corresponding methods.
+ * Scope: clock + user-info handshake, spot HR + SpO2 (Measure button), all-day vital timing
+ * enable/disable driven by [MeasurementSettings], find-device, factory reset. Steps and battery
+ * arrive as autonomous pushes/reads (see [CRPDriver]). HRV / stress / temperature are all-day
+ * metrics — their timing is enabled here and live results decode via [CRPDecoder], but pulling the
+ * stored day timeline (group-7/group-2 history queries) is still TODO pending a hardware capture.
  */
 class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
@@ -47,11 +46,13 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // engine-side state (no staged history pipeline to advance).
     }
 
-    // ---- Heart rate (standard 2a37 stream, started/stopped via the fdda command channel) ----
+    // ---- Spot (manual) measurements. Trigger via the fdda command channel; the ring replies on
+    // the same group-1/cmd, decoded by CRPDecoder.decodeVitalResult and persisted via the bridge.
+    // HR and SpO2 are the app's spot-measurable vitals (MANUAL_* capabilities); HRV/stress/temp are
+    // all-day metrics pulled through timing + history, not the Measure button. ----
     override fun startHeartRate() { send(CRPProtocol.measureHeartRate(true)) }
     override fun stopHeartRate() { send(CRPProtocol.measureHeartRate(false)) }
 
-    // ---- SpO2 (command verified; result parsing deferred, so capability isn't advertised) ----
     override fun startSpO2() { send(CRPProtocol.measureSpO2(true)) }
     override fun stopSpO2() { send(CRPProtocol.measureSpO2(false)) }
 
