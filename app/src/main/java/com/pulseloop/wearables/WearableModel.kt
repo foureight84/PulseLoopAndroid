@@ -65,6 +65,23 @@ data class WearableModel(
             requiresOsBond = true)
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
 
+        /**
+         * The **CRP-firmware** R11 — same physical ring as [COLMI_R11], but its official app is
+         * Moyoung "Da Rings" and it speaks the proprietary `fdda` CRP protocol, not the Colmi/QRing
+         * UART (see `CRPCoordinator`). "R11 / SMART_RING" is sold under both firmwares; a unit is
+         * routed here when discovery reveals the `fdda` service (issue #29, zaggash's ring) or when
+         * the user explicitly picks this card. No usable name pattern — the ring advertises the same
+         * generic `SMART_RING` as jring, so identity comes from the `fdda` service post-connect, not
+         * the name. Connects GATT-only, so `requiresOsBond = false` (no pairing dialog).
+         */
+        val COLMI_R11_CRP = WearableModel(
+            id = "colmi-r11-crp", displayName = "Colmi R11 (Da Rings app)", brand = "Colmi",
+            family = RingDeviceType.CRP,
+            tint = PulseColors.hrv, blurb = "HR · Steps",
+            advertisedNamePatterns = emptyList(),
+            imageRes = R.drawable.ring_yawell_r11,
+        )
+
         // Yawell-branded variants
         val YAWELL_R05 = colmi("yawell-r05", "Yawell R05", "Yawell", "^R05_[0-9A-F]{4}$", R.drawable.ring_yawell_r05)
         val YAWELL_R10 = colmi("yawell-r10", "Yawell R10", "Yawell", "^R10_[0-9A-F]{4}$", R.drawable.ring_yawell_r10)
@@ -126,7 +143,7 @@ data class WearableModel(
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
             COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59, TK5, LUCK_RING_TK18,
+            YAWELL_R05, YAWELL_R10, H59, TK5, LUCK_RING_TK18, COLMI_R11_CRP,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
             COLMI_SMARTHEALTH,

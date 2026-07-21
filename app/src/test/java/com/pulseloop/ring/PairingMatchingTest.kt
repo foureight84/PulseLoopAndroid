@@ -83,7 +83,7 @@ class PairingMatchingTest {
         val registeredTypes = setOf(
             JringCoordinator.deviceType, ColmiCoordinator.deviceType,
             TK5Coordinator.deviceType, ColmiSmartHealthCoordinator.deviceType,
-            LuckRingCoordinator.deviceType,
+            LuckRingCoordinator.deviceType, CRPCoordinator.deviceType,
         )
         for (model in WearableModel.CATALOG) {
             assertTrue("no coordinator for ${model.displayName}", registeredTypes.contains(model.family))
