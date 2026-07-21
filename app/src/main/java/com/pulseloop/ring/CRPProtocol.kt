@@ -51,8 +51,25 @@ object CRPCommands {
     const val GROUP_DEVICE = 1
     const val CMD_SET_USER_INFO = 0     // b1/k.a: [height, weight, age, gender, strideLen]
     const val CMD_SET_TIME = 1          // b1/e.b: [epochSecondsLE(4), tzByte]
-    const val CMD_MEASURE_HR = 9        // b1/t.d: [enable] — start(1)/stop(0) continuous HR
-    const val CMD_MEASURE_SPO2 = 11     // b1/h.d: [enable] — start(1)/stop(0) SpO2
+    // Group 1 — spot (manual) measurement toggles (OUTBOUND). Each is `[enable]` — start(1)/stop(0)
+    // a one-shot on-demand measurement. Source: the vendor SDK's `startMeasureX`/`stopMeasureX`
+    // (`d1/b.java`) → the `b1` builders. The ring reports the reading back on the SAME cmd byte
+    // (see CMD_RESULT_* below), which is why these opcodes double as the result opcodes.
+    const val CMD_MEASURE_HR = 9        // b1/t.d:  q.c(1,9,  [enable])
+    const val CMD_MEASURE_HRV = 10      // b1/u.d:  q.c(1,10, [enable])
+    const val CMD_MEASURE_SPO2 = 11     // b1/h.d:  q.c(1,11, [enable])
+    const val CMD_MEASURE_STRESS = 14   // b1/h0.d: q.c(1,14, [enable])
+    const val CMD_MEASURE_TEMP = 32     // b1/i0.d: q.c(1,32, [enable])
+
+    // Group 1 — real-time result reply opcodes (INBOUND). The cmd byte the ring puts on the framed
+    // `fdd3` channel when it reports a live reading — identical to the measure opcode above (the
+    // measurement echoes back on its own cmd). Source: vendor dispatcher `g1/a.java` lines 664–712
+    // (case group==1): 9→onHeartRate, 10→onHrv, 11→onBloodOxygen, 14→onStressChange, 32→onMeasureComplete(temp).
+    const val CMD_RESULT_HR = CMD_MEASURE_HR         // g1/a: onHeartRate(e1/f.b → payload[0])
+    const val CMD_RESULT_HRV = CMD_MEASURE_HRV       // g1/a: onHrv(byte2int(payload[0]))
+    const val CMD_RESULT_SPO2 = CMD_MEASURE_SPO2     // g1/a: onBloodOxygen(e1/d.b → payload[0])
+    const val CMD_RESULT_STRESS = CMD_MEASURE_STRESS // g1/a: onStressChange(byte2int(payload[0]))
+    const val CMD_RESULT_TEMP = CMD_MEASURE_TEMP     // g1/a: onMeasureComplete(e1/m.a → (payload[1]<<8|payload[0])/10)
 
     // Group 1 — timing/enable controls (decompiled b1 package).
     // Disable: HR/HRV/SpO2/Stress use enable with interval=0. Temp uses a separate cmd.
@@ -60,11 +77,12 @@ object CRPCommands {
     const val CMD_ENABLE_TIMING_HRV = 7       // b1/u.c: q.c(1,7, [interval])
     const val CMD_ENABLE_TIMING_SPO2 = 8      // b1/h.c: q.c(1,8, [interval])
     const val CMD_ENABLE_TIMING_STRESS = 39   // b1/h0.c: q.c(1,39, [interval])
-    const val CMD_ENABLE_TIMING_TEMP = 13     // b1/i0.c: q.c(1,13, [true])
-    const val CMD_DISABLE_TIMING_TEMP = 32    // b1/i0.d: q.c(1,32, [false]) — vendor uses this for temp disable
+    const val CMD_ENABLE_TIMING_TEMP = 13     // b1/i0.c: q.c(1,13, [enable]) — all-day temp timing on/off
+    // NOTE: temp's spot-measure toggle is a DIFFERENT opcode (cmd 32, b1/i0.d) — see CMD_MEASURE_TEMP.
 
     // Group 7 — history queries + device info (decompiled b1/e0 + b1/r).
-    // NOTE: History queries are group 7, NOT group 2 (the b1/e0 builders use q.b(7,…) and q.c(7,…)).
+    // NOTE: most history queries are group 7 (b1/e0 builders use q.b(7,…)/q.c(7,…)), but sleep
+    // and temp are the exception — they live on group 2 (see GROUP_HISTORY below).
     const val GROUP_DEVICE_INFO = 7
     const val CMD_QUERY_DEVICE_INFO = 0       // b1/r.a: q.b(7,0)
     const val CMD_QUERY_FIRMWARE_VERSION = 1  // b1/r.b: q.b(7,1)
@@ -73,8 +91,11 @@ object CRPCommands {
     const val CMD_QUERY_HISTORY_STRESS = 5    // b1/e0.b: q.c(7,5, [interval])
     const val CMD_QUERY_HISTORY_HRV = 6       // b1/e0.e: q.c(7,6, [interval])
     const val CMD_QUERY_HISTORY_SPO2 = 7      // b1/e0.f: q.b(7,7)
+
+    // Group 2 — the two history queries that live outside group 7 (decompiled b1/e0).
+    const val GROUP_HISTORY = 2
     const val CMD_QUERY_HISTORY_SLEEP = 14    // b1/e0.c: q.c(2,14, [CRPHistoryDay])
-    const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: q.b(7,48)
+    const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: q.b(2,48)
 
     // Group 3 — power control.
     const val GROUP_POWER = 3
@@ -152,11 +173,25 @@ object CRPProtocol {
         return frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_SET_USER_INFO, payload)
     }
 
+    // ---- Spot (manual) measurement toggles ----
+    // start(true)/stop(false) an on-demand reading; the ring reports back on the same cmd byte,
+    // decoded by CRPDecoder.decodeVitalResult. Mirrors the vendor's startMeasureX/stopMeasureX
+    // (`d1/b.java` → `b1/t.d`,`u.d`,`h.d`,`h0.d`,`i0.d`).
+
     fun measureHeartRate(enable: Boolean): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_MEASURE_HR, byteArrayOf(if (enable) 1 else 0))
 
+    fun measureHRV(enable: Boolean): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_MEASURE_HRV, byteArrayOf(if (enable) 1 else 0))
+
     fun measureSpO2(enable: Boolean): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_MEASURE_SPO2, byteArrayOf(if (enable) 1 else 0))
+
+    fun measureStress(enable: Boolean): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_MEASURE_STRESS, byteArrayOf(if (enable) 1 else 0))
+
+    fun measureTemp(enable: Boolean): ByteArray =
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_MEASURE_TEMP, byteArrayOf(if (enable) 1 else 0))
 
     fun findDevice(enable: Boolean): ByteArray =
         frame(CRPCommands.GROUP_ACTION, CRPCommands.CMD_FIND_DEVICE, byteArrayOf(if (enable) 1 else 0))
@@ -193,18 +228,19 @@ object CRPProtocol {
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_STRESS, byteArrayOf(0))
 
     fun enableTimingTemp(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_TEMP)
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_TEMP, byteArrayOf(1))
 
     fun disableTimingTemp(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_DISABLE_TIMING_TEMP)
+        frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_TEMP, byteArrayOf(0))
 
-    // ---- History query commands (group 2) ----
+    // ---- History query commands ----
+    // Most vitals are group 7 (b1/e0.a/b/e/f); sleep and temp are group 2 (b1/e0.c/d).
 
     fun queryHistoryHeartRate(): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_HR)
+        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_HR)
 
     fun queryHistoryStress(): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_STRESS)
+        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_STRESS)
 
     fun queryHistorySleep(daysAgo: Int = 0): ByteArray =
         frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(daysAgo.toByte()))
@@ -213,10 +249,10 @@ object CRPProtocol {
         frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_TEMP)
 
     fun queryHistoryHRV(): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_HRV)
+        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_HRV)
 
     fun queryHistorySpO2(): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SPO2)
+        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_SPO2)
 
     // ---- Device info queries (group 7) ----
 

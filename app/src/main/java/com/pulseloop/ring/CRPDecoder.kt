@@ -97,52 +97,41 @@ object CRPDecoder {
     }
 
     /**
-     * Decode group-1 vital result replies. Confirmed against `g1/a.java` and `e1/f.java` (HR),
-     * `e1/g.java` (HRV), `e1/d.java` (SpO2), `e1/h.java` (stress/physical strength), and
-     * the vendor's `onMeasureComplete` flow for temperature (cmd 32).
-     *
-     * Layout: `payload[0]` is the metric value for all types. Plausibility guards prevent
-     * garbage samples (HR 40–200, SpO2 70–100, stress 0–100, HRV 20–200).
+     * Decode group-1 real-time vital result replies. Routed on the INBOUND result opcodes
+     * (`CMD_RESULT_*`), which are distinct from the outbound enable-timing commands. Confirmed
+     * against the vendor dispatcher `g1/a.java` (lines 664–712) and its per-vital parsers:
+     *   cmd 9  → HR    `e1/f.b`  : byte2int(payload[0])                     — guard 40..200
+     *   cmd 10 → HRV   `g1/a`    : byte2int(payload[0]) (live path)         — guard 20..200
+     *   cmd 11 → SpO2  `e1/d.b`  : byte2int(payload[0])                     — guard 70..100
+     *   cmd 14 → stress`g1/a`    : byte2int(payload[0])                     — guard 0..100
+     *   cmd 32 → temp  `e1/m.a`  : (payload[1]<<8 | payload[0]) / 10.0 °C   — guard 28.0..50.0
      */
     private fun decodeVitalResult(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
-        if (payload.isEmpty()) return listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE shl 4) or (cmd and 0x0F)).toUByte()))
+        fun ack() = listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE shl 4) or (cmd and 0x0F)).toUByte()))
+        if (payload.isEmpty()) return ack()
         val value = payload[0].toInt() and 0xFF
 
         return when (cmd) {
-            CRPCommands.CMD_MEASURE_HR -> {
-                // HR from `e1/f.b()`: byte2int(payload[0]).
+            CRPCommands.CMD_RESULT_HR ->
                 if (value in 40..200) listOf(RingDecodedEvent.HeartRateSample(bpm = value, _timestamp = now))
                 else emptyList()
-            }
-            CRPCommands.CMD_ENABLE_TIMING_HRV -> {
-                // HRV from `e1/g.d()`: twoBytes2int(payload[1], payload[0]), but vendor's
-                // onHrv() callback receives byte2int(payload[0]) for the live measurement path.
-                // We accept either layout: single-byte if payload is 1 byte, two-byte otherwise.
-                val hrvValue = if (payload.size >= 2) (
-                    (payload[0].toInt() and 0xFF) or ((payload[1].toInt() and 0xFF) shl 8)
-                ) else value
-                if (hrvValue in 20..200) listOf(RingDecodedEvent.HrvSample(value = hrvValue, _timestamp = now))
+            CRPCommands.CMD_RESULT_HRV ->
+                if (value in 20..200) listOf(RingDecodedEvent.HrvSample(value = value, _timestamp = now))
                 else emptyList()
-            }
-            CRPCommands.CMD_ENABLE_TIMING_SPO2 -> {
-                // SpO2 from `e1/d.b()`: byte2int(payload[0]).
+            CRPCommands.CMD_RESULT_SPO2 ->
                 if (value in 70..100) listOf(RingDecodedEvent.Spo2Result(value = value, _timestamp = now))
                 else emptyList()
-            }
-            CRPCommands.CMD_ENABLE_TIMING_STRESS -> {
-                // Stress/physical strength from `e1/h.c()`: byte2int(payload[0]).
+            CRPCommands.CMD_RESULT_STRESS ->
                 if (value in 0..100) listOf(RingDecodedEvent.StressSample(value = value, _timestamp = now))
                 else emptyList()
+            CRPCommands.CMD_RESULT_TEMP -> {
+                // Vendor `e1/m.a(payload[1], payload[0])`: twoBytes2int/10, valid 28.0..50.0 °C.
+                if (payload.size < 2) return emptyList()
+                val celsius = (((payload[1].toInt() and 0xFF) shl 8) or (payload[0].toInt() and 0xFF)) / 10.0
+                if (celsius in 28.0..50.0) listOf(RingDecodedEvent.TemperatureSample(celsius = celsius, _timestamp = now))
+                else emptyList()
             }
-            CRPCommands.CMD_ENABLE_TIMING_TEMP -> {
-                // Temperature: vendor uses onMeasureComplete with payload. Layout unconfirmed.
-                // Emit as temperature_sample with raw byte as placeholder until verified.
-                listOf(RingDecodedEvent.TemperatureSample(celsius = value.toDouble(), _timestamp = now))
-            }
-            else -> {
-                // Acknowledgment for enable/disable commands.
-                listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE shl 4) or (cmd and 0x0F)).toUByte()))
-            }
+            else -> ack() // enable/disable acknowledgments and other group-1 replies
         }
     }
 

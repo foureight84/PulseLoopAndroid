@@ -16,18 +16,18 @@ class CRPSyncEngineTest {
     }
 
     @Test
-    fun `runStartup sends set-time, and user info once a profile is stored`() {
+    fun `runStartup sends set-time, firmware query, and user info once a profile is stored`() {
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)
         engine.runStartup()
-        assertEquals(listOf(1 to 1), w.opcodes()) // set-time only, no profile yet
+        assertEquals(listOf(1 to 1, 7 to 1), w.opcodes()) // set-time then firmware query, no profile yet
 
         w.sent.clear()
         engine.setUserProfile(
             UserProfileValues(metric = true, gender = 1u, age = 30u, heightCm = 180u, weightKg = 75u),
         )
         engine.runStartup()
-        assertEquals(listOf(1 to 1, 1 to 0), w.opcodes()) // set-time then set-user-info
+        assertEquals(listOf(1 to 1, 7 to 1, 1 to 0), w.opcodes()) // set-time, firmware query, set-user-info
     }
 
     @Test
