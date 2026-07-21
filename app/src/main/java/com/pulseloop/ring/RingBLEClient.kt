@@ -256,11 +256,31 @@ class RingBLEClient(private val context: Context) {
         // prior Disconnect so [connectLastKnown] isn't suppressed for this or the next session.
         prefs.edit().remove(USER_DISCONNECTED_KEY).apply()
         resetReconnectBackoff()
-        // Discovery's name-derived model wins over the carousel choice (iOS connect(to:selectedModelID:)).
+
+        // Normally discovery's name-derived family wins over the carousel choice
+        // (iOS connect(to:selectedModelID:)). The exception (issue #29): several Colmi/Yawell
+        // rings — notably the R11 — advertise the generic BLE name "SMART_RING", which the
+        // scanner can only classify as JRING because that name isn't exclusive to jring hardware
+        // and they don't advertise their Colmi service UUID pre-connect. When the user has
+        // explicitly picked a NON-jring model in the pairing carousel, trust that pick over a
+        // generic-JRING detection: drive the connection with the selected model's coordinator
+        // (and, for the R11, its OS bond) instead of the jring driver, which can't find its
+        // 000056ff characteristics on a Colmi ring and hangs the connect forever. A *confident*
+        // scan match (a specific Colmi name pattern, or the 000056ff jring service UUID) still
+        // resolves to its own family and is unaffected — we only override the JRING fallback.
+        val detectedType = discoveredRing?.deviceType
+        val selectedModel = com.pulseloop.wearables.WearableModel.model(selectedModelID)
+        val honorSelection = detectedType == RingDeviceType.JRING &&
+            selectedModel != null && selectedModel.family != RingDeviceType.JRING
+        if (honorSelection) {
+            Log.i("RingBLEClient", "Ring detected as JRING (generic \"SMART_RING\" name) but user " +
+                "selected ${selectedModel!!.displayName} — honoring the carousel choice")
+        }
         beginConnect(
             target,
-            discoveredRing?.deviceType,
-            selectedModelID = discoveredRing?.wearableModelID ?: selectedModelID,
+            if (honorSelection) selectedModel!!.family else detectedType,
+            selectedModelID = if (honorSelection) selectedModelID
+                else discoveredRing?.wearableModelID ?: selectedModelID,
             advertisedName = discoveredRing?.name ?: target.name,
         )
     }
@@ -1088,6 +1108,34 @@ class RingBLEClient(private val context: Context) {
                         ))
                     }
                 } catch (_: Exception) {}
+            }
+
+            // Post-connect re-route (issue #29): a Colmi R11 that advertised the generic name
+            // "SMART_RING" with no Colmi service UUID in its advertisement gets classified as
+            // JRING by the scanner, so the jring driver is installed — but the jring driver's
+            // 000056ff characteristics don't exist on this ring, so the binding loop below would
+            // find nothing, no notify CCCD write is enqueued, and the connect hangs (30s watchdog
+            // → disconnect → retry loop). The ring's real Colmi service only becomes visible now,
+            // post-connect, in the GATT table. If we see it while running the jring driver, swap
+            // to the Colmi coordinator so the correct characteristics bind below and the R11 gets
+            // its OS bond. Scoped to JRING → Colmi only, so YCBT/TK5/etc. are never affected.
+            val hasColmiService = gatt.services.any {
+                val u = it.uuid.toString()
+                u == ColmiUUIDs.SERVICE_V1 || u == ColmiUUIDs.SERVICE_V2
+            }
+            if (hasColmiService && activeCoordinator?.deviceType == RingDeviceType.JRING) {
+                Log.i("RingBLEClient", "Discovered Colmi services under the jring driver — " +
+                    "re-routing to the Colmi driver")
+                installDriver(ColmiCoordinator)
+                // Re-resolve the model against the Colmi family so bonding is evaluated correctly.
+                // If the user picked a Colmi model in the carousel it's honored; otherwise the
+                // generic R02 base is used (requiresOsBond = false, so no speculative bond prompt).
+                val remodel = com.pulseloop.wearables.WearableModel.resolve(
+                    advertisedName = activeAdvertisedName,
+                    selectedModelID = _state.value.activeWearableModelID,
+                    family = RingDeviceType.COLMI_R02,
+                )?.id ?: com.pulseloop.wearables.WearableModel.COLMI_R02.id
+                updateState { copy(activeWearableModelID = remodel) }
             }
 
             val driver = activeDriver ?: return
