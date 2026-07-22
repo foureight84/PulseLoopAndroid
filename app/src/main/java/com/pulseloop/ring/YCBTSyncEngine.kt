@@ -1,51 +1,131 @@
 package com.pulseloop.ring
 
-import java.time.Instant
-
 /**
- * Ported from YCBTSyncEngine.swift (iOS #82).
- * YCBT sync engine. Connect is a parameterized handshake (clock -> device interrogation -> locale
- * -> all-day monitors -> user profile -> live-status stream), followed by the history sync.
- *
- * History is **not** driven from here. It is a protocol state machine in [YCBTHistoryTransfer]
- * (owned by the driver, the only thing that sees frames): request -> header -> data frames ->
- * terminal block -> mandatory ACK -> next type. This engine only seeds the queue.
- *
- * `runStartup()` doubles as the periodic re-sync on Android — `RingSyncCoordinator.syncNow()` and
- * the 30-minute periodic pass both just call `engine.runStartup()` again (the same convention
- * jring/Colmi already use), rather than a dedicated lighter-weight "re-fetch history only" call.
- * `transfer.start` is a no-op while a transfer is already in flight, so this is safe to call
- * repeatedly.
+ * Ported from YCBTSyncEngine.swift.
+ * YCBT sync engine. Connect is a parameterized handshake, followed by the history sync.
  */
+
 class YCBTSyncEngine(
     private val writer: RingCommandWriter?,
     private val transfer: YCBTHistoryTransfer,
+    private val profile: YCBTFamilyProfile = YCBTFamilyProfile(
+        baselineCapabilities = YCBTCoordinator.capabilities,
+        bitmapGatedCapabilities = YCBTCoordinator.bitmapGatedCapabilities,
+    ),
 ) : RingSyncEngine {
+    private val encoder = YCBTEncoder()
 
-    /**
-     * Pushed in by `RingSyncCoordinator` before [runStartup], so the handshake carries the user's
-     * real configuration. Defaults keep a freshly-paired ring logging until the store is read.
-     */
-    private var measurementSettings: MeasurementSettings = MeasurementSettings.ALL_ON_DEFAULT
-    private var userProfile = UserProfileValues(metric = true, gender = 0x02u, age = 0u, heightCm = 0u, weightKg = 0u)
+    private var measurementSettings = MeasurementSettings.ALL_ON_DEFAULT
+    private var userProfile = UserProfileValues(metric = true, gender = 0x02u, age = 25u, heightCm = 175u, weightKg = 70u)
+    private var requestActivityAfterStartupHistory = false
+    private var historyCapabilities = profile.baselineCapabilities
 
-    // MARK: Startup
-
-    override fun runStartup() {
-        for (command in YCBTEncoder.startupSequence(measurement = measurementSettings, profile = userProfile)) {
-            writer?.enqueue(command.toRawByteArray())
-        }
-        // The transfer machine writes the first `05 <type>` query itself and advances off the
-        // ring's terminal blocks. History steps arrive as an activity update (a per-day max
-        // ratchet) and history measurements upsert by (kind, timestamp), so a re-sync is already
-        // idempotent.
-        transfer.start(YCBTHistoryType.CATALOG)
+    companion object {
+        private val HISTORY_TYPES: List<YCBTHistoryType> = listOf(
+            YCBTHistoryType.SPORT, YCBTHistoryType.SLEEP, YCBTHistoryType.HEART,
+            YCBTHistoryType.BLOOD, YCBTHistoryType.ALL,
+            YCBTHistoryType.SPO2, YCBTHistoryType.TEMPERATURE,
+            YCBTHistoryType.COMPREHENSIVE, YCBTHistoryType.BODY_DATA,
+        )
+        private val VITALS_TYPES: List<YCBTHistoryType> = listOf(YCBTHistoryType.HEART, YCBTHistoryType.ALL)
     }
 
-    /** History is protocol-driven — nothing here advances it. */
-    override fun handle(event: RingDecodedEvent) {}
+    @Synchronized
+    override fun runStartup() {
+        requestActivityAfterStartupHistory = true
+        for (command in encoder.startupSequence(
+            measurement = measurementSettings,
+            profile = userProfile,
+            capabilities = historyCapabilities,
+            queryChipScheme = profile.queryChipSchemeAtStartup,
+            supportsBloodPressureMonitor = profile.supportsBloodPressureMonitor,
+        )) {
+            writer?.enqueue(command)
+        }
+        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES))
+    }
 
-    // MARK: All-day measurement config (the five `01 xx {enable, interval}` monitors)
+    @Synchronized
+    override fun handle(event: RingDecodedEvent) {
+        if (event is RingDecodedEvent.SupportFunctions) {
+            val previousTypes = supportedHistoryTypes(HISTORY_TYPES).toSet()
+            val previousCapabilities = historyCapabilities
+            historyCapabilities = profile.baselineCapabilities +
+                event.capabilities.intersect(profile.bitmapGatedCapabilities)
+            for (command in encoder.monitorCommands(
+                measurementSettings,
+                historyCapabilities - previousCapabilities,
+                profile.supportsBloodPressureMonitor,
+            )) {
+                writer?.enqueue(command)
+            }
+            val addedCapabilities = historyCapabilities - previousCapabilities
+            val newlySupported = supportedHistoryTypes(HISTORY_TYPES)
+                .filterNot(previousTypes::contains)
+                .toMutableList()
+            // ALL carries optional fields as well as baseline SpO2. If capability discovery lands
+            // after its first pass, fetch it once more so newly accepted values are not lost.
+            if (addedCapabilities.any {
+                    it == WearableCapability.BLOOD_PRESSURE ||
+                        it == WearableCapability.HRV ||
+                        it == WearableCapability.TEMPERATURE ||
+                        it == WearableCapability.BLOOD_SUGAR
+                }) {
+                newlySupported.add(YCBTHistoryType.ALL)
+            }
+            transfer.append(newlySupported)
+        }
+        // The early startup command enables live status while the ring is still processing its
+        // connect handshake. Some R10M firmware acknowledges it without immediately publishing
+        // the current cumulative activity. Ask once more after the startup history walk, when the
+        // connection is settled, so reconnect updates steps without requiring pull-to-refresh.
+        if (event is RingDecodedEvent.HistorySyncFinished && requestActivityAfterStartupHistory) {
+            requestActivityAfterStartupHistory = false
+            writer?.enqueue(encoder.enableLiveStatus())
+        }
+    }
+
+    @Synchronized
+    override fun refresh() {
+        // Ask for current cumulative activity before the slower multi-type history walk. Without
+        // this, pull-to-refresh can leave steps stale until an unsolicited live push arrives.
+        writer?.enqueue(encoder.enableLiveStatus())
+        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES))
+    }
+
+    @Synchronized
+    override fun querySleep() {
+        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)))
+    }
+
+    @Synchronized
+    override fun syncVitalsHistory() {
+        transfer.start(types = supportedHistoryTypes(VITALS_TYPES))
+    }
+
+    @Synchronized
+    override fun syncSleepNow() {
+        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)))
+    }
+
+    private fun supportedHistoryTypes(types: List<YCBTHistoryType>): List<YCBTHistoryType> =
+        types.filter { type ->
+            when (type) {
+                YCBTHistoryType.SPORT -> WearableCapability.STEPS in historyCapabilities
+                YCBTHistoryType.SLEEP -> WearableCapability.SLEEP in historyCapabilities
+                YCBTHistoryType.HEART -> WearableCapability.HEART_RATE in historyCapabilities
+                YCBTHistoryType.BLOOD -> WearableCapability.BLOOD_PRESSURE in historyCapabilities
+                YCBTHistoryType.ALL -> true
+                YCBTHistoryType.SPO2 -> WearableCapability.SPO2_HISTORY in historyCapabilities
+                YCBTHistoryType.TEMPERATURE -> WearableCapability.TEMPERATURE in historyCapabilities
+                YCBTHistoryType.COMPREHENSIVE -> WearableCapability.BLOOD_SUGAR in historyCapabilities
+                YCBTHistoryType.BODY_DATA ->
+                    WearableCapability.HRV in historyCapabilities ||
+                        WearableCapability.STRESS in historyCapabilities ||
+                        WearableCapability.FATIGUE in historyCapabilities
+                else -> false
+            }
+        }
 
     override fun setMeasurementSettings(settings: MeasurementSettings?) {
         if (settings != null) measurementSettings = settings
@@ -53,12 +133,14 @@ class YCBTSyncEngine(
 
     override fun applyMeasurementSettings(settings: MeasurementSettings) {
         measurementSettings = settings
-        for (command in YCBTEncoder.monitorCommands(settings)) {
-            writer?.enqueue(command.toRawByteArray())
+        for (command in encoder.monitorCommands(
+            settings,
+            historyCapabilities,
+            profile.supportsBloodPressureMonitor,
+        )) {
+            writer?.enqueue(command)
         }
     }
-
-    // MARK: User profile (`01 03`)
 
     override fun setUserProfile(profile: UserProfileValues) {
         userProfile = profile
@@ -66,63 +148,62 @@ class YCBTSyncEngine(
 
     override fun applyUserProfile(profile: UserProfileValues) {
         userProfile = profile
-        writer?.enqueue(YCBTEncoder.userInfo(profile).toRawByteArray())
+        writer?.enqueue(encoder.userInfo(profile))
     }
-
-    // MARK: Clock / battery
-
-    /** The ring's stored records are stamped from its own RTC in local wall-clock, so a timezone
-     *  change must be pushed or every subsequent record decodes to the wrong instant. */
-    override fun resyncTime() {
-        writer?.enqueue(YCBTEncoder.setTime(Instant.now()).toRawByteArray())
-    }
-
-    // MARK: Live actions (proprietary 06-stream on be940003, mode-selected by 03 2f)
 
     override fun startHeartRate() {
-        writer?.enqueue(YCBTEncoder.heartRateStart().toRawByteArray())
+        writer?.enqueue(encoder.heartRateStart())
     }
 
     override fun stopHeartRate() {
-        writer?.enqueue(YCBTEncoder.heartRateStop().toRawByteArray())
+        writer?.enqueue(encoder.heartRateStop())
     }
 
     override fun startSpO2() {
-        writer?.enqueue(YCBTEncoder.spo2Start().toRawByteArray())
+        writer?.enqueue(encoder.spo2Start())
     }
 
     override fun stopSpO2() {
-        writer?.enqueue(YCBTEncoder.spo2Stop().toRawByteArray())
+        writer?.enqueue(encoder.spo2Stop())
     }
 
-    /**
-     * "Measure now" (combined) drives the blood-pressure mode: it surfaces BP plus the HR the same
-     * sweep measures, on the shared `06 03` live-vitals frame. Unlike Colmi's single `0x24` combined
-     * command — which returns HR/BP/SpO2/stress/fatigue/bloodSugar/HRV all in one packet — YCBT's
-     * `03 2f` mode byte gates *which* fields the ring fills (BP mode fills SBP/DBP and zeroes HRV),
-     * so a single YCBT sweep cannot recover every metric simultaneously the way Colmi's can.
-     * Standalone HRV/temperature/stress/blood-sugar spot measurement rides the ring's own all-day
-     * monitors and history sync instead, matching this app's product surface (no dedicated
-     * "Measure HRV" screen exists on Android, unlike iOS's Vitals detail screens).
-     */
-    override fun startCombinedMeasurement() {
-        writer?.enqueue(YCBTEncoder.bloodPressureStart().toRawByteArray())
+    override fun startHRV() {
+        writer?.enqueue(encoder.hrvStart())
     }
 
-    override fun stopCombinedMeasurement() {
-        writer?.enqueue(YCBTEncoder.bloodPressureStop().toRawByteArray())
+    override fun stopHRV() {
+        writer?.enqueue(encoder.hrvStop())
+    }
+
+    override fun startBloodPressure() {
+        writer?.enqueue(encoder.bloodPressureStart())
+    }
+
+    override fun stopBloodPressure() {
+        writer?.enqueue(encoder.bloodPressureStop())
     }
 
     override fun findDevice() {
-        writer?.enqueue(YCBTEncoder.findDevice().toRawByteArray())
+        writer?.enqueue(encoder.findDevice())
     }
 
-    /** `SettingGoal 01 02` exists in the SDK but its payload shape is unverified for this ring;
-     *  PulseLoop persists the goal app-side regardless. */
-    override fun setGoal(steps: Int) {}
+    override fun setGoal(steps: Int) {
+        // Unverified for this ring; goal is persisted app-side.
+    }
 
-    /** No YCBT power-off/factory-reset opcode is implemented — neither TK5 nor SmartHealth-Colmi
-     *  declare these capabilities, so the buttons stay hidden and these are never invoked. */
     override fun powerOff() {}
     override fun factoryReset() {}
+    override fun startCombinedMeasurement() = startBloodPressure()
+    override fun stopCombinedMeasurement() = stopBloodPressure()
+
+    override fun resyncTime() {
+        writer?.enqueue(encoder.setTime())
+    }
+    override fun setUserInfo(ageYears: Int, isMale: Boolean, heightCm: Int, weightKg: Int) {}
+    override fun setBloodPressureAdjust(systolic: Int, diastolic: Int) {}
+    override fun setAppId(appId: String) {}
+    override fun setOnMeasurementConfigSeeded(callback: (MeasurementSettings) -> Unit) {}
+    override fun setOnBondRequested(callback: () -> Unit) {}
+
+    override fun handleRawNotify(data: ByteArray) {}
 }

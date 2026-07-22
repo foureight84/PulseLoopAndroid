@@ -44,6 +44,8 @@ import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.ring.RingConnectionState
+import com.pulseloop.ring.RingDeviceType
+import com.pulseloop.ring.WearableCapability
 import com.pulseloop.service.GlucoseUnit
 import com.pulseloop.service.MetricZone
 import com.pulseloop.service.RingSyncCoordinator
@@ -1170,6 +1172,11 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val db = remember { PulseLoopDatabase.getInstance(context) }
     val scope = rememberCoroutineScope()
     val device = db.deviceDao().currentFlow().collectAsState(initial = null).value
+    val capabilities = device?.capabilities.orEmpty()
+    val minimumInterval = if (device?.deviceType == RingDeviceType.YCBT) 30 else 5
+    val intervalSteps = ((60 - minimumInterval) / 5 - 1).coerceAtLeast(0)
+    val supportsStressSetting = WearableCapability.STRESS in capabilities &&
+        device?.deviceType != RingDeviceType.YCBT
 
     var cfgHrEnabled by remember { mutableStateOf(true) }
     var cfgHrInterval by remember { mutableStateOf(5) }
@@ -1180,13 +1187,16 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     var cfgLoaded by remember { mutableStateOf(false) }
     var cfgSavedMsg by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(device?.id) {
+    LaunchedEffect(device?.id, device?.capabilitiesRaw) {
         val id = device?.id ?: return@LaunchedEffect
-        db.deviceMeasurementConfigDao().byDevice(id)?.let { c ->
-            cfgHrEnabled = c.hrEnabled; cfgHrInterval = c.hrIntervalMinutes
-            cfgSpo2 = c.spo2Enabled; cfgStress = c.stressEnabled
-            cfgHrv = c.hrvEnabled; cfgTemp = c.temperatureEnabled
-        }
+        cfgLoaded = false
+        val config = db.deviceMeasurementConfigDao().byDevice(id)
+        cfgHrEnabled = config?.hrEnabled ?: true
+        cfgHrInterval = (config?.hrIntervalMinutes ?: minimumInterval).coerceIn(minimumInterval, 60)
+        cfgSpo2 = (config?.spo2Enabled ?: true) && WearableCapability.SPO2 in capabilities
+        cfgStress = (config?.stressEnabled ?: true) && supportsStressSetting
+        cfgHrv = (config?.hrvEnabled ?: true) && WearableCapability.HRV in capabilities
+        cfgTemp = (config?.temperatureEnabled ?: true) && WearableCapability.TEMPERATURE in capabilities
         cfgLoaded = true
     }
 
@@ -1227,16 +1237,24 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                         Slider(
                             enabled = cfgLoaded,
                             value = cfgHrInterval.toFloat(),
-                            onValueChange = { cfgHrInterval = ((it / 5).toInt() * 5).coerceIn(5, 60); cfgSavedMsg = null },
-                            valueRange = 5f..60f,
-                            steps = 10,  // 5-minute stops: 5, 10, …, 60
+                            onValueChange = { cfgHrInterval = ((it / 5).toInt() * 5).coerceIn(minimumInterval, 60); cfgSavedMsg = null },
+                            valueRange = minimumInterval.toFloat()..60f,
+                            steps = intervalSteps,
                         )
                     }
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    VitalToggle("Blood oxygen (SpO₂)", cfgSpo2) { cfgSpo2 = it }
-                    VitalToggle("Stress", cfgStress) { cfgStress = it }
-                    VitalToggle("HRV", cfgHrv) { cfgHrv = it }
-                    VitalToggle("Temperature", cfgTemp) { cfgTemp = it }
+                    if (WearableCapability.SPO2 in capabilities) {
+                        VitalToggle("Blood oxygen (SpO₂)", cfgSpo2) { cfgSpo2 = it }
+                    }
+                    if (supportsStressSetting) {
+                        VitalToggle("Stress", cfgStress) { cfgStress = it }
+                    }
+                    if (WearableCapability.HRV in capabilities) {
+                        VitalToggle("HRV", cfgHrv) { cfgHrv = it }
+                    }
+                    if (WearableCapability.TEMPERATURE in capabilities) {
+                        VitalToggle("Temperature", cfgTemp) { cfgTemp = it }
+                    }
 
                     Spacer(Modifier.height(12.dp))
                     Button(
@@ -1246,12 +1264,12 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                 db.deviceMeasurementConfigDao().upsert(
                                     com.pulseloop.data.entity.DeviceMeasurementConfigEntity(
                                         deviceId = device.id,
-                                        hrIntervalMinutes = cfgHrInterval,
+                                        hrIntervalMinutes = cfgHrInterval.coerceIn(minimumInterval, 60),
                                         hrEnabled = cfgHrEnabled,
-                                        spo2Enabled = cfgSpo2,
-                                        stressEnabled = cfgStress,
-                                        hrvEnabled = cfgHrv,
-                                        temperatureEnabled = cfgTemp,
+                                        spo2Enabled = cfgSpo2 && WearableCapability.SPO2 in capabilities,
+                                        stressEnabled = cfgStress && supportsStressSetting,
+                                        hrvEnabled = cfgHrv && WearableCapability.HRV in capabilities,
+                                        temperatureEnabled = cfgTemp && WearableCapability.TEMPERATURE in capabilities,
                                         updatedAt = System.currentTimeMillis(),
                                     )
                                 )
@@ -1297,6 +1315,8 @@ fun WearableSettingsScreen(
     val isConnected = bleState.connectionState == RingConnectionState.CONNECTED
     val supportsFactoryReset = bleState.activeCapabilities
         .contains(com.pulseloop.ring.WearableCapability.FACTORY_RESET)
+    val supportsFindDevice = bleState.activeCapabilities
+        .contains(com.pulseloop.ring.WearableCapability.FIND_DEVICE)
     var showFactoryReset by remember { mutableStateOf(false) }
     var resetting by remember { mutableStateOf(false) }
     var resetStatus by remember { mutableStateOf("") }
@@ -1359,14 +1379,16 @@ fun WearableSettingsScreen(
                         Spacer(Modifier.width(4.dp))
                         Text("Sync now")
                     }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = { coordinator?.findRing() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Filled.NotificationsActive, null, Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Find ring")
+                    if (supportsFindDevice) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { coordinator?.findRing() },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Filled.NotificationsActive, null, Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Find ring")
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(

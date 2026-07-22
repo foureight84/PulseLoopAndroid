@@ -1,118 +1,201 @@
 package com.pulseloop.ring
 
 import java.time.Instant
+import java.util.TimeZone
 
 /**
- * Ported from YCBTEncoder.swift (iOS #82).
- * Builds *logical* YCBT commands — `[type, cmd, payload...]` without the length field or CRC,
- * which `YCBTDriver.frame(_)` appends.
- *
- * The connect handshake is **parameterized**, not a captured byte replay: it mirrors the order the
- * SmartHealth app actually runs (`HomeFragment.getCompile` -> `syncSettingData`), with every
- * payload built from the SDK's own definitions and the user's real settings. The Setting-group
- * builders live in [YCBTSettingsEncoder], shared with the other YCBT families.
+ * Ported from YCBTEncoder.swift and YCBTSettingsEncoder.swift.
+ * Builds *logical* YCBT commands — [type, cmd, payload…] without the length field or CRC,
+ * which YCBTDriver.frame appends.
  */
-object YCBTEncoder {
-    /** Set the ring clock (`01 00`), including the Mon=0 weekday byte. */
-    fun setTime(instant: Instant = Instant.now()): List<UByte> = YCBTSettingsEncoder.setTime(instant)
 
-    /**
-     * The connect handshake, in the SmartHealth app's own order: clock -> device interrogation ->
-     * locale -> all-day monitors -> user profile -> live-status stream.
-     *
-     * **Never add these to it** — each was once here, and each was a different kind of wrong:
-     *   - **No `05 xx`.** The Health group is the *history* protocol: [YCBTHistoryTransfer] owns
-     *     those queries and a stray one here would race it. Worse, `05 40..4E` are the Health
-     *     **Delete** opcodes — they erase the ring's stored log. The five `01 xx {enable, interval}`
-     *     monitors below are what actually makes the ring *record* between syncs.
-     *   - **No `04 xx`.** Group 4 is DevControl, the *device->app* push channel. The app's only
-     *     legitimate `04` write is an ACK for a push it received (`YCBTDriver.acknowledgePush`).
-     */
+object YCBTSettingKey {
+    const val SET_TIME: Int = 0x00
+    const val USER_INFO: Int = 0x03
+    const val UNITS: Int = 0x04
+    const val HEART_MONITOR: Int = 0x0c
+    const val LANGUAGE: Int = 0x12
+    const val BLOOD_PRESSURE_MONITOR: Int = 0x1c
+    const val TEMPERATURE_MONITOR: Int = 0x20
+    const val BLOOD_OXYGEN_MONITOR: Int = 0x26
+    const val HRV_MONITOR: Int = 0x45
+}
+
+class YCBTSettingsEncoder {
+    companion object {
+        const val MINIMUM_INTERVAL_MINUTES = 30
+        const val DEFAULT_INTERVAL_MINUTES = 60
+
+        fun clampInterval(minutes: Int): Int {
+            if (minutes <= 0) return DEFAULT_INTERVAL_MINUTES
+            return minOf(255, maxOf(MINIMUM_INTERVAL_MINUTES, minutes))
+        }
+    }
+
+    /** 01 00 + [year:u16 LE][month][day][hour][min][sec][weekday]. Weekday is Mon=0 … Sun=6. */
+    fun setTime(date: Instant = Instant.now(), timeZone: TimeZone = TimeZone.getDefault()): ByteArray {
+        val calendar = java.util.Calendar.getInstance(timeZone).apply { time = java.util.Date(date.toEpochMilli()) }
+        val year = calendar.get(java.util.Calendar.YEAR)
+        val gregorianWeekday = calendar.get(java.util.Calendar.DAY_OF_WEEK) // 1=Sun, 2=Mon...
+        val weekday = if (gregorianWeekday == 1) 6 else gregorianWeekday - 2
+        return byteArrayOf(
+            YCBTGroup.SETTING.toByte(), YCBTSettingKey.SET_TIME.toByte(),
+            (year and 0xFF).toByte(), ((year shr 8) and 0xFF).toByte(),
+            (calendar.get(java.util.Calendar.MONTH) + 1).toByte(),
+            calendar.get(java.util.Calendar.DAY_OF_MONTH).toByte(),
+            calendar.get(java.util.Calendar.HOUR_OF_DAY).toByte(),
+            calendar.get(java.util.Calendar.MINUTE).toByte(),
+            calendar.get(java.util.Calendar.SECOND).toByte(),
+            weekday.toByte(),
+        )
+    }
+
+    /** 01 03 + [heightCm][weightKg][sex][age]. */
+    fun userInfo(profile: UserProfileValues): ByteArray {
+        return byteArrayOf(
+            YCBTGroup.SETTING.toByte(), YCBTSettingKey.USER_INFO.toByte(),
+            profile.heightCm.toByte(), profile.weightKg.toByte(),
+            (if (profile.gender == 0x01u.toUByte()) 1 else 0).toByte(),
+            profile.age.toByte(),
+        )
+    }
+
+    /** 01 04 + [distance][weight][temp][timeFormat][bloodSugar][uricAcid]. 0 = metric everywhere. */
+    fun units(metric: Boolean, is24Hour: Boolean = true): ByteArray {
+        val imperial = if (metric) 0 else 1
+        return byteArrayOf(
+            YCBTGroup.SETTING.toByte(), YCBTSettingKey.UNITS.toByte(),
+            imperial.toByte(), imperial.toByte(), imperial.toByte(),
+            (if (is24Hour) 0 else 1).toByte(),
+            0, 0,
+        )
+    }
+
+    /** 01 12 + [languageCode]. */
+    fun language(code: Int = 0): ByteArray {
+        return byteArrayOf(YCBTGroup.SETTING.toByte(), YCBTSettingKey.LANGUAGE.toByte(), code.toByte())
+    }
+
+    /** The five background samplers, each {enable, intervalMinutes}. */
+    fun monitorCommands(settings: MeasurementSettings): List<ByteArray> {
+        val interval = clampInterval(settings.hrIntervalMinutes).toByte()
+        return listOf(
+            heartMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
+            bloodPressureMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
+            temperatureMonitor(enabled = settings.temperatureEnabled, intervalMinutes = interval),
+            bloodOxygenMonitor(enabled = settings.spo2Enabled, intervalMinutes = interval),
+            hrvMonitor(enabled = settings.hrvEnabled, intervalMinutes = interval),
+        )
+    }
+
+    private fun heartMonitor(enabled: Boolean, intervalMinutes: Byte): ByteArray {
+        return byteArrayOf(YCBTGroup.SETTING.toByte(), YCBTSettingKey.HEART_MONITOR.toByte(), if (enabled) 1 else 0, intervalMinutes)
+    }
+
+    private fun bloodPressureMonitor(enabled: Boolean, intervalMinutes: Byte): ByteArray {
+        return byteArrayOf(YCBTGroup.SETTING.toByte(), YCBTSettingKey.BLOOD_PRESSURE_MONITOR.toByte(), if (enabled) 1 else 0, intervalMinutes)
+    }
+
+    private fun temperatureMonitor(enabled: Boolean, intervalMinutes: Byte): ByteArray {
+        return byteArrayOf(YCBTGroup.SETTING.toByte(), YCBTSettingKey.TEMPERATURE_MONITOR.toByte(), if (enabled) 1 else 0, intervalMinutes)
+    }
+
+    private fun bloodOxygenMonitor(enabled: Boolean, intervalMinutes: Byte): ByteArray {
+        return byteArrayOf(YCBTGroup.SETTING.toByte(), YCBTSettingKey.BLOOD_OXYGEN_MONITOR.toByte(), if (enabled) 1 else 0, intervalMinutes)
+    }
+
+    private fun hrvMonitor(enabled: Boolean, intervalMinutes: Byte): ByteArray {
+        return byteArrayOf(YCBTGroup.SETTING.toByte(), YCBTSettingKey.HRV_MONITOR.toByte(), if (enabled) 1 else 0, intervalMinutes, 0, 0, 0)
+    }
+}
+
+class YCBTEncoder {
+    private val settings = YCBTSettingsEncoder()
+
+    fun setTime(
+        date: Instant = Instant.now(),
+        timeZone: TimeZone = TimeZone.getDefault(),
+    ): ByteArray = settings.setTime(date, timeZone)
+
     fun startupSequence(
-        instant: Instant = Instant.now(),
         measurement: MeasurementSettings = MeasurementSettings.ALL_ON_DEFAULT,
-        profile: UserProfileValues = UserProfileValues(metric = true, gender = 0x02u, age = 0u, heightCm = 0u, weightKg = 0u),
-        languageCode: UByte = 0u,
+        profile: UserProfileValues = UserProfileValues(metric = true, gender = 0x02u, age = 25u, heightCm = 175u, weightKg = 70u),
+        languageCode: Int = 0,
         is24Hour: Boolean = true,
-    ): List<List<UByte>> {
-        val seq = mutableListOf<List<UByte>>()
-        seq.add(setTime(instant))
-        // Device interrogation. The 2-byte tags are cosmetic (the firmware ignores the payload of
-        // a Get) but we keep the app's exact bytes: they cost nothing and keep a byte-diff against
-        // a capture clean.
-        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, listOf(0x47u, 0x43u)))
-        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_SUPPORT_FUNCTION, listOf(0x47u, 0x46u)))
-        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_CHIP_SCHEME, emptyList()))
-        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_NAME, listOf(0x47u, 0x50u)))
-        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_USER_CONFIG, listOf(0x43u, 0x46u)))
-        seq.add(YCBTSettingsEncoder.language(languageCode))
-        seq.add(YCBTSettingsEncoder.units(metric = profile.metric, is24Hour = is24Hour))
-        seq.addAll(YCBTSettingsEncoder.monitorCommands(measurement))
-        seq.add(YCBTSettingsEncoder.userInfo(profile))
+        capabilities: Set<WearableCapability> = YCBTCoordinator.capabilities,
+        queryChipScheme: Boolean = false,
+        supportsBloodPressureMonitor: Boolean = false,
+    ): List<ByteArray> {
+        val seq = mutableListOf<ByteArray>()
+        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, byteArrayOf(0x47, 0x43)))
+        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_SUPPORT_FUNCTION, byteArrayOf(0x47, 0x46)))
+        // R10M closes an otherwise healthy connection with HCI 0x13 on this informational query.
+        if (queryChipScheme) {
+            seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_CHIP_SCHEME, byteArrayOf()))
+        }
+        seq.add(logical(YCBTGroup.GET, YCBTCommand.GET_USER_CONFIG, byteArrayOf(0x43, 0x46)))
+        seq.add(settings.language(languageCode))
+        seq.add(settings.units(metric = profile.metric, is24Hour = is24Hour))
+        seq.addAll(monitorCommands(measurement, capabilities, supportsBloodPressureMonitor))
+        seq.add(settings.userInfo(profile))
         seq.add(enableLiveStatus())
         return seq
     }
 
-    /** Re-push the all-day monitors without the rest of the handshake (the live "Save" path). */
-    fun monitorCommands(measurement: MeasurementSettings): List<List<UByte>> =
-        YCBTSettingsEncoder.monitorCommands(measurement)
+    /** Exact current SmartHealth sequence immediately after both indication CCCDs complete. */
+    fun postSubscriptionHandshake(date: Instant = Instant.now()): List<ByteArray> =
+        listOf(deviceNameRequest(), setTime(date))
 
-    /** Push the user's real height/weight/sex/age (`01 03`). */
-    fun userInfo(profile: UserProfileValues): List<UByte> = YCBTSettingsEncoder.userInfo(profile)
+    fun monitorCommands(
+        measurement: MeasurementSettings,
+        capabilities: Set<WearableCapability> = YCBTCoordinator.capabilities,
+        supportsBloodPressureMonitor: Boolean = false,
+    ): List<ByteArray> = settings.monitorCommands(measurement).filter { command ->
+        when (command[1].toInt() and 0xFF) {
+            YCBTSettingKey.HEART_MONITOR -> WearableCapability.HEART_RATE in capabilities
+            YCBTSettingKey.BLOOD_PRESSURE_MONITOR ->
+                supportsBloodPressureMonitor && WearableCapability.BLOOD_PRESSURE in capabilities
+            YCBTSettingKey.TEMPERATURE_MONITOR -> WearableCapability.TEMPERATURE in capabilities
+            YCBTSettingKey.BLOOD_OXYGEN_MONITOR -> WearableCapability.SPO2 in capabilities
+            YCBTSettingKey.HRV_MONITOR -> WearableCapability.HRV in capabilities
+            else -> false
+        }
+    }
 
-    /** Read device info (`02 00`) — battery and firmware come back in the reply. */
-    fun deviceInfoRequest(): List<UByte> = logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, listOf(0x47u, 0x43u))
+    fun userInfo(profile: UserProfileValues): ByteArray = settings.userInfo(profile)
 
-    /**
-     * Enable the ring's **live status auto-push** (`03 09 01 00 02`). Once sent, the ring streams
-     * `06 00` status frames (current step count / distance / calories) on be940003 continuously
-     * while connected. Without it the app only sees the one-time history dump, so today's live
-     * step count never updates. (`03 09 00 00 02` disables it.)
-     */
-    fun enableLiveStatus(): List<UByte> = logical(YCBTGroup.APP_CONTROL, YCBTCommand.LIVE_STATUS_PUSH, listOf(0x01u, 0x00u, 0x02u))
+    fun deviceInfoRequest(): ByteArray =
+        logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, byteArrayOf(0x47, 0x43))
 
-    // MARK: - Health history
+    fun deviceNameRequest(): ByteArray =
+        logical(YCBTGroup.GET, YCBTCommand.GET_DEVICE_NAME, byteArrayOf(0x47, 0x50))
 
-    /** Ask for one history type: `05 <queryKey>`, empty payload. */
-    fun healthHistoryRequest(type: YCBTHistoryType): List<UByte> = YCBTHealthCommand.historyRequest(type)
+    fun enableLiveStatus(): ByteArray =
+        logical(YCBTGroup.APP_CONTROL, YCBTCommand.LIVE_STATUS_PUSH, byteArrayOf(0x01, 0x00, 0x02))
 
-    /** The mandatory end-of-transfer ACK: `05 80 {00}` accepted / `{04}` CRC failure. */
-    fun historyBlockAck(status: UByte): List<UByte> = YCBTHealthCommand.historyBlockAck(status)
+    fun healthHistoryRequest(type: YCBTHistoryType): ByteArray =
+        YCBTHealthCommand.historyRequest(type)
 
-    // MARK: - Live actions
+    fun historyBlockAck(status: Int): ByteArray =
+        YCBTHealthCommand.historyBlockAck(status)
 
-    /**
-     * Live measurement start/stop via `03 2f` with a `[enable:1][mode:1]` payload. The **mode byte
-     * selects the sensor**: 0x00 heart rate (green LED) -> `06 01` stream, 0x01 blood pressure ->
-     * `06 03`, 0x02 SpO2 (red/IR LED) -> `06 02`, 0x0a HRV -> `06 03`. Using the wrong mode lights
-     * the wrong LED and yields no reading, so each metric must use its own start.
-     *
-     * **The stop echoes its own mode** — it is not mode-agnostic. Stopping an SpO2 sweep with mode
-     * 0 tells the ring to stop *heart rate*, leaving the SpO2 sweep running.
-     */
-    fun heartRateStart(): List<UByte> = liveMeasurement(enable = true, mode = YCBTMeasurementMode.HEART_RATE)
-    fun heartRateStop(): List<UByte> = liveMeasurement(enable = false, mode = YCBTMeasurementMode.HEART_RATE)
-    fun spo2Start(): List<UByte> = liveMeasurement(enable = true, mode = YCBTMeasurementMode.SPO2)
-    fun spo2Stop(): List<UByte> = liveMeasurement(enable = false, mode = YCBTMeasurementMode.SPO2)
-    fun hrvStart(): List<UByte> = liveMeasurement(enable = true, mode = YCBTMeasurementMode.HRV)
-    fun hrvStop(): List<UByte> = liveMeasurement(enable = false, mode = YCBTMeasurementMode.HRV)
-    fun bloodPressureStart(): List<UByte> = liveMeasurement(enable = true, mode = YCBTMeasurementMode.BLOOD_PRESSURE)
-    fun bloodPressureStop(): List<UByte> = liveMeasurement(enable = false, mode = YCBTMeasurementMode.BLOOD_PRESSURE)
+    fun heartRateStart(): ByteArray = liveMeasurement(enable = true, mode = YCBTMeasurementMode.HEART_RATE)
+    fun heartRateStop(): ByteArray = liveMeasurement(enable = false, mode = YCBTMeasurementMode.HEART_RATE)
+    fun spo2Start(): ByteArray = liveMeasurement(enable = true, mode = YCBTMeasurementMode.SPO2)
+    fun spo2Stop(): ByteArray = liveMeasurement(enable = false, mode = YCBTMeasurementMode.SPO2)
+    fun hrvStart(): ByteArray = liveMeasurement(enable = true, mode = YCBTMeasurementMode.HRV)
+    fun hrvStop(): ByteArray = liveMeasurement(enable = false, mode = YCBTMeasurementMode.HRV)
+    fun bloodPressureStart(): ByteArray = liveMeasurement(enable = true, mode = YCBTMeasurementMode.BLOOD_PRESSURE)
+    fun bloodPressureStop(): ByteArray = liveMeasurement(enable = false, mode = YCBTMeasurementMode.BLOOD_PRESSURE)
 
-    /**
-     * Find device — make the ring buzz (`03 00`), with the exact three payload bytes SmartHealth's
-     * own "find ring" button sends (`appFindDevice(1, 5, 2)`).
-     *
-     * **UNVERIFIED:** the SDK never names those three arguments, so replaying the app's literal
-     * values is the only way to be sure of the ring's response.
-     */
-    fun findDevice(): List<UByte> = logical(YCBTGroup.APP_CONTROL, YCBTCommand.FIND_DEVICE, listOf(0x01u, 0x05u, 0x02u))
+    fun findDevice(): ByteArray =
+        logical(YCBTGroup.APP_CONTROL, YCBTCommand.FIND_DEVICE, byteArrayOf(0x01, 0x05, 0x02))
 
-    // MARK: - Helpers
+    private fun liveMeasurement(enable: Boolean, mode: Int): ByteArray {
+        return logical(YCBTGroup.APP_CONTROL, YCBTCommand.LIVE_MEASUREMENT, byteArrayOf(if (enable) 1 else 0, mode.toByte()))
+    }
 
-    private fun liveMeasurement(enable: Boolean, mode: UByte): List<UByte> =
-        logical(YCBTGroup.APP_CONTROL, YCBTCommand.LIVE_MEASUREMENT, listOf(if (enable) 1u else 0u, mode))
-
-    private fun logical(group: UByte, cmd: UByte, payload: List<UByte>): List<UByte> =
-        listOf(group, cmd) + payload
+    private fun logical(group: Int, cmd: Int, payload: ByteArray): ByteArray {
+        return byteArrayOf(group.toByte(), cmd.toByte()) + payload
+    }
 }

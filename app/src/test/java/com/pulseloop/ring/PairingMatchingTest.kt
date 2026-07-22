@@ -22,12 +22,18 @@ class PairingMatchingTest {
         val types = RingDeviceType.entries.map { it.name }
         assertTrue(types.contains("JRING"))
         assertTrue(types.contains("COLMI_R02"))
+        assertTrue(types.contains("YCBT"))
+        assertTrue(types.contains("TK5"))
+        assertTrue(types.contains("COLMI_SMART_HEALTH"))
+        assertTrue(types.contains("LUCK_RING"))
+        assertTrue(types.contains("CRP"))
     }
 
     @Test
     fun `device type display names are meaningful`() {
         assertEquals("SMART_RING", RingDeviceType.JRING.displayName)
         assertEquals("Colmi / Yawell ring", RingDeviceType.COLMI_R02.displayName)
+        assertEquals("YCBT / SmartHealth ring", RingDeviceType.YCBT.displayName)
     }
 
     // ── Coordinator name matching (delegated to the WearableModel catalog, iOS #49) ────
@@ -46,7 +52,7 @@ class PairingMatchingTest {
 
     @Test
     fun `non-colmi names do not match`() {
-        for (name in listOf("SMART_RING", "Mi Band 5", "Galaxy Watch", "R0X_NOPE", "Random")) {
+        for (name in listOf("SMART_RING", "R10M FCF4", "Mi Band 5", "Galaxy Watch", "R0X_NOPE", "Random")) {
             assertFalse("did not expect Colmi match for $name", colmiMatches(name))
         }
     }
@@ -61,6 +67,54 @@ class PairingMatchingTest {
     fun `jring does not claim colmi names`() {
         assertFalse(JringCoordinator.matches("R02_A1B2", noAdv))
         assertTrue(JringCoordinator.matches("SMART_RING", noAdv))
+    }
+
+    @Test
+    fun `R10M is claimed only by YCBT`() {
+        for (name in listOf("R10M FCF4", "R10M_FCF4")) {
+            assertTrue(YCBTCoordinator.matches(name, noAdv))
+            assertFalse(ColmiCoordinator.matches(name, noAdv))
+            assertFalse(JringCoordinator.matches(name, noAdv))
+        }
+    }
+
+    @Test
+    fun `YCBT does not shadow uncataloged TK5 or SmartHealth-family names`() {
+        // YCBTCoordinator is registered ahead of TK5Coordinator/ColmiSmartHealthCoordinator, so it
+        // must claim only the R10M by name — never the other YCBT-family prefixes. An uncataloged
+        // TK5/SR0x/R0x unit has to fall through to its own coordinator's name/manufacturer fallback.
+        for (name in listOf("TK5_1234", "TK5 1234", "T50_1234", "SR09_1234", "SR08_1234", "R08 1234", "R09 1234")) {
+            assertFalse("YCBT should not claim $name by name", YCBTCoordinator.matches(name, noAdv))
+        }
+        // TK5's own fallback still recognizes the uncataloged unit.
+        assertTrue(TK5Coordinator.matches("TK5_1234", noAdv))
+    }
+
+    @Test
+    fun `YCBT still claims an R10M advertising only its proprietary service`() {
+        val adv = AdvertisementInfo(listOf(YCBTUUIDs.SERVICE), null)
+        assertTrue(YCBTCoordinator.matches("Unlabeled", adv))
+    }
+
+    @Test
+    fun `R10M catalog entry uses the discoverable retail name`() {
+        assertTrue(WearableModel.R10M in WearableModel.CATALOG)
+        assertEquals("LittleMeatball", WearableModel.R10M.brand)
+        assertEquals("LittleMeatball R10M", WearableModel.R10M.displayName)
+    }
+
+    @Test
+    fun `YCBT find device is enabled only by the support bitmap`() {
+        assertFalse(YCBTCoordinator.capabilities.contains(WearableCapability.FIND_DEVICE))
+        assertTrue(YCBTCoordinator.bitmapGatedCapabilities.contains(WearableCapability.FIND_DEVICE))
+        assertFalse(YCBTCoordinator.capabilities.contains(WearableCapability.SPO2_HISTORY))
+    }
+
+    @Test
+    fun `YCBT manufacturer marker does not override QRing service`() {
+        val manufacturer = byteArrayOf(0x10, 0x78)
+        assertFalse(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(emptyList(), manufacturer)))
+        assertFalse(YCBTCoordinator.matches("Unlabeled", AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V2), manufacturer)))
     }
 
     @Test
@@ -81,7 +135,7 @@ class PairingMatchingTest {
     @Test
     fun `catalog families all have a registered coordinator`() {
         val registeredTypes = setOf(
-            JringCoordinator.deviceType, ColmiCoordinator.deviceType,
+            JringCoordinator.deviceType, ColmiCoordinator.deviceType, YCBTCoordinator.deviceType,
             TK5Coordinator.deviceType, ColmiSmartHealthCoordinator.deviceType,
             LuckRingCoordinator.deviceType, CRPCoordinator.deviceType,
         )
@@ -109,6 +163,8 @@ class PairingMatchingTest {
             "R10_DEAD" to "yawell-r10",
             "R11_BEEF" to "yawell-r11",
             "H59_anything" to "h59",
+            "R10M FCF4" to "r10m",
+            "R10M_FCF4" to "r10m",
         )
         for ((name, modelID) in expected) {
             assertEquals(name, modelID, WearableModel.modelForAdvertisedName(name)?.id)

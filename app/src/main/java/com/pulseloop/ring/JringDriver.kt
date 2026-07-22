@@ -82,8 +82,9 @@ class JringDriver(private val writer: RingCommandWriter) : WearableDriver {
  */
 class JringSyncEngine(
     private val writer: RingCommandWriter?,
-    private val clock: JringClock,
+    private val clock: JringClock = JringClock(),
 ) : RingSyncEngine {
+    override val supportsCombinedMeasurement: Boolean = true
     private val encoder = RingEncoder
 
     /** The ring's self-reported feature bits (0x20 reply), or `null` if it never answered.

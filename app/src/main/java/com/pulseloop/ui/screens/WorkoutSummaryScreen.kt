@@ -554,4 +554,3 @@ private fun paceLabel(secPerUnit: Double, paceUnit: String): String {
     val total = Math.round(secPerUnit).toInt()
     return "%d:%02d %s".format(total / 60, total % 60, paceUnit)
 }
-

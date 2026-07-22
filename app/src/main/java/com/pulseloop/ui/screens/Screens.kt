@@ -69,8 +69,14 @@ fun VitalsScreen(
     //  • combined (56ff/Jring): one 0x23 packet → BP + SpO₂ + stress + fatigue + blood sugar
     //  • spot (Colmi): sequential live HR + SpO₂ via the real-time command (0x69)
     // Colmi has no BP/glucose hardware, so it never qualifies for the combined flow.
-    val combinedMode = state.supportsBP || state.supportsGlucose
-    val spotMode = !combinedMode && (state.supportsManualHr || state.supportsManualSpo2)
+    // Manual BP/glucose capability alone is not evidence of Jring's 0x23 combined packet.
+    // In particular YCBT/R10M advertises those vitals but requires sequential 03/2f modes;
+    // routing it to measureCombined() silently called a protocol no-op.
+    val combinedMode = coordinator?.supportsCombinedMeasurement == true &&
+        (state.supportsBP || state.supportsGlucose)
+    val spotMode = !combinedMode && (
+        state.supportsManualHr || state.supportsManualSpo2 || state.supportsBP
+    )
     val measureSeconds = if (combinedMode)
         com.pulseloop.service.RingSyncCoordinator.COMBINED_MEASURE_SECONDS
     else

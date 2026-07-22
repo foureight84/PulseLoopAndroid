@@ -72,7 +72,15 @@ object TK5Coordinator : WearableCoordinator {
 
     override val iconSystemName = "circle.circle.fill"
 
-    override fun makeDriver(writer: RingCommandWriter): WearableDriver = YCBTDriver(writer)
+    override fun makeDriver(writer: RingCommandWriter): WearableDriver = YCBTDriver(
+        writer,
+        YCBTFamilyProfile(
+            baselineCapabilities = capabilities,
+            bitmapGatedCapabilities = bitmapGatedCapabilities,
+            queryChipSchemeAtStartup = true,
+            supportsBloodPressureMonitor = true,
+        ),
+    )
 }
 
 /**
@@ -165,5 +173,13 @@ object ColmiSmartHealthCoordinator : WearableCoordinator {
 
     override val iconSystemName = "circle.circle.fill"
 
-    override fun makeDriver(writer: RingCommandWriter): WearableDriver = YCBTDriver(writer)
+    override fun makeDriver(writer: RingCommandWriter): WearableDriver = YCBTDriver(
+        writer,
+        YCBTFamilyProfile(
+            baselineCapabilities = capabilities,
+            bitmapGatedCapabilities = bitmapGatedCapabilities,
+            queryChipSchemeAtStartup = true,
+            supportsBloodPressureMonitor = true,
+        ),
+    )
 }

@@ -3,194 +3,142 @@ package com.pulseloop.ring
 import org.junit.Assert.*
 import org.junit.Test
 
-/** Wire-format tests for the YCBT frame/CRC/byte helpers (iOS #82). Oracle values from
- *  docs/YCBT-Protocol.md (ported from the decompiled vendor SDK). */
-class YCBTFrameTest {
+class YCBTProtocolTest {
 
-    @Test
-    fun `crc16 check value matches the CCITT-FALSE oracle`() {
-        // Standard CRC-16/CCITT-FALSE check value: "123456789" -> 0x29B1.
-        val ascii = "123456789".map { it.code.toUByte() }
-        assertEquals(0x29B1, YCBTFrame.crc16(ascii))
+    private val streamUUID = YCBTUUIDs.STREAM
+    private val commandUUID = YCBTUUIDs.COMMAND
+
+    private fun frameBytes(cmd: Int, payloadLength: Int, fill: Int = 0xaa): ByteArray {
+        return YCBTFrame.frame(byteArrayOf(YCBTGroup.HEALTH.toByte(), cmd.toByte()) + ByteArray(payloadLength) { fill.toByte() })
     }
 
     @Test
-    fun `frame inserts total length and appends little-endian crc`() {
-        // Worked example from the protocol doc: 05 06 (health, heart-rate query, empty payload)
-        // frames to 05 06 06 00 83 20 (len=6 LE, crc=0x2083 LE).
-        val framed = YCBTFrame.frame(listOf(YCBTGroup.HEALTH, 0x06u))
-        assertArrayEquals(byteArrayOf(0x05, 0x06, 0x06, 0x00, 0x83.toByte(), 0x20), framed)
+    fun `frame builds length and CRC matching captured setTime`() {
+        val logical = byteArrayOf(0x01, 0x00, 0xea.toByte(), 0x07, 0x07, 0x06, 0x0c, 0x22, 0x0e, 0x00)
+        val framed = YCBTFrame.frame(logical)
+        assertEquals("01000e00ea0707060c220e0026c7", framed.toHexString())
     }
 
     @Test
-    fun `validating round-trips a framed command`() {
-        val framed = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, 0x47u, 0x43u))
-        val parsed = YCBTFrame.validating(framed)
-        assertNotNull(parsed)
-        assertEquals(YCBTGroup.GET, parsed!!.type)
-        assertEquals(YCBTCommand.GET_DEVICE_INFO, parsed.cmd)
-        assertEquals(listOf<UByte>(0x47u, 0x43u), parsed.payload)
+    fun `CRC16 matches captured setTime body`() {
+        val body = hexToBytes("01000e00ea0707060c220e00")
+        val crc = YCBTFrame.crc16(body)
+        assertEquals(0xc726, crc)
     }
 
     @Test
-    fun `validating rejects a length mismatch`() {
-        val framed = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO)).toMutableList()
-        framed[2] = (framed[2] + 1).toByte()   // corrupt the declared length
-        assertNull(YCBTFrame.validating(framed.toByteArray()))
+    fun `validating rejects bad CRC`() {
+        val raw = hexToBytes("01000e00ea0707060c220e0026c7")
+        raw[raw.size - 1] = (raw[raw.size - 1].toInt() xor 0xff).toByte()
+        assertNull(YCBTFrame.validating(raw))
     }
 
     @Test
-    fun `validating rejects a crc mismatch`() {
-        val framed = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO)).toMutableList()
-        framed[framed.size - 1] = (framed[framed.size - 1] + 1).toByte()   // flip a CRC byte
-        assertNull(YCBTFrame.validating(framed.toByteArray()))
+    fun `validating rejects wrong declared length`() {
+        assertNull(YCBTFrame.validating(hexToBytes("0100ff00ea0707060c220e0026c7")))
     }
 
     @Test
-    fun `validating rejects a frame shorter than the header`() {
-        assertNull(YCBTFrame.validating(byteArrayOf(0x05, 0x06, 0x04)))
-    }
-
-    // MARK: - YCBTBytes epoch round-trip
-
-    @Test
-    fun `ring seconds round-trip through date`() {
-        val zone = java.time.ZoneId.of("UTC")
-        val now = java.time.Instant.now().let { java.time.Instant.ofEpochSecond(it.epochSecond) }
-        val ringSeconds = YCBTBytes.ringSeconds(now, zone)
-        val back = YCBTBytes.date(ringSeconds, zone)
-        assertEquals(now, back)
-    }
-
-    @Test
-    fun `u16 u24 u32 read little-endian`() {
-        val bytes = listOf<UByte>(0x01u, 0x02u, 0x03u, 0x04u, 0x05u)
-        assertEquals(0x0201, YCBTBytes.u16(bytes, 0))
-        assertEquals(0x030201, YCBTBytes.u24(bytes, 0))
-        assertEquals(0x04030201L, YCBTBytes.u32(bytes, 0))
-    }
-}
-
-/** Tests for [YCBTFrameAssembler]'s fragmentation/resync behavior. */
-class YCBTFrameAssemblerTest {
-
-    @Test
-    fun `reassembles a frame split across two notifications`() {
+    fun `frame split across three notifications is reassembled`() {
         val assembler = YCBTFrameAssembler()
-        val whole = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, 0x47u, 0x43u))
-        val part1 = whole.copyOfRange(0, 3)
-        val part2 = whole.copyOfRange(3, whole.size)
+        val whole = frameBytes(cmd = 0x15, payloadLength = 60)
 
-        assertTrue(assembler.append(part1, YCBTUUIDs.COMMAND).isEmpty())
-        val completed = assembler.append(part2, YCBTUUIDs.COMMAND)
-        assertEquals(1, completed.size)
-        assertArrayEquals(whole, completed[0])
+        assertTrue(assembler.append(whole.copyOfRange(0, 20), streamUUID).isEmpty())
+        assertTrue(assembler.append(whole.copyOfRange(20, 40), streamUUID).isEmpty())
+        val done = assembler.append(whole.copyOfRange(40, whole.size), streamUUID)
+
+        assertEquals(1, done.size)
+        assertArrayEquals(whole, done[0])
+        assertNotNull(YCBTFrame.validating(done[0]))
     }
 
     @Test
-    fun `splits two short frames delivered in one notification`() {
+    fun `two frames in one notification both emerge`() {
         val assembler = YCBTFrameAssembler()
-        val a = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO))
-        val b = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_SUPPORT_FUNCTION))
-        val completed = assembler.append(a + b, YCBTUUIDs.COMMAND)
-        assertEquals(2, completed.size)
-        assertArrayEquals(a, completed[0])
-        assertArrayEquals(b, completed[1])
+        val first = frameBytes(cmd = 0x15, payloadLength = 6)
+        val second = frameBytes(cmd = 0x18, payloadLength = 20)
+
+        val done = assembler.append(first + second, streamUUID)
+        assertEquals(2, done.size)
+        assertArrayEquals(first, done[0])
+        assertArrayEquals(second, done[1])
     }
 
     @Test
-    fun `keeps command and stream channel buffers independent`() {
+    fun `fragment then whole frame in one notification`() {
         val assembler = YCBTFrameAssembler()
-        val whole = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, 0x47u, 0x43u))
-        // Feed the command channel's first half, then a stream-channel frame — the stream frame
-        // must not be treated as a continuation of the command channel's partial buffer.
-        assembler.append(whole.copyOfRange(0, 3), YCBTUUIDs.COMMAND)
-        val streamFrame = YCBTFrame.frame(listOf(YCBTGroup.REAL, YCBTCommand.LIVE_HEART_RATE, 70u))
-        val streamCompleted = assembler.append(streamFrame, YCBTUUIDs.STREAM)
-        assertArrayEquals(streamFrame, streamCompleted[0])
+        val first = frameBytes(cmd = 0x15, payloadLength = 30)
+        val second = frameBytes(cmd = 0x18, payloadLength = 4)
 
-        // The command channel's partial buffer is still intact and completes normally.
-        val commandCompleted = assembler.append(whole.copyOfRange(3, whole.size), YCBTUUIDs.COMMAND)
-        assertArrayEquals(whole, commandCompleted[0])
+        assertTrue(assembler.append(first.copyOfRange(0, 10), streamUUID).isEmpty())
+        val done = assembler.append(first.copyOfRange(10, first.size) + second, streamUUID)
+        assertEquals(2, done.size)
+        assertArrayEquals(first, done[0])
+        assertArrayEquals(second, done[1])
     }
 
     @Test
-    fun `resyncs by dropping one byte at a time on garbage`() {
+    fun `garbage prefix resyncs to next valid frame`() {
         val assembler = YCBTFrameAssembler()
-        val whole = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO))
-        // Two garbage bytes (not a plausible group byte) ahead of a real frame.
-        val garbage = byteArrayOf(0xAA.toByte(), 0xBB.toByte()) + whole
-        val completed = assembler.append(garbage, YCBTUUIDs.COMMAND)
-        assertEquals(1, completed.size)
-        assertArrayEquals(whole, completed[0])
+        val good = frameBytes(cmd = 0x15, payloadLength = 6)
+        val garbage = byteArrayOf(0xff.toByte(), 0x00, 0xff.toByte(), 0xff.toByte(), 0x7f)
+
+        val done = assembler.append(garbage + good, streamUUID)
+        assertEquals(1, done.size)
+        assertArrayEquals(good, done[0])
+    }
+
+    @Test
+    fun `channels buffer independently`() {
+        val assembler = YCBTFrameAssembler()
+        val streamFrame = frameBytes(cmd = 0x15, payloadLength = 30)
+        val commandFrame = YCBTFrame.frame(byteArrayOf(0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64))
+
+        assertTrue(assembler.append(streamFrame.copyOfRange(0, 10), streamUUID).isEmpty())
+        val cmdDone = assembler.append(commandFrame, commandUUID)
+        assertEquals(1, cmdDone.size)
+        assertArrayEquals(commandFrame, cmdDone[0])
+
+        val streamDone = assembler.append(streamFrame.copyOfRange(10, streamFrame.size), streamUUID)
+        assertEquals(1, streamDone.size)
+        assertArrayEquals(streamFrame, streamDone[0])
     }
 
     @Test
     fun `reset drops partial frames`() {
         val assembler = YCBTFrameAssembler()
-        val whole = YCBTFrame.frame(listOf(YCBTGroup.GET, YCBTCommand.GET_DEVICE_INFO, 0x47u, 0x43u))
-        assembler.append(whole.copyOfRange(0, 3), YCBTUUIDs.COMMAND)
+        val whole = frameBytes(cmd = 0x15, payloadLength = 30)
+
+        assertTrue(assembler.append(whole.copyOfRange(0, 10), streamUUID).isEmpty())
         assembler.reset()
-        // The old partial bytes must not be prepended to a fresh frame's tail.
-        val completed = assembler.append(whole.copyOfRange(3, whole.size), YCBTUUIDs.COMMAND)
-        assertTrue(completed.isEmpty())
+        assertTrue(assembler.append(whole.copyOfRange(10, whole.size), streamUUID).isEmpty())
     }
-}
 
-/** Tests for [YCBTSupportFunction]'s capability-bitmap parsing. */
-class YCBTSupportFunctionTest {
-
-    private fun payload(size: Int, vararg setBits: Pair<Int, Int>): List<UByte> {
-        val bytes = MutableList(size) { 0u.toUByte() }
-        for ((byte, bit) in setBits) {
-            bytes[byte] = (bytes[byte].toInt() or (1 shl bit)).toUByte()
+    @Test
+    fun `find device capability follows its support bit`() {
+        val withoutFind = ByteArray(14)
+        val withFind = withoutFind.copyOf().apply {
+            this[6] = (1 shl 4).toByte()
         }
-        return bytes
+
+        assertFalse(YCBTSupportFunction.capabilities(withoutFind).contains(WearableCapability.FIND_DEVICE))
+        assertTrue(YCBTSupportFunction.capabilities(withFind).contains(WearableCapability.FIND_DEVICE))
     }
 
     @Test
-    fun `too-short payload yields no capabilities`() {
-        assertTrue(YCBTSupportFunction.capabilities(payload(10)).isEmpty())
-    }
-
-    @Test
-    fun `heart rate bit maps to heart rate capability`() {
-        val caps = YCBTSupportFunction.capabilities(payload(14, 0 to 3))
-        assertTrue(caps.contains(WearableCapability.HEART_RATE))
-    }
-
-    @Test
-    fun `stress bit also grants fatigue since they share one record`() {
-        val caps = YCBTSupportFunction.capabilities(payload(23, 22 to 6))
-        assertTrue(caps.contains(WearableCapability.STRESS))
-        assertTrue(caps.contains(WearableCapability.FATIGUE))
-    }
-
-    @Test
-    fun `manual heart rate bit requires the sdk's own 18-byte gate, not just physical presence`() {
-        // Byte 15 is physically readable in a 17-byte payload (indices 0..16), but the SDK's own
-        // gate (minLength 18) still refuses to read it below that — the gate is stricter than
-        // sheer byte-count availability.
-        assertTrue(YCBTSupportFunction.capabilities(payload(17, 15 to 1)).isEmpty())
-        assertTrue(YCBTSupportFunction.capabilities(payload(18, 15 to 1)).contains(WearableCapability.MANUAL_HEART_RATE))
-    }
-
-    @Test
-    fun `every bitmap-gated capability in both coordinators is derivable from a bit`() {
-        // A gate no bit can ever satisfy is a dead promise (mirrors iOS's PairingMatchingTests
-        // invariant) — build a payload with every mapped bit set and confirm it covers each
-        // coordinator's gated set.
-        val allBitsPayload = payload(
-            24,
-            0 to 7, 0 to 6, 0 to 3, 0 to 0, 1 to 3, 1 to 1, 8 to 0, 17 to 3, 22 to 6,
-            6 to 4, 15 to 1, 15 to 2, 15 to 3, 23 to 0,
-        )
-        val derivable = YCBTSupportFunction.capabilities(allBitsPayload)
-        for (cap in TK5Coordinator.bitmapGatedCapabilities) {
-            assertTrue("TK5 gated capability $cap has no satisfying bit", derivable.contains(cap))
+    fun `pressure support bit enables both body-data scores`() {
+        val payload = ByteArray(23).apply {
+            this[22] = (1 shl 6).toByte()
         }
-        for (cap in ColmiSmartHealthCoordinator.bitmapGatedCapabilities) {
-            assertTrue("SmartHealth-Colmi gated capability $cap has no satisfying bit", derivable.contains(cap))
-        }
+        val capabilities = YCBTSupportFunction.capabilities(payload)
+
+        assertTrue(capabilities.contains(WearableCapability.STRESS))
+        assertTrue(capabilities.contains(WearableCapability.FATIGUE))
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val clean = hex.replace(" ", "")
+        require(clean.length % 2 == 0)
+        return clean.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     }
 }

@@ -29,12 +29,6 @@ class EventPersistenceSubscriber(
     private var lastBatteryLogAt: Long? = null
     private val batteryMinIntervalMs = 30 * 60_000L
 
-    /** Identity of a history sample within one sync run — see [isDuplicateHistory]. */
-    private data class HistoryKey(val kind: String, val epochSecond: Long)
-    /** History samples already seen this sync. Cleared when a sync completes, so it can't grow
-     *  unbounded across a long-lived session. */
-    private val seenHistoryKeys = mutableSetOf<HistoryKey>()
-
     fun start() {
         if (job != null) return
         job = scope.launch {
@@ -62,6 +56,8 @@ class EventPersistenceSubscriber(
         is PulseEvent.HistoryMeasurement,
         is PulseEvent.StressSample,
         is PulseEvent.HrvSample,
+        is PulseEvent.BloodPressureSample,
+        is PulseEvent.BloodSugarSample,
         is PulseEvent.TemperatureSample,
         is PulseEvent.ActivityUpdate,
         is PulseEvent.ActivityBucket,
@@ -86,14 +82,16 @@ class EventPersistenceSubscriber(
                     RingConnectionState.CONNECTED -> {
                         db.measurementDao().clearDemo()
                         db.activityDailyDao().clearDemo()
-                        // Sessions rebuild from the ring on every connect. Blocks must be wiped
-                        // WITH them (no FK cascade at runtime): stale blocks keyed under an id a
-                        // rebuilt session reuses — e.g. rows from the pre-waking-day keying, which
-                        // filed a night's pre-midnight packets under what is now a different
-                        // night's id — would otherwise be merged into that night by
-                        // upsertSleepSession and corrupt its span and score.
-                        db.sleepStageBlockDao().clear()
-                        db.sleepSessionDao().clear()
+                        if (preservesSleepOnConnect(event.deviceType, existing?.deviceType)) {
+                            // YCBT status packets re-emit CONNECTED while history is still arriving.
+                            db.sleepStageBlockDao().clearDemo()
+                            db.sleepSessionDao().clearDemo()
+                        } else {
+                            // Packet-based families rebuild sleep on connect. Clear blocks with
+                            // sessions so legacy midnight-keyed blocks cannot contaminate a rebuild.
+                            db.sleepStageBlockDao().clear()
+                            db.sleepSessionDao().clear()
+                        }
                         "CONNECTED"
                     }
                     RingConnectionState.DISCONNECTED -> "DISCONNECTED"
@@ -131,15 +129,9 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.DeviceForgotten -> {
-                // Mirror iOS: forgetting clears the stored model identity (the row itself is
-                // cleared by the Forget flow; this covers a row that survives, e.g. offline forget).
-                db.deviceDao().currentReal()?.let { device ->
-                    db.deviceDao().upsert(device.copy(
-                        wearableModelID = null,
-                        advertisedName = null,
-                        updatedAt = System.currentTimeMillis(),
-                    ))
-                }
+                // This event is queued after all earlier ring events, so deleting here prevents a
+                // pre-forget CONNECTED event still in the bus from recreating the cleared row.
+                db.deviceDao().currentReal()?.let { db.deviceDao().deleteById(it.id) }
             }
             is PulseEvent.BatteryLevel -> {
                 val device = db.deviceDao().currentReal() ?: DeviceEntity()
@@ -167,11 +159,8 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.HistoryMeasurement -> {
-                // History rows are upserted on (kind, timestamp): a ring replays the same log
-                // every time we re-request a day, and the epochs it stamps are deterministic, so
-                // an exact-timestamp match is a valid identity.
-                if (isDuplicateHistory(event.kind.name, event.value, event.timestamp.toEpochMilli())) return
-                db.measurementDao().insert(MeasurementEntity(
+                db.measurementDao().upsert(MeasurementEntity(
+                    id = historyMeasurementId(event.kind, event.timestamp.toEpochMilli()),
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
                     timestamp = event.timestamp.toEpochMilli(),
@@ -179,28 +168,84 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.StressSample -> {
-                db.measurementDao().insert(MeasurementEntity(
+                val measurement = MeasurementEntity(
+                    id = if (event.isHistory) {
+                        historyMeasurementId(MeasurementKind.STRESS, event.timestamp.toEpochMilli())
+                    } else {
+                        java.util.UUID.randomUUID().toString()
+                    },
                     kindRaw = MeasurementKind.STRESS.name,
                     value = event.value.toDouble(), unit = "",
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "colmi",
-                ))
+                )
+                if (event.isHistory) db.measurementDao().upsert(measurement)
+                else db.measurementDao().insert(measurement)
             }
             is PulseEvent.HrvSample -> {
                 db.measurementDao().insert(MeasurementEntity(
                     kindRaw = MeasurementKind.HRV.name,
                     value = event.value.toDouble(), unit = "ms",
                     timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "colmi",
+                    sourceRaw = "live",
+                ))
+            }
+            is PulseEvent.BloodPressureSample -> {
+                db.withTransaction {
+                    val systolic = MeasurementEntity(
+                        id = if (event.isHistory) {
+                            historyMeasurementId(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, event.timestamp.toEpochMilli())
+                        } else {
+                            java.util.UUID.randomUUID().toString()
+                        },
+                        kindRaw = MeasurementKind.BLOOD_PRESSURE_SYSTOLIC.name,
+                        value = event.systolic.toDouble(), unit = "mmHg",
+                        timestamp = event.timestamp.toEpochMilli(),
+                        sourceRaw = if (event.isHistory) "history" else "live",
+                    )
+                    val diastolic = MeasurementEntity(
+                        id = if (event.isHistory) {
+                            historyMeasurementId(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC, event.timestamp.toEpochMilli())
+                        } else {
+                            java.util.UUID.randomUUID().toString()
+                        },
+                        kindRaw = MeasurementKind.BLOOD_PRESSURE_DIASTOLIC.name,
+                        value = event.diastolic.toDouble(), unit = "mmHg",
+                        timestamp = event.timestamp.toEpochMilli(),
+                        sourceRaw = if (event.isHistory) "history" else "live",
+                    )
+                    if (event.isHistory) {
+                        db.measurementDao().upsert(systolic)
+                        db.measurementDao().upsert(diastolic)
+                    } else {
+                        db.measurementDao().insert(systolic)
+                        db.measurementDao().insert(diastolic)
+                    }
+                }
+            }
+            is PulseEvent.BloodSugarSample -> {
+                db.measurementDao().insert(MeasurementEntity(
+                    kindRaw = MeasurementKind.BLOOD_SUGAR.name,
+                    value = event.mgdl,
+                    unit = MeasurementKind.BLOOD_SUGAR.unit,
+                    timestamp = event.timestamp.toEpochMilli(),
+                    sourceRaw = "live",
                 ))
             }
             is PulseEvent.TemperatureSample -> {
-                db.measurementDao().insert(MeasurementEntity(
+                val measurement = MeasurementEntity(
+                    id = if (event.isHistory) {
+                        historyMeasurementId(MeasurementKind.TEMPERATURE, event.timestamp.toEpochMilli())
+                    } else {
+                        java.util.UUID.randomUUID().toString()
+                    },
                     kindRaw = MeasurementKind.TEMPERATURE.name,
                     value = event.celsius, unit = "°C",
                     timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "colmi",
-                ))
+                    sourceRaw = "live",
+                )
+                if (event.isHistory) db.measurementDao().upsert(measurement)
+                else db.measurementDao().insert(measurement)
             }
             is PulseEvent.ActivityUpdate -> {
                 upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
@@ -213,7 +258,7 @@ class EventPersistenceSubscriber(
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.SleepTimeline -> {
-                upsertSleepSession(event.timestamp.toEpochMilli(), event.stages)
+                upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
             }
             is PulseEvent.SyncProgress -> {
                 // Only "done" (a history sync actually completed) stamps lastFullSyncAt — the
@@ -224,13 +269,13 @@ class EventPersistenceSubscriber(
                     if (device != null) {
                         db.deviceDao().upsert(device.copy(lastFullSyncAt = System.currentTimeMillis()))
                     }
-                    // The rows are committed by now; the next sync re-checks against the database.
-                    seenHistoryKeys.clear()
                     reconcileRecentlyFinishedWorkouts()
                 }
             }
             is PulseEvent.HeartRateComplete -> {}
             is PulseEvent.Spo2Complete -> {}
+            is PulseEvent.MeasurementRejected -> {} // Product orchestration only; no persistence.
+
             is PulseEvent.RawPacket -> {
                 db.rawPacketDao().insert(RawPacketEntity(
                     directionRaw = event.direction.name,
@@ -251,20 +296,6 @@ class EventPersistenceSubscriber(
                 // 0xF6 is never needed here. Kept as a decoded event purely for diagnostics.
             }
         }
-    }
-
-    /** True when this history sample is already stored (updating the existing row's value in
-     *  place). Two tiers: an in-process key set keeps the hot sync path off the database
-     *  entirely, and a single indexed fetch catches re-syncs across launches. */
-    private suspend fun isDuplicateHistory(kind: String, value: Double, timestampMs: Long): Boolean {
-        val key = HistoryKey(kind, timestampMs / 1000)
-        if (key in seenHistoryKeys) return true
-        seenHistoryKeys += key
-
-        val existing = db.measurementDao().findHistoryAt(kind, timestampMs) ?: return false
-        // Same slot, possibly refined value (the ring can revise an averaged block).
-        db.measurementDao().updateValue(existing.id, value)
-        return true
     }
 
     /**
@@ -327,6 +358,10 @@ class EventPersistenceSubscriber(
      * iOS (the GadgetBridge model). Calories intentionally untouched (unverified ring field).
      */
     private suspend fun applyActivityBucket(ts: Long, steps: Int, distanceM: Double) {
+        db.withTransaction { applyActivityBucketAtomic(ts, steps, distanceM) }
+    }
+
+    private suspend fun applyActivityBucketAtomic(ts: Long, steps: Int, distanceM: Double) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         db.activityBucketDao().upsert(ActivityBucketEntity(
             startEpoch = ts,
@@ -360,30 +395,41 @@ class EventPersistenceSubscriber(
         )
     }
 
-    private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>) {
-        if (stages.isEmpty()) return
+    private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
+        if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
+        db.withTransaction { upsertSleepSessionAtomic(ts, stages, completeSession) }
+    }
+
+    private suspend fun upsertSleepSessionAtomic(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
         // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
         // a night that starts before midnight lands under the morning of waking instead of being
         // split into two sessions at midnight. Matches the iOS reference
         // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
         val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
-
-        // The ring streams sleep as many 15-minute packets (a night in 0x39, daytime naps in 0x3E)
-        // that must be STITCHED, not overwritten. Gather every block already stored across the
-        // day's sessions, add this packet's, de-dup by absolute start time, then re-split the whole
-        // set into distinct sessions (main night vs. naps separated by a >= 60 min gap) via
-        // SleepSegmentation. Matches iOS reconcileWakingDay (PR #83).
-        val existing = db.sleepSessionDao().ringAllByDay(dayStart)
+        val packetEnd = ts + stages.size * 60_000L
+        // Include legacy rows keyed to the wrong day if they overlap this packet. Reconciliation
+        // re-points their surviving blocks to the correct waking day.
+        val overlapping = db.sleepSessionDao().ringOverlapping(ts, packetEnd)
+        val existing = (db.sleepSessionDao().ringAllByDay(dayStart) + overlapping).distinctBy { it.id }
         val existingBlocks =
             if (existing.isEmpty()) emptyList()
             else db.sleepStageBlockDao().forSessions(existing.map { it.id })
 
-        val byStart = LinkedHashMap<Long, SleepStageBlockEntity>()
-        for (b in existingBlocks) byStart[b.startAt] = b
-        // buildStageBlocks needs a sessionId, but reconcile re-points every block, so a placeholder
-        // is fine — only startAt/durationMinutes/stageRaw survive the re-point.
-        for (b in buildStageBlocks("", ts, stages)) byStart.putIfAbsent(b.startAt, b)
-        val dayBlocks = byStart.values.sortedBy { it.startAt }
+        // YCBT complete records are authoritative for their interval, including shortened
+        // revisions. Packet-based families replace only the packet interval. In both cases the
+        // unaffected blocks remain available for SleepSegmentation to preserve separate naps.
+        val replacements = buildStageBlocks("", ts, stages)
+        val dayBlocks = replaceOverlappingSleepBlocks(
+            existing = if (completeSession) {
+                val replacedSessionIds = overlapping.mapTo(mutableSetOf()) { it.id }
+                existingBlocks.filterNot { it.sessionId in replacedSessionIds }
+            } else {
+                existingBlocks
+            },
+            replacements = replacements,
+            replacementStart = ts,
+            replacementEnd = packetEnd,
+        )
 
         reconcileWakingDay(dayStart, existing, dayBlocks)
     }
@@ -546,6 +592,60 @@ class EventPersistenceSubscriber(
             else -> 40
         }
     }
+
+    private companion object {
+        const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+    }
+}
+
+internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
+    "history:${kind.key}:$timestamp"
+
+internal fun preservesSleepOnConnect(
+    eventDeviceType: RingDeviceType?,
+    persistedDeviceType: RingDeviceType? = null,
+): Boolean = when (eventDeviceType ?: persistedDeviceType) {
+    // All three identifiers use YCBTDriver and share its repeated status packets plus async
+    // history transfer. Packet-based Colmi/Jring/CRP families still clear and rebuild on connect.
+    RingDeviceType.YCBT, RingDeviceType.TK5, RingDeviceType.COLMI_SMART_HEALTH -> true
+    else -> false
+}
+
+internal fun shouldReplaceCompleteSleep(
+    existingStart: Long,
+    existingMinutes: Int,
+    incomingStart: Long,
+    incomingMinutes: Int,
+): Boolean = existingStart == incomingStart || incomingMinutes > existingMinutes
+
+internal fun replaceOverlappingSleepBlocks(
+    existing: List<SleepStageBlockEntity>,
+    replacements: List<SleepStageBlockEntity>,
+    replacementStart: Long,
+    replacementEnd: Long,
+): List<SleepStageBlockEntity> {
+    val byStart = LinkedHashMap<Long, SleepStageBlockEntity>()
+    for (block in existing) {
+        val blockEnd = block.startAt + block.durationMinutes * 60_000L
+        if (blockEnd <= replacementStart || block.startAt >= replacementEnd) {
+            byStart[block.startAt] = block
+            continue
+        }
+        if (block.startAt < replacementStart) {
+            byStart[block.startAt] = block.copy(
+                durationMinutes = ((replacementStart - block.startAt) / 60_000L).toInt(),
+            )
+        }
+        if (blockEnd > replacementEnd) {
+            byStart[replacementEnd] = block.copy(
+                id = "${block.id}:$replacementEnd",
+                startAt = replacementEnd,
+                durationMinutes = ((blockEnd - replacementEnd) / 60_000L).toInt(),
+            )
+        }
+    }
+    for (block in replacements) byStart[block.startAt] = block
+    return byStart.values.sortedBy { it.startAt }
 }
 
 // Extension for Set<WearableCapability> CSV from WearableCapability.kt

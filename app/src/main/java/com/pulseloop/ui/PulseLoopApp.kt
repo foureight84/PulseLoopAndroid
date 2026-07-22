@@ -39,6 +39,7 @@ import com.pulseloop.ui.components.AppHeader
 import com.pulseloop.ui.screens.*
 import com.pulseloop.ui.theme.PulseLoopTheme
 import com.pulseloop.ui.viewmodels.*
+import com.pulseloop.util.TimeUtil
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
@@ -196,6 +197,9 @@ fun PulseLoopApp() {
                 when (event) {
                     Lifecycle.Event.ON_START -> {
                         bgDisconnectJob?.cancel(); bgDisconnectJob = null
+                        todayVM.refreshCurrentDay()
+                        activityVM.refreshCurrentDay()
+                        sleepVM.refreshReferenceNight()
                         if (isFirstStart) isFirstStart = false else bleClient.reconnectIfNeeded()
                     }
                     Lifecycle.Event.ON_STOP -> {
@@ -215,6 +219,17 @@ fun PulseLoopApp() {
             onDispose {
                 bgDisconnectJob?.cancel()
                 lifecycleOwner.lifecycle.removeObserver(observer)
+            }
+        }
+
+        // Keep an app left open overnight on the current local-day Room query. Rechecking at most
+        // once a minute also catches wall-clock or timezone changes without a lifecycle edge.
+        LaunchedEffect(todayVM, activityVM, sleepVM) {
+            while (true) {
+                delay(TimeUtil.millisUntilNextLocalDay().coerceAtMost(60_000L))
+                todayVM.refreshCurrentDay()
+                activityVM.refreshCurrentDay()
+                sleepVM.refreshReferenceNight()
             }
         }
 

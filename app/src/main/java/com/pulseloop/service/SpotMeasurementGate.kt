@@ -19,14 +19,14 @@ import java.util.concurrent.atomic.AtomicInteger
 class SpotMeasurementGate {
     /** A handle to one in-flight spot measurement. Identity is [id], **not** the mode, so two
      *  flows that somehow ran the same mode at once still could not end or abort each other. */
-    data class Token internal constructor(internal val id: Int, val mode: UByte)
+    data class Token internal constructor(internal val id: Int, val mode: Int)
 
     /** The measurements currently mid-poll, and whether the ring has refused each. */
     private val inFlight = LinkedHashMap<Token, Boolean>()
     private val nextId = AtomicInteger(0)
 
     /** Arm the gate for one measurement and hand back its handle. */
-    fun begin(mode: UByte): Token {
+    fun begin(mode: Int): Token {
         val token = Token(nextId.getAndIncrement(), mode)
         inFlight[token] = false
         return token
@@ -44,7 +44,7 @@ class SpotMeasurementGate {
 
     /** The ring refused [mode]. Honoured only by the in-flight measurement(s) actually running
      *  it — a late reply for a mode nothing is polling is ignored. */
-    fun noteRejected(mode: UByte) {
+    fun noteRejected(mode: Int) {
         for (token in inFlight.keys) {
             if (token.mode == mode) inFlight[token] = true
         }
@@ -52,5 +52,5 @@ class SpotMeasurementGate {
 
     /** The modes currently mid-poll. Read by tests; the coordinator drives everything through
      *  tokens. */
-    val modesInFlight: Set<UByte> get() = inFlight.keys.map { it.mode }.toSet()
+    val modesInFlight: Set<Int> get() = inFlight.keys.map { it.mode }.toSet()
 }

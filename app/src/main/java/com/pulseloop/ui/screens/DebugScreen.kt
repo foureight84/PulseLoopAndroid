@@ -249,6 +249,9 @@ private fun labelFor(event: PulseEvent): String = when (event) {
     is PulseEvent.HeartRateComplete -> "HR Done"
     is PulseEvent.Spo2Result -> "SpO₂"
     is PulseEvent.Spo2Complete -> "SpO₂ Done"
+    is PulseEvent.MeasurementRejected -> "Measure Rejected"
+    is PulseEvent.BloodPressureSample -> "Blood Pressure"
+    is PulseEvent.BloodSugarSample -> "Glucose"
     is PulseEvent.HistoryMeasurement -> when (event.kind) {
         com.pulseloop.ring.MeasurementKind.HEART_RATE -> "HR History"
         com.pulseloop.ring.MeasurementKind.SPO2 -> "SpO₂ History"
@@ -260,7 +263,7 @@ private fun labelFor(event: PulseEvent): String = when (event) {
         com.pulseloop.ring.MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> "BP Dia"
         com.pulseloop.ring.MeasurementKind.BLOOD_SUGAR -> "Glucose"
         com.pulseloop.ring.MeasurementKind.RESPIRATORY_RATE -> "Resp Rate"
-        com.pulseloop.ring.MeasurementKind.VO2MAX -> "VO2max"
+        com.pulseloop.ring.MeasurementKind.VO2MAX -> "VO₂ max"
     }
     is PulseEvent.BatteryLevel -> "Battery"
     is PulseEvent.ActivityUpdate -> "Activity"
@@ -281,6 +284,7 @@ private fun labelFor(event: PulseEvent): String = when (event) {
 private fun detailFor(event: PulseEvent): String = when (event) {
     is PulseEvent.HeartRateSample -> "${event.bpm} bpm"
     is PulseEvent.Spo2Result -> "${event.value}%"
+    is PulseEvent.BloodSugarSample -> "${event.mgdl.toInt()} mg/dL"
     is PulseEvent.HistoryMeasurement -> "${event.value.toInt()} ${event.kind.unit}"
     is PulseEvent.BatteryLevel -> "${event.percent}%"
     is PulseEvent.ActivityUpdate -> "${event.steps} steps"
@@ -307,6 +311,7 @@ private fun hexDump(data: ByteArray): String {
 private fun colorFor(event: PulseEvent): Color = when (event) {
     is PulseEvent.HeartRateSample, is PulseEvent.HeartRateComplete -> Color(0xFFE53935)
     is PulseEvent.Spo2Result -> Color(0xFF1E88E5)
+    is PulseEvent.BloodSugarSample -> Color(0xFF00BCD4)
     is PulseEvent.HistoryMeasurement -> when (event.kind) {
         com.pulseloop.ring.MeasurementKind.HEART_RATE -> Color(0xFFE53935)
         com.pulseloop.ring.MeasurementKind.SPO2 -> Color(0xFF1E88E5)

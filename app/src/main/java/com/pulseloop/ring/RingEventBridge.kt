@@ -9,9 +9,13 @@ import java.time.temporal.ChronoUnit
  */
 object RingEventBridge {
     private val hrRange = 30..220
+    val spo2Range = 70..100
     private val stressRange = 1..100
     private val hrvRange = 1..300
     private val temperatureRange = 30.0..45.0
+    private val systolicRange = 60..250
+    private val diastolicRange = 30..150
+    private val bloodSugarRange = 20.0..600.0
     private const val maxBucketSteps = 5000
     private const val maxBucketDistance = 6000
 
@@ -36,7 +40,7 @@ object RingEventBridge {
             listOf(PulseEvent.Spo2Result(decoded.value, decoded._timestamp))
 
         is RingDecodedEvent.HistoryMeasurement -> {
-            if (decoded.kind_field == MeasurementKind.HEART_RATE && decoded.value.toInt() !in hrRange) emptyList()
+            if (!isPlausibleHistoryMeasurement(decoded.kind_field, decoded.value)) emptyList()
             // A ring's on-device log can still hold records stamped under a previous clock — e.g.
             // a jring that logged against a UTC RTC before the app started setting it to local
             // time. Those decode hours into the future. Drop anything outside the history horizon
@@ -47,7 +51,7 @@ object RingEventBridge {
 
         is RingDecodedEvent.StressSample -> {
             if (decoded.value !in stressRange) emptyList()
-            else listOf(PulseEvent.StressSample(decoded.value, decoded._timestamp))
+            else listOf(PulseEvent.StressSample(decoded.value, decoded._timestamp, decoded.isHistory))
         }
 
         is RingDecodedEvent.HrvSample -> {
@@ -57,7 +61,7 @@ object RingEventBridge {
 
         is RingDecodedEvent.TemperatureSample -> {
             if (decoded.celsius !in temperatureRange) emptyList()
-            else listOf(PulseEvent.TemperatureSample(decoded.celsius, decoded._timestamp))
+            else listOf(PulseEvent.TemperatureSample(decoded.celsius, decoded._timestamp, decoded.isHistory))
         }
 
         is RingDecodedEvent.HistorySyncProgress ->
@@ -68,7 +72,7 @@ object RingEventBridge {
 
         is RingDecodedEvent.SleepTimeline -> {
             if (!isWithinHistoryWindow(decoded._timestamp, now) || decoded.stages.isEmpty()) emptyList()
-            else listOf(PulseEvent.SleepTimeline(decoded._timestamp, decoded.stages))
+            else listOf(PulseEvent.SleepTimeline(decoded._timestamp, decoded.stages, decoded.completeSession))
         }
 
         is RingDecodedEvent.Battery -> {
@@ -94,21 +98,48 @@ object RingEventBridge {
         is RingDecodedEvent.BindNotify ->
             emptyList() // Bind/unbind handshake is driven in the sync engine / BLE client
 
-        is RingDecodedEvent.BandFunction ->
-            emptyList() // Consumed by JringSyncEngine directly; produces no PulseEvent
-
-        is RingDecodedEvent.SupportFunctions ->
-            emptyList() // Consumed by RingBLEClient to refine active capabilities; produces no PulseEvent
-
-        is RingDecodedEvent.ChipScheme ->
-            emptyList() // Diagnostic only
-
-        is RingDecodedEvent.WearingStatus ->
-            emptyList() // Debug-feed only; nothing gates on wear state yet
-
         is RingDecodedEvent.MeasurementRejected ->
-            emptyList() // A verdict on a command, not data — RingSyncCoordinator reads it off the
-                        // raw-packet feed (SpotMeasurementGate) to fast-fail the named measurement
+            listOf(PulseEvent.MeasurementRejected(decoded.mode))
+
+        is RingDecodedEvent.BandFunction,
+        is RingDecodedEvent.WearingStatus,
+        is RingDecodedEvent.SupportFunctions,
+        is RingDecodedEvent.ChipScheme ->
+            emptyList() // Debug-feed only; no product surface yet
+
+        is RingDecodedEvent.BloodPressureSample -> {
+            if (decoded.systolic in systolicRange && decoded.diastolic in diastolicRange) {
+                listOf(
+                    PulseEvent.BloodPressureSample(
+                        decoded.systolic,
+                        decoded.diastolic,
+                        decoded._timestamp,
+                        decoded.isHistory,
+                    )
+                )
+            } else emptyList()
+        }
+
+        is RingDecodedEvent.BloodSugarSample -> {
+            if (decoded.mgdl in bloodSugarRange) listOf(PulseEvent.BloodSugarSample(decoded.mgdl, decoded._timestamp))
+            else emptyList()
+        }
+    }
+
+    private fun isPlausibleHistoryMeasurement(kind: MeasurementKind, value: Double): Boolean {
+        if (!value.isFinite()) return false
+        return when (kind) {
+            MeasurementKind.HEART_RATE -> value.toInt() in hrRange
+            MeasurementKind.SPO2 -> value.toInt() in spo2Range
+            MeasurementKind.STRESS, MeasurementKind.FATIGUE -> value.toInt() in stressRange
+            MeasurementKind.HRV -> value.toInt() in hrvRange
+            MeasurementKind.TEMPERATURE -> value in temperatureRange
+            MeasurementKind.BLOOD_PRESSURE_SYSTOLIC -> value.toInt() in systolicRange
+            MeasurementKind.BLOOD_PRESSURE_DIASTOLIC -> value.toInt() in diastolicRange
+            MeasurementKind.BLOOD_SUGAR -> value in bloodSugarRange
+            MeasurementKind.RESPIRATORY_RATE -> value.toInt() in 5..60
+            MeasurementKind.VO2MAX -> value.toInt() in 1..100
+        }
     }
 
     /** Shared plausibility window: within the last ~8 days (the history horizon) and no more

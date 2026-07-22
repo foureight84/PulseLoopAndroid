@@ -65,6 +65,12 @@ data class WearableModel(
             requiresOsBond = true)
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
 
+        // YCBT / SmartHealth family (distinct protocol from QRing Colmi)
+        val R10M = ycbt(
+            "r10m", "LittleMeatball R10M", "LittleMeatball",
+            "^R10M[ _][0-9A-F]{4}$", R.drawable.ring_colmi_r10,
+        )
+
         /**
          * The **CRP-firmware** R11 — same physical ring as [COLMI_R11], but its official app is
          * Moyoung "Da Rings" and it speaks the proprietary `fdda` CRP protocol, not the Colmi/QRing
@@ -139,11 +145,24 @@ data class WearableModel(
             requiresOsBond = requiresOsBond,
         )
 
+        private fun ycbt(
+            id: String,
+            name: String,
+            brand: String,
+            pattern: String,
+            @DrawableRes imageRes: Int?,
+        ) = WearableModel(
+            id = id, displayName = name, brand = brand, family = RingDeviceType.YCBT,
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · BP · Sleep",
+            advertisedNamePatterns = listOf(pattern),
+            imageRes = imageRes,
+        )
+
         /** Every supported model. The pairing screen groups by brand and sorts each tab alphabetically. */
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
             COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59, TK5, LUCK_RING_TK18, COLMI_R11_CRP,
+            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
             COLMI_SMARTHEALTH,

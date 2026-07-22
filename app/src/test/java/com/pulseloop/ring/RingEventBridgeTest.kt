@@ -281,6 +281,65 @@ class RingEventBridgeTest {
     }
 
     @Test
+    fun `measurement rejection reaches product orchestration`() {
+        val events = RingEventBridge.eventsFor(
+            RingDecodedEvent.MeasurementRejected(YCBTMeasurementMode.SPO2), now
+        )
+        assertEquals(listOf(PulseEvent.MeasurementRejected(YCBTMeasurementMode.SPO2)), events)
+    }
+
+    @Test
+    fun `live blood pressure preserves live identity`() {
+        val events = RingEventBridge.eventsFor(
+            RingDecodedEvent.BloodPressureSample(118, 79, now), now
+        )
+
+        assertEquals(listOf(PulseEvent.BloodPressureSample(118, 79, now)), events)
+        assertFalse(events.any { it is PulseEvent.HistoryMeasurement })
+    }
+
+    @Test
+    fun `historical blood pressure and HRV retain history identity`() {
+        val systolic = RingEventBridge.eventsFor(
+            RingDecodedEvent.HistoryMeasurement(MeasurementKind.BLOOD_PRESSURE_SYSTOLIC, 130.0, now), now
+        ).single()
+        val hrv = RingEventBridge.eventsFor(
+            RingDecodedEvent.HistoryMeasurement(MeasurementKind.HRV, 55.0, now), now
+        ).single()
+
+        assertTrue(systolic is PulseEvent.HistoryMeasurement)
+        assertTrue(hrv is PulseEvent.HistoryMeasurement)
+        assertFalse(systolic is PulseEvent.BloodPressureSample)
+        assertFalse(hrv is PulseEvent.HrvSample)
+    }
+
+    @Test
+    fun `implausible historical measurements are dropped`() {
+        assertTrue(
+            RingEventBridge.eventsFor(
+                RingDecodedEvent.HistoryMeasurement(MeasurementKind.SPO2, 255.0, now), now
+            ).isEmpty()
+        )
+        assertTrue(
+            RingEventBridge.eventsFor(
+                RingDecodedEvent.HistoryMeasurement(MeasurementKind.TEMPERATURE, 255.0, now), now
+            ).isEmpty()
+        )
+        assertTrue(
+            RingEventBridge.eventsFor(
+                RingDecodedEvent.BloodPressureSample(255, 255, now, isHistory = true), now
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun `live blood sugar keeps live event identity`() {
+        val events = RingEventBridge.eventsFor(RingDecodedEvent.BloodSugarSample(99.0, now), now)
+
+        assertEquals(listOf(PulseEvent.BloodSugarSample(99.0, now)), events)
+    }
+
+    @Test
     fun `band function reply produces no output`() {
         val bf = RingDecodedEvent.BandFunction(JringBandCapabilities(byteArrayOf(0, 0, 0)))
         assertTrue(RingEventBridge.eventsFor(bf, now).isEmpty())

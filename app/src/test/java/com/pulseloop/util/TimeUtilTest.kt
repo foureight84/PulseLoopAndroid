@@ -84,4 +84,22 @@ class TimeUtilTest {
             TimeUtil.wakingDayLocal(morningPacket, zone),
         )
     }
+
+    @Test
+    fun `delay to midnight follows a normal local day`() {
+        val now = millis(LocalDateTime.of(2026, 7, 5, 23, 0))
+        assertEquals(3_600_000L, TimeUtil.millisUntilNextLocalDay(now, zone))
+    }
+
+    @Test
+    fun `delay from midnight spans the spring-forward day`() {
+        val now = millis(LocalDateTime.of(2026, 3, 8, 0, 0))
+        assertEquals(23 * 3_600_000L, TimeUtil.millisUntilNextLocalDay(now, zone))
+    }
+
+    @Test
+    fun `delay from midnight spans the fall-back day`() {
+        val now = millis(LocalDateTime.of(2026, 11, 1, 0, 0))
+        assertEquals(25 * 3_600_000L, TimeUtil.millisUntilNextLocalDay(now, zone))
+    }
 }

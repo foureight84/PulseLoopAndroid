@@ -8,6 +8,13 @@ fun interface RingCommandWriter {
     fun enqueue(command: ByteArray)
 }
 
+enum class SubscriptionMode { NOTIFICATION, INDICATION }
+
+data class RequiredSubscription(
+    val uuid: String,
+    val mode: SubscriptionMode,
+)
+
 /**
  * Ported from [WearableDriver] in WearableDriver.swift.
  * Connection + protocol handler for one wearable family.
@@ -20,6 +27,13 @@ interface WearableDriver {
     val batteryServiceUUID: String? get() = null
     val batteryCharUUID: String? get() = null
 
+    /** Channels that must be subscribed successfully before this driver is usable. Empty keeps
+     * legacy first-notify readiness for devices whose additional channels are optional. */
+    val requiredSubscriptionsBeforeConnected: List<RequiredSubscription> get() = emptyList()
+
+    /** Commands that must be placed directly after the final required CCCD write. */
+    fun immediatePostSubscriptionCommands(): List<ByteArray> = emptyList()
+
     /** Apply outbound framing. jring: identity. Colmi: pad to 15 + checksum. */
     fun frame(command: ByteArray): ByteArray
 
@@ -31,6 +45,10 @@ interface WearableDriver {
 
     /** Build the per-device sync engine. */
     fun makeSyncEngine(): RingSyncEngine
+
+    /** Reset connection-scoped protocol state. */
+    fun connectionDidStart() {}
+    fun connectionDidEnd() {}
 }
 
 /**
@@ -92,10 +110,23 @@ data class UserProfileValues(
  * Per-device orchestration of command flows.
  */
 interface RingSyncEngine {
+    /** True only for protocols with one native command that returns a combined vitals packet.
+     * Capability bits such as manual BP/glucose do not imply this transport feature. */
+    val supportsCombinedMeasurement: Boolean get() = false
+
     fun runStartup()
     fun handle(event: RingDecodedEvent)
 
-    /** On-demand, standalone sleep fetch — request just the sleep record without running the
+    /** User-requested refresh. Existing families historically replay their startup sync. */
+    fun refresh() = runStartup()
+
+    /** Legacy sleep query action. Existing families historically replay their startup sync. */
+    fun querySleep() = runStartup()
+
+    /** Refresh the recent vital series after a live workout without replaying all history. */
+    fun syncVitalsHistory() {}
+
+    /** On-screen, standalone sleep fetch — request just the sleep record without running the
      *  whole history pipeline (which buries sleep behind activity/HR/stress/SpO₂ and can lose it
      *  to a watchdog stage-skip). Mirrors the official QRing app, which fires a dedicated sleep
      *  request when its sleep screen opens. No-op on devices whose history sync isn't staged this
@@ -106,6 +137,10 @@ interface RingSyncEngine {
     fun measureHeartRateSpot() { startHeartRate() }
     fun startSpO2()
     fun stopSpO2()
+    fun startHRV() {}
+    fun stopHRV() {}
+    fun startBloodPressure() {}
+    fun stopBloodPressure() {}
     /** Combined measurement: HR + systolic + diastolic + SpO₂ + fatigue + stress + blood sugar + HRV. No-op if unsupported. */
     fun startCombinedMeasurement() {}
     fun stopCombinedMeasurement() {}
