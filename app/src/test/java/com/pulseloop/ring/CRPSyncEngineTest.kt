@@ -19,21 +19,47 @@ class CRPSyncEngineTest {
      *  HR/SpO2/HRV/stress, group 2 for temp/sleep — see CRPProtocol.queryHistory*. */
     private val historyQueries = listOf(7 to 4, 7 to 7, 7 to 6, 7 to 5, 2 to 48, 2 to 14)
 
+    /** The all-day monitor enables sent on connect (default ALL_ON): HR, HRV, stress, SpO2, temp —
+     *  see CRPSyncEngine.applyTimingSettings. Without these a fresh R11 records no history. */
+    private val timingEnables = listOf(1 to 6, 1 to 7, 1 to 39, 1 to 8, 1 to 13)
+
     @Test
-    fun `runStartup sends set-time, firmware query, user info, then the history pull`() {
+    fun `runStartup sends set-time, firmware query, user info, default monitor enables, then the history pull`() {
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)
         engine.runStartup()
-        // set-time, firmware query, then the history pull (no profile / no settings yet).
-        assertEquals(listOf(1 to 1, 7 to 1) + historyQueries, w.opcodes())
+        // set-time, firmware query, default-on monitor enables, then the history pull.
+        assertEquals(listOf(1 to 1, 7 to 1) + timingEnables + historyQueries, w.opcodes())
 
         w.sent.clear()
         engine.setUserProfile(
             UserProfileValues(metric = true, gender = 1u, age = 30u, heightCm = 180u, weightKg = 75u),
         )
         engine.runStartup()
-        // set-time, firmware query, set-user-info, then the history pull.
-        assertEquals(listOf(1 to 1, 7 to 1, 1 to 0) + historyQueries, w.opcodes())
+        // set-time, firmware query, set-user-info, monitor enables, then the history pull.
+        assertEquals(listOf(1 to 1, 7 to 1, 1 to 0) + timingEnables + historyQueries, w.opcodes())
+    }
+
+    @Test
+    fun `runStartup honours a saved config, disabling the vitals the user turned off`() {
+        val w = FakeWriter()
+        val engine = CRPSyncEngine(w)
+        engine.setMeasurementSettings(
+            MeasurementSettings(
+                hrEnabled = true, hrIntervalMinutes = 10,
+                spo2Enabled = false, stressEnabled = false, hrvEnabled = true, temperatureEnabled = false,
+            ),
+        )
+        engine.runStartup()
+        val opcodes = w.opcodes()
+        // Every monitor is addressed on connect (enable or disable), never skipped.
+        for (op in timingEnables) assertTrue("missing monitor op $op", opcodes.contains(op))
+        // HR (interval 10) and HRV are enabled; SpO2/stress/temp are disabled (payload byte 0).
+        fun payloadOf(group: Int, cmd: Int) = w.sent.first { it[4].toInt() == group && it[5].toInt() == cmd }[6].toInt()
+        assertEquals(10, payloadOf(1, 6))   // HR enabled at the saved interval
+        assertEquals(0, payloadOf(1, 8))    // SpO2 disabled
+        assertEquals(0, payloadOf(1, 39))   // stress disabled
+        assertEquals(0, payloadOf(1, 13))   // temp disabled
     }
 
     @Test
