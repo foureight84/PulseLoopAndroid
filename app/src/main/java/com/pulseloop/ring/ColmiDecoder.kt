@@ -174,7 +174,11 @@ object ColmiDecoder {
             val stress = v[i].toInt()
             if (stress == 0) return@mapNotNull null
             val ts = base.plusMinutes((minutesInPrevious + (i - startIndex) * slotMin).toLong()).toInstant()
-            RingDecodedEvent.StressSample(value = stress, _timestamp = ts)
+            RingDecodedEvent.StressSample(
+                value = stress,
+                _timestamp = ts,
+                isHistory = true,
+            )
         }
     }
 
@@ -329,7 +333,8 @@ object ColmiDecoder {
             if (raw > 0) {
                 events.add(RingDecodedEvent.TemperatureSample(
                     celsius = raw.toDouble() / 100.0,
-                    _timestamp = dayStart.plusMinutes((slot * interval).toLong()).toInstant()
+                    _timestamp = dayStart.plusMinutes((slot * interval).toLong()).toInstant(),
+                    isHistory = true,
                 ))
             }
             slot++
@@ -389,7 +394,8 @@ object ColmiDecoder {
                 if (raw > 0) {
                     events.add(RingDecodedEvent.TemperatureSample(
                         celsius = raw.toDouble() / 10.0 + 20.0,
-                        _timestamp = dayStart.plusMinutes((s * timeSpan).toLong()).toInstant()
+                        _timestamp = dayStart.plusMinutes((s * timeSpan).toLong()).toInstant(),
+                        isHistory = true,
                     ))
                 }
             }

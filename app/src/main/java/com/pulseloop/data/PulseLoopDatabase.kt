@@ -40,7 +40,7 @@ import com.pulseloop.data.entity.*
         BatterySampleEntity::class,
         CoachNotificationRecordEntity::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -205,7 +205,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
-        /** v12 → v13: make replayed sensor history idempotent across reconnects. */
+        /** v12 → v13: index replayed sensor-history identity without deleting valid collisions. */
         private val MIGRATION_12_13 = object : Migration(12, 13) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 // Feature APKs briefly used version 8 for this index before main assigned v8 to
@@ -222,21 +222,68 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     """.trimIndent()
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_battery_samples_timestamp` ON `battery_samples` (`timestamp`)")
-                db.execSQL(
-                    """
-                    DELETE FROM `measurements`
-                    WHERE rowid NOT IN (
-                        SELECT MAX(rowid)
-                        FROM `measurements`
-                        GROUP BY `kindRaw`, `timestamp`, `sourceRaw`
-                    )
-                    """.trimIndent()
-                )
-                db.execSQL(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_measurements_kindRaw_timestamp_sourceRaw` " +
-                        "ON `measurements` (`kindRaw`, `timestamp`, `sourceRaw`)"
-                )
+                adoptStableMeasurementIdentities(db)
             }
+        }
+
+        /** v13 → v14: replace the pre-review unique identity index without dropping rows. */
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                adoptStableMeasurementIdentities(db)
+            }
+        }
+
+        private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
+            db.execSQL(
+                "UPDATE `measurements` SET `sourceRaw` = 'live' " +
+                    "WHERE `sourceRaw` = 'colmi' AND `kindRaw` IN ('HRV', 'TEMPERATURE')"
+            )
+            listOf(
+                "HEART_RATE" to "hr",
+                "SPO2" to "spo2",
+                "STRESS" to "stress",
+                "FATIGUE" to "fatigue",
+                "HRV" to "hrv",
+                "TEMPERATURE" to "temp",
+                "BLOOD_PRESSURE_SYSTOLIC" to "bp_sys",
+                "BLOOD_PRESSURE_DIASTOLIC" to "bp_dia",
+                "BLOOD_SUGAR" to "glucose",
+                "RESPIRATORY_RATE" to "resp_rate",
+                "VO2MAX" to "vo2max",
+            ).forEach { (kind, key) ->
+                adoptStableMeasurementIdentity(db, kind = kind, source = "history", key = key)
+            }
+            adoptStableMeasurementIdentity(db, kind = "STRESS", source = "colmi", key = "stress")
+            adoptStableMeasurementIdentity(db, kind = "TEMPERATURE", source = "live", key = "temp")
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_measurements_kindRaw_timestamp_sourceRaw` " +
+                    "ON `measurements` (`kindRaw`, `timestamp`, `sourceRaw`)"
+            )
+        }
+
+        private fun adoptStableMeasurementIdentity(
+            db: SupportSQLiteDatabase,
+            kind: String,
+            source: String,
+            key: String,
+        ) {
+            db.execSQL(
+                """
+                UPDATE `measurements`
+                SET `id` = 'history:$key:' || `timestamp`
+                WHERE `kindRaw` = '$kind' AND `sourceRaw` = '$source'
+                  AND `rowid` IN (
+                      SELECT MIN(`rowid`) FROM `measurements`
+                      WHERE `kindRaw` = '$kind' AND `sourceRaw` = '$source'
+                      GROUP BY `timestamp`
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM `measurements` AS `existing`
+                      WHERE `existing`.`id` = 'history:$key:' || `measurements`.`timestamp`
+                  )
+                """.trimIndent()
+            )
         }
 
         fun getInstance(context: Context): PulseLoopDatabase =
@@ -258,6 +305,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_10_11,
                         MIGRATION_11_12,
                         MIGRATION_12_13,
+                        MIGRATION_13_14,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

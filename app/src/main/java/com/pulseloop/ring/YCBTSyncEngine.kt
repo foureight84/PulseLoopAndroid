@@ -6,7 +6,7 @@ package com.pulseloop.ring
  */
 
 class YCBTSyncEngine(
-    private var writer: RingCommandWriter?,
+    private val writer: RingCommandWriter?,
     private val transfer: YCBTHistoryTransfer,
     private val profile: YCBTFamilyProfile = YCBTFamilyProfile(
         baselineCapabilities = YCBTCoordinator.capabilities,

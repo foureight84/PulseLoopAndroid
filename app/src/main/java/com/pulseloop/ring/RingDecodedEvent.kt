@@ -261,7 +261,8 @@ sealed class RingDecodedEvent {
 
     data class StressSample(
         val value: Int,
-        val _timestamp: Instant
+        val _timestamp: Instant,
+        val isHistory: Boolean = false,
     ) : RingDecodedEvent() {
         override val kind = "stress_sample"
         override val confidence = DecodeConfidence.KNOWN
@@ -279,7 +280,8 @@ sealed class RingDecodedEvent {
 
     data class TemperatureSample(
         val celsius: Double,
-        val _timestamp: Instant
+        val _timestamp: Instant,
+        val isHistory: Boolean = false,
     ) : RingDecodedEvent() {
         override val kind = "temperature_sample"
         override val confidence = DecodeConfidence.KNOWN

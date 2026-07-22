@@ -25,11 +25,16 @@ class YCBTHistoryTransferTest {
         )
     }
 
-    private fun terminal(packets: Int, buffer: ByteArray, crc: Int? = null): ByteArray {
+    private fun terminal(
+        packets: Int,
+        buffer: ByteArray,
+        crc: Int? = null,
+        reportedBytes: Int = buffer.size,
+    ): ByteArray {
         val checksum = crc ?: YCBTFrame.crc16(buffer)
         return byteArrayOf(
             (packets and 0xFF).toByte(), (packets shr 8).toByte(),
-            (buffer.size and 0xFF).toByte(), ((buffer.size shr 8) and 0xFF).toByte(),
+            (reportedBytes and 0xFF).toByte(), ((reportedBytes shr 8) and 0xFF).toByte(),
             (checksum and 0xFF).toByte(), ((checksum shr 8) and 0xFF).toByte(),
         )
     }
@@ -123,6 +128,39 @@ class YCBTHistoryTransferTest {
     }
 
     @Test
+    fun `missing data frame nacks and retries the type once`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+        val firstFrame = heartBuffer.copyOfRange(0, 6)
+        transfer.start(types = listOf(YCBTHistoryType.HEART, YCBTHistoryType.ALL))
+
+        transfer.handle(cmd = 0x06, payload = header(records = 2, packets = 2, bytes = heartBuffer.size))
+        transfer.handle(cmd = 0x15, payload = firstFrame)
+        writer.sent.clear()
+
+        transfer.handle(
+            cmd = 0x80,
+            payload = terminal(packets = 2, buffer = firstFrame, reportedBytes = heartBuffer.size),
+        )
+
+        assertEquals(2, writer.sent.size)
+        assertArrayEquals(ackCrcFailure, writer.sent[0])
+        assertArrayEquals(heartQuery, writer.sent[1])
+
+        transfer.handle(cmd = 0x06, payload = header(records = 2, packets = 2, bytes = heartBuffer.size))
+        transfer.handle(cmd = 0x15, payload = firstFrame)
+        writer.sent.clear()
+        transfer.handle(
+            cmd = 0x80,
+            payload = terminal(packets = 2, buffer = firstFrame, reportedBytes = heartBuffer.size),
+        )
+
+        assertEquals(2, writer.sent.size)
+        assertArrayEquals(ackCrcFailure, writer.sent[0])
+        assertArrayEquals(allQuery, writer.sent[1])
+    }
+
+    @Test
     fun `no data header advances without acking`() {
         val writer = FakeWriter()
         val transfer = YCBTHistoryTransfer(writer = writer)
@@ -152,7 +190,7 @@ class YCBTHistoryTransferTest {
     }
 
     @Test
-    fun `late terminal from skipped type cannot corrupt the next transfer`() {
+    fun `late terminal from skipped type causes only a bounded retry`() {
         val writer = FakeWriter()
         val transfer = YCBTHistoryTransfer(writer = writer)
         val allBuffer = ByteArray(20) { it.toByte() }
@@ -166,7 +204,9 @@ class YCBTHistoryTransferTest {
         val events = transfer.handle(cmd = 0x80, payload = terminal(packets = 1, buffer = heartBuffer))
 
         assertTrue(events.isEmpty())
-        assertTrue(writer.sent.isEmpty())
+        assertEquals(2, writer.sent.size)
+        assertArrayEquals(ackCrcFailure, writer.sent[0])
+        assertArrayEquals(allQuery, writer.sent[1])
         assertTrue(transfer.isActive)
     }
 

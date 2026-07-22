@@ -14,7 +14,13 @@ import kotlinx.coroutines.launch
  * Typed events published on the bus for subscribers to consume.
  */
 sealed class PulseEvent {
-    data class DeviceStateChanged(val state: RingConnectionState, val address: String?, val firmware: String? = null, val name: String? = null) : PulseEvent()
+    data class DeviceStateChanged(
+        val state: RingConnectionState,
+        val address: String?,
+        val firmware: String? = null,
+        val name: String? = null,
+        val deviceType: RingDeviceType? = null,
+    ) : PulseEvent()
     /** Emitted on connect once the active wearable's type + capabilities are known (iOS #49 adds
      *  the exact catalog model + advertised name so persistence can stamp them on the device). */
     data class DeviceIdentified(
@@ -52,9 +58,9 @@ sealed class PulseEvent {
     ) : PulseEvent()
     data class BloodSugarSample(val mgdl: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class HistoryMeasurement(val kind: MeasurementKind, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
-    data class StressSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
+    data class StressSample(val value: Int, val timestamp: java.time.Instant, val isHistory: Boolean = false) : PulseEvent()
     data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
-    data class TemperatureSample(val celsius: Double, val timestamp: java.time.Instant) : PulseEvent()
+    data class TemperatureSample(val celsius: Double, val timestamp: java.time.Instant, val isHistory: Boolean = false) : PulseEvent()
     data class SleepTimeline(
         val timestamp: java.time.Instant,
         val stages: List<SleepStage>,
@@ -90,6 +96,9 @@ object PulseEventBus {
 
     /** Non-suspending publish for use from non-coroutine contexts (callbacks). */
     fun publishBlocking(event: PulseEvent) {
-        check(pending.trySend(event).isSuccess) { "Pulse event queue is closed" }
+        val result = pending.trySend(event)
+        if (result.isFailure) {
+            android.util.Log.e("PulseEventBus", "Pulse event queue rejected ${event.javaClass.simpleName}", result.exceptionOrNull())
+        }
     }
 }

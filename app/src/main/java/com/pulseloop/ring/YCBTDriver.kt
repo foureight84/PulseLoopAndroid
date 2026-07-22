@@ -91,11 +91,13 @@ class YCBTDriver(
                 YCBTGroup.DEV_CONTROL -> {
                     acknowledgePush(frame)
                     decoder.decode(frame).also { decoded ->
-                        // A real measurement value proves a start succeeded even if its command
-                        // reply was lost. Drop stale FIFO correlation before the next command.
+                        // A real measurement value proves that mode's start succeeded even if its
+                        // command reply was lost. Preserve unrelated pending correlations.
                         if (frame.cmd == YCBTDevControl.MEASUREMENT_STATUS &&
                             decoded.any { it !is RingDecodedEvent.CommandAck }) {
-                            pendingMeasurementReplies.clear()
+                            frame.payload.firstOrNull()?.let {
+                                pendingMeasurementReplies.discardStartedMode(it.toInt() and 0xFF)
+                            }
                         }
                     }
                 }
@@ -143,7 +145,8 @@ class YCBTDriver(
             MeasurementKind.STRESS -> WearableCapability.STRESS in capabilities
             MeasurementKind.FATIGUE -> WearableCapability.FATIGUE in capabilities
             MeasurementKind.TEMPERATURE -> WearableCapability.TEMPERATURE in capabilities
-            MeasurementKind.RESPIRATORY_RATE, MeasurementKind.VO2MAX -> false
+            // These have no support-function bits. Valid history values are data-gated in the UI.
+            MeasurementKind.RESPIRATORY_RATE, MeasurementKind.VO2MAX -> true
         }
         else -> true
     }
@@ -172,6 +175,21 @@ internal class PendingMeasurementReplies {
 
     @Synchronized
     fun consume(): Reply? = if (replies.isEmpty()) null else replies.removeFirst()
+
+    @Synchronized
+    fun discardStartedMode(mode: Int) {
+        val retained = ArrayDeque<Reply>()
+        var discarded = false
+        while (replies.isNotEmpty()) {
+            val reply = replies.removeFirst()
+            if (!discarded && reply.startedMode == mode) {
+                discarded = true
+            } else {
+                retained.addLast(reply)
+            }
+        }
+        replies.addAll(retained)
+    }
 
     @Synchronized
     fun clear() {

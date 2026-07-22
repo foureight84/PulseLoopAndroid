@@ -178,11 +178,9 @@ object YCBTMeasurementMode {
     const val HEART_RATE: Int = 0x00
     const val BLOOD_PRESSURE: Int = 0x01
     const val SPO2: Int = 0x02
-    const val RESPIRATORY_RATE: Int = 0x03
     const val TEMPERATURE: Int = 0x04
     const val BLOOD_SUGAR: Int = 0x05
     const val URIC_ACID: Int = 0x06
-    const val BLOOD_KETONE: Int = 0x07
     const val BLOOD_FAT: Int = 0x09
     const val HRV: Int = 0x0a
     const val STRESS: Int = 0x0c

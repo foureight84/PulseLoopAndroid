@@ -102,10 +102,9 @@ class RingSyncCoordinator(
          *  with no result — at 40s the outcome is a coin toss where the user watches the ring's
          *  red LED work and gets an error anyway. */
         const val SPO2_MEASURE_SECONDS = 60
-        /** Upper-bound for a sequential HR+SpO₂ spot measurement; drives the UI countdown.
+        /** Intentional UX upper bound for sequential HR + SpO₂ + BP + HRV; drives the countdown.
          *  Derived from the legs so the countdown can't desync when one is tuned. Post-#66 the
-         *  HR leg samples its full window by design (no early exit), so this is a real bound,
-         *  not slack. */
+         *  HR leg samples its full window by design, so this is a real bound, not slack. */
         const val BP_MEASURE_SECONDS = 40
         const val HRV_MEASURE_SECONDS = 40
         const val SPOT_MEASURE_SECONDS =
@@ -334,11 +333,18 @@ class RingSyncCoordinator(
      * cleanup (e.g. clearing the device row) without tying it to a screen's lifecycle.
      */
     fun forgetRing(onCleared: suspend () -> Unit) {
-        // client.forget() already sends the protocol unbind, waits for the ack, removes any
+        // client.forgetAndWait() sends the protocol unbind, waits for the ack, removes any
         // OS bond, and clears the stored peripheral. That is the whole forget.
         scope.launch {
-            client.forget()
-            onCleared()
+            stop()
+            client.forgetAndWait()
+            try {
+                onCleared()
+            } finally {
+                // The coordinator is process-long; resume its event collector so a ring paired
+                // without restarting the app still receives sync and measurement events.
+                start()
+            }
         }
     }
 
@@ -367,8 +373,13 @@ class RingSyncCoordinator(
                 // otherwise a slow queue silently swallows the wipe the user confirmed.
                 client.awaitOpsFlushed()
             }
-            client.forget()
-            onCleared()
+            stop()
+            client.forgetAndWait()
+            try {
+                onCleared()
+            } finally {
+                start()
+            }
         }
     }
 
@@ -477,11 +488,11 @@ class RingSyncCoordinator(
         engine?.startBloodPressure()
         var result: Pair<Int, Int>? = null
         try {
-            for (step in 0 until BP_MEASURE_SECONDS * 2) {
-                result = latestBloodPressure
-                if (result != null || bloodPressureNoReadingReported || spot.isRejected(spotToken)) break
-                delay(500)
-            }
+            result = pollForValue(
+                BP_MEASURE_SECONDS.toLong(),
+                { latestBloodPressure },
+                { bloodPressureNoReadingReported || spot.isRejected(spotToken) },
+            )
         } finally {
             spot.end(spotToken)
             engine?.stopBloodPressure()
@@ -535,11 +546,11 @@ class RingSyncCoordinator(
         }
     }
 
-    private suspend fun pollForValue(
+    private suspend fun <T> pollForValue(
         windowSec: Long,
-        value: () -> Int?,
+        value: () -> T?,
         abort: () -> Boolean,
-    ): Int? {
+    ): T? {
         val steps = (windowSec * 2).toInt()
         repeat(steps) {
             value()?.let { return it }

@@ -240,11 +240,12 @@ object YCBTHealthRecords {
         return "$integer.$fraction".toDoubleOrNull() ?: integer.toDouble()
     }
 
-    /** Digit-concatenated score (used for stress/fatigue on a 1…100 scale). */
+    /** UNVERIFIED: digit-concatenated score inferred for stress/fatigue on a 1…100 scale. */
     fun score(integer: Int, fraction: Int): Double {
         return "$integer$fraction".toDoubleOrNull() ?: integer.toDouble()
     }
 
+    // UNVERIFIED: hardware payloads look like tenths of mmol/L; no vendor ground truth yet.
     const val MGDL_PER_MMOL = 18.016
 
     fun bloodSugarMgdl(tenthsOfMmol: Int): Double {

@@ -67,40 +67,8 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertByIdentity(measurement: MeasurementEntity): Long
-
-    @Query("""
-        UPDATE measurements
-        SET value = :value, unit = :unit, confidenceRaw = :confidenceRaw,
-            activitySessionId = :activitySessionId, rawPacketId = :rawPacketId
-        WHERE kindRaw = :kindRaw AND timestamp = :timestamp AND sourceRaw = :sourceRaw
-    """)
-    suspend fun updateByIdentity(
-        kindRaw: String,
-        timestamp: Long,
-        sourceRaw: String,
-        value: Double,
-        unit: String,
-        confidenceRaw: String,
-        activitySessionId: String?,
-        rawPacketId: String?,
-    ): Int
-
-    @Transaction
-    suspend fun upsertByIdentity(measurement: MeasurementEntity) {
-        val updated = updateByIdentity(
-            kindRaw = measurement.kindRaw,
-            timestamp = measurement.timestamp,
-            sourceRaw = measurement.sourceRaw,
-            value = measurement.value,
-            unit = measurement.unit,
-            confidenceRaw = measurement.confidenceRaw,
-            activitySessionId = measurement.activitySessionId,
-            rawPacketId = measurement.rawPacketId,
-        )
-        if (updated == 0) insertByIdentity(measurement)
-    }
+    @Upsert
+    suspend fun upsert(measurement: MeasurementEntity)
 
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()

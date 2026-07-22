@@ -2,11 +2,26 @@ package com.pulseloop.service
 
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.ring.MeasurementKind
+import com.pulseloop.ring.RingDeviceType
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EventPersistenceIdentityTest {
+    @Test
+    fun `only YCBT protocol families preserve sleep on connect`() {
+        assertTrue(preservesSleepOnConnect(RingDeviceType.YCBT))
+        assertTrue(preservesSleepOnConnect(RingDeviceType.TK5))
+        assertTrue(preservesSleepOnConnect(RingDeviceType.COLMI_SMART_HEALTH))
+        assertTrue(preservesSleepOnConnect(null, RingDeviceType.YCBT))
+        assertTrue(preservesSleepOnConnect(RingDeviceType.YCBT, RingDeviceType.JRING))
+        assertFalse(preservesSleepOnConnect(RingDeviceType.JRING, RingDeviceType.YCBT))
+        assertFalse(preservesSleepOnConnect(RingDeviceType.COLMI_R02))
+        assertFalse(preservesSleepOnConnect(null))
+    }
+
     @Test
     fun `history identity is stable across repeated syncs`() {
         val timestamp = 1_721_234_567_000L

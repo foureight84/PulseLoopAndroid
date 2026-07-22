@@ -168,6 +168,22 @@ class YCBTDriverTest {
     }
 
     @Test
+    fun `measurement data preserves pending replies for other modes`() {
+        val driver = YCBTDriver(RingCommandWriter { })
+
+        driver.frame(byteArrayOf(0x03, 0x2f, 0x01, YCBTMeasurementMode.HEART_RATE.toByte()))
+        driver.frame(byteArrayOf(0x03, 0x2f, 0x01, YCBTMeasurementMode.SPO2.toByte()))
+        driver.ingest(
+            YCBTFrame.frame(byteArrayOf(0x04, 0x13, YCBTMeasurementMode.HEART_RATE.toByte(), 0, 72)),
+            streamUUID,
+        )
+
+        val refusal = driver.ingest(YCBTFrame.frame(byteArrayOf(0x03, 0x2f, 0x01)), streamUUID)
+
+        assertEquals(YCBTMeasurementMode.SPO2, (refusal.single() as RingDecodedEvent.MeasurementRejected).mode)
+    }
+
+    @Test
     fun `pending measurement replies preserve deterministic FIFO pairing`() {
         val replies = PendingMeasurementReplies()
         replies.record(YCBTMeasurementMode.HEART_RATE)

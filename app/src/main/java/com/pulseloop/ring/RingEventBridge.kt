@@ -51,7 +51,7 @@ object RingEventBridge {
 
         is RingDecodedEvent.StressSample -> {
             if (decoded.value !in stressRange) emptyList()
-            else listOf(PulseEvent.StressSample(decoded.value, decoded._timestamp))
+            else listOf(PulseEvent.StressSample(decoded.value, decoded._timestamp, decoded.isHistory))
         }
 
         is RingDecodedEvent.HrvSample -> {
@@ -61,7 +61,7 @@ object RingEventBridge {
 
         is RingDecodedEvent.TemperatureSample -> {
             if (decoded.celsius !in temperatureRange) emptyList()
-            else listOf(PulseEvent.TemperatureSample(decoded.celsius, decoded._timestamp))
+            else listOf(PulseEvent.TemperatureSample(decoded.celsius, decoded._timestamp, decoded.isHistory))
         }
 
         is RingDecodedEvent.HistorySyncProgress ->

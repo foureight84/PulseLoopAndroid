@@ -148,8 +148,11 @@ class YCBTHistoryTransfer(
         if (payload.size < YCBTHealth.TERMINAL_PAYLOAD_LENGTH) return advance()
         val packets = YCBTBytes.u16(payload, 0)
         val bytes = YCBTBytes.u16(payload, 2)
-        if (packets != expectedPackets || bytes != expectedBytes || bytes != buffer.size) {
-            return emptyList()
+        val terminalMatchesHeader = packets == expectedPackets && bytes == expectedBytes
+        val terminalMatchesBuffer = bytes == buffer.size
+        if (!terminalMatchesHeader || !terminalMatchesBuffer) {
+            writer?.enqueue(YCBTHealthCommand.historyBlockAck(status = YCBTHealth.ACK_CRC_FAILURE))
+            return retryOrSkip(type)
         }
         val expected = YCBTBytes.u16(payload, 4)
         val matches = YCBTFrame.crc16(buffer) == expected

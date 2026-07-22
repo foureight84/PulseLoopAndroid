@@ -112,9 +112,6 @@ class YCBTDecoder {
         val minor = p.getOrNull(2)?.toInt()?.and(0xFF)
         val firmware = if (major != null && minor != null) String.format("%d.%02d", major, minor) else null
         val events = mutableListOf<RingDecodedEvent>(RingDecodedEvent.Status(address = null, firmware = firmware))
-        if (major != null && minor != null) {
-            events.add(RingDecodedEvent.FirmwareVersion(version = major * 100 + minor))
-        }
         if (p.size >= 6) {
             events.add(RingDecodedEvent.Battery(percent = p[5].toInt() and 0xFF))
         }

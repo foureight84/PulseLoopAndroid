@@ -195,6 +195,7 @@ class ColmiDecoderTest {
         val events = ColmiDecoder.decodeBigData(frame, zone = zone)
         val temps = events.filterIsInstance<RingDecodedEvent.TemperatureSample>()
         assertEquals(35.0, temps.first().celsius, 0.01)
+        assertTrue(temps.first().isHistory)
     }
 
     @Test

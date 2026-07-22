@@ -49,7 +49,7 @@ data class DeviceEntity(
         Index("timestamp"),
         Index("activitySessionId"),
         Index("kindRaw"),
-        Index(value = ["kindRaw", "timestamp", "sourceRaw"], unique = true),
+        Index(value = ["kindRaw", "timestamp", "sourceRaw"]),
     ],
 )
 data class MeasurementEntity(
