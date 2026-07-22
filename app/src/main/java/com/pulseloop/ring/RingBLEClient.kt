@@ -1067,7 +1067,11 @@ class RingBLEClient(
                 // command then silence" failure. Time the op out and unblock the queue.
                 scope.launch {
                     delay(OP_TIMEOUT_MS)
-                    if (inFlightOp === op) {
+                    // Read under opLock: inFlightOp is written on the binder thread under the same
+                    // lock, and without it a completion landing right at the timeout could be
+                    // invisible here and trigger a spurious reconnect for an op that already retired.
+                    val stillInFlight = synchronized(opLock) { inFlightOp === op }
+                    if (stillInFlight) {
                         Log.w("RingBLEClient", "GATT op ACK timed out — unblocking queue: ${opLabel(op)}")
                         // Android does not identify a write callback beyond its characteristic.
                         // Two successive protocol writes use the same characteristic, so a late

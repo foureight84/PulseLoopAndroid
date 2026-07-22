@@ -28,6 +28,10 @@ class YCBTDriver(
         onOutOfBandEvents = ::handleOutOfBandEvents,
     )
     private val pendingMeasurementReplies = PendingMeasurementReplies()
+    // Written on the GATT thread (updateCapabilities / connectionDidStart/End) and read on the
+    // watchdog thread via handleOutOfBandEvents → isSupported. Single-reference assignment, so
+    // @Volatile is enough to publish it across threads without a lock.
+    @Volatile
     private var capabilities = profile.baselineCapabilities
 
     override val serviceUUIDs = listOf(YCBTUUIDs.SERVICE)

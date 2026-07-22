@@ -184,10 +184,17 @@ class YCBTHistoryTransfer(
         }
     }
 
-    @Synchronized
     private fun watchdogFired(type: YCBTHistoryType) {
-        if (state == State.IDLE || currentType != type) return
-        publishOutOfBand(advance())
+        // Advance the state machine under the lock, then publish OUTSIDE it. `onOutOfBandEvents`
+        // re-enters the sync engine (which in turn calls back into this transfer's `append`), so
+        // holding the transfer monitor while publishing inverts the engine→transfer lock order the
+        // GATT-callback path uses and can deadlock. The `handle()` path already returns its events
+        // to the caller for exactly this reason; the watchdog path must do the same.
+        val events = synchronized(this) {
+            if (state == State.IDLE || currentType != type) return
+            advance()
+        }
+        publishOutOfBand(events)
     }
 
     private fun cancelWatchdog() {

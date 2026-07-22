@@ -1,5 +1,6 @@
 package com.pulseloop.ring
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -86,7 +87,18 @@ object PulseEventBus {
 
     init {
         dispatchScope.launch {
-            for (event in pending) _events.emit(event)
+            // The bus is process-long and single-drained: an uncaught throw here would kill the
+            // dispatcher and silently stop every subscriber for the rest of the process (the
+            // SupervisorJob does not restart it). Isolate each emit so one bad event can't do that.
+            for (event in pending) {
+                try {
+                    _events.emit(event)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    android.util.Log.e("PulseEventBus", "Dropped ${event.javaClass.simpleName} on emit failure", t)
+                }
+            }
         }
     }
 

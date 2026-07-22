@@ -21,17 +21,21 @@ object YCBTCoordinator : WearableCoordinator {
             return model.family == deviceType && isSmartHealthName(name)
         }
 
+        // Only the R10M is claimed on name alone. This coordinator sits ahead of
+        // ColmiSmartHealthCoordinator/TK5Coordinator in the registry, so it must NOT match the
+        // other YCBT-family prefixes (TK5/T50/SR0x/R0x) by name — an uncataloged `TK5_xxxx` unit
+        // still relies on TK5Coordinator's own name/manufacturer fallback and must fall through.
+        // `YCBTUUIDs.SERVICE` (be940000) is the R10M's proprietary service and is not advertised by
+        // TK5 or the SmartHealth-Colmi rings, so it stays a safe positive signal here.
         val hasYcbtService = advertisement.serviceUUIDs.contains(YCBTUUIDs.SERVICE)
         val hasKnownName = isSmartHealthName(name)
-        // The 0x7810 manufacturer marker is common enough that it is corroborating
-        // evidence only, never sufficient to route an unknown peripheral.
         return hasYcbtService || hasKnownName
     }
 
     private fun isSmartHealthName(name: String?): Boolean {
         if (name == null) return false
         val normalized = name.trim().uppercase()
-        return Regex("^(?:R10M|TK5|T50|SR09|SR08|R08|R09)(?:[ _-][0-9A-Z]+)?$").matches(normalized)
+        return Regex("^R10M(?:[ _-][0-9A-Z]+)?$").matches(normalized)
     }
 
     override val capabilities = setOf(

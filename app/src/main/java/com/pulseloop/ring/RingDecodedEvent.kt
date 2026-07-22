@@ -247,9 +247,9 @@ sealed class RingDecodedEvent {
     /**
      * The ring **refused** to start the spot measurement we asked for (YCBT `03 2f` answered with a
      * non-zero status). `mode` is the measurement mode we started — the reply itself carries only a
-     * status byte, so the mode comes from the start `YCBTDriver` remembers sending. Produces no
-     * `PulseEvent`: it is a verdict on a command, not data — `RingSyncCoordinator` reads it off the
-     * raw-packet feed and aborts the matching in-flight measurement.
+     * status byte, so the mode comes from the start `YCBTDriver` remembers sending. `RingEventBridge`
+     * maps it to `PulseEvent.MeasurementRejected`, which `RingSyncCoordinator` consumes to abort the
+     * matching in-flight measurement.
      */
     data class MeasurementRejected(
         val mode: Int

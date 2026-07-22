@@ -79,6 +79,24 @@ class PairingMatchingTest {
     }
 
     @Test
+    fun `YCBT does not shadow uncataloged TK5 or SmartHealth-family names`() {
+        // YCBTCoordinator is registered ahead of TK5Coordinator/ColmiSmartHealthCoordinator, so it
+        // must claim only the R10M by name — never the other YCBT-family prefixes. An uncataloged
+        // TK5/SR0x/R0x unit has to fall through to its own coordinator's name/manufacturer fallback.
+        for (name in listOf("TK5_1234", "TK5 1234", "T50_1234", "SR09_1234", "SR08_1234", "R08 1234", "R09 1234")) {
+            assertFalse("YCBT should not claim $name by name", YCBTCoordinator.matches(name, noAdv))
+        }
+        // TK5's own fallback still recognizes the uncataloged unit.
+        assertTrue(TK5Coordinator.matches("TK5_1234", noAdv))
+    }
+
+    @Test
+    fun `YCBT still claims an R10M advertising only its proprietary service`() {
+        val adv = AdvertisementInfo(listOf(YCBTUUIDs.SERVICE), null)
+        assertTrue(YCBTCoordinator.matches("Unlabeled", adv))
+    }
+
+    @Test
     fun `R10M catalog entry uses the discoverable retail name`() {
         assertTrue(WearableModel.R10M in WearableModel.CATALOG)
         assertEquals("LittleMeatball", WearableModel.R10M.brand)
