@@ -54,11 +54,16 @@ class CRPFrameAssembler {
  */
 object CRPDecoder {
 
-    fun decode(data: ByteArray, from: String, now: Instant = Instant.now()): List<RingDecodedEvent> {
+    fun decode(
+        data: ByteArray,
+        from: String,
+        now: Instant = Instant.now(),
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): List<RingDecodedEvent> {
         val src = from.lowercase()
         return when {
             src.contains("fdd1") -> decodeCurrentSteps(data, now)
-            CRPProtocol.isFrameStart(data) -> decodeFramedReply(data, now)
+            CRPProtocol.isFrameStart(data) -> decodeFramedReply(data, now, zone)
             else -> emptyList()
         }
     }
@@ -77,7 +82,7 @@ object CRPDecoder {
      * Framed `fdd3` reply: `FD DA 10 <len> <group> <cmd> <payload>`.
      * Real-time vital results come on group 1; history queries on group 7; device info on group 7.
      */
-    private fun decodeFramedReply(frame: ByteArray, now: Instant): List<RingDecodedEvent> {
+    private fun decodeFramedReply(frame: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent> {
         if (frame.size < CRPProtocol.HEADER_SIZE) return emptyList()
         val group = frame[4].toInt() and 0xFF
         val cmd = frame[5].toInt() and 0xFF
@@ -98,7 +103,7 @@ object CRPDecoder {
         // non-empty capture pins the layout.
         if (group == CRPCommands.GROUP_HISTORY) {
             if (cmd == CRPCommands.CMD_QUERY_HISTORY_SLEEP) {
-                return decodeSleep(payload, now, ZoneId.systemDefault())
+                return decodeSleep(payload, now, zone)
             }
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
@@ -167,10 +172,19 @@ object CRPDecoder {
      * to a clean 01:07→08:05 night (245 light / 110 deep / 63 REM minutes).
      *
      * Emitted as one [RingDecodedEvent.SleepTimeline] whose `stages` list is one entry per minute
-     * (the shape [EventPersistenceSubscriber] expects), matching [ColmiDecoder.decodeSleep]. The
-     * session start is anchored on the wake day (`today - dayIndex`) using the same evening-rollover
-     * rule Colmi uses: a first record later in the clock than the last means the night began before
-     * midnight, so the start offset is pulled back a day.
+     * (the shape [EventPersistenceSubscriber] expects), matching [ColmiDecoder.decodeSleep].
+     *
+     * Two deliberate departures from the vendor:
+     *  - The vendor extends the final record's state to the current wall-clock when it isn't awake
+     *    (an in-progress sleep). We don't — a completed night always ends on an awake record (which
+     *    contributes no sleep), so the only case affected is a sync taken mid-sleep, where we'd
+     *    rather show the night up to the last recorded transition than invent minutes up to "now".
+     *  - Session-start anchoring is ours, not the vendor's (its parser keeps minute-of-day only and
+     *    lets the UI place the date from `dayIndex`). We anchor on the wake day (`today - dayIndex`)
+     *    with the same evening-rollover rule as Colmi: a first record later in the clock than the
+     *    last means the night began before midnight, so the offset is pulled back a day. NOTE: this
+     *    assumes `dayIndex` is the WAKE day — verified against a post-midnight capture; an
+     *    evening-start night is not yet capture-confirmed.
      */
     private fun decodeSleep(payload: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent> {
         // [dayIndex] + N*[state,hour,minute]; the vendor rejects any other shape outright.
@@ -189,13 +203,17 @@ object CRPDecoder {
             val state = payload[off].toInt() and 0xFF
             val hour = payload[off + 1].toInt() and 0xFF
             val minute = payload[off + 2].toInt() and 0xFF
-            if (prevState >= 0) {
-                // The segment ending at this record carries the PREVIOUS record's state.
-                val duration = sleepSegmentMinutes(prevHour, prevMinute, hour, minute)
-                if (duration in 1..MAX_SLEEP_MINUTES) {
-                    val stage = mapSleepState(prevState)
-                    repeat(duration) { stages.add(stage) }
-                }
+            // Guard against a corrupt record (byte is 0..255): a bad hour would otherwise anchor the
+            // whole night wrong and could allocate a giant per-minute list.
+            if (hour > 23 || minute > 59) continue
+            val duration = sleepSegmentMinutes(prevHour, prevMinute, hour, minute)
+            // A negative duration is an out-of-order record; the vendor skips it entirely without
+            // advancing its cursor, so neither the segment nor the anchor moves.
+            if (duration < 0) continue
+            // The segment ending at this record carries the PREVIOUS record's state.
+            if (prevState >= 0 && duration <= MAX_SLEEP_MINUTES) {
+                val stage = mapSleepState(prevState)
+                repeat(duration) { stages.add(stage) }
             }
             if (firstMinuteOfDay < 0) firstMinuteOfDay = hour * 60 + minute
             lastMinuteOfDay = hour * 60 + minute

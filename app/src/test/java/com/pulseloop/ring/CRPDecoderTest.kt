@@ -2,6 +2,8 @@ package com.pulseloop.ring
 
 import org.junit.Assert.*
 import org.junit.Test
+import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Unit tests for CRP inbound decoding + reassembly ([CRPDecoder], [CRPFrameAssembler]) and the
@@ -152,6 +154,29 @@ class CRPDecoderTest {
     fun `sleep reply with only the day byte yields no timeline`() {
         val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(0x00))
         assertTrue(CRPDecoder.decode(frame, fdd3).none { it is RingDecodedEvent.SleepTimeline })
+    }
+
+    @Test
+    fun `post-midnight night anchors on the query day`() {
+        // dayIndex 0, light @01:00 → awake @08:00 = 7h light, starting today at 01:00.
+        val payload = byteArrayOf(0, /*light*/1, 1, 0, /*awake*/0, 8, 0)
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, payload)
+        val now = Instant.parse("2026-07-22T11:00:00Z")
+        val timeline = CRPDecoder.decode(frame, fdd3, now, ZoneId.of("UTC")).single() as RingDecodedEvent.SleepTimeline
+        assertEquals(420, timeline.stages.size)
+        assertEquals(SleepStage.LIGHT, timeline.stages.first())
+        assertEquals(Instant.parse("2026-07-22T01:00:00Z"), timeline._timestamp)
+    }
+
+    @Test
+    fun `evening-start night rolls back before midnight`() {
+        // dayIndex 0, light @23:00 → awake @06:00 = 7h, so the night began the previous evening.
+        val payload = byteArrayOf(0, /*light*/1, 23, 0, /*awake*/0, 6, 0)
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, payload)
+        val now = Instant.parse("2026-07-22T11:00:00Z")
+        val timeline = CRPDecoder.decode(frame, fdd3, now, ZoneId.of("UTC")).single() as RingDecodedEvent.SleepTimeline
+        assertEquals(420, timeline.stages.size)
+        assertEquals(Instant.parse("2026-07-21T23:00:00Z"), timeline._timestamp)
     }
 
     @Test
