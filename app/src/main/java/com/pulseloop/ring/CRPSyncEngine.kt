@@ -34,8 +34,12 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         profile?.let { send(userInfoFrame(it)) }
         // Enable all-day vital monitoring. A fresh ring has these OFF, so without this the ring
         // stores no HR/SpO2/HRV/stress/temperature history and every history query below returns an
-        // empty reply (issue #29, zaggash's full-day capture). Default to ALL_ON until the user
-        // saves their own config, then honour it exactly.
+        // empty reply (issue #29, zaggash's full-day capture). When the user has saved a config we
+        // honour it exactly (interval included); until then we fall back to ALL_ON_DEFAULT, whose
+        // interval matches DeviceMeasurementConfigEntity's own default — i.e. the same app-wide
+        // sampling cadence every other ring uses, not a CRP-specific value. The Measurement Settings
+        // screen writes that config, and its interval flows straight back here via
+        // RingSyncCoordinator's loadMeasurementSettings.
         applyTimingSettings(measurementSettings ?: MeasurementSettings.ALL_ON_DEFAULT)
         // Pull the day's stored all-day timeline. runStartup() IS the poll pass (RingSyncWorker's
         // ~30-min background sync and the foreground syncNow() both re-invoke it), so this runs at

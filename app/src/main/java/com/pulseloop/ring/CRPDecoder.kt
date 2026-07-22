@@ -53,6 +53,12 @@ class CRPFrameAssembler {
  *   Other cmd values → command acknowledgment.
  */
 object CRPDecoder {
+    /** Longest plausible single sleep segment; a longer one is a corrupt record, not real sleep. */
+    private const val MAX_SLEEP_MINUTES = 24 * 60
+    /** Awake run that separates two sleep bouts (night vs nap) — matches the persistence layer. */
+    private const val SESSION_GAP_MINUTES = 60
+    /** CRPHistoryDay caps at 14 days ago; a larger dayIndex is a corrupt reply. */
+    private const val MAX_HISTORY_DAY = 14
 
     fun decode(
         data: ByteArray,
@@ -171,8 +177,11 @@ object CRPDecoder {
      * Confirmed against a hardware capture (issue #29): a `dayIndex 0` reply of 26 records decoded
      * to a clean 01:07→08:05 night (245 light / 110 deep / 63 REM minutes).
      *
-     * Emitted as one [RingDecodedEvent.SleepTimeline] whose `stages` list is one entry per minute
-     * (the shape [EventPersistenceSubscriber] expects), matching [ColmiDecoder.decodeSleep].
+     * Emitted as [RingDecodedEvent.SleepTimeline]s whose `stages` lists are one entry per minute
+     * (the shape [EventPersistenceSubscriber] expects), matching [ColmiDecoder.decodeSleep]. A day's
+     * reply can hold more than one sleep bout (a night plus a nap), so we split into a separate
+     * timeline at any awake run of [SESSION_GAP_MINUTES]+ (the same gap the persistence layer uses
+     * to separate sessions). Short mid-night wakes stay inside their bout as awake minutes.
      *
      * Two deliberate departures from the vendor:
      *  - The vendor extends the final record's state to the current wall-clock when it isn't awake
@@ -180,22 +189,28 @@ object CRPDecoder {
      *    contributes no sleep), so the only case affected is a sync taken mid-sleep, where we'd
      *    rather show the night up to the last recorded transition than invent minutes up to "now".
      *  - Session-start anchoring is ours, not the vendor's (its parser keeps minute-of-day only and
-     *    lets the UI place the date from `dayIndex`). We anchor on the wake day (`today - dayIndex`)
-     *    with the same evening-rollover rule as Colmi: a first record later in the clock than the
-     *    last means the night began before midnight, so the offset is pulled back a day. NOTE: this
-     *    assumes `dayIndex` is the WAKE day — verified against a post-midnight capture; an
+     *    lets the UI place the date from `dayIndex`). We anchor the FIRST record on the wake day
+     *    (`today - dayIndex`) with the same evening-rollover rule as Colmi — a first record later in
+     *    the clock than the last means the night began before midnight — then place every later bout
+     *    by its elapsed offset from that anchor, which carries naps onto the correct day for free.
+     *    NOTE: this assumes `dayIndex` is the WAKE day — verified against a post-midnight capture; an
      *    evening-start night is not yet capture-confirmed.
      */
     private fun decodeSleep(payload: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent> {
         // [dayIndex] + N*[state,hour,minute]; the vendor rejects any other shape outright.
         if (payload.size < 4 || payload.size % 3 != 1) return emptyList()
         val dayIndex = payload[0].toInt() and 0xFF
+        // CRPHistoryDay tops out at 14 days ago; a wilder value is a corrupt reply, not a real day.
+        if (dayIndex > MAX_HISTORY_DAY) return emptyList()
         val recordCount = (payload.size - 1) / 3
 
-        val stages = mutableListOf<SleepStage>()
+        // Pass 1: fold the records into monotonic transition points, each an elapsed-minute offset
+        // from the first valid record and the state that begins there. Out-of-order / corrupt
+        // records are skipped without advancing the cursor, matching the vendor's `iA >= 0` guard.
+        val transitions = mutableListOf<Transition>()
         var firstMinuteOfDay = -1
         var lastMinuteOfDay = 0
-        var prevState = -1
+        var elapsed = 0
         var prevHour = 0
         var prevMinute = 0
         for (k in 0 until recordCount) {
@@ -203,30 +218,55 @@ object CRPDecoder {
             val state = payload[off].toInt() and 0xFF
             val hour = payload[off + 1].toInt() and 0xFF
             val minute = payload[off + 2].toInt() and 0xFF
-            // Guard against a corrupt record (byte is 0..255): a bad hour would otherwise anchor the
-            // whole night wrong and could allocate a giant per-minute list.
             if (hour > 23 || minute > 59) continue
-            val duration = sleepSegmentMinutes(prevHour, prevMinute, hour, minute)
-            // A negative duration is an out-of-order record; the vendor skips it entirely without
-            // advancing its cursor, so neither the segment nor the anchor moves.
-            if (duration < 0) continue
-            // The segment ending at this record carries the PREVIOUS record's state.
-            if (prevState >= 0 && duration <= MAX_SLEEP_MINUTES) {
-                val stage = mapSleepState(prevState)
-                repeat(duration) { stages.add(stage) }
+            if (transitions.isEmpty()) {
+                firstMinuteOfDay = hour * 60 + minute
+                lastMinuteOfDay = firstMinuteOfDay
+                transitions.add(Transition(0, state))
+            } else {
+                val duration = sleepSegmentMinutes(prevHour, prevMinute, hour, minute)
+                if (duration < 0 || duration > MAX_SLEEP_MINUTES) continue
+                elapsed += duration
+                lastMinuteOfDay = hour * 60 + minute
+                transitions.add(Transition(elapsed, state))
             }
-            if (firstMinuteOfDay < 0) firstMinuteOfDay = hour * 60 + minute
-            lastMinuteOfDay = hour * 60 + minute
-            prevState = state
             prevHour = hour
             prevMinute = minute
         }
-        if (stages.isEmpty()) return emptyList()
+        if (transitions.size < 2) return emptyList()
 
+        // Anchor the first record; every bout is then just an offset from it.
         val startOffset = if (firstMinuteOfDay > lastMinuteOfDay) firstMinuteOfDay - 1440 else firstMinuteOfDay
         val wakeDay = now.atZone(zone).toLocalDate().minusDays(dayIndex.toLong())
-        val start = wakeDay.atStartOfDay(zone).plusMinutes(startOffset.toLong()).toInstant()
-        return listOf(RingDecodedEvent.SleepTimeline(_timestamp = start, stages = stages))
+        val anchor = wakeDay.atStartOfDay(zone).plusMinutes(startOffset.toLong()).toInstant()
+
+        // Pass 2: each transition's state runs until the next; split bouts on a long awake gap.
+        val events = mutableListOf<RingDecodedEvent>()
+        var boutStages = mutableListOf<SleepStage>()
+        var boutStartElapsed = 0
+        for (i in 0 until transitions.size - 1) {
+            val segment = transitions[i]
+            val duration = transitions[i + 1].elapsed - segment.elapsed
+            if (duration <= 0) continue
+            val stage = mapSleepState(segment.state)
+            if (stage == SleepStage.AWAKE && duration >= SESSION_GAP_MINUTES) {
+                emitSleepBout(events, anchor, boutStartElapsed, boutStages)
+                boutStages = mutableListOf()
+                continue
+            }
+            if (boutStages.isEmpty()) boutStartElapsed = segment.elapsed
+            repeat(duration) { boutStages.add(stage) }
+        }
+        emitSleepBout(events, anchor, boutStartElapsed, boutStages)
+        return events
+    }
+
+    private class Transition(val elapsed: Int, val state: Int)
+
+    /** Emit a bout as a SleepTimeline, unless it holds no actual sleep (awake-only). */
+    private fun emitSleepBout(into: MutableList<RingDecodedEvent>, anchor: Instant, startElapsed: Int, stages: List<SleepStage>) {
+        if (stages.none { it != SleepStage.AWAKE }) return
+        into.add(RingDecodedEvent.SleepTimeline(_timestamp = anchor.plusSeconds(startElapsed * 60L), stages = stages))
     }
 
     /** Minutes from a previous `hh:mm` to this one, wrapping across midnight (vendor `e1/j.a`). */
@@ -243,8 +283,6 @@ object CRPDecoder {
         3 -> SleepStage.REM
         else -> SleepStage.UNKNOWN
     }
-
-    private const val MAX_SLEEP_MINUTES = 24 * 60
 
     /** Little-endian unsigned 3-byte int at [offset]. */
     private fun le3(data: ByteArray, offset: Int): Int =

@@ -180,6 +180,33 @@ class CRPDecoderTest {
     }
 
     @Test
+    fun `a night and a nap split into separate sessions on the long awake gap`() {
+        // light 01:00→03:00 (2h), awake 03:00→05:00 (2h ≥ gap → split), light 05:00→06:00 (nap), awake.
+        val payload = byteArrayOf(0, 1, 1, 0, 0, 3, 0, 1, 5, 0, 0, 6, 0)
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, payload)
+        val now = Instant.parse("2026-07-22T12:00:00Z")
+        val events = CRPDecoder.decode(frame, fdd3, now, ZoneId.of("UTC")).filterIsInstance<RingDecodedEvent.SleepTimeline>()
+        assertEquals(2, events.size)
+        assertEquals(120, events[0].stages.size)
+        assertEquals(Instant.parse("2026-07-22T01:00:00Z"), events[0]._timestamp)
+        assertEquals(60, events[1].stages.size)
+        assertEquals(Instant.parse("2026-07-22T05:00:00Z"), events[1]._timestamp)
+    }
+
+    @Test
+    fun `a brief mid-night wake stays inside one session`() {
+        // light 60m + awake 30m (< gap, kept) + deep 90m = one 180-minute session.
+        val payload = byteArrayOf(0, 1, 1, 0, 0, 2, 0, 2, 2, 30, 0, 4, 0)
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, payload)
+        val now = Instant.parse("2026-07-22T12:00:00Z")
+        val timeline = CRPDecoder.decode(frame, fdd3, now, ZoneId.of("UTC")).single() as RingDecodedEvent.SleepTimeline
+        assertEquals(180, timeline.stages.size)
+        assertEquals(60, timeline.stages.count { it == SleepStage.LIGHT })
+        assertEquals(30, timeline.stages.count { it == SleepStage.AWAKE })
+        assertEquals(90, timeline.stages.count { it == SleepStage.DEEP })
+    }
+
+    @Test
     fun `malformed sleep reply length is rejected`() {
         // 4 payload bytes ⇒ length % 3 != 1, which the vendor parser refuses.
         val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(0x00, 0x01, 0x02, 0x03))
