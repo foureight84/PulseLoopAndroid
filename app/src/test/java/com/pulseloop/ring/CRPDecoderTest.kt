@@ -124,4 +124,43 @@ class CRPDecoderTest {
         assertTrue(driver.ingest(full.copyOfRange(0, 4), fdd3).isEmpty())
         assertEquals(1, driver.ingest(full.copyOfRange(4, full.size), fdd3).size)
     }
+
+    // ── Sleep history (group 2 / cmd 14, vendor e1/j.b) ──────────────────────────────────────
+
+    @Test
+    fun `sleep history reply decodes a full night into per-minute stages`() {
+        // Real payload from zaggash's Colmi R11 (issue #29): dayIndex 0 + 26 [state,hour,minute]
+        // records spanning 01:07 → 08:05. Wrapped in a group-2/cmd-14 frame as it arrives on fdd3.
+        val payload = hexToBytes(
+            "0001010702011301013702020901021302022501022d02030201031302031801032103" +
+                "040801040e03043001050002051501052502052d01053403053901061102063301063a03071301072c000805"
+        )
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, payload)
+
+        val timeline = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.SleepTimeline
+        val stages = timeline.stages
+        // One entry per minute; the night totals 418 minutes of scored sleep.
+        assertEquals(418, stages.size)
+        assertEquals(245, stages.count { it == SleepStage.LIGHT })
+        assertEquals(110, stages.count { it == SleepStage.DEEP })
+        assertEquals(63, stages.count { it == SleepStage.REM })
+        // The closing awake record only terminates the night; it contributes no sleep minutes.
+        assertEquals(0, stages.count { it == SleepStage.AWAKE })
+    }
+
+    @Test
+    fun `sleep reply with only the day byte yields no timeline`() {
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(0x00))
+        assertTrue(CRPDecoder.decode(frame, fdd3).none { it is RingDecodedEvent.SleepTimeline })
+    }
+
+    @Test
+    fun `malformed sleep reply length is rejected`() {
+        // 4 payload bytes ⇒ length % 3 != 1, which the vendor parser refuses.
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(0x00, 0x01, 0x02, 0x03))
+        assertTrue(CRPDecoder.decode(frame, fdd3).none { it is RingDecodedEvent.SleepTimeline })
+    }
+
+    private fun hexToBytes(hex: String): ByteArray =
+        ByteArray(hex.length / 2) { ((hex[it * 2].digitToInt(16) shl 4) or hex[it * 2 + 1].digitToInt(16)).toByte() }
 }

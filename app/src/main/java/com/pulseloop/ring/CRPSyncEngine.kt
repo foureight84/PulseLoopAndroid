@@ -9,16 +9,20 @@ package com.pulseloop.ring
  * Scope: clock + user-info handshake, spot HR + SpO2 (Measure button), all-day vital timing
  * enable/disable driven by [MeasurementSettings], find-device, factory reset. Steps and battery
  * arrive as autonomous pushes/reads (see [CRPDriver]). HRV / stress / temperature are all-day
- * metrics — their timing is enabled here and live results decode via [CRPDecoder], but pulling the
- * stored day timeline (group-7/group-2 history queries) is still TODO pending a hardware capture.
+ * metrics — their timing is enabled here and live results decode via [CRPDecoder]. Of the stored
+ * day timelines, sleep (group-2/cmd-14) is decoded ([CRPDecoder.decodeSleep], confirmed against a
+ * hardware capture); the group-7 vital histories still land as acks pending a non-empty capture.
  */
 class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     private var profile: UserProfileValues? = null
 
     /** User-chosen all-day measurement config. Applied in the connect handshake and updatable
-     *  live via [applyMeasurementSettings]. `null` ⇒ the user has never saved one, so the engine
-     *  skips the vital enable commands (the ring's own settings are the source of truth). */
+     *  live via [applyMeasurementSettings]. `null` ⇒ the user has never saved one; unlike QRing/YCBT
+     *  the CRP ring exposes no way to read back its own config, so a fresh R11 ships with every
+     *  all-day monitor OFF and never records anything to sync. We therefore fall back to
+     *  [MeasurementSettings.ALL_ON_DEFAULT] (matching how [ColmiSyncEngine] force-enables on connect)
+     *  so the day timeline actually accumulates. */
     private var measurementSettings: MeasurementSettings? = null
 
     override fun runStartup() {
@@ -28,17 +32,11 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // Query firmware version so the UI doesn't show "Firmware: reading" (zaggash's report).
         send(CRPProtocol.queryFirmwareVersion())
         profile?.let { send(userInfoFrame(it)) }
-        // Enable vital monitoring only when the user has configured it (mirrors the vendor app's
-        // connect flow). Uses the user's polling interval for all vital types — the CRP protocol
-        // takes a single interval byte per enable command, and MeasurementSettings only exposes
-        // hrIntervalMinutes (no per-vital intervals), so we share it across the board.
-        measurementSettings?.let { settings ->
-            if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
-            if (settings.hrvEnabled) send(CRPProtocol.enableTimingHRV(settings.hrIntervalMinutes))
-            if (settings.stressEnabled) send(CRPProtocol.enableTimingStress(settings.hrIntervalMinutes))
-            if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
-            if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
-        }
+        // Enable all-day vital monitoring. A fresh ring has these OFF, so without this the ring
+        // stores no HR/SpO2/HRV/stress/temperature history and every history query below returns an
+        // empty reply (issue #29, zaggash's full-day capture). Default to ALL_ON until the user
+        // saves their own config, then honour it exactly.
+        applyTimingSettings(measurementSettings ?: MeasurementSettings.ALL_ON_DEFAULT)
         // Pull the day's stored all-day timeline. runStartup() IS the poll pass (RingSyncWorker's
         // ~30-min background sync and the foreground syncNow() both re-invoke it), so this runs at
         // the app's configured polling cadence; the ring samples at hrIntervalMinutes (above).
@@ -101,7 +99,14 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     override fun applyMeasurementSettings(settings: MeasurementSettings) {
         measurementSettings = settings
-        // Re-send vital enable/disable commands with the updated settings.
+        applyTimingSettings(settings)
+    }
+
+    /** Send the all-day enable/disable command for every vital. The CRP protocol takes a single
+     *  interval byte per enable, and [MeasurementSettings] carries only [MeasurementSettings.hrIntervalMinutes]
+     *  (no per-vital cadence), so the HR interval is shared across the board. Disabled vitals are
+     *  explicitly turned off so a reconnect can't leave a previously-enabled monitor running. */
+    private fun applyTimingSettings(settings: MeasurementSettings) {
         if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
         else send(CRPProtocol.disableTimingHeartRate())
         if (settings.hrvEnabled) send(CRPProtocol.enableTimingHRV(settings.hrIntervalMinutes))
