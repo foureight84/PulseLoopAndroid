@@ -12,7 +12,6 @@ class CRPDecoderTest {
 
     private val fdd1 = CRPUUIDs.CHAR_STEPS_NOTIFY
     private val fdd3 = CRPUUIDs.CHAR_CMD_NOTIFY
-    private val hr = CRPUUIDs.CHAR_HEART_RATE_MEASURE
 
     @Test
     fun `current-steps push decodes little-endian steps distance calories`() {
@@ -43,21 +42,51 @@ class CRPDecoderTest {
         assertTrue(CRPDecoder.decode(byteArrayOf(1, 2), fdd1).isEmpty())
     }
 
+    // ---- Real-time vital results: framed group-1 replies on fdd3 (g1/a.java 664–712). ----
+    // This ring does NOT use the standard 2a37 characteristic — HR comes back as a framed reply.
+
     @Test
-    fun `heart rate 2a37 reads bpm from byte1 when the 0x0400 marker is present`() {
-        // [status, bpm=72, 0x00, 0x04] -> marker bytes[2..3] == 0x0400
-        val hrs = CRPDecoder.decode(byteArrayOf(0x00, 72, 0x00, 0x04), hr)[0] as RingDecodedEvent.HeartRateSample
-        assertEquals(72, hrs.bpm)
+    fun `group1 cmd9 framed reply decodes heart rate from payload0`() {
+        // The exact frame the ring returned for zaggash's Measure press (issue #29): HR = 0x4a = 74.
+        val frame = CRPProtocol.frame(1, CRPCommands.CMD_RESULT_HR, byteArrayOf(0x4a))
+        val hrs = CRPDecoder.decode(frame, fdd3)[0] as RingDecodedEvent.HeartRateSample
+        assertEquals(74, hrs.bpm)
     }
 
     @Test
-    fun `heart rate 2a37 with wrong marker is dropped`() {
-        assertTrue(CRPDecoder.decode(byteArrayOf(0x00, 72, 0x00, 0x08), hr).isEmpty())
+    fun `group1 cmd9 out-of-range bpm is dropped`() {
+        assertTrue(CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_HR, byteArrayOf(0)), fdd3).isEmpty())
     }
 
     @Test
-    fun `heart rate 2a37 with zero bpm is dropped`() {
-        assertTrue(CRPDecoder.decode(byteArrayOf(0x00, 0, 0x00, 0x04), hr).isEmpty())
+    fun `group1 cmd10 decodes hrv, cmd11 spo2, cmd14 stress from payload0`() {
+        val hrv = CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_HRV, byteArrayOf(45)), fdd3)[0]
+        assertEquals(45, (hrv as RingDecodedEvent.HrvSample).value)
+        val spo2 = CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_SPO2, byteArrayOf(98)), fdd3)[0]
+        assertEquals(98, (spo2 as RingDecodedEvent.Spo2Result).value)
+        val stress = CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_STRESS, byteArrayOf(37)), fdd3)[0]
+        assertEquals(37, (stress as RingDecodedEvent.StressSample).value)
+    }
+
+    @Test
+    fun `group1 cmd32 decodes temperature as two-byte tenths of a degree`() {
+        // e1/m.a: (payload[1]<<8 | payload[0]) / 10 -> 365 => 36.5 C
+        val frame = CRPProtocol.frame(1, CRPCommands.CMD_RESULT_TEMP, byteArrayOf(0x6D, 0x01))
+        val temp = CRPDecoder.decode(frame, fdd3)[0] as RingDecodedEvent.TemperatureSample
+        assertEquals(36.5, temp.celsius, 0.001)
+    }
+
+    @Test
+    fun `group1 out-of-range temperature is dropped`() {
+        // 0x0064 = 100 -> 10.0 C, below the 28..50 validity window.
+        assertTrue(CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_TEMP, byteArrayOf(0x64, 0x00)), fdd3).isEmpty())
+    }
+
+    @Test
+    fun `unrecognised group1 cmd is acked, not dropped`() {
+        // cmd 0 (set-user-info ack) isn't a vital result -> CommandAck, no fabricated sample.
+        val ev = CRPDecoder.decode(CRPProtocol.frame(1, 0, byteArrayOf(0)), fdd3)[0]
+        assertTrue(ev is RingDecodedEvent.CommandAck)
     }
 
     @Test

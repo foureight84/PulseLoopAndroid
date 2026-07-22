@@ -77,6 +77,30 @@ class CRPProtocolTest {
     }
 
     @Test
+    fun `spot measure toggles use the vendor opcodes hrv10 stress14 temp32`() {
+        // b1/u.d, b1/h0.d, b1/i0.d — start(1)/stop(0) on group 1.
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 1, 10, 1), CRPProtocol.measureHRV(true))
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 1, 10, 0), CRPProtocol.measureHRV(false))
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 1, 14, 1), CRPProtocol.measureStress(true))
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 1, 32, 1), CRPProtocol.measureTemp(true))
+    }
+
+    @Test
+    fun `spot measure opcode matches the result opcode the ring replies on`() {
+        // The measurement echoes back on its own cmd byte — guard against these drifting apart.
+        assertEquals(CRPCommands.CMD_MEASURE_HRV, CRPCommands.CMD_RESULT_HRV)
+        assertEquals(CRPCommands.CMD_MEASURE_STRESS, CRPCommands.CMD_RESULT_STRESS)
+        assertEquals(CRPCommands.CMD_MEASURE_TEMP, CRPCommands.CMD_RESULT_TEMP)
+    }
+
+    @Test
+    fun `temp all-day timing toggles cmd13 with an enable byte, distinct from measure cmd32`() {
+        // b1/i0.c: q.c(1,13,[enable]) — NOT cmd 32 (that's the spot-measure toggle, b1/i0.d).
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 1, 13, 1), CRPProtocol.enableTimingTemp())
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 1, 13, 0), CRPProtocol.disableTimingTemp())
+    }
+
+    @Test
     fun `findDevice is group9 cmd2`() {
         assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 9, 2, 1), CRPProtocol.findDevice(true))
     }

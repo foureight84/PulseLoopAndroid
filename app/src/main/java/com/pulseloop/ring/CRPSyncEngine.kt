@@ -4,24 +4,60 @@ package com.pulseloop.ring
  * Per-connection orchestration for a CRP ("crrepa") ring. Ported in spirit from the Moyoung
  * "Da Rings" connect flow (`d1/b.java` + `b1` package builders): after the link is up the app sets the
  * clock and pushes user anthropometrics, then the ring streams current steps (`fdd1`) on its own
- * and answers measurement commands. There is no bulk history state machine in v1, so most of the
- * [RingSyncEngine] surface is left as the interface's no-op defaults.
+ * and answers measurement commands. The bulk-history state machine stays deferred for now.
  *
- * v1 scope: clock + user-info handshake, live/manual heart rate, find-device, factory reset.
- * Steps and battery arrive as autonomous pushes/reads (see [CRPDriver]) and need no command here.
- * Sleep / SpO2 / HRV / stress / temperature and history sync are deliberately deferred — their
- * reply layouts aren't yet confirmed against the decompile, and [CRPCoordinator] doesn't advertise
- * those capabilities, so nothing calls the corresponding methods.
+ * Scope: clock + user-info handshake, spot HR + SpO2 (Measure button), all-day vital timing
+ * enable/disable driven by [MeasurementSettings], find-device, factory reset. Steps and battery
+ * arrive as autonomous pushes/reads (see [CRPDriver]). HRV / stress / temperature are all-day
+ * metrics — their timing is enabled here and live results decode via [CRPDecoder], but pulling the
+ * stored day timeline (group-7/group-2 history queries) is still TODO pending a hardware capture.
  */
 class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     private var profile: UserProfileValues? = null
 
+    /** User-chosen all-day measurement config. Applied in the connect handshake and updatable
+     *  live via [applyMeasurementSettings]. `null` ⇒ the user has never saved one, so the engine
+     *  skips the vital enable commands (the ring's own settings are the source of truth). */
+    private var measurementSettings: MeasurementSettings? = null
+
     override fun runStartup() {
         // Set the device clock first (matches the vendor's connect handshake), then user info so
         // the ring's step/calorie algorithm has real inputs.
         send(CRPProtocol.setTime())
+        // Query firmware version so the UI doesn't show "Firmware: reading" (zaggash's report).
+        send(CRPProtocol.queryFirmwareVersion())
         profile?.let { send(userInfoFrame(it)) }
+        // Enable vital monitoring only when the user has configured it (mirrors the vendor app's
+        // connect flow). Uses the user's polling interval for all vital types — the CRP protocol
+        // takes a single interval byte per enable command, and MeasurementSettings only exposes
+        // hrIntervalMinutes (no per-vital intervals), so we share it across the board.
+        measurementSettings?.let { settings ->
+            if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
+            if (settings.hrvEnabled) send(CRPProtocol.enableTimingHRV(settings.hrIntervalMinutes))
+            if (settings.stressEnabled) send(CRPProtocol.enableTimingStress(settings.hrIntervalMinutes))
+            if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
+            if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
+        }
+        // Pull the day's stored all-day timeline. runStartup() IS the poll pass (RingSyncWorker's
+        // ~30-min background sync and the foreground syncNow() both re-invoke it), so this runs at
+        // the app's configured polling cadence; the ring samples at hrIntervalMinutes (above).
+        // The ring only emits history replies once asked — so this also produces the group-7/2
+        // reply frames in a diagnostic capture, which is what we need to finish decoding them.
+        // NOTE: the replies are currently acknowledged, not yet parsed into samples
+        // (CRPDecoder.decodeHistoryOrDeviceInfoResponse is a TODO pending that capture).
+        queryAllHistory()
+    }
+
+    /** Request the stored all-day timelines the ring has accumulated (group 7 for HR/stress/HRV/
+     *  SpO2, group 2 for sleep/temp). Vendor `u3/g1.java` fires the same set on its sync pass. */
+    private fun queryAllHistory() {
+        send(CRPProtocol.queryHistoryHeartRate())
+        send(CRPProtocol.queryHistorySpO2())
+        send(CRPProtocol.queryHistoryHRV())
+        send(CRPProtocol.queryHistoryStress())
+        send(CRPProtocol.queryHistoryTemp())
+        send(CRPProtocol.queryHistorySleep())
     }
 
     override fun handle(event: RingDecodedEvent) {
@@ -29,11 +65,13 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // engine-side state (no staged history pipeline to advance).
     }
 
-    // ---- Heart rate (standard 2a37 stream, started/stopped via the fdda command channel) ----
+    // ---- Spot (manual) measurements. Trigger via the fdda command channel; the ring replies on
+    // the same group-1/cmd, decoded by CRPDecoder.decodeVitalResult and persisted via the bridge.
+    // HR and SpO2 are the app's spot-measurable vitals (MANUAL_* capabilities); HRV/stress/temp are
+    // all-day metrics pulled through timing + history, not the Measure button. ----
     override fun startHeartRate() { send(CRPProtocol.measureHeartRate(true)) }
     override fun stopHeartRate() { send(CRPProtocol.measureHeartRate(false)) }
 
-    // ---- SpO2 (command verified; result parsing deferred, so capability isn't advertised) ----
     override fun startSpO2() { send(CRPProtocol.measureSpO2(true)) }
     override fun stopSpO2() { send(CRPProtocol.measureSpO2(false)) }
 
@@ -55,6 +93,25 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     override fun applyUserProfile(profile: UserProfileValues) {
         this.profile = profile
         send(userInfoFrame(profile))
+    }
+
+    override fun setMeasurementSettings(settings: MeasurementSettings?) {
+        measurementSettings = settings
+    }
+
+    override fun applyMeasurementSettings(settings: MeasurementSettings) {
+        measurementSettings = settings
+        // Re-send vital enable/disable commands with the updated settings.
+        if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingHeartRate())
+        if (settings.hrvEnabled) send(CRPProtocol.enableTimingHRV(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingHRV())
+        if (settings.stressEnabled) send(CRPProtocol.enableTimingStress(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingStress())
+        if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
+        else send(CRPProtocol.disableTimingSpO2())
+        if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
+        else send(CRPProtocol.disableTimingTemp())
     }
 
     override fun resyncTime() { send(CRPProtocol.setTime()) }

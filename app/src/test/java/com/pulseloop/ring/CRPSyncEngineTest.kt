@@ -15,19 +15,25 @@ class CRPSyncEngineTest {
         fun opcodes(): List<Pair<Int, Int>> = sent.map { it[4].toInt() to it[5].toInt() }
     }
 
+    /** The all-day history pull appended to every runStartup (the poll pass). Group 7 for
+     *  HR/SpO2/HRV/stress, group 2 for temp/sleep — see CRPProtocol.queryHistory*. */
+    private val historyQueries = listOf(7 to 4, 7 to 7, 7 to 6, 7 to 5, 2 to 48, 2 to 14)
+
     @Test
-    fun `runStartup sends set-time, and user info once a profile is stored`() {
+    fun `runStartup sends set-time, firmware query, user info, then the history pull`() {
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)
         engine.runStartup()
-        assertEquals(listOf(1 to 1), w.opcodes()) // set-time only, no profile yet
+        // set-time, firmware query, then the history pull (no profile / no settings yet).
+        assertEquals(listOf(1 to 1, 7 to 1) + historyQueries, w.opcodes())
 
         w.sent.clear()
         engine.setUserProfile(
             UserProfileValues(metric = true, gender = 1u, age = 30u, heightCm = 180u, weightKg = 75u),
         )
         engine.runStartup()
-        assertEquals(listOf(1 to 1, 1 to 0), w.opcodes()) // set-time then set-user-info
+        // set-time, firmware query, set-user-info, then the history pull.
+        assertEquals(listOf(1 to 1, 7 to 1, 1 to 0) + historyQueries, w.opcodes())
     }
 
     @Test
