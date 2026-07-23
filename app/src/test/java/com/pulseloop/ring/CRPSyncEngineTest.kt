@@ -15,9 +15,10 @@ class CRPSyncEngineTest {
         fun opcodes(): List<Pair<Int, Int>> = sent.map { it[4].toInt() to it[5].toInt() }
     }
 
-    /** The all-day history pull appended to every runStartup (the poll pass). Group 7 for
-     *  HR/SpO2/HRV/stress, group 2 for temp/sleep — see CRPProtocol.queryHistory*. */
-    private val historyQueries = listOf(7 to 4, 7 to 7, 7 to 6, 7 to 5, 2 to 48, 2 to 14)
+    /** The all-day history pull appended to every runStartup (the poll pass). All group 2: the
+     *  "timing" vital timelines HR/SpO2/HRV/stress (cmd 15/17/16/47), then temp (48) + sleep (14) —
+     *  the opcodes the ring actually answers (issue #29). See CRPProtocol.queryTiming/queryHistory. */
+    private val historyQueries = listOf(2 to 15, 2 to 17, 2 to 16, 2 to 47, 2 to 48, 2 to 14)
 
     /** The all-day monitor enables sent on connect (default ALL_ON): HR, HRV, stress, SpO2, temp —
      *  see CRPSyncEngine.applyTimingSettings. Without these a fresh R11 records no history. */

@@ -11,7 +11,9 @@ package com.pulseloop.ring
  * arrive as autonomous pushes/reads (see [CRPDriver]). HRV / stress / temperature are all-day
  * metrics — their timing is enabled here and live results decode via [CRPDecoder]. Of the stored
  * day timelines, sleep (group-2/cmd-14) is decoded ([CRPDecoder.decodeSleep], confirmed against a
- * hardware capture); the group-7 vital histories still land as acks pending a non-empty capture.
+ * hardware capture). The group-2 all-day "timing" vital histories (HR/SpO2/HRV/stress) are now
+ * queried with the correct opcodes so the ring returns them; decoding those multi-frame replies
+ * into samples is the next step, done against a real capture rather than a blind port.
  */
 class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
@@ -54,10 +56,15 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     /** Request the stored all-day timelines the ring has accumulated (group 7 for HR/stress/HRV/
      *  SpO2, group 2 for sleep/temp). Vendor `u3/g1.java` fires the same set on its sync pass. */
     private fun queryAllHistory() {
-        send(CRPProtocol.queryHistoryHeartRate())
-        send(CRPProtocol.queryHistorySpO2())
-        send(CRPProtocol.queryHistoryHRV())
-        send(CRPProtocol.queryHistoryStress())
+        // The all-day vital timelines the vendor's sync pass pulls (`u3/g1.java`): the group-2
+        // "timing" histories for TODAY. The previous group-7 HR/SpO2/HRV/stress queries were the
+        // wrong opcodes (device-info group) and the ring returned empty every time (issue #29).
+        // Replies are multi-frame; decoding them into samples is the next step, done against a real
+        // capture now that the ring actually answers (CRPDecoder acks them for now — never blind).
+        send(CRPProtocol.queryTimingHeartRateHistory())
+        send(CRPProtocol.queryTimingSpO2History())
+        send(CRPProtocol.queryTimingHrvHistory())
+        send(CRPProtocol.queryTimingStressHistory())
         send(CRPProtocol.queryHistoryTemp())
         send(CRPProtocol.queryHistorySleep())
     }

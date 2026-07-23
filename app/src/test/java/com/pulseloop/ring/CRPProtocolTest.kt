@@ -77,6 +77,18 @@ class CRPProtocolTest {
     }
 
     @Test
+    fun `all-day timing history queries match vendor group2 opcodes with day-zero payload`() {
+        // Vendor b1/{t,u,h,h0}.b(day, 0): group 2, cmds 15/16/17/47, payload [day, 0]; TODAY = 0.
+        // len = 6 header + 2 payload = 8. These are the queries the ring actually answers (issue #29).
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 15, 0, 0), CRPProtocol.queryTimingHeartRateHistory())
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 16, 0, 0), CRPProtocol.queryTimingHrvHistory())
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 17, 0, 0), CRPProtocol.queryTimingSpO2History())
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 47, 0, 0), CRPProtocol.queryTimingStressHistory())
+        // A non-today day flows into payload[0].
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 15, 1, 0), CRPProtocol.queryTimingHeartRateHistory(1))
+    }
+
+    @Test
     fun `spot measure toggles use the vendor opcodes hrv10 stress14 temp32`() {
         // b1/u.d, b1/h0.d, b1/i0.d — start(1)/stop(0) on group 1.
         assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 7, 1, 10, 1), CRPProtocol.measureHRV(true))
