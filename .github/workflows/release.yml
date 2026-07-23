@@ -21,16 +21,23 @@ jobs:
       - name: Parse version from tag
         id: ver
         run: |
-          TAG="${GITHUB_REF_NAME}"            # e.g. v1.0.0+5
+          TAG="${GITHUB_REF_NAME}"            # e.g. v1.0.0+5 or v1.0.0+5-rc1 (prerelease)
           NAME="${TAG#v}"; NAME="${NAME%%+*}" # 1.0.0
-          CODE="${TAG##*+}"                   # 5
+          CODE="${TAG##*+}"                   # 5 or 5-rc1
+          # A '-suffix' on the versionCode marks a prerelease test build (e.g. v1.0.0+26-rc1).
+          # The GitHub release is flagged prerelease, which the in-app updater never serves (it
+          # reads /releases/latest and skips prereleases), so it can go to a single tester
+          # without shipping to everyone. The suffix is stripped from the built versionCode.
+          PRERELEASE=false
+          if [[ "$CODE" == *-* ]]; then PRERELEASE=true; CODE="${CODE%%-*}"; fi
           if ! [[ "$CODE" =~ ^[0-9]+$ ]]; then
-            echo "::error::Tag must be v<versionName>+<versionCode>, e.g. v1.0.0+5 (got '$TAG')"
+            echo "::error::Tag must be v<versionName>+<versionCode>[-suffix], e.g. v1.0.0+5 or v1.0.0+5-rc1 (got '$TAG')"
             exit 1
           fi
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
-          echo "Building versionName=$NAME versionCode=$CODE"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Building versionName=$NAME versionCode=$CODE prerelease=$PRERELEASE"
 
       - uses: actions/setup-java@v4
         with:
@@ -90,5 +97,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: PulseLoop ${{ steps.ver.outputs.name }} (${{ steps.ver.outputs.code }})
+          prerelease: ${{ steps.ver.outputs.prerelease }}
           generate_release_notes: true
           files: dist/*.apk
