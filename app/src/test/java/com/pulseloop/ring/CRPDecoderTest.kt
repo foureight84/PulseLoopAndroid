@@ -84,6 +84,33 @@ class CRPDecoderTest {
         assertTrue(CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_TEMP, byteArrayOf(0x64, 0x00)), fdd3).isEmpty())
     }
 
+    // ---- Wear state: framed group-3 cmd-7 push (g1/a.java case 3->7, onWearStateChange). ----
+
+    @Test
+    fun `group3 cmd7 payload0 zero decodes wear state not worn`() {
+        // The exact frame from zaggash's build-25 captures (issue #29): ring off the finger.
+        val ev = CRPDecoder.decode(CRPProtocol.frame(3, CRPCommands.CMD_WEAR_STATE, byteArrayOf(0)), fdd3)[0]
+        assertFalse((ev as RingDecodedEvent.WearingStatus).worn)
+    }
+
+    @Test
+    fun `group3 cmd7 payload0 nonzero decodes wear state worn`() {
+        val ev = CRPDecoder.decode(CRPProtocol.frame(3, CRPCommands.CMD_WEAR_STATE, byteArrayOf(1)), fdd3)[0]
+        assertTrue((ev as RingDecodedEvent.WearingStatus).worn)
+    }
+
+    @Test
+    fun `wear state maps to a PulseEvent WearState`() {
+        val worn = RingEventBridge.eventsFor(RingDecodedEvent.WearingStatus(worn = false, _timestamp = Instant.EPOCH))
+        assertEquals(false, (worn.single() as PulseEvent.WearState).worn)
+    }
+
+    @Test
+    fun `unrecognised group3 cmd is acked, not dropped`() {
+        val ev = CRPDecoder.decode(CRPProtocol.frame(3, 2, byteArrayOf(0)), fdd3)[0]
+        assertTrue(ev is RingDecodedEvent.CommandAck)
+    }
+
     @Test
     fun `unrecognised group1 cmd is acked, not dropped`() {
         // cmd 0 (set-user-info ack) isn't a vital result -> CommandAck, no fabricated sample.

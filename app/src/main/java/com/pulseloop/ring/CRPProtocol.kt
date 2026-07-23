@@ -97,10 +97,14 @@ object CRPCommands {
     const val CMD_QUERY_HISTORY_SLEEP = 14    // b1/e0.c: q.c(2,14, [CRPHistoryDay])
     const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: q.b(2,48)
 
-    // Group 3 — power control.
+    // Group 3 — power control + device-state pushes.
     const val GROUP_POWER = 3
     const val CMD_FACTORY_RESET = 0     // b1/l.v: q.b(3,0)
     const val CMD_RESTART = 1           // b1/l.w: q.b(3,1)
+    // Autonomous wear-state push: vendor `g1/a.java` case 3→7 → onWearStateChange(payload[0] > 0).
+    // payload[0] == 0 ⇒ ring not on finger / no skin contact (issue #29: an optical spot measure
+    // returns nothing while this is 0; we surface it instead of spinning the full window).
+    const val CMD_WEAR_STATE = 7
 
     // Group 9 — device actions.
     const val GROUP_ACTION = 9

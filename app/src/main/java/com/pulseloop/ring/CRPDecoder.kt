@@ -114,6 +114,16 @@ object CRPDecoder {
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
 
+        // Group 3: power control + the autonomous wear-state push (vendor `g1/a.java` case 3→7,
+        // `onWearStateChange(payload[0] > 0)`). Confirmed against zaggash's R11 (issue #29): a spot
+        // measure returns nothing while `payload[0] == 0` (ring off the finger).
+        if (group == CRPCommands.GROUP_POWER) {
+            if (cmd == CRPCommands.CMD_WEAR_STATE && payload.isNotEmpty()) {
+                return listOf(RingDecodedEvent.WearingStatus(worn = (payload[0].toInt() and 0xFF) != 0, _timestamp = now))
+            }
+            return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
+        }
+
         // Unknown group/cmd — ack.
         return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
     }

@@ -104,7 +104,7 @@ object RingEventBridge {
             emptyList() // Diagnostic only
 
         is RingDecodedEvent.WearingStatus ->
-            emptyList() // Debug-feed only; nothing gates on wear state yet
+            listOf(PulseEvent.WearState(decoded.worn))
 
         is RingDecodedEvent.MeasurementRejected ->
             emptyList() // A verdict on a command, not data — RingSyncCoordinator reads it off the
