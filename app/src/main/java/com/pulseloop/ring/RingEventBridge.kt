@@ -104,7 +104,11 @@ object RingEventBridge {
             emptyList() // Diagnostic only
 
         is RingDecodedEvent.WearingStatus ->
-            emptyList() // Debug-feed only; nothing gates on wear state yet
+            listOf(PulseEvent.WearState(decoded.worn))
+
+        is RingDecodedEvent.TimingHistoryFrame ->
+            emptyList() // Drives CRPSyncEngine's next-frame follow-up; its samples arrive as
+                        // separate HistoryMeasurement events. Produces no PulseEvent itself.
 
         is RingDecodedEvent.MeasurementRejected ->
             emptyList() // A verdict on a command, not data — RingSyncCoordinator reads it off the

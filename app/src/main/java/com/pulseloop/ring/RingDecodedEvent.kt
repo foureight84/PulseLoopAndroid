@@ -89,6 +89,7 @@ sealed class RingDecodedEvent {
         is SupportFunctions -> Instant.EPOCH
         is ChipScheme -> Instant.EPOCH
         is WearingStatus -> this._timestamp
+        is TimingHistoryFrame -> Instant.EPOCH
         is MeasurementRejected -> Instant.EPOCH
         is Unknown -> Instant.EPOCH
     }
@@ -176,6 +177,24 @@ sealed class RingDecodedEvent {
         override val kind = "history_measurement"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = "{}"
+    }
+
+    /**
+     * A CRP all-day "timing" vital-history frame just decoded (group 2, cmd 15/16/17/47). Carries no
+     * metric itself — its samples are emitted as [HistoryMeasurement]s — but signals the sync engine
+     * to pull the NEXT frame in the day's timeline, mirroring the vendor's sequential follow-up
+     * (`e1/{f,d,g,l}.java`: `insertBleMessage(<query>.b(day, index + 1))`). `cmd` identifies the vital,
+     * `frameIndex` the frame just received; the engine requests `frameIndex + 1` until the vital's
+     * terminal frame. Produces no `PulseEvent` (consumed by [CRPSyncEngine.handle]).
+     */
+    data class TimingHistoryFrame(
+        val cmd: Int,
+        val day: Int,
+        val frameIndex: Int,
+    ) : RingDecodedEvent() {
+        override val kind = "timing_history_frame"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"cmd":$cmd,"day":$day,"frameIndex":$frameIndex}"""
     }
 
     /**
