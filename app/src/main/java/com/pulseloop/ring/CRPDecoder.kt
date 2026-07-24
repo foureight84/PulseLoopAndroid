@@ -104,13 +104,16 @@ object CRPDecoder {
             return decodeHistoryOrDeviceInfoResponse(cmd, payload, now)
         }
 
-        // Group 2: sleep + temperature history (decompiled `b1/e0.c`/`e0.d`). Sleep is confirmed
-        // against a hardware capture (zaggash's R11, issue #29); temp history stays an ack until a
-        // non-empty capture pins the layout.
+        // Group 2: sleep + the all-day "timing" vital timelines + temperature history.
+        //   cmd 14        → sleep (decompiled `e1/j`), confirmed against a hardware capture.
+        //   cmd 15/16/17/47 → HR/HRV/SpO2/stress all-day timeline (decompiled `e1/{f,g,d,l}`),
+        //                     confirmed against zaggash's R11 rc2 capture (issue #29).
+        //   cmd 48        → temperature history, still an ack until a non-empty capture pins it.
         if (group == CRPCommands.GROUP_HISTORY) {
             if (cmd == CRPCommands.CMD_QUERY_HISTORY_SLEEP) {
                 return decodeSleep(payload, now, zone)
             }
+            decodeTimingHistory(cmd, payload, now, zone)?.let { return it }
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
 
@@ -175,6 +178,73 @@ object CRPDecoder {
      */
     private fun decodeHistoryOrDeviceInfoResponse(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
         return listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE_INFO shl 4) or (cmd and 0x0F)).toUByte()))
+    }
+
+    /** All-day timeline frames carry 144 sample-slots at a fixed 5-minute cadence (`w0.b.a() / 5`
+     *  in the vendor). Two slot widths: HR/SpO2/stress store one byte per slot (144 slots/frame,
+     *  terminal frame index 1); HRV stores a little-endian 2-byte value per slot (72 slots/frame,
+     *  terminal index 3). Both reassemble to a 288-slot (24 h) day across their frames. */
+    private const val TIMING_SLOT_MINUTES = 5
+    private const val TIMING_SLOTS_PER_FRAME_1BYTE = 144
+    private const val TIMING_SLOTS_PER_FRAME_2BYTE = 72
+
+    /**
+     * Decode a CRP all-day "timing" vital-history reply (group 2). Returns null for a non-timing
+     * group-2 cmd (e.g. temp cmd 48) so the caller falls back to an ack. Layout, confirmed against
+     * zaggash's R11 rc2 capture and the vendor parsers `e1/{f,g,d,l}.java`:
+     *   `[day][frameIndex][slot samples…]` — one 5-minute slot per sample, `0` = no reading.
+     * HR/SpO2/stress use one byte per slot; HRV uses a little-endian 2-byte value per slot. Each
+     * slot's absolute time is `localMidnight(today − day) + (frameIndex*slotsPerFrame + slot)*5min`,
+     * matching the vendor's `w0.b.a()/5` slot indexing. Emits a [RingDecodedEvent.HistoryMeasurement]
+     * per valid slot (invalid/zero slots dropped, per the vendor's per-vital clamp) plus a trailing
+     * [RingDecodedEvent.TimingHistoryFrame] that drives the engine's next-frame follow-up.
+     */
+    private fun decodeTimingHistory(cmd: Int, payload: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent>? {
+        // (kind, sample byte-width, validity predicate) per vital. Ranges mirror the vendor clamps:
+        // HR 40..200 (`e1/f.e`), SpO2 1..100 (`e1/d.e`, >100→0), HRV any positive (`e1/g.d`, no clamp),
+        // stress 1..100 (`e1/l.d`, no clamp; 0 treated as no-reading). Zero is always "no sample".
+        val kind: MeasurementKind
+        val twoByte: Boolean
+        val valid: (Int) -> Boolean
+        when (cmd) {
+            CRPCommands.CMD_QUERY_TIMING_HR -> { kind = MeasurementKind.HEART_RATE; twoByte = false; valid = { it in 40..200 } }
+            CRPCommands.CMD_QUERY_TIMING_SPO2 -> { kind = MeasurementKind.SPO2; twoByte = false; valid = { it in 1..100 } }
+            CRPCommands.CMD_QUERY_TIMING_HRV -> { kind = MeasurementKind.HRV; twoByte = true; valid = { it in 1..300 } }
+            CRPCommands.CMD_QUERY_TIMING_STRESS -> { kind = MeasurementKind.STRESS; twoByte = false; valid = { it in 1..100 } }
+            else -> return null
+        }
+        // [day][frameIndex] header; anything shorter is malformed.
+        if (payload.size < 2) return emptyList()
+        val day = payload[0].toInt() and 0xFF
+        val frameIndex = payload[1].toInt() and 0xFF
+        // A wilder day than CRPHistoryDay allows is a corrupt reply — ack without inventing samples.
+        if (day > MAX_HISTORY_DAY) {
+            return listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_HISTORY shl 4) or (cmd and 0x0F)).toUByte()))
+        }
+
+        val midnight = now.atZone(zone).toLocalDate().minusDays(day.toLong()).atStartOfDay(zone).toInstant()
+        val slotsPerFrame = if (twoByte) TIMING_SLOTS_PER_FRAME_2BYTE else TIMING_SLOTS_PER_FRAME_1BYTE
+        val events = mutableListOf<RingDecodedEvent>()
+        val step = if (twoByte) 2 else 1
+        var slot = 0
+        var i = 2
+        while (i + step - 1 < payload.size) {
+            val value = if (twoByte) {
+                (payload[i].toInt() and 0xFF) or ((payload[i + 1].toInt() and 0xFF) shl 8)
+            } else {
+                payload[i].toInt() and 0xFF
+            }
+            if (valid(value)) {
+                val globalSlot = frameIndex * slotsPerFrame + slot
+                val ts = midnight.plusSeconds(globalSlot.toLong() * TIMING_SLOT_MINUTES * 60)
+                events.add(RingDecodedEvent.HistoryMeasurement(kind, value.toDouble(), ts))
+            }
+            i += step
+            slot++
+        }
+        // Drive the vendor's sequential next-frame pull (see [RingDecodedEvent.TimingHistoryFrame]).
+        events.add(RingDecodedEvent.TimingHistoryFrame(cmd = cmd, day = day, frameIndex = frameIndex))
+        return events
     }
 
     /**

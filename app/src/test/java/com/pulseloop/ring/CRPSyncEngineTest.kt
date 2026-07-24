@@ -84,6 +84,51 @@ class CRPSyncEngineTest {
     }
 
     @Test
+    fun `a timing-history frame drives the next-frame pull until the vital's terminal frame`() {
+        val w = FakeWriter()
+        val engine = CRPSyncEngine(w)
+        // Clear the send buffer of the startup queries so we only see follow-ups.
+        engine.runStartup(); w.sent.clear()
+
+        // HR frame 0 → request HR frame 1 (its terminal frame); frame 1 → nothing further.
+        engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, day = 0, frameIndex = 0))
+        assertEquals(listOf(2 to 15), w.opcodes())
+        assertEquals(1, w.sent[0][7].toInt()) // payload[1] = requested frame index 1
+        w.sent.clear()
+        engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, day = 0, frameIndex = 1))
+        assertTrue("terminal HR frame must not request another", w.sent.isEmpty())
+    }
+
+    @Test
+    fun `HRV walks four frames, others two`() {
+        val w = FakeWriter()
+        val engine = CRPSyncEngine(w)
+        engine.runStartup(); w.sent.clear()
+        // HRV finalizes at frame 3: frames 0,1,2 each pull the next; frame 3 stops.
+        for (idx in 0..2) {
+            engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HRV, 0, idx))
+            assertEquals(idx + 1, w.sent.last()[7].toInt())
+        }
+        w.sent.clear()
+        engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HRV, 0, 3))
+        assertTrue(w.sent.isEmpty())
+    }
+
+    @Test
+    fun `a repeated frame does not spam duplicate follow-up requests`() {
+        val w = FakeWriter()
+        val engine = CRPSyncEngine(w)
+        engine.runStartup(); w.sent.clear()
+        // The ring re-sends HR frame 0 several times in one poll pass — only one frame-1 pull fires.
+        repeat(5) { engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, 0, 0)) }
+        assertEquals(1, w.sent.size)
+        // A fresh poll pass clears the guard, so the next sync re-pulls frame 1.
+        engine.runStartup(); w.sent.clear()
+        engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, 0, 0))
+        assertEquals(1, w.sent.size)
+    }
+
+    @Test
     fun `applyUserProfile pushes user info immediately`() {
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)

@@ -242,20 +242,24 @@ object CRPProtocol {
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_TEMP, byteArrayOf(0))
 
     // ---- History query commands (all group 2; see GROUP_HISTORY) ----
-    // The all-day vital timelines take a [day, 0] payload (vendor `b1/{t,u,h,h0}.b`); sleep takes
-    // [day]; temp takes none. `day` is CRPHistoryDay (0 = today).
+    // The all-day vital timelines take a [day, frameIndex] payload (vendor `b1/{t,u,h,h0}.b`); sleep
+    // takes [day]; temp takes none. `day` is CRPHistoryDay (0 = today). A day's 5-minute timeline is
+    // split across several 144-slot frames selected by `frameIndex`: the vendor requests index 0,
+    // then pulls the next index on each reply until the terminal frame (HR/SpO2/stress → index 1,
+    // HRV → index 3), reassembling a full 288-slot (24 h × 5-min) day. See `e1/{f,d,g,l}.java` and
+    // [CRPSyncEngine]'s follow-up on [RingDecodedEvent.TimingHistoryFrame].
 
-    fun queryTimingHeartRateHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HR, byteArrayOf(day.toByte(), 0))
+    fun queryTimingHeartRateHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HR, byteArrayOf(day.toByte(), frameIndex.toByte()))
 
-    fun queryTimingHrvHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HRV, byteArrayOf(day.toByte(), 0))
+    fun queryTimingHrvHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HRV, byteArrayOf(day.toByte(), frameIndex.toByte()))
 
-    fun queryTimingSpO2History(day: Int = CRPCommands.HISTORY_DAY_TODAY): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_SPO2, byteArrayOf(day.toByte(), 0))
+    fun queryTimingSpO2History(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_SPO2, byteArrayOf(day.toByte(), frameIndex.toByte()))
 
-    fun queryTimingStressHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_STRESS, byteArrayOf(day.toByte(), 0))
+    fun queryTimingStressHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_STRESS, byteArrayOf(day.toByte(), frameIndex.toByte()))
 
     fun queryHistorySleep(daysAgo: Int = 0): ByteArray =
         frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(daysAgo.toByte()))

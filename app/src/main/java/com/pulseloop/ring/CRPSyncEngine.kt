@@ -11,9 +11,9 @@ package com.pulseloop.ring
  * arrive as autonomous pushes/reads (see [CRPDriver]). HRV / stress / temperature are all-day
  * metrics — their timing is enabled here and live results decode via [CRPDecoder]. Of the stored
  * day timelines, sleep (group-2/cmd-14) is decoded ([CRPDecoder.decodeSleep], confirmed against a
- * hardware capture). The group-2 all-day "timing" vital histories (HR/SpO2/HRV/stress) are now
- * queried with the correct opcodes so the ring returns them; decoding those multi-frame replies
- * into samples is the next step, done against a real capture rather than a blind port.
+ * hardware capture), and the group-2 all-day "timing" vital histories (HR/SpO2/HRV/stress) decode
+ * into [RingDecodedEvent.HistoryMeasurement] samples (confirmed against zaggash's R11 rc2 capture);
+ * their multi-frame replies reassemble via the next-frame follow-up in [handle].
  */
 class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
@@ -45,22 +45,28 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         applyTimingSettings(measurementSettings ?: MeasurementSettings.ALL_ON_DEFAULT)
         // Pull the day's stored all-day timeline. runStartup() IS the poll pass (RingSyncWorker's
         // ~30-min background sync and the foreground syncNow() both re-invoke it), so this runs at
-        // the app's configured polling cadence; the ring samples at hrIntervalMinutes (above).
-        // The ring only emits history replies once asked — so this also produces the group-7/2
-        // reply frames in a diagnostic capture, which is what we need to finish decoding them.
-        // NOTE: the replies are currently acknowledged, not yet parsed into samples
-        // (CRPDecoder.decodeHistoryOrDeviceInfoResponse is a TODO pending that capture).
+        // the app's configured polling cadence; the ring samples at hrIntervalMinutes (above). The
+        // ring only emits history replies once asked; CRPDecoder parses the group-2 timing frames
+        // into HistoryMeasurement samples (confirmed against zaggash's R11 rc2 capture) and this
+        // engine walks the remaining frames of each day via the follow-up in handle().
         queryAllHistory()
     }
 
-    /** Request the stored all-day timelines the ring has accumulated (group 7 for HR/stress/HRV/
-     *  SpO2, group 2 for sleep/temp). Vendor `u3/g1.java` fires the same set on its sync pass. */
+    /** Frame follow-ups already requested this poll pass, keyed `cmd * 100 + frameIndex`, so a ring
+     *  that re-sends the same frame can't trigger a request storm. Cleared at the start of every
+     *  [queryAllHistory] pass so each sync re-pulls the full timeline. */
+    private val requestedTimingFrames = mutableSetOf<Int>()
+
+    /** Request the stored all-day timelines the ring has accumulated: the group-2 "timing" vital
+     *  timelines (HR/SpO2/HRV/stress), temperature, and sleep. Vendor `u3/g1.java` fires the same set
+     *  on its sync pass. Each timing query pulls frame 0; the ring's reply drives [handle] to pull
+     *  the next frame until the day is complete. */
     private fun queryAllHistory() {
-        // The all-day vital timelines the vendor's sync pass pulls (`u3/g1.java`): the group-2
-        // "timing" histories for TODAY. The previous group-7 HR/SpO2/HRV/stress queries were the
-        // wrong opcodes (device-info group) and the ring returned empty every time (issue #29).
-        // Replies are multi-frame; decoding them into samples is the next step, done against a real
-        // capture now that the ring actually answers (CRPDecoder acks them for now — never blind).
+        requestedTimingFrames.clear()
+        // The group-2 "timing" histories for TODAY, frame 0. The previous group-7 HR/SpO2/HRV/stress
+        // queries were the wrong opcodes (device-info group) and the ring returned empty every time
+        // (issue #29). Confirmed decoding into samples against zaggash's R11 rc2 capture; the
+        // multi-frame replies reassemble via the next-frame follow-up in [handle].
         send(CRPProtocol.queryTimingHeartRateHistory())
         send(CRPProtocol.queryTimingSpO2History())
         send(CRPProtocol.queryTimingHrvHistory())
@@ -69,9 +75,34 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         send(CRPProtocol.queryHistorySleep())
     }
 
+    /** The last frame index each timing vital emits before its day is complete (vendor terminal
+     *  index: HR/SpO2/stress finalize at frame 1 — two 144-slot frames; HRV at frame 3 — four
+     *  72-slot frames). A reply below this index triggers a pull of the next frame. */
+    private fun terminalFrameIndex(cmd: Int): Int =
+        if (cmd == CRPCommands.CMD_QUERY_TIMING_HRV) 3 else 1
+
+    /** Build the next-frame query for a timing vital, or null for a non-timing cmd. */
+    private fun timingQuery(cmd: Int, day: Int, frameIndex: Int): ByteArray? = when (cmd) {
+        CRPCommands.CMD_QUERY_TIMING_HR -> CRPProtocol.queryTimingHeartRateHistory(day, frameIndex)
+        CRPCommands.CMD_QUERY_TIMING_HRV -> CRPProtocol.queryTimingHrvHistory(day, frameIndex)
+        CRPCommands.CMD_QUERY_TIMING_SPO2 -> CRPProtocol.queryTimingSpO2History(day, frameIndex)
+        CRPCommands.CMD_QUERY_TIMING_STRESS -> CRPProtocol.queryTimingStressHistory(day, frameIndex)
+        else -> null
+    }
+
     override fun handle(event: RingDecodedEvent) {
-        // Steps/HR/battery are persisted by RingBLEClient via RingEventBridge; v1 keeps no
-        // engine-side state (no staged history pipeline to advance).
+        // Steps/HR/battery are persisted by RingBLEClient via RingEventBridge. The one piece of
+        // engine-side state is the all-day timeline's multi-frame pull: on each timing-history frame
+        // the ring returns, request the next frame until the vital's terminal index — the vendor's
+        // sequential `insertBleMessage(<query>.b(day, index + 1))` (`e1/{f,d,g,l}.java`). The
+        // samples themselves are decoded + persisted via the bridge; this only advances the cursor.
+        if (event is RingDecodedEvent.TimingHistoryFrame) {
+            if (event.frameIndex >= terminalFrameIndex(event.cmd)) return
+            val nextIndex = event.frameIndex + 1
+            // Guard against a ring that re-sends the same frame spamming duplicate follow-ups.
+            if (!requestedTimingFrames.add(event.cmd * 100 + nextIndex)) return
+            send(timingQuery(event.cmd, event.day, nextIndex))
+        }
     }
 
     // ---- Spot (manual) measurements. Trigger via the fdda command channel; the ring replies on

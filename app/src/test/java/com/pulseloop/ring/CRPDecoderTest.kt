@@ -240,6 +240,83 @@ class CRPDecoderTest {
         assertTrue(CRPDecoder.decode(frame, fdd3).none { it is RingDecodedEvent.SleepTimeline })
     }
 
+    // ── All-day "timing" vital history (group 2 / cmd 15/16/17/47, vendor e1/{f,d,g,l}) ──────────
+    // Frames captured verbatim from zaggash's Colmi R11 (rc2, issue #29): [day][frameIndex][slots…],
+    // one 5-minute slot per sample. HR/SpO2/stress = one byte/slot; HRV = little-endian 2 bytes/slot.
+
+    /** Real group-2/cmd-15 HR frame (day 0, frame 0): 19 non-zero 5-min slots, an overnight curve. */
+    private val hrTimingFrame =
+        "fdda1098020f000000003a000000000000003c000000004b0000000054000000005200000000680000000063000000005400" +
+        "0000006300000000006000000058000000004f00000000300000000063000000005a0000000060000000003f000000005c00" +
+        "0000005000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" +
+        "0000"
+
+    /** Real group-2/cmd-16 HRV frame (day 0, frame 0): 11 non-zero slots, little-endian 2-byte values. */
+    private val hrvTimingFrame =
+        "fdda109802100000000000002f00000000000000000000000000000020000000000000000000000000000000000000003200" +
+        "0000000000000000000000000000000000001e00000000000000000021000000000000000000220000000000000000003300" +
+        "0000000000000000000021000000000000000000000000000000000024000000000000000000380000000000000000002400" +
+        "0000"
+
+    @Test
+    fun `HR timing frame decodes one bpm per 5-minute slot at the right time-of-day`() {
+        // day 0, so slots hang off local midnight; slot 2 → 00:10, slot 10 → 00:50, slot 95 → 07:55.
+        val now = Instant.parse("2026-07-24T12:00:00Z")
+        val events = CRPDecoder.decode(hexToBytes(hrTimingFrame), fdd3, now, ZoneId.of("UTC"))
+        val samples = events.filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+        assertEquals(19, samples.size)
+        assertTrue(samples.all { it.kind_field == MeasurementKind.HEART_RATE })
+        // First slot: 58 bpm at 00:10 (slot 2 × 5 min).
+        assertEquals(58.0, samples.first().value, 0.0)
+        assertEquals(Instant.parse("2026-07-24T00:10:00Z"), samples.first()._timestamp)
+        // A daytime peak the vendor keeps (within 40..200): 104 bpm at 02:30 (slot 30).
+        assertTrue(samples.any { it.value == 104.0 && it._timestamp == Instant.parse("2026-07-24T02:30:00Z") })
+        // Last slot: 80 bpm at 07:55 (slot 95).
+        assertEquals(80.0, samples.last().value, 0.0)
+        assertEquals(Instant.parse("2026-07-24T07:55:00Z"), samples.last()._timestamp)
+    }
+
+    @Test
+    fun `HRV timing frame decodes little-endian two-byte samples per slot`() {
+        val now = Instant.parse("2026-07-24T12:00:00Z")
+        val samples = CRPDecoder.decode(hexToBytes(hrvTimingFrame), fdd3, now, ZoneId.of("UTC"))
+            .filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+        assertEquals(11, samples.size)
+        assertTrue(samples.all { it.kind_field == MeasurementKind.HRV })
+        // First slot: 47 ms at 00:10 (slot 2, 2-byte value 0x002f).
+        assertEquals(47.0, samples.first().value, 0.0)
+        assertEquals(Instant.parse("2026-07-24T00:10:00Z"), samples.first()._timestamp)
+        // 2-byte cadence: HRV packs 72 slots/frame, so slot 10 is still 00:50.
+        assertTrue(samples.any { it.value == 32.0 && it._timestamp == Instant.parse("2026-07-24T00:50:00Z") })
+    }
+
+    @Test
+    fun `an all-zero timing frame yields no samples, only the follow-up marker`() {
+        // zaggash's SpO2 timeline came back all-zero (no all-day SpO2 recorded) — decode must not
+        // fabricate 0-valued samples, but must still emit the frame marker so the engine advances.
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_SPO2, ByteArray(146))
+        val events = CRPDecoder.decode(frame, fdd3)
+        assertTrue(events.none { it is RingDecodedEvent.HistoryMeasurement })
+        val marker = events.filterIsInstance<RingDecodedEvent.TimingHistoryFrame>().single()
+        assertEquals(CRPCommands.CMD_QUERY_TIMING_SPO2, marker.cmd)
+        assertEquals(0, marker.frameIndex)
+    }
+
+    @Test
+    fun `a timing frame emits a TimingHistoryFrame marker carrying its cmd, day and index`() {
+        val payload = byteArrayOf(1, 0) + ByteArray(144) // day 1, frame 0, empty slots
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HR, payload)
+        val marker = CRPDecoder.decode(frame, fdd3).filterIsInstance<RingDecodedEvent.TimingHistoryFrame>().single()
+        assertEquals(CRPCommands.CMD_QUERY_TIMING_HR, marker.cmd)
+        assertEquals(1, marker.day)
+        assertEquals(0, marker.frameIndex)
+    }
+
+    @Test
+    fun `TimingHistoryFrame produces no PulseEvent`() {
+        assertTrue(RingEventBridge.eventsFor(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, 0, 0)).isEmpty())
+    }
+
     private fun hexToBytes(hex: String): ByteArray =
         ByteArray(hex.length / 2) { ((hex[it * 2].digitToInt(16) shl 4) or hex[it * 2 + 1].digitToInt(16)).toByte() }
 }

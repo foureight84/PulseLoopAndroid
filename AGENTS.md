@@ -71,13 +71,26 @@ supporting evidence as the cause.
 - The single-channel contention theory is **plausible but unproven** — no capture has shown a spot
   measure starved by an active history dump. Don't treat it as established; if you suspect it, prove
   it from a capture where the channel is actually saturated during a failed measure.
-- **Vendor divergences to fix when the group-7 all-day history is tackled** (verified from the
-  decompile, separate from the wear-state issue): the vendor *can* read monitor state
-  (`queryTimingHeartRateState`), so the engine's "no read-back → force `ALL_ON_DEFAULT` every connect"
-  premise is false — match the vendor (query state / apply saved config). The all-day HR history is
-  `queryHistoryTimingHeartRate(day)`, **not** the paramless `queryHistoryHeartRate()` (group-7 cmd 4)
-  we currently send — likely why group-7 comes back empty. And the vendor sends spot measures on a
-  priority path (`insertNotificationMessage`) distinct from config/history (`insertBleMessage`).
+- **All-day "timing" vital history is DECODED (build 27, rc3), confirmed against zaggash's rc2
+  capture.** Layout (vendor `e1/{f,d,g,l}.java`, group 2): a query `[day, frameIndex]` returns
+  `[day][frameIndex][slots…]`, one **5-minute** slot per sample (`w0.b.a()/5`), `0` = no reading.
+  **HR (cmd 15) / SpO2 (17) / stress (47)** are **one byte/slot**, 144 slots/frame, terminal frame
+  index **1** (two frames = 288 slots = 24 h). **HRV (cmd 16)** is a **little-endian 2-byte** value
+  per slot, 72 slots/frame, terminal index **3** (four frames). Clamps: HR 40..200, SpO2 ≤100, HRV
+  any positive, stress 1..100. Each slot's time = `localMidnight(today − day) + globalSlot*5min`
+  (ring stamps against **local** midnight — a UTC-vs-local offset makes samples look "in the future"
+  in a raw capture; that's expected, not a bug). `CRPDecoder.decodeTimingHistory` emits one
+  `HistoryMeasurement` per valid slot (persisted idempotently, `source="history"`) plus a
+  `TimingHistoryFrame` marker that drives `CRPSyncEngine.handle` to pull the next frame — the
+  vendor's sequential `insertBleMessage(<query>.b(day, index+1))`. **Still to hardware-validate on
+  rc3:** that the ring answers a direct `[day, index>0]` request (the multi-frame follow-up). In
+  the rc2 capture SpO2 came back all-zero and stress didn't reply at all — confirm those all-day
+  monitors are actually enabled on his ring before assuming a decode gap.
+- **Vendor divergences still open** (verified from the decompile): the vendor *can* read monitor
+  state (`queryTimingHeartRateState`), so the engine's "no read-back → force `ALL_ON_DEFAULT` every
+  connect" premise is false — match the vendor (query state / apply saved config). And the vendor
+  sends spot measures on a priority path (`insertNotificationMessage`) distinct from config/history
+  (`insertBleMessage`).
 - Whenever you touch CRP measure/sync/all-day behavior, hardware-validate with the ring owner
   (zaggash) — and for a "measure broken" report, first get a capture of **several** Measure presses
   with the ring snug and still, to separate a contact failure from a real code bug.

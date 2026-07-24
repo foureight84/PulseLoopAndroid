@@ -86,6 +86,10 @@ class CRPProtocolTest {
         assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 47, 0, 0), CRPProtocol.queryTimingStressHistory())
         // A non-today day flows into payload[0].
         assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 15, 1, 0), CRPProtocol.queryTimingHeartRateHistory(1))
+        // The frame index (payload[1]) selects a later slice of the day's timeline for the follow-up
+        // pull — vendor `t.b(day, index)`; here today's frame 1 (00:00 stays day 0, index → 1).
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 15, 0, 1), CRPProtocol.queryTimingHeartRateHistory(0, 1))
+        assertArrayEquals(byteArrayOf(0xFD.toByte(), 0xDA.toByte(), 0x10, 8, 2, 16, 0, 2), CRPProtocol.queryTimingHrvHistory(0, 2))
     }
 
     @Test
