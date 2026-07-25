@@ -268,6 +268,7 @@ class ColmiQringParityTest {
         assertEquals(1, events.size)
         val sample = events.single() as RingDecodedEvent.TemperatureSample
         assertEquals(36.26, sample.celsius, 0.001)
+        assertTrue(sample.isHistory)
         val expectedDay = LocalDate.now(zone).minusDays(1).atStartOfDay(zone).toInstant()
         assertEquals(expectedDay, sample._timestamp)
 

@@ -91,6 +91,8 @@ sealed class RingDecodedEvent {
         is WearingStatus -> this._timestamp
         is TimingHistoryFrame -> Instant.EPOCH
         is MeasurementRejected -> Instant.EPOCH
+        is BloodPressureSample -> this._timestamp
+        is BloodSugarSample -> this._timestamp
         is Unknown -> Instant.EPOCH
     }
 
@@ -162,7 +164,9 @@ sealed class RingDecodedEvent {
 
     data class SleepTimeline(
         val _timestamp: Instant,
-        val stages: List<SleepStage>
+        val stages: List<SleepStage>,
+        /** True when this event is the ring's complete authoritative session, not one packet. */
+        val completeSession: Boolean = false,
     ) : RingDecodedEvent() {
         override val kind = "sleep_timeline"
         override val confidence = DecodeConfidence.KNOWN
@@ -262,12 +266,12 @@ sealed class RingDecodedEvent {
     /**
      * The ring **refused** to start the spot measurement we asked for (YCBT `03 2f` answered with a
      * non-zero status). `mode` is the measurement mode we started — the reply itself carries only a
-     * status byte, so the mode comes from the start `YCBTDriver` remembers sending. Produces no
-     * `PulseEvent`: it is a verdict on a command, not data — `RingSyncCoordinator` reads it off the
-     * raw-packet feed and aborts the matching in-flight measurement.
+     * status byte, so the mode comes from the start `YCBTDriver` remembers sending. `RingEventBridge`
+     * maps it to `PulseEvent.MeasurementRejected`, which `RingSyncCoordinator` consumes to abort the
+     * matching in-flight measurement.
      */
     data class MeasurementRejected(
-        val mode: UByte
+        val mode: Int
     ) : RingDecodedEvent() {
         override val kind = "measurement_rejected"
         override val confidence = DecodeConfidence.KNOWN
@@ -276,7 +280,8 @@ sealed class RingDecodedEvent {
 
     data class StressSample(
         val value: Int,
-        val _timestamp: Instant
+        val _timestamp: Instant,
+        val isHistory: Boolean = false,
     ) : RingDecodedEvent() {
         override val kind = "stress_sample"
         override val confidence = DecodeConfidence.KNOWN
@@ -294,7 +299,8 @@ sealed class RingDecodedEvent {
 
     data class TemperatureSample(
         val celsius: Double,
-        val _timestamp: Instant
+        val _timestamp: Instant,
+        val isHistory: Boolean = false,
     ) : RingDecodedEvent() {
         override val kind = "temperature_sample"
         override val confidence = DecodeConfidence.KNOWN
@@ -355,6 +361,26 @@ sealed class RingDecodedEvent {
         override val kind = "command_ack"
         override val confidence = DecodeConfidence.PARTIAL
         override val debugJSON = "{}"
+    }
+
+    data class BloodPressureSample(
+        val systolic: Int,
+        val diastolic: Int,
+        val _timestamp: Instant,
+        val isHistory: Boolean = false,
+    ) : RingDecodedEvent() {
+        override val kind = "blood_pressure_sample"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"sys":$systolic,"dia":$diastolic}"""
+    }
+
+    data class BloodSugarSample(
+        val mgdl: Double,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "blood_sugar_sample"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"mgdl":$mgdl}"""
     }
 
     data class Unknown(

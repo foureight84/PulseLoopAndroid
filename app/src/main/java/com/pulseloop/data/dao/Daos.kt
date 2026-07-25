@@ -41,6 +41,10 @@ interface DeviceDao {
 
 @Dao
 interface MeasurementDao {
+    /** Invalidates after committed measurement inserts; consumers can debounce bursty history. */
+    @Query("SELECT COUNT(*) FROM measurements")
+    fun changeFlow(): Flow<Int>
+
     @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
     suspend fun range(kind: String, start: Long, end: Long): List<MeasurementEntity>
 
@@ -63,16 +67,8 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
-    /** Look up an already-persisted history row at an exact timestamp — the identity a ring's
-     *  history replay is deduped on (a ring re-sends the same log every re-sync, with
-     *  deterministic per-record epochs). */
-    @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND timestamp = :timestamp AND sourceRaw = 'history' LIMIT 1")
-    suspend fun findHistoryAt(kind: String, timestamp: Long): MeasurementEntity?
-
-    /** Update a row's value in place — used when a re-synced history sample revises an existing
-     *  one (the ring can refine an averaged block) without creating a duplicate row. */
-    @Query("UPDATE measurements SET value = :value WHERE id = :id")
-    suspend fun updateValue(id: String, value: Double)
+    @Upsert
+    suspend fun upsert(measurement: MeasurementEntity)
 
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
@@ -214,6 +210,9 @@ interface SleepSessionDao {
     /** The synced (non-demo) session for a day — the seeder's "already has ring data" guard. */
     @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' LIMIT 1")
     suspend fun ringByDay(day: Long): SleepSessionEntity?
+
+    @Query("SELECT * FROM sleep_sessions WHERE sourceRaw != 'demo' AND startAt < :end AND endAt > :start")
+    suspend fun ringOverlapping(start: Long, end: Long): List<SleepSessionEntity>
 
     /** All synced (non-demo) sessions for a waking day, earliest first — the reconcile target. */
     @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' ORDER BY startAt ASC")

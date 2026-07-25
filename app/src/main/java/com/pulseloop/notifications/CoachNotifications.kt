@@ -11,6 +11,8 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.*
 import com.pulseloop.MainActivity
 import com.pulseloop.coach.config.CoachSleepSyncGate
@@ -21,12 +23,16 @@ import com.pulseloop.data.entity.CoachNotificationRecordEntity
 import com.pulseloop.ring.PulseEvent
 import com.pulseloop.ring.PulseEventBus
 import com.pulseloop.ring.RingBLEClient
+import com.pulseloop.ring.RingConnectionState
 import com.pulseloop.service.loadPersistedMeasurementSettings
 import com.pulseloop.service.loadPersistedUserProfile
 import com.pulseloop.settings.ApiKeyStore
 import kotlinx.coroutines.async
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
 import java.time.LocalDateTime
@@ -264,8 +270,9 @@ class CoachNotificationWorker(
             awaitSyncDone()
             return
         }
+        if (isAppForeground()) return
 
-        val bleClient = RingBLEClient(applicationContext)
+        val bleClient = RingBLEClient(applicationContext, transientOwner = true)
         if (!bleClient.hasPermissions()) {
             // destroy(), not just drop the reference: the client's init-started connection
             // watchdog would otherwise keep firing into permission-less connect attempts.
@@ -288,14 +295,31 @@ class CoachNotificationWorker(
                     engine?.runStartup()
                 }
                 bleClient.connectLastKnown()
+                while (!doneSignal.isCompleted && !isAppForeground()) delay(500)
+                if (isAppForeground()) {
+                    doneSignal.cancel()
+                    return@withTimeoutOrNull
+                }
                 doneSignal.await()
             }
         } finally {
             // destroy(), not disconnect(): the client's connection watchdog (started in init)
             // survives disconnect() and re-attaches the ring ~15s after the worker exits —
             // re-firing onConnected → a full runStartup, then holding the ring with no UI.
-            bleClient.destroy()
+            val releasedConnection = bleClient.destroy()
+            if (releasedConnection && !isAppForeground()) {
+                PulseEventBus.publishBlocking(
+                    PulseEvent.DeviceStateChanged(
+                        RingConnectionState.DISCONNECTED,
+                        null,
+                    )
+                )
+            }
         }
+    }
+
+    private suspend fun isAppForeground(): Boolean = withContext(Dispatchers.Main.immediate) {
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     }
 
     /** Give an in-flight sync (driven by whoever owns the live link) a bounded chance to finish. */

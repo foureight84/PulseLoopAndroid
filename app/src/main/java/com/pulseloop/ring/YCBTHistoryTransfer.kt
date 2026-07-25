@@ -1,122 +1,114 @@
 package com.pulseloop.ring
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import java.time.Instant
 
 /**
- * Ported from YCBTHistoryTransfer.swift (iOS #82).
+ * Ported from YCBTHistoryTransfer.swift.
  * The YCBT history state machine — protocol-driven, not timer-driven.
- *
- * Per type the ring answers a `05 <queryKey>` request with:
- *   header   `05 <queryKey>`  payload >= 10 -> `[recordCount:u16][totalPackets:u32][totalBytes:u32]`
- *                             payload <=  9 -> nothing stored for this type
- *   data     `05 <ackKey>`    N frames whose payloads **concatenate** into one buffer
- *   terminal `05 80`          `[totalPackets:u16][totalBytes:u16][crc16:u16]` over that buffer
- *
- * and then **waits for an ACK** (`05 80 {00}` accepted / `{04}` CRC failure) before releasing the
- * next type. The ring does not release the next type until it arrives, so we ACK before we parse
- * — a slow decode can't stall the ring.
- *
- * **Completion is the ring's terminal block, never a timer.** The watchdog below is a *safety net
- * only*: it never ACKs (an ACK without a verified terminal block claims data we don't hold) and is
- * never a completion signal — it just abandons a type the ring has gone silent on.
  */
+
 class YCBTHistoryTransfer(
     private val writer: RingCommandWriter?,
-    private val inactivityMs: Long = 10_000,
-    private val absoluteCapMs: Long = 30_000,
-) {
-    private sealed class State {
-        object Idle : State()
-        /** Query written; waiting for the header (or a "no data" / error reply). */
-        data class RequestSent(val historyType: YCBTHistoryType) : State()
-        /** Header seen; accumulating data frames until the terminal block. */
-        data class Receiving(val historyType: YCBTHistoryType) : State()
-
-        val type: YCBTHistoryType? get() = when (this) {
-            is Idle -> null
-            is RequestSent -> historyType
-            is Receiving -> historyType
+    private val inactivitySeconds: Double = 10.0,
+    private val absoluteCapSeconds: Double = 30.0,
+    private val onOutOfBandEvents: (List<RingDecodedEvent>) -> Unit = { events ->
+        for (event in events) {
+            for (pulseEvent in RingEventBridge.eventsFor(event)) {
+                PulseEventBus.publishBlocking(pulseEvent)
+            }
         }
-    }
-
+    },
+) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    private var state: State = State.Idle
-    private val queue = mutableListOf<YCBTHistoryType>()
-    private var buffer = mutableListOf<UByte>()
-    /** A CRC mismatch buys the type exactly one re-request; a second failure gives up on it. */
+    private enum class State {
+        IDLE, REQUEST_SENT, RECEIVING
+    }
+
+    private var state = State.IDLE
+    private var currentType: YCBTHistoryType? = null
+    private var queue: MutableList<YCBTHistoryType> = mutableListOf()
+    private var buffer: ByteArray = ByteArray(0)
     private var retriedCurrentType = false
-    /** Types the firmware answered `0xFB`/`0xFC` for — never asked again this session. */
-    private val unsupported = mutableSetOf<UByte>()
+    private var unsupported: MutableSet<Int> = mutableSetOf()
+    private var bufferCap = DEFAULT_BUFFER_CAP
+    private var expectedPackets: Int? = null
+    private var expectedBytes: Int? = null
+    private var watchdogJob: Job? = null
+    private var typeDeadline: Long? = null
 
-    private val defaultBufferCap = 64 * 1024
-    private var bufferCap = defaultBufferCap
+    companion object {
+        private const val DEFAULT_BUFFER_CAP = 64 * 1024
+        private const val MAX_BUFFER_CAP = 512 * 1024
+    }
 
-    // MARK: - Driving the queue
+    @get:Synchronized
+    val isActive: Boolean get() = state != State.IDLE
 
-    /** True while a type is being requested or received. */
-    val isActive: Boolean get() = state != State.Idle
-
-    /**
-     * Seed the queue and request the first type. Types the ring already rejected this session are
-     * skipped.
-     *
-     * **A transfer already in flight wins.** There are multiple callers (the connect handshake,
-     * the post-workout vitals backfill, the periodic pass), and a second `start` would abandon the
-     * in-flight type mid-dump: the ring keeps streaming its data frames regardless, so they would
-     * land in the *new* type's buffer and fail its terminal CRC.
-     */
+    @Synchronized
     fun start(types: List<YCBTHistoryType>) {
         if (isActive) return
-        queue.clear()
-        queue.addAll(types.filter { !unsupported.contains(it.queryKey) })
-        publishOutOfBand(advance())
+        queue = types.filter { !unsupported.contains(it.queryKey) }.toMutableList()
+        advance()
     }
 
-    /** Abandon any in-flight transfer (disconnect / teardown). */
+    /** Add newly discovered capability-gated types without disturbing an active block. */
+    @Synchronized
+    fun append(types: List<YCBTHistoryType>) {
+        val additions = types.distinct().filter { type ->
+            !unsupported.contains(type.queryKey) && type != currentType && type !in queue
+        }
+        if (additions.isEmpty()) return
+        if (state == State.IDLE) {
+            queue = additions.toMutableList()
+            advance()
+        } else {
+            queue.addAll(additions)
+        }
+    }
+
+    @Synchronized
     fun cancel() {
         cancelWatchdog()
-        state = State.Idle
+        state = State.IDLE
+        currentType = null
         queue.clear()
-        buffer.clear()
+        buffer = ByteArray(0)
     }
 
-    /** Request the next type, or report completion when the queue drains. */
     private fun advance(): List<RingDecodedEvent> {
         cancelWatchdog()
-        buffer = mutableListOf()
-        bufferCap = defaultBufferCap
+        buffer = ByteArray(0)
+        expectedPackets = null
+        expectedBytes = null
+        bufferCap = DEFAULT_BUFFER_CAP
         retriedCurrentType = false
         if (queue.isEmpty()) {
-            state = State.Idle
+            state = State.IDLE
+            currentType = null
             return listOf(RingDecodedEvent.HistorySyncFinished)
         }
-        sendQuery(queue.removeAt(0))
+        val next = queue.removeAt(0)
+        sendQuery(next)
         return emptyList()
     }
 
-    /** Write `05 <queryKey>` and arm the stall watchdog. Also used for the single CRC retry. */
     private fun sendQuery(type: YCBTHistoryType) {
-        state = State.RequestSent(type)
-        typeDeadlineAtMs = System.currentTimeMillis() + absoluteCapMs
-        writer?.enqueue(YCBTHealthCommand.historyRequest(type).toRawByteArray())
+        state = State.REQUEST_SENT
+        currentType = type
+        typeDeadline = System.currentTimeMillis() + (absoluteCapSeconds * 1000).toLong()
+        writer?.enqueue(YCBTHealthCommand.historyRequest(type))
         armWatchdog(type)
     }
 
-    // MARK: - Inbound
+    /** Feed every validated Health-group (type == 0x05) frame here. */
+    @Synchronized
+    fun handle(cmd: Int, payload: ByteArray): List<RingDecodedEvent> {
+        if (state == State.IDLE) return emptyList()
+        val type = currentType ?: return emptyList()
 
-    /** Feed every validated Health-group (`type == 0x05`) frame here. */
-    fun handle(cmd: UByte, payload: List<UByte>): List<RingDecodedEvent> {
-        val type = state.type ?: return emptyList()
-
-        // A 1-byte 0xFB..0xFF payload is a rejection, not data.
-        val error = YCBTFrameError.detect(payload)
-        if (error != null) {
+        YCBTFrameError.detect(payload)?.let { error ->
             if (error.isPermanent) unsupported.add(type.queryKey)
             return advance()
         }
@@ -129,85 +121,89 @@ class YCBTHistoryTransfer(
                 emptyList()
             }
             YCBTHealth.TERMINAL_BLOCK -> handleTerminal(type, payload)
-            else -> emptyList()   // a frame for some other type — not ours to interpret
+            else -> emptyList()
         }
     }
 
-    /** Header: `[recordCount:u16][totalPackets:u32][totalBytes:u32]`. <= 9 bytes = "no stored data". */
-    private fun handleHeader(type: YCBTHistoryType, payload: List<UByte>): List<RingDecodedEvent> {
+    private fun handleHeader(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
         if (payload.size < YCBTHealth.HEADER_PAYLOAD_LENGTH) return advance()
+        expectedPackets = YCBTBytes.u16(payload, 2)
         val totalBytes = YCBTBytes.u32(payload, 6)
-        buffer = mutableListOf()
-        bufferCap = maxOf(totalBytes.toInt(), defaultBufferCap)
-        state = State.Receiving(type)
+        expectedBytes = totalBytes
+        buffer = ByteArray(0)
+        bufferCap = totalBytes.coerceIn(0, MAX_BUFFER_CAP)
+        state = State.RECEIVING
         armWatchdog(type)
-        return listOf(RingDecodedEvent.HistorySyncProgress("Syncing ${type.label}..."))
+        return listOf(RingDecodedEvent.HistorySyncProgress(stage = "Syncing ${type.label}…"))
     }
 
-    /** Data frames concatenate. Accepted even if the header was missed — the terminal CRC is the
-     *  real integrity check, and it will fail us into the retry path rather than persisting a
-     *  misaligned buffer. */
-    private fun appendData(payload: List<UByte>) {
-        if (buffer.size + payload.size > bufferCap) return
-        buffer.addAll(payload)
+    private fun appendData(payload: ByteArray) {
+        if (buffer.size + payload.size <= bufferCap) {
+            buffer += payload
+        }
     }
 
-    /** Terminal: verify the CRC16 over everything accumulated, ACK, then decode. Order matters —
-     *  we ACK first, and the ring gates the next type on it. */
-    private fun handleTerminal(type: YCBTHistoryType, payload: List<UByte>): List<RingDecodedEvent> {
-        if (state is State.RequestSent && buffer.isEmpty()) return emptyList()
+    private fun handleTerminal(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
+        if (state == State.REQUEST_SENT && buffer.isEmpty()) return emptyList()
         if (payload.size < YCBTHealth.TERMINAL_PAYLOAD_LENGTH) return advance()
+        val packets = YCBTBytes.u16(payload, 0)
+        val bytes = YCBTBytes.u16(payload, 2)
+        val terminalMatchesHeader = packets == expectedPackets && bytes == expectedBytes
+        val terminalMatchesBuffer = bytes == buffer.size
+        if (!terminalMatchesHeader || !terminalMatchesBuffer) {
+            writer?.enqueue(YCBTHealthCommand.historyBlockAck(status = YCBTHealth.ACK_CRC_FAILURE))
+            return retryOrSkip(type)
+        }
         val expected = YCBTBytes.u16(payload, 4)
         val matches = YCBTFrame.crc16(buffer) == expected
 
-        writer?.enqueue(
-            YCBTHealthCommand.historyBlockAck(if (matches) YCBTHealth.ACK_ACCEPTED else YCBTHealth.ACK_CRC_FAILURE).toRawByteArray()
-        )
+        writer?.enqueue(YCBTHealthCommand.historyBlockAck(status = if (matches) YCBTHealth.ACK_ACCEPTED else YCBTHealth.ACK_CRC_FAILURE))
 
         if (!matches) return retryOrSkip(type)
         return YCBTHealthRecords.decode(buffer, type) + advance()
     }
 
-    /** One re-request per type on a corrupt transfer; if that also fails, drop the type. */
     private fun retryOrSkip(type: YCBTHistoryType): List<RingDecodedEvent> {
         if (retriedCurrentType) return advance()
         retriedCurrentType = true
-        buffer = mutableListOf()
+        buffer = ByteArray(0)
         sendQuery(type)
         return emptyList()
     }
 
-    // MARK: - Stall watchdog (safety net)
+    // MARK: Stall watchdog (safety net)
 
-    private var watchdogJob: Job? = null
-    private var typeDeadlineAtMs: Long? = null
-
-    /** Fires only on silence: the type is declared stalled and skipped. Must never ACK and must
-     *  never stand in for completion. */
     private fun armWatchdog(type: YCBTHistoryType) {
         watchdogJob?.cancel()
-        val deadline = typeDeadlineAtMs ?: (System.currentTimeMillis() + absoluteCapMs)
-        val fireAt = minOf(System.currentTimeMillis() + inactivityMs, deadline)
+        val deadline = typeDeadline ?: (System.currentTimeMillis() + (absoluteCapSeconds * 1000).toLong())
+        val fireAt = minOf(System.currentTimeMillis() + (inactivitySeconds * 1000).toLong(), deadline)
         val delayMs = maxOf(0, fireAt - System.currentTimeMillis())
         watchdogJob = scope.launch {
             delay(delayMs)
-            if (state.type == type) {
-                publishOutOfBand(advance())
-            }
+            watchdogFired(type)
         }
+    }
+
+    private fun watchdogFired(type: YCBTHistoryType) {
+        // Advance the state machine under the lock, then publish OUTSIDE it. `onOutOfBandEvents`
+        // re-enters the sync engine (which in turn calls back into this transfer's `append`), so
+        // holding the transfer monitor while publishing inverts the engine→transfer lock order the
+        // GATT-callback path uses and can deadlock. The `handle()` path already returns its events
+        // to the caller for exactly this reason; the watchdog path must do the same.
+        val events = synchronized(this) {
+            if (state == State.IDLE || currentType != type) return
+            advance()
+        }
+        publishOutOfBand(events)
     }
 
     private fun cancelWatchdog() {
         watchdogJob?.cancel()
         watchdogJob = null
-        typeDeadlineAtMs = null
+        typeDeadline = null
     }
 
-    /** `handle` returns its events to the driver, which publishes them. `start` and the watchdog
-     *  have no such return channel, so the one event they can produce — completion — is published
-     *  here. */
     private fun publishOutOfBand(events: List<RingDecodedEvent>) {
-        if (events.none { it is RingDecodedEvent.HistorySyncFinished }) return
-        PulseEventBus.publishBlocking(PulseEvent.SyncProgress("done"))
+        onOutOfBandEvents(events)
     }
 }

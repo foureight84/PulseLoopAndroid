@@ -66,6 +66,25 @@ data class WearableModel(
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
 
         /**
+         * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
+         * runs [RingDeviceType.YCBT]'s driver, not the Colmi one, despite the R10-ish model number.
+         *
+         * "R10M" is a white-label ODM model sold under several reseller brands (LittleMeatball,
+         * Anarow, JTLlink, MOMOTECH). LittleMeatball is the one hardware-validated unit and the name
+         * a buyer is most likely to recognise, so it leads the display name. The pattern accepts
+         * both separators: `R10M FCF4` (the tested unit) is also caught by the deliberately broad
+         * [COLMI_SMARTHEALTH] entry — which this precedes in [CATALOG], so it wins — while
+         * `R10M_FCF4` matches nothing else in the catalog at all.
+         *
+         * No dedicated product art: it is not a Colmi ring, so it must not borrow Colmi art. Falls
+         * back to the generic ring silhouette, same as [TK5] and [LUCK_RING_TK18].
+         */
+        val R10M = ycbt(
+            "r10m", "R10M (LittleMeatball)", "LittleMeatball",
+            "^R10M[ _][0-9A-F]{4}$", imageRes = null,
+        )
+
+        /**
          * The **CRP-firmware** R11 — same physical ring as [COLMI_R11], but its official app is
          * Moyoung "Da Rings" and it speaks the proprietary `fdda` CRP protocol, not the Colmi/QRing
          * UART (see `CRPCoordinator`). "R11 / SMART_RING" is sold under both firmwares; a unit is
@@ -139,11 +158,24 @@ data class WearableModel(
             requiresOsBond = requiresOsBond,
         )
 
+        private fun ycbt(
+            id: String,
+            name: String,
+            brand: String,
+            pattern: String,
+            @DrawableRes imageRes: Int?,
+        ) = WearableModel(
+            id = id, displayName = name, brand = brand, family = RingDeviceType.YCBT,
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · BP · Sleep",
+            advertisedNamePatterns = listOf(pattern),
+            imageRes = imageRes,
+        )
+
         /** Every supported model. The pairing screen groups by brand and sorts each tab alphabetically. */
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
             COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59, TK5, LUCK_RING_TK18, COLMI_R11_CRP,
+            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
             COLMI_SMARTHEALTH,

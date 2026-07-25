@@ -1,11 +1,18 @@
 package com.pulseloop.service
 
 import android.content.Context
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.*
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.ring.PulseEvent
+import com.pulseloop.ring.PulseEventBus
 import com.pulseloop.ring.RingBLEClient
+import com.pulseloop.ring.RingConnectionState
 import com.pulseloop.settings.ApiKeyStore
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.TimeUnit
 
@@ -55,6 +62,11 @@ class RingSyncWorker(
     }
 
     override suspend fun doWork(): Result {
+        // The foreground app owns the live GATT. An overdue periodic job can start at the same
+        // moment as MainActivity after process launch; opening a second client interleaves both
+        // command queues and lets this worker's cleanup disconnect the UI-owned session.
+        if (isAppForeground()) return Result.success()
+
         val keyStore = ApiKeyStore(applicationContext)
         val db = PulseLoopDatabase.getInstance(applicationContext)
 
@@ -63,7 +75,7 @@ class RingSyncWorker(
         val device = db.deviceDao().currentReal()
         if (device == null) return Result.success()
 
-        val bleClient = RingBLEClient(applicationContext)
+        val bleClient = RingBLEClient(applicationContext, transientOwner = true)
 
         // Load the persisted measurement config + profile up front so the connect
         // handshake pushes the user's saved settings. Null (never saved) makes the
@@ -94,22 +106,38 @@ class RingSyncWorker(
                 while (!connected && waited < 20_000L) {
                     delay(1000)
                     waited += 1000
+                    if (isAppForeground()) return@withTimeout Result.success()
                 }
 
                 if (!connected) {
-                    bleClient.disconnect()
                     return@withTimeout Result.success()
                 }
 
-                // Let data stream in for a few seconds after connect
-                delay(15_000L)
+                // Let data stream in after connect, but yield ownership promptly if the app opens.
+                repeat(15) {
+                    delay(1000L)
+                    if (isAppForeground()) return@withTimeout Result.success()
+                }
 
-                // Disconnect cleanly
-                bleClient.disconnect()
                 Result.success()
             }
         } catch (e: Exception) {
             Result.retry()
+        } finally {
+            // This client is worker-owned. Cancel its watchdog as well as closing GATT so it
+            // cannot reconnect after doWork() has returned.
+            val releasedConnection = bleClient.destroy()
+            // A private client must not overwrite a foreground client's state during an ownership
+            // race. If the app remains backgrounded, persist the worker's actual teardown.
+            if (releasedConnection && !isAppForeground()) {
+                PulseEventBus.publishBlocking(
+                    PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
+                )
+            }
         }
+    }
+
+    private suspend fun isAppForeground(): Boolean = withContext(Dispatchers.Main.immediate) {
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     }
 }

@@ -35,7 +35,8 @@ import java.time.ZoneId
 class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
     // Local midnight, not UTC — the Today dashboard rolls over at the device's local
     // midnight so daily stats line up with how the rest of the app keys per-day rows.
-    private val todayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
+    private val todayDate = MutableStateFlow(java.time.LocalDate.now().toString())
 
     data class TodayState(
         val steps: Int? = null,
@@ -70,9 +71,14 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
     private val _state = MutableStateFlow(TodayState())
     val state: StateFlow<TodayState> = _state.asStateFlow()
 
+    fun refreshCurrentDay() {
+        todayStart.value = TimeUtil.startOfTodayLocal()
+        todayDate.value = java.time.LocalDate.now().toString()
+    }
+
     init {
         viewModelScope.launch {
-            db.activityDailyDao().byDayFlow(todayStart).collect { activity ->
+            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { activity ->
                 _state.update { it.copy(
                     steps = activity?.steps,
                     calories = activity?.calories,
@@ -102,9 +108,10 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         }
         // Today's coach summary card (kind="today", scopeKey=local date).
         viewModelScope.launch {
-            db.coachSummaryDao()
-                .getFlow(com.pulseloop.coach.summaries.CoachSummaryKind.TODAY.rawValue, java.time.LocalDate.now().toString())
-                .collect { summary -> _state.update { it.copy(coachSummary = summary) } }
+            currentDayValues(todayDate) { date ->
+                db.coachSummaryDao()
+                    .getFlow(com.pulseloop.coach.summaries.CoachSummaryKind.TODAY.rawValue, date)
+            }.collect { summary -> _state.update { it.copy(coachSummary = summary) } }
         }
         viewModelScope.launch {
             db.deviceDao().currentFlow().collect { device ->
@@ -220,6 +227,10 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         // Returning to Day from an aggregate range always lands on today, not a stale offset.
         _state.update { it.copy(range = range, dayOffset = if (range == SleepRangeKey.DAY) 0 else it.dayOffset) }
         viewModelScope.launch { try { rebuild(range) } catch (_: Exception) {} }
+    }
+
+    fun refreshReferenceNight() {
+        viewModelScope.launch { try { rebuild(_state.value.range) } catch (_: Exception) {} }
     }
 
     init {
@@ -382,8 +393,13 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
 
     private val _state = MutableStateFlow(ActivityState())
     val state: StateFlow<ActivityState> = _state.asStateFlow()
+    private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
 
     private val db = db
+
+    fun refreshCurrentDay() {
+        todayStart.value = TimeUtil.startOfTodayLocal()
+    }
 
     init {
         viewModelScope.launch {
@@ -392,7 +408,7 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
             }
         }
         viewModelScope.launch {
-            db.activityDailyDao().byDayFlow(TimeUtil.startOfTodayLocal()).collect { day ->
+            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { day ->
                 _state.update { it.copy(today = day) }
             }
         }
@@ -444,6 +460,7 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
  * Ported from MetricsService.metricRange in PulseServices.swift.
  * Uses reactive polling so data appears as soon as the ring syncs.
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
     data class VitalsState(
         val hrSamples: List<Double> = emptyList(),
@@ -498,6 +515,14 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
     val state: StateFlow<VitalsState> = _state.asStateFlow()
 
     init {
+        // Room is the display source of truth. Rebuild after inserts commit so a manual reading
+        // cannot lose a race between the coordinator seeing its event and the persistence
+        // subscriber writing it. Debounce coalesces large history batches into one rebuild.
+        viewModelScope.launch {
+            db.measurementDao().changeFlow().debounce(250).collect {
+                try { refresh(db) } catch (_: Exception) {}
+            }
+        }
         // Poll every 5 seconds so data appears as the ring syncs history
         viewModelScope.launch {
             while (true) {

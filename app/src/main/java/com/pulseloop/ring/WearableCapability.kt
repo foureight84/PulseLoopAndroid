@@ -27,23 +27,21 @@ enum class WearableCapability(val key: String) {
     // Interaction capabilities
     MANUAL_HEART_RATE("manualHeartRate"),
     MANUAL_SPO2("manualSpo2"),
+    MANUAL_BLOOD_PRESSURE("manualBloodPressure"),
+    MANUAL_HRV("manualHrv"),
     REALTIME_HEART_RATE("realtimeHeartRate"),
     REALTIME_STEPS("realtimeSteps"),
     FIND_DEVICE("findDevice"),
     POWER_OFF("powerOff"),
     FACTORY_RESET("factoryReset"),
+    SPO2_HISTORY("spo2History"),
 
     // Configurable all-day measurement: the device exposes a settable HR sampling interval and
     // per-vital monitoring toggles (Colmi `0x16` + prefs). The generic jring has no such control,
     // so it never declares this and the Measurement settings section stays hidden for it.
     MEASUREMENT_INTERVAL("measurementInterval"),
 
-    // YCBT (TK5 / SmartHealth-Colmi): the all-day SpO2 log is a separate query (`05 1A`) from the
-    // spot-measurement gate below, and on-demand HRV/BP are their own SupportFunction bits distinct
-    // from the trend/history capability.
-    SPO2_HISTORY("spo2History"),
-    MANUAL_HRV("manualHrv"),
-    MANUAL_BLOOD_PRESSURE("manualBloodPressure"),
+    // YCBT history-only metric.
     VO2MAX("vo2max");
 
     companion object {
@@ -75,5 +73,7 @@ enum class RingDeviceType(val displayName: String) {
     // Moyoung "Da Rings" (com.moyoung.ring). Notably the CRP-firmware Colmi R11: it advertises the
     // generic "SMART_RING" name with no service UUID, so it's classified JRING at scan and only
     // reveals its `fdda` service post-connect (issue #29, zaggash's ring). See CRPCoordinator.
-    CRP("Colmi / Moyoung ring (CRP)");
+    CRP("Colmi / Moyoung ring (CRP)"),
+    // Hardware-validated SmartHealth R10M path, kept separate from the broader YCBT families.
+    YCBT("YCBT / SmartHealth ring");
 }

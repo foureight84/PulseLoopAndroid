@@ -40,7 +40,7 @@ import com.pulseloop.data.entity.*
         BatterySampleEntity::class,
         CoachNotificationRecordEntity::class,
     ],
-    version = 12,
+    version = 16,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -205,6 +205,150 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v12 → v13: index replayed sensor-history identity without deleting valid collisions. */
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Feature APKs briefly used version 8 for this index before main assigned v8 to
+                // battery history. Keep the migration valid for both upgrade lineages.
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `battery_samples` (
+                        `id` TEXT NOT NULL,
+                        `percent` INTEGER NOT NULL,
+                        `timestamp` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_battery_samples_timestamp` ON `battery_samples` (`timestamp`)")
+                adoptStableMeasurementIdentities(db)
+            }
+        }
+
+        /** v13 → v14: replace the pre-review unique identity index without dropping rows. */
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                adoptStableMeasurementIdentities(db)
+            }
+        }
+
+        /** v14 → v15: re-run identity adoption now that it also covers HRV rows stored as 'live'.
+         *  Same reasoning as v13 → v14: a test APK that already reached v14 ran the pre-fix version
+         *  of [adoptStableMeasurementIdentities] and would otherwise keep its un-keyed HRV rows,
+         *  which double the HRV series on the next re-sync. The function is idempotent, so re-running
+         *  it is free for anyone whose rows are already adopted. */
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                adoptStableMeasurementIdentities(db)
+            }
+        }
+
+        /**
+         * v15 → v16: delete the duplicate rows the pre-identity code accumulated.
+         *
+         * Before measurements had stable ids, a ring's history *replay* was persisted with a fresh
+         * random id every time, so each re-sync appended another row at a slot already stored — on
+         * a real Colmi that meant HRV, stress and temperature growing by one row per slot per sync,
+         * forever (nothing prunes this table). [adoptStableMeasurementIdentities] stops the growth
+         * by giving one row per slot the canonical `history:<key>:<timestamp>` id that later syncs
+         * upsert onto, but it deliberately leaves the already-accumulated copies in place. They are
+         * not harmless: `dailyAggregates`/`hourlyAggregates` compute `AVG(value)` over raw rows with
+         * no `sourceRaw` filter, so a slot replayed more often than its neighbours drags the average
+         * toward its value.
+         *
+         * Deleting is restricted to rows that are **provably redundant**: a non-canonical row is
+         * removed only when a canonical row exists for the same `(kindRaw, timestamp)` *and* holds
+         * the same `value`. A row whose value differs is a distinct reading and is always kept, so
+         * this can never destroy information — every deleted row's (kind, timestamp, value) is still
+         * represented by the canonical row that survives.
+         *
+         * **Interruption safety.** This is deliberately one statement. SQLite applies a single
+         * `DELETE` atomically via its journal, so a process kill mid-migration can only leave the
+         * table fully cleaned or wholly untouched — never half-deleted. Room additionally runs
+         * migrations inside the transaction `SQLiteOpenHelper` opens around `onUpgrade`, so the
+         * schema-version bump and this delete commit together: an interrupted upgrade rolls back to
+         * v15 and simply re-runs on the next launch. The statement is also idempotent — once the
+         * redundant rows are gone it matches nothing — so re-running after a rollback is a no-op.
+         */
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    DELETE FROM `measurements`
+                    WHERE `id` NOT LIKE 'history:%'
+                      AND EXISTS (
+                          SELECT 1 FROM `measurements` AS `canonical`
+                          WHERE `canonical`.`id` LIKE 'history:%'
+                            AND `canonical`.`kindRaw` = `measurements`.`kindRaw`
+                            AND `canonical`.`timestamp` = `measurements`.`timestamp`
+                            AND `canonical`.`value` = `measurements`.`value`
+                      )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
+            db.execSQL(
+                "UPDATE `measurements` SET `sourceRaw` = 'live' " +
+                    "WHERE `sourceRaw` = 'colmi' AND `kindRaw` IN ('HRV', 'TEMPERATURE')"
+            )
+            listOf(
+                "HEART_RATE" to "hr",
+                "SPO2" to "spo2",
+                "STRESS" to "stress",
+                "FATIGUE" to "fatigue",
+                "HRV" to "hrv",
+                "TEMPERATURE" to "temp",
+                "BLOOD_PRESSURE_SYSTOLIC" to "bp_sys",
+                "BLOOD_PRESSURE_DIASTOLIC" to "bp_dia",
+                "BLOOD_SUGAR" to "glucose",
+                "RESPIRATORY_RATE" to "resp_rate",
+                "VO2MAX" to "vo2max",
+            ).forEach { (kind, key) ->
+                adoptStableMeasurementIdentity(db, kind = kind, source = "history", key = key)
+            }
+            adoptStableMeasurementIdentity(db, kind = "STRESS", source = "colmi", key = "stress")
+            adoptStableMeasurementIdentity(db, kind = "TEMPERATURE", source = "live", key = "temp")
+            // HRV needs the same 'live' pass as TEMPERATURE above, for the same reason: Colmi's
+            // HRV *history* used to persist as an `HrvSample` — random id, sourceRaw 'live' — and
+            // now decodes to a `HistoryMeasurement`, which keys on `history:hrv:<timestamp>`.
+            // Without re-keying the old rows they don't collide with the new ones, so a re-sync
+            // writes a second row at every timestamp already stored, and `range()` (which filters
+            // on kindRaw + timestamp, never sourceRaw) returns both — doubling the HRV series.
+            adoptStableMeasurementIdentity(db, kind = "HRV", source = "live", key = "hrv")
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_measurements_kindRaw_timestamp_sourceRaw` " +
+                    "ON `measurements` (`kindRaw`, `timestamp`, `sourceRaw`)"
+            )
+        }
+
+        private fun adoptStableMeasurementIdentity(
+            db: SupportSQLiteDatabase,
+            kind: String,
+            source: String,
+            key: String,
+        ) {
+            db.execSQL(
+                """
+                UPDATE `measurements`
+                SET `id` = 'history:$key:' || `timestamp`
+                WHERE `kindRaw` = '$kind' AND `sourceRaw` = '$source'
+                  AND `rowid` IN (
+                      SELECT MIN(`rowid`) FROM `measurements`
+                      WHERE `kindRaw` = '$kind' AND `sourceRaw` = '$source'
+                      GROUP BY `timestamp`
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM `measurements` AS `existing`
+                      WHERE `existing`.`id` = 'history:$key:' || `measurements`.`timestamp`
+                  )
+                """.trimIndent()
+            )
+        }
+
         fun getInstance(context: Context): PulseLoopDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -212,7 +356,22 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                     PulseLoopDatabase::class.java,
                     "pulseloop.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+                    .addMigrations(
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8,
+                        MIGRATION_8_9,
+                        MIGRATION_9_10,
+                        MIGRATION_10_11,
+                        MIGRATION_11_12,
+                        MIGRATION_12_13,
+                        MIGRATION_13_14,
+                        MIGRATION_14_15,
+                        MIGRATION_15_16,
+                    )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
                     // coach conversation on any future version bump that misses a
