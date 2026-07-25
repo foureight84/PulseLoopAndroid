@@ -40,7 +40,7 @@ import com.pulseloop.data.entity.*
         BatterySampleEntity::class,
         CoachNotificationRecordEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -233,6 +233,17 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /** v14 → v15: re-run identity adoption now that it also covers HRV rows stored as 'live'.
+         *  Same reasoning as v13 → v14: a test APK that already reached v14 ran the pre-fix version
+         *  of [adoptStableMeasurementIdentities] and would otherwise keep its un-keyed HRV rows,
+         *  which double the HRV series on the next re-sync. The function is idempotent, so re-running
+         *  it is free for anyone whose rows are already adopted. */
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                adoptStableMeasurementIdentities(db)
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -256,6 +267,13 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
             adoptStableMeasurementIdentity(db, kind = "STRESS", source = "colmi", key = "stress")
             adoptStableMeasurementIdentity(db, kind = "TEMPERATURE", source = "live", key = "temp")
+            // HRV needs the same 'live' pass as TEMPERATURE above, for the same reason: Colmi's
+            // HRV *history* used to persist as an `HrvSample` — random id, sourceRaw 'live' — and
+            // now decodes to a `HistoryMeasurement`, which keys on `history:hrv:<timestamp>`.
+            // Without re-keying the old rows they don't collide with the new ones, so a re-sync
+            // writes a second row at every timestamp already stored, and `range()` (which filters
+            // on kindRaw + timestamp, never sourceRaw) returns both — doubling the HRV series.
+            adoptStableMeasurementIdentity(db, kind = "HRV", source = "live", key = "hrv")
             db.execSQL(
                 "CREATE INDEX IF NOT EXISTS `index_measurements_kindRaw_timestamp_sourceRaw` " +
                     "ON `measurements` (`kindRaw`, `timestamp`, `sourceRaw`)"
@@ -306,6 +324,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_11_12,
                         MIGRATION_12_13,
                         MIGRATION_13_14,
+                        MIGRATION_14_15,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

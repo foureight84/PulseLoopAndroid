@@ -65,10 +65,23 @@ data class WearableModel(
             requiresOsBond = true)
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
 
-        // YCBT / SmartHealth family (distinct protocol from QRing Colmi)
+        /**
+         * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
+         * runs [RingDeviceType.YCBT]'s driver, not the Colmi one, despite the R10-ish model number.
+         *
+         * "R10M" is a white-label ODM model sold under several reseller brands (LittleMeatball,
+         * Anarow, JTLlink, MOMOTECH). LittleMeatball is the one hardware-validated unit and the name
+         * a buyer is most likely to recognise, so it leads the display name. The pattern accepts
+         * both separators: `R10M FCF4` (the tested unit) is also caught by the deliberately broad
+         * [COLMI_SMARTHEALTH] entry — which this precedes in [CATALOG], so it wins — while
+         * `R10M_FCF4` matches nothing else in the catalog at all.
+         *
+         * No dedicated product art: it is not a Colmi ring, so it must not borrow Colmi art. Falls
+         * back to the generic ring silhouette, same as [TK5] and [LUCK_RING_TK18].
+         */
         val R10M = ycbt(
-            "r10m", "LittleMeatball R10M", "LittleMeatball",
-            "^R10M[ _][0-9A-F]{4}$", R.drawable.ring_colmi_r10,
+            "r10m", "R10M (LittleMeatball)", "LittleMeatball",
+            "^R10M[ _][0-9A-F]{4}$", imageRes = null,
         )
 
         /**

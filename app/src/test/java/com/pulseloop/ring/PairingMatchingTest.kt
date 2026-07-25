@@ -100,7 +100,11 @@ class PairingMatchingTest {
     fun `R10M catalog entry uses the discoverable retail name`() {
         assertTrue(WearableModel.R10M in WearableModel.CATALOG)
         assertEquals("LittleMeatball", WearableModel.R10M.brand)
-        assertEquals("LittleMeatball R10M", WearableModel.R10M.displayName)
+        // Model number first, reseller brand in parentheses: the model is what the ring advertises
+        // and what every reseller shares, the brand is what the buyer recognises.
+        assertEquals("R10M (LittleMeatball)", WearableModel.R10M.displayName)
+        // Never Colmi art — the R10M is a YCBT-protocol ring, not a Colmi one.
+        assertNull(WearableModel.R10M.imageRes)
     }
 
     @Test
