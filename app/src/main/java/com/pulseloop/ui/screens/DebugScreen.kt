@@ -252,6 +252,7 @@ private fun labelFor(event: PulseEvent): String = when (event) {
     is PulseEvent.MeasurementRejected -> "Measure Rejected"
     is PulseEvent.BloodPressureSample -> "Blood Pressure"
     is PulseEvent.BloodSugarSample -> "Glucose"
+    is PulseEvent.WearState -> if (event.worn) "Worn" else "Not Worn"
     is PulseEvent.HistoryMeasurement -> when (event.kind) {
         com.pulseloop.ring.MeasurementKind.HEART_RATE -> "HR History"
         com.pulseloop.ring.MeasurementKind.SPO2 -> "SpO₂ History"

@@ -275,7 +275,7 @@ class EventPersistenceSubscriber(
             is PulseEvent.HeartRateComplete -> {}
             is PulseEvent.Spo2Complete -> {}
             is PulseEvent.MeasurementRejected -> {} // Product orchestration only; no persistence.
-
+            is PulseEvent.WearState -> {} // Product orchestration only (fast-fail a measure); not persisted.
             is PulseEvent.RawPacket -> {
                 db.rawPacketDao().insert(RawPacketEntity(
                     directionRaw = event.direction.name,

@@ -98,14 +98,24 @@ object RingEventBridge {
         is RingDecodedEvent.BindNotify ->
             emptyList() // Bind/unbind handshake is driven in the sync engine / BLE client
 
+        is RingDecodedEvent.BandFunction ->
+            emptyList() // Consumed by JringSyncEngine directly; produces no PulseEvent
+
+        is RingDecodedEvent.SupportFunctions ->
+            emptyList() // Consumed by RingBLEClient to refine active capabilities; produces no PulseEvent
+
+        is RingDecodedEvent.ChipScheme ->
+            emptyList() // Diagnostic only
+
+        is RingDecodedEvent.WearingStatus ->
+            listOf(PulseEvent.WearState(decoded.worn))
+
+        is RingDecodedEvent.TimingHistoryFrame ->
+            emptyList() // Drives CRPSyncEngine's next-frame follow-up; its samples arrive as
+                        // separate HistoryMeasurement events. Produces no PulseEvent itself.
+
         is RingDecodedEvent.MeasurementRejected ->
             listOf(PulseEvent.MeasurementRejected(decoded.mode))
-
-        is RingDecodedEvent.BandFunction,
-        is RingDecodedEvent.WearingStatus,
-        is RingDecodedEvent.SupportFunctions,
-        is RingDecodedEvent.ChipScheme ->
-            emptyList() // Debug-feed only; no product surface yet
 
         is RingDecodedEvent.BloodPressureSample -> {
             if (decoded.systolic in systolicRange && decoded.diastolic in diastolicRange) {
