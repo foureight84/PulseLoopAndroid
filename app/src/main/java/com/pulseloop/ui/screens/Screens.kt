@@ -65,6 +65,9 @@ fun VitalsScreen(
     // the refusal gate keeps bad values off screen, and this surfaces the failure with iOS's
     // per-kind copy instead of silently re-enabling the button (second-pass finding #30).
     var measureFailed by remember { mutableStateOf(false) }
+    // Set alongside [measureFailed] when the CRP ring reported it wasn't on the finger, so the
+    // failure copy tells the user to put the ring on rather than the generic "hold still" (issue #29).
+    var measureNotWornHint by remember { mutableStateOf(false) }
     // Two measurement flavours:
     //  • combined (56ff/Jring): one 0x23 packet → BP + SpO₂ + stress + fatigue + blood sugar
     //  • spot (Colmi): sequential live HR + SpO₂ via the real-time command (0x69)
@@ -256,6 +259,7 @@ fun VitalsScreen(
                         onClick = {
                             measuring = true
                             measureFailed = false
+                            measureNotWornHint = false
                             remaining = measureSeconds
                             scope.launch {
                                 val ticker = launch {
@@ -272,6 +276,7 @@ fun VitalsScreen(
                                             coordinator.spo2State == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED)
                                     ) {
                                         measureFailed = true
+                                        measureNotWornHint = coordinator.measureNotWorn
                                     }
                                     viewModel?.refreshNow()  // show the new reading immediately
                                 }
@@ -306,7 +311,10 @@ fun VitalsScreen(
                 // iOS MeasurementKindPresentation failure copy ("…Keep the ring snug and your
                 // hand still, then try again."), shown until the next attempt.
                 Text(
-                    "Couldn't get a steady reading. Keep the ring snug and your hand still, then try again.",
+                    if (measureNotWornHint)
+                        "The ring isn't detecting your finger. Put it on snugly, then try again."
+                    else
+                        "Couldn't get a steady reading. Keep the ring snug and your hand still, then try again.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(top = 4.dp),

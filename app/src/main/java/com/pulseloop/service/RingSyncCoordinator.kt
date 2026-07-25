@@ -62,6 +62,12 @@ class RingSyncCoordinator(
         private set
     private var hrNoReadingReported = false
     private var spo2NoReadingReported = false
+    /** The ring told us it isn't on the finger during a spot measure (CRP wear-state push). Read by
+     *  the Vitals UI to show "put the ring on" instead of the generic steadiness hint. Set only when
+     *  the not-worn signal arrives *before* any reading, so a wear-state drop right after a good
+     *  reading (seen on real hardware, issue #29) can't turn a success into "not worn". */
+    var measureNotWorn: Boolean = false
+        private set
     /** The samples of the HR measurement in flight, and the rule for whether they settled — see
      *  [HRSampleWindow], which owns the warm-up echo and the consistency gate (iOS #66). */
     private val hrWindow = HRSampleWindow()
@@ -367,6 +373,7 @@ class RingSyncCoordinator(
         // Do NOT clear latestHRValue — it's the live value the workout UI shows, so a new
         // measurement keeps the last reading on screen until a fresh one replaces it.
         hrNoReadingReported = false
+        measureNotWorn = false
         hrWindow.begin()
 
         val spotToken = spot.begin(YCBTMeasurementMode.HEART_RATE)
@@ -407,6 +414,7 @@ class RingSyncCoordinator(
         spo2State = MeasureState.MEASURING
         latestSpO2Value = null
         spo2NoReadingReported = false
+        measureNotWorn = false
         val spotToken = spot.begin(YCBTMeasurementMode.SPO2)
         engine?.startSpO2()
         var result: Int? = null
@@ -476,6 +484,23 @@ class RingSyncCoordinator(
             is PulseEvent.Spo2Complete -> {
                 if (spo2State == MeasureState.MEASURING && latestSpO2Value == null) {
                     spo2NoReadingReported = true
+                }
+            }
+            // The CRP ring pushes wear state; `worn == false` means no skin contact, so an optical
+            // spot measure can't read (issue #29). Fast-fail the in-flight measure instead of idling
+            // out the full window, and flag *why* — but only if no reading landed first (a wear-state
+            // drop right after a good reading must not turn a success into a failure). Gated to CRP:
+            // other families' wear polarity is unverified (RingDecodedEvent.WearingStatus).
+            is PulseEvent.WearState -> {
+                if (!event.worn && client.state.value.activeDeviceType == RingDeviceType.CRP) {
+                    var flagged = false
+                    if (hrState == MeasureState.MEASURING && !measurementReceivedReading) {
+                        hrNoReadingReported = true; flagged = true
+                    }
+                    if (spo2State == MeasureState.MEASURING && latestSpO2Value == null) {
+                        spo2NoReadingReported = true; flagged = true
+                    }
+                    if (flagged) measureNotWorn = true
                 }
             }
             is PulseEvent.DeviceStateChanged -> {

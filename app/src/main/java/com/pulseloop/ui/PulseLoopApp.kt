@@ -128,6 +128,24 @@ fun PulseLoopApp() {
             )
         }
 
+        // Guarantee sleep is repopulated after every sync. The CONNECTED handler wipes sleep_sessions
+        // to rebuild them from the ring (EventPersistenceSubscriber), but the full-sync SLEEP stage is
+        // gated behind four earlier watchdog-skippable stages and often doesn't re-deliver — so the
+        // Today tile / widgets can sit on "Sleep pending" until the user opens the Sleep screen, whose
+        // onOpen fires the reliable sleep-only fetch (syncSleepNow). Fire that same fetch here on the
+        // sync-completion edge — NOT on connect: syncSleepNow no-ops while a full sync is running
+        // (ColmiSyncEngine guards stage != IDLE/DONE), so it must run once the pipeline reaches DONE
+        // (syncProgress falls back to null). Its reply lands after the connect-clear, so it can't be
+        // wiped; the upsert is idempotent, so a sync whose SLEEP stage did survive just refreshes.
+        LaunchedEffect(Unit) {
+            var wasSyncing = false
+            coordinator.syncProgress.collect { progress ->
+                val syncing = progress != null
+                if (wasSyncing && !syncing) coordinator.syncSleepNow() // a full sync just finished
+                wasSyncing = syncing
+            }
+        }
+
         // ── Start services (one-shot on composition) ─────────────────────
         LaunchedEffect(Unit) {
             // Wire onConnected → run the startup/history sync only (matches iOS). Connecting

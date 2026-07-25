@@ -87,20 +87,28 @@ object CRPCommands {
     const val CMD_QUERY_DEVICE_INFO = 0       // b1/r.a: q.b(7,0)
     const val CMD_QUERY_FIRMWARE_VERSION = 1  // b1/r.b: q.b(7,1)
     const val CMD_QUERY_DEVICE_SN = 13        // b1/r.c: q.b(7,13)
-    const val CMD_QUERY_HISTORY_HR = 4        // b1/e0.a: q.b(7,4)
-    const val CMD_QUERY_HISTORY_STRESS = 5    // b1/e0.b: q.c(7,5, [interval])
-    const val CMD_QUERY_HISTORY_HRV = 6       // b1/e0.e: q.c(7,6, [interval])
-    const val CMD_QUERY_HISTORY_SPO2 = 7      // b1/e0.f: q.b(7,7)
 
-    // Group 2 — the two history queries that live outside group 7 (decompiled b1/e0).
+    // Group 2 — the day's stored vital timelines. The all-day "timing" histories the vendor's sync
+    // pass actually pulls (`u3/g1.java`) live here with a [day, 0] payload, NOT on group 7: the ring
+    // returned empty for the old group-7 HR/SpO2/HRV/stress queries (issue #29). Replies are
+    // multi-frame (`e1/f.i` reassembles by index into a CRPHeartRateInfo: startTime + list + interval).
     const val GROUP_HISTORY = 2
     const val CMD_QUERY_HISTORY_SLEEP = 14    // b1/e0.c: q.c(2,14, [CRPHistoryDay])
+    const val CMD_QUERY_TIMING_HR = 15        // b1/t.b:  q.c(2,15, [day, 0])
+    const val CMD_QUERY_TIMING_HRV = 16       // b1/u.b:  q.c(2,16, [day, 0])
+    const val CMD_QUERY_TIMING_SPO2 = 17      // b1/h.b:  q.c(2,17, [day, 0])
+    const val CMD_QUERY_TIMING_STRESS = 47    // b1/h0.b: q.c(2,47, [day, 0])
     const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: q.b(2,48)
+    const val HISTORY_DAY_TODAY = 0           // CRPHistoryDay.TODAY; YESTERDAY = 1
 
-    // Group 3 — power control.
+    // Group 3 — power control + device-state pushes.
     const val GROUP_POWER = 3
     const val CMD_FACTORY_RESET = 0     // b1/l.v: q.b(3,0)
     const val CMD_RESTART = 1           // b1/l.w: q.b(3,1)
+    // Autonomous wear-state push: vendor `g1/a.java` case 3→7 → onWearStateChange(payload[0] > 0).
+    // payload[0] == 0 ⇒ ring not on finger / no skin contact (issue #29: an optical spot measure
+    // returns nothing while this is 0; we surface it instead of spinning the full window).
+    const val CMD_WEAR_STATE = 7
 
     // Group 9 — device actions.
     const val GROUP_ACTION = 9
@@ -233,26 +241,31 @@ object CRPProtocol {
     fun disableTimingTemp(): ByteArray =
         frame(CRPCommands.GROUP_DEVICE, CRPCommands.CMD_ENABLE_TIMING_TEMP, byteArrayOf(0))
 
-    // ---- History query commands ----
-    // Most vitals are group 7 (b1/e0.a/b/e/f); sleep and temp are group 2 (b1/e0.c/d).
+    // ---- History query commands (all group 2; see GROUP_HISTORY) ----
+    // The all-day vital timelines take a [day, frameIndex] payload (vendor `b1/{t,u,h,h0}.b`); sleep
+    // takes [day]; temp takes none. `day` is CRPHistoryDay (0 = today). A day's 5-minute timeline is
+    // split across several 144-slot frames selected by `frameIndex`: the vendor requests index 0,
+    // then pulls the next index on each reply until the terminal frame (HR/SpO2/stress → index 1,
+    // HRV → index 3), reassembling a full 288-slot (24 h × 5-min) day. See `e1/{f,d,g,l}.java` and
+    // [CRPSyncEngine]'s follow-up on [RingDecodedEvent.TimingHistoryFrame].
 
-    fun queryHistoryHeartRate(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_HR)
+    fun queryTimingHeartRateHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HR, byteArrayOf(day.toByte(), frameIndex.toByte()))
 
-    fun queryHistoryStress(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_STRESS)
+    fun queryTimingHrvHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HRV, byteArrayOf(day.toByte(), frameIndex.toByte()))
+
+    fun queryTimingSpO2History(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_SPO2, byteArrayOf(day.toByte(), frameIndex.toByte()))
+
+    fun queryTimingStressHistory(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_STRESS, byteArrayOf(day.toByte(), frameIndex.toByte()))
 
     fun queryHistorySleep(daysAgo: Int = 0): ByteArray =
         frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(daysAgo.toByte()))
 
     fun queryHistoryTemp(): ByteArray =
         frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_TEMP)
-
-    fun queryHistoryHRV(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_HRV)
-
-    fun queryHistorySpO2(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_HISTORY_SPO2)
 
     // ---- Device info queries (group 7) ----
 

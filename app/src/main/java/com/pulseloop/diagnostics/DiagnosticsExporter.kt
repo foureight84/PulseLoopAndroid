@@ -78,7 +78,10 @@ object DiagnosticsExporter {
             // Raw BLE packets for protocol debugging. When masking, health-measurement frames
             // are reduced to their opcode (the values live in the payload); control frames stay
             // whole so connection/pairing flow is still fully visible.
-            val packets = db.rawPacketDao().recent(200)
+            // 1000 (was 200): high-frequency steps/activity pushes flood the buffer, so a small
+            // window evicts the command-channel frames a capture is actually taken for — e.g. the
+            // spot-measure round-trip or a multi-frame history reply (issue #29 debugging).
+            val packets = db.rawPacketDao().recent(1000)
             putJsonArray("rawPackets") {
                 packets.forEach { pkt ->
                     val kind = pkt.decodedKind ?: ""

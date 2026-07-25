@@ -44,6 +44,9 @@ sealed class PulseEvent {
     data class SleepTimeline(val timestamp: java.time.Instant, val stages: List<SleepStage>) : PulseEvent()
     data class SyncProgress(val stage: String) : PulseEvent()
     data class FirmwareVersion(val version: Int?) : PulseEvent()
+    /** The ring's on-finger / skin-contact state changed. `worn == false` ⇒ an optical spot
+     *  measurement can't produce a reading, so the coordinator fast-fails it (issue #29). */
+    data class WearState(val worn: Boolean) : PulseEvent()
 }
 
 enum class RingConnectionState { IDLE, SCANNING, CONNECTING, CONNECTED, DISCONNECTED, RECONNECTING, FAILED }
