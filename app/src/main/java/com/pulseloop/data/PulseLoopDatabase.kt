@@ -40,7 +40,7 @@ import com.pulseloop.data.entity.*
         BatterySampleEntity::class,
         CoachNotificationRecordEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -244,6 +244,51 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v15 → v16: delete the duplicate rows the pre-identity code accumulated.
+         *
+         * Before measurements had stable ids, a ring's history *replay* was persisted with a fresh
+         * random id every time, so each re-sync appended another row at a slot already stored — on
+         * a real Colmi that meant HRV, stress and temperature growing by one row per slot per sync,
+         * forever (nothing prunes this table). [adoptStableMeasurementIdentities] stops the growth
+         * by giving one row per slot the canonical `history:<key>:<timestamp>` id that later syncs
+         * upsert onto, but it deliberately leaves the already-accumulated copies in place. They are
+         * not harmless: `dailyAggregates`/`hourlyAggregates` compute `AVG(value)` over raw rows with
+         * no `sourceRaw` filter, so a slot replayed more often than its neighbours drags the average
+         * toward its value.
+         *
+         * Deleting is restricted to rows that are **provably redundant**: a non-canonical row is
+         * removed only when a canonical row exists for the same `(kindRaw, timestamp)` *and* holds
+         * the same `value`. A row whose value differs is a distinct reading and is always kept, so
+         * this can never destroy information — every deleted row's (kind, timestamp, value) is still
+         * represented by the canonical row that survives.
+         *
+         * **Interruption safety.** This is deliberately one statement. SQLite applies a single
+         * `DELETE` atomically via its journal, so a process kill mid-migration can only leave the
+         * table fully cleaned or wholly untouched — never half-deleted. Room additionally runs
+         * migrations inside the transaction `SQLiteOpenHelper` opens around `onUpgrade`, so the
+         * schema-version bump and this delete commit together: an interrupted upgrade rolls back to
+         * v15 and simply re-runs on the next launch. The statement is also idempotent — once the
+         * redundant rows are gone it matches nothing — so re-running after a rollback is a no-op.
+         */
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    DELETE FROM `measurements`
+                    WHERE `id` NOT LIKE 'history:%'
+                      AND EXISTS (
+                          SELECT 1 FROM `measurements` AS `canonical`
+                          WHERE `canonical`.`id` LIKE 'history:%'
+                            AND `canonical`.`kindRaw` = `measurements`.`kindRaw`
+                            AND `canonical`.`timestamp` = `measurements`.`timestamp`
+                            AND `canonical`.`value` = `measurements`.`value`
+                      )
+                    """.trimIndent()
+                )
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -325,6 +370,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_12_13,
                         MIGRATION_13_14,
                         MIGRATION_14_15,
+                        MIGRATION_15_16,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and
