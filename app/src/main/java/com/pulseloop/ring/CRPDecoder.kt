@@ -113,6 +113,9 @@ object CRPDecoder {
             if (cmd == CRPCommands.CMD_QUERY_HISTORY_SLEEP) {
                 return decodeSleep(payload, now, zone)
             }
+            if (cmd == CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE) {
+                return decodeSpO2Support(payload)
+            }
             decodeTimingHistory(cmd, payload, now, zone)?.let { return it }
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
@@ -179,6 +182,36 @@ object CRPDecoder {
     private fun decodeHistoryOrDeviceInfoResponse(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
         return listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE_INFO shl 4) or (cmd and 0x0F)).toUByte()))
     }
+
+    /**
+     * The ring's own answer to "do you have SpO2 hardware?" (`group 2 / cmd 37`). Vendor `g1/a.V0`
+     * hands `payload[0]` to `CRPBloodOxygenType`: **0 = NOT_SUPPORT**, 1 = SLEEP_OXYGEN,
+     * 2 = TIMING_OXYGEN.
+     *
+     * This is the read-back that lets the app stop guessing. [CRPCoordinator] leaves SpO2 out of its
+     * unconditional capabilities — COLMI's R11 spec lists a single optical sensor (Vcare VC30F, heart
+     * rate) and the ring answers every SpO2 measure with the `0xFF` no-reading sentinel — and offers
+     * it as a `bitmapGatedCapabilities` entry instead. A unit that reports a real type earns SpO2
+     * back here; a unit that says NOT_SUPPORT (or never answers) simply never gets it, so we no
+     * longer show a Measure button that cannot succeed.
+     *
+     * Emitted as [RingDecodedEvent.SupportFunctions], the same additive refinement path YCBT's
+     * `02 01` bitmap uses — `RingBLEClient.refineActiveCapabilities` intersects it with the
+     * coordinator's gate-able set and unions the result in.
+     */
+    private fun decodeSpO2Support(payload: ByteArray): List<RingDecodedEvent> {
+        val type = payload.firstOrNull()?.toInt()?.and(0xFF) ?: return listOf(supportAck())
+        // 0 = NOT_SUPPORT. Report an empty set rather than nothing, so the diagnostics feed records
+        // that the ring was asked and said no.
+        val granted = if (type == 0) emptySet()
+        else setOf(WearableCapability.SPO2, WearableCapability.MANUAL_SPO2)
+        return listOf(RingDecodedEvent.SupportFunctions(granted))
+    }
+
+    private fun supportAck() = RingDecodedEvent.CommandAck(
+        commandId = ((CRPCommands.GROUP_HISTORY shl 4) or
+            (CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE and 0x0F)).toUByte()
+    )
 
     /** All-day timeline frames carry 144 sample-slots at a fixed 5-minute cadence (`w0.b.a() / 5`
      *  in the vendor). Two slot widths: HR/SpO2/stress store one byte per slot (144 slots/frame,

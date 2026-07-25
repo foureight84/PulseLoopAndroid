@@ -78,6 +78,8 @@ class RingSyncCoordinator(
      *  reading (seen on real hardware, issue #29) can't turn a success into "not worn". */
     var measureNotWorn: Boolean = false
         private set
+    /** Proof the ring is actually on a finger — see [WearEvidence], which owns the rule. */
+    private var wearEvidence = WearEvidence()
     /** The samples of the HR measurement in flight, and the rule for whether they settled — see
      *  [HRSampleWindow], which owns the warm-up echo and the consistency gate (iOS #66). */
     private val hrWindow = HRSampleWindow()
@@ -574,6 +576,9 @@ class RingSyncCoordinator(
         when (event) {
             is PulseEvent.HeartRateSample -> {
                 latestHRValue = event.bpm
+                // A real bpm can only come off skin, so this doubles as the wear witness — see the
+                // WearState branch below and [WearEvidence].
+                wearEvidence = wearEvidence.withHeartRateSample(System.currentTimeMillis())
                 if (hrState == MeasureState.MEASURING) hrWindow.collect(event.bpm)
             }
             is PulseEvent.HeartRateComplete -> {
@@ -607,11 +612,22 @@ class RingSyncCoordinator(
                 }
             }
 
-            // The CRP ring pushes wear state; `worn == false` means no skin contact, so an optical
-            // spot measure can't read (issue #29). Fast-fail the in-flight measure instead of idling
-            // out the full window, and flag *why* — but only if no reading landed first (a wear-state
-            // drop right after a good reading must not turn a success into a failure). Gated to CRP:
-            // other families' wear polarity is unverified (RingDecodedEvent.WearingStatus).
+            // The CRP ring pushes `group 3 / cmd 7 [00]` when a spot measure is about to come back
+            // empty — in zaggash's 2026-07-25 capture it lands 2 ms before the `0xFF` no-reading
+            // sentinel, and every measure that saw one produced no reading while every measure that
+            // didn't produced one. So it is a reliable *abort* signal: fast-fail instead of idling out
+            // the full window (SpO2's is 60 s). Gated to CRP; other families' polarity is unverified.
+            //
+            // It is NOT a reliable *wear* signal. That ring never once reports `[01]` — 32 pushes in
+            // the capture, all `[00]`, several of them seconds after a good HR reading. Blaming the
+            // user's wearing for every one of them is wrong: per COLMI's own spec the R11 carries a
+            // single optical sensor (Vcare VC30F, heart rate) and no SpO2 hardware at all, so its SpO2
+            // measure *always* fails no matter how the ring is worn. Telling someone to put on a ring
+            // they are already wearing sends them to fix the one thing that isn't broken.
+            //
+            // So the "put the ring on" copy needs corroboration, and HR is the honest witness: it is
+            // the ring's one working optical metric, so a recent HR sample is proof of skin contact.
+            // Without that proof we still say "not worn"; with it we fall back to the generic failure.
             is PulseEvent.WearState -> {
                 if (!event.worn && client.state.value.activeDeviceType == RingDeviceType.CRP) {
                     var flagged = false
@@ -621,7 +637,7 @@ class RingSyncCoordinator(
                     if (spo2State == MeasureState.MEASURING && latestSpO2Value == null) {
                         spo2NoReadingReported = true; flagged = true
                     }
-                    if (flagged) measureNotWorn = true
+                    if (flagged) measureNotWorn = !wearEvidence.provesWorn(System.currentTimeMillis())
                 }
             }
             is PulseEvent.DeviceStateChanged -> {

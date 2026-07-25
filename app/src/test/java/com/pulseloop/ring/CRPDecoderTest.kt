@@ -317,6 +317,50 @@ class CRPDecoderTest {
         assertTrue(RingEventBridge.eventsFor(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, 0, 0)).isEmpty())
     }
 
+    // ---- SpO2 support read-back (group 2 / cmd 37) ----
+
+    /** `CRPBloodOxygenType.NOT_SUPPORT`. The R11 has no SpO2 hardware, so the ring must be able to
+     *  say so and keep the capability from ever being granted. */
+    @Test
+    fun `a NOT_SUPPORT reply grants no SpO2 capability`() {
+        val frame = CRPProtocol.frame(
+            CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE, byteArrayOf(0),
+        )
+        val event = CRPDecoder.decode(frame, fdd3).single()
+        assertTrue(event is RingDecodedEvent.SupportFunctions)
+        assertTrue((event as RingDecodedEvent.SupportFunctions).capabilities.isEmpty())
+    }
+
+    /** SLEEP_OXYGEN (1) and TIMING_OXYGEN (2) are both real sensors — a unit reporting either earns
+     *  SpO2 back through the additive `bitmapGatedCapabilities` path. */
+    @Test
+    fun `a real SpO2 type grants the SpO2 capabilities back`() {
+        for (type in listOf<Byte>(1, 2)) {
+            val frame = CRPProtocol.frame(
+                CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE, byteArrayOf(type),
+            )
+            val event = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.SupportFunctions
+            assertEquals(
+                setOf(WearableCapability.SPO2, WearableCapability.MANUAL_SPO2), event.capabilities,
+            )
+        }
+    }
+
+    /** Only the coordinator's gate-able set can ever be granted, and SpO2 must not be in the floor —
+     *  otherwise the read-back is decorative and the Measure button comes back regardless. */
+    @Test
+    fun `CRP withholds SpO2 until the ring claims it`() {
+        val coordinator = CRPCoordinator
+        assertTrue(WearableCapability.SPO2 !in coordinator.capabilities)
+        assertTrue(WearableCapability.MANUAL_SPO2 !in coordinator.capabilities)
+        assertEquals(
+            setOf(WearableCapability.SPO2, WearableCapability.MANUAL_SPO2),
+            coordinator.bitmapGatedCapabilities,
+        )
+        // HR is hardware the ring definitely has, so it stays unconditional.
+        assertTrue(WearableCapability.MANUAL_HEART_RATE in coordinator.capabilities)
+    }
+
     private fun hexToBytes(hex: String): ByteArray =
         ByteArray(hex.length / 2) { ((hex[it * 2].digitToInt(16) shl 4) or hex[it * 2 + 1].digitToInt(16)).toByte() }
 }

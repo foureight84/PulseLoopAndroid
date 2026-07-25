@@ -18,7 +18,12 @@ class CRPSyncEngineTest {
     /** The all-day history pull appended to every runStartup (the poll pass). All group 2: the
      *  "timing" vital timelines HR/SpO2/HRV/stress (cmd 15/17/16/47), then temp (48) + sleep (14) —
      *  the opcodes the ring actually answers (issue #29). See CRPProtocol.queryTiming/queryHistory. */
-    private val historyQueries = listOf(2 to 15, 2 to 17, 2 to 16, 2 to 47, 2 to 48, 2 to 14)
+    /** Temperature history is 2/22, not 2/48 — `q.b(2,48)` is the vendor's `querySleepState`. */
+    private val historyQueries = listOf(2 to 15, 2 to 17, 2 to 16, 2 to 47, 2 to 22, 2 to 14)
+
+    /** The read-backs that let the ring describe itself instead of us guessing: SpO2 support type,
+     *  then each all-day monitor's configured interval. See CRPSyncEngine.runStartup. */
+    private val readBackQueries = listOf(2 to 37, 2 to 6, 2 to 7, 2 to 8, 2 to 45, 2 to 21)
 
     /** The all-day monitor enables sent on connect (default ALL_ON): HR, HRV, stress, SpO2, temp —
      *  see CRPSyncEngine.applyTimingSettings. Without these a fresh R11 records no history. */
@@ -29,16 +34,19 @@ class CRPSyncEngineTest {
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)
         engine.runStartup()
-        // set-time, firmware query, default-on monitor enables, then the history pull.
-        assertEquals(listOf(1 to 1, 7 to 1) + timingEnables + historyQueries, w.opcodes())
+        // set-time, firmware query, read-backs, default-on monitor enables, then the history pull.
+        assertEquals(listOf(1 to 1, 7 to 1) + readBackQueries + timingEnables + historyQueries, w.opcodes())
 
         w.sent.clear()
         engine.setUserProfile(
             UserProfileValues(metric = true, gender = 1u, age = 30u, heightCm = 180u, weightKg = 75u),
         )
         engine.runStartup()
-        // set-time, firmware query, set-user-info, monitor enables, then the history pull.
-        assertEquals(listOf(1 to 1, 7 to 1, 1 to 0) + timingEnables + historyQueries, w.opcodes())
+        // set-time, firmware query, set-user-info, read-backs, monitor enables, then the history pull.
+        assertEquals(
+            listOf(1 to 1, 7 to 1, 1 to 0) + readBackQueries + timingEnables + historyQueries,
+            w.opcodes(),
+        )
     }
 
     @Test

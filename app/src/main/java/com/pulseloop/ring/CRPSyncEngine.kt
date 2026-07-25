@@ -32,8 +32,23 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // the ring's step/calorie algorithm has real inputs.
         send(CRPProtocol.setTime())
         // Query firmware version so the UI doesn't show "Firmware: reading" (zaggash's report).
+        // NOTE: still unanswered on his R11 — 23 sends, 0 replies in the 2026-07-25 capture — so the
+        // panel keeps showing "?". The group-7 opcode is the vendor's, but this ring ignores it.
         send(CRPProtocol.queryFirmwareVersion())
         profile?.let { send(userInfoFrame(it)) }
+        // Ask the ring what it actually is before assuming. `querySupportSpO2Type` is the vendor's own
+        // read-back (NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN) and is what grants the SpO2 capability
+        // the coordinator deliberately withholds — see [CRPCoordinator.bitmapGatedCapabilities]. The
+        // timing-state queries report each all-day monitor's configured interval (0 = off), which is
+        // the evidence base for whether a silent history query means "off" or "unsupported": stress
+        // (2/47), temperature (2/22) and firmware (7/1) all went unanswered on zaggash's ring, and
+        // these replies are how we tell those two cases apart in the next capture.
+        send(CRPProtocol.querySupportSpO2Type())
+        send(CRPProtocol.queryTimingHeartRateState())
+        send(CRPProtocol.queryTimingHrvState())
+        send(CRPProtocol.queryTimingSpO2State())
+        send(CRPProtocol.queryTimingStressState())
+        send(CRPProtocol.queryTimingTempState())
         // Enable all-day vital monitoring. A fresh ring has these OFF, so without this the ring
         // stores no HR/SpO2/HRV/stress/temperature history and every history query below returns an
         // empty reply (issue #29, zaggash's full-day capture). When the user has saved a config we

@@ -63,11 +63,36 @@ supporting evidence as the cause.
   `group/cmd` frames against the vendor `g1/a.java` response dispatch before attributing a symptom to
   a recent commit. A known-good "measure button" capture (worn, HR returns ~19 s after `g1/cmd9 [01]`)
   is the baseline to diff against.
-- **Wear state = `group 3 / cmd 7`** (`onWearStateChange`, `payload[0] > 0`). Decoded as of the
-  wear-state fix: `CRPDecoder` → `RingDecodedEvent.WearingStatus` → `PulseEvent.WearState`, and
-  `RingSyncCoordinator` fast-fails an in-flight CRP spot measure (with a "put the ring on" message)
-  when it reports not-worn *before* any reading. Gated to CRP — YCBT's wear polarity is unverified.
-  A not-worn measure now fails in ~2 s with guidance instead of spinning the full window silently.
+- **`group 3 / cmd 7` is a measurement-failed signal, NOT a wear signal.** The vendor calls it
+  `onWearStateChange(payload[0] > 0)`, and an earlier note here read `[00]` as "ring not worn". The
+  2026-07-25 capture (build 30, zaggash) contradicts that: **32 pushes, every one `[00]`, never once
+  `[01]`** — several arriving seconds *after* a good HR reading. It is emitted when a spot measure is
+  about to come back empty, landing ~2 ms before the `0xFF` no-reading sentinel.
+  - **As an abort it is reliable** and worth keeping: every measure that saw one produced no reading,
+    every measure that didn't produced one. It turns a 60 s SpO2 dead-wait into a ~4.5 s failure.
+  - **As "put the ring on" copy it needs corroboration**, or it blames the user's wearing for a vital
+    the ring cannot measure. `WearEvidence` holds the rule: a real bpm can only be read off skin, so a
+    recent HR sample vouches for contact and downgrades the message to the generic failure. Gated to
+    CRP — YCBT's polarity is still unverified.
+- **The R11 has no SpO2 hardware.** COLMI's own spec sheet lists two sensors — an STK8321
+  accelerometer and a **Vcare VC30F heart-rate** unit — and pulse oximetry needs a second wavelength
+  the VC30F hasn't got. The capture agrees: every spot SpO2 answers `0xFF`, every all-day SpO2 frame
+  is all-zero. So `CRPCoordinator` keeps SpO2 out of its unconditional `capabilities` and offers it
+  via `bitmapGatedCapabilities`, granted only when the ring's own `querySupportSpO2Type` (`2/37`)
+  answers SLEEP_OXYGEN or TIMING_OXYGEN. **Ask the ring; don't hardcode either answer.**
+- **Read-backs exist — use them instead of guessing.** `querySupportSpO2Type` (`2/37`) and the
+  monitor-state queries `2/6` HR, `2/7` HRV, `2/8` SpO2, `2/45` stress, `2/21` temp all report the
+  configured interval (`0` = off). These are how you tell "the monitor is switched off" apart from
+  "this ring lacks the sensor" — the open question for stress (`2/47`), temperature and firmware,
+  which went 23-sent/0-answered on zaggash's ring.
+- **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`
+  (`d1/b.java` line 650); real temp history is `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the
+  same shape as the other timing histories. We queried 48 for months and never got a reply. Its
+  sample layout is still unconfirmed — no non-empty capture yet — so the reply stays an ack.
+- **The multi-frame follow-up is hardware-validated** (was open on rc3): HR asked frames (0,0)+(0,1)
+  and got both; HRV asked (0,0)…(0,3) and got all four. HR history decoded 27 readings at 00:10–11:35
+  local (46–104 bpm), HRV 11 readings (30–56 ms), sleep 12 records across light/deep/REM — so the
+  local-midnight anchoring is right and there is no UTC drift.
 - The single-channel contention theory is **plausible but unproven** — no capture has shown a spot
   measure starved by an active history dump. Don't treat it as established; if you suspect it, prove
   it from a capture where the channel is actually saturated during a failed measure.
