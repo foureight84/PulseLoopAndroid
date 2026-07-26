@@ -317,6 +317,63 @@ class CRPDecoderTest {
         assertTrue(RingEventBridge.eventsFor(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, 0, 0)).isEmpty())
     }
 
+    // ---- SpO2 support read-back (group 2 / cmd 37) ----
+
+    /** `CRPBloodOxygenType.NOT_SUPPORT`. The R11 has no SpO2 hardware, so the ring must be able to
+     *  say so and keep the capability from ever being granted. */
+    @Test
+    fun `a NOT_SUPPORT reply grants no SpO2 capability`() {
+        val frame = CRPProtocol.frame(
+            CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE, byteArrayOf(0),
+        )
+        val event = CRPDecoder.decode(frame, fdd3).single()
+        assertTrue(event is RingDecodedEvent.SupportFunctions)
+        assertTrue((event as RingDecodedEvent.SupportFunctions).capabilities.isEmpty())
+    }
+
+    /** SLEEP_OXYGEN (1) and TIMING_OXYGEN (2) are the two values that mean "I have the sensor".
+     *
+     *  NOTE: this asserts the *decode* only. Nothing is granted today — `CRPCoordinator` declares no
+     *  `bitmapGatedCapabilities`, so `RingBLEClient.refineActiveCapabilities` intersects with the
+     *  empty set and returns early. SpO2 is already an unconditional CRP capability (hardware-
+     *  confirmed), so the read-back is diagnostic: it puts the ring's own answer in the packet feed.
+     *  Refinement is additive-only and could not remove a capability even if the ring said
+     *  NOT_SUPPORT. */
+    @Test
+    fun `a real SpO2 type is decoded as a claim of support`() {
+        for (type in listOf<Byte>(1, 2)) {
+            val frame = CRPProtocol.frame(
+                CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE, byteArrayOf(type),
+            )
+            val event = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.SupportFunctions
+            assertEquals(
+                setOf(WearableCapability.SPO2, WearableCapability.MANUAL_SPO2), event.capabilities,
+            )
+        }
+    }
+
+    /** `0xFF` is this ring's no-reading sentinel (every failed spot SpO2 answers `1/11 [FF]`), and
+     *  `CRPBloodOxygenType` has no value for it. It must not read as a capability claim. */
+    @Test
+    fun `an unknown support type is not treated as a claim of support`() {
+        for (type in listOf<Byte>(0xFF.toByte(), 3, 9)) {
+            val frame = CRPProtocol.frame(
+                CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE, byteArrayOf(type),
+            )
+            val event = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.SupportFunctions
+            assertTrue("type $type must not grant", event.capabilities.isEmpty())
+        }
+    }
+
+    /** SpO2 is hardware-confirmed on the R11 — zaggash's 2026-07-23 capture has a real 97 % reading —
+     *  so it stays an unconditional capability and the Vitals card and Measure button stay visible.
+     *  The read-back is diagnostic; refinement is additive-only and cannot take it away. */
+    @Test
+    fun `CRP keeps SpO2 as an unconditional capability`() {
+        assertTrue(WearableCapability.SPO2 in CRPCoordinator.capabilities)
+        assertTrue(WearableCapability.MANUAL_SPO2 in CRPCoordinator.capabilities)
+    }
+
     private fun hexToBytes(hex: String): ByteArray =
         ByteArray(hex.length / 2) { ((hex[it * 2].digitToInt(16) shl 4) or hex[it * 2 + 1].digitToInt(16)).toByte() }
 }
