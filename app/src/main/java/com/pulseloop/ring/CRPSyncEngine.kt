@@ -74,6 +74,13 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
      * change between syncs. Re-asking would add six writes to every pass on a ring that funnels the
      * handshake, timing config, history pull *and* on-demand measures through the single `fdd2`
      * channel — and a spot SpO2 needs ~48 s of that channel to return a reading.
+     *
+     * **Call order matters: this must run BEFORE [applyTimingSettings].** The state queries report
+     * each monitor's *current* interval, and `applyTimingSettings` force-enables everything moments
+     * later. Ask afterwards and every reply describes the state we just imposed, which answers
+     * nothing — the whole point is to learn whether stress and temperature were silent because their
+     * monitor was off. `CRPSyncEngineTest` pins the ordering; if that assertion ever fails, fix the
+     * call site rather than the expectation.
      */
     private fun sendConnectionReadBacks() {
         if (readBacksSent) return

@@ -331,10 +331,16 @@ class CRPDecoderTest {
         assertTrue((event as RingDecodedEvent.SupportFunctions).capabilities.isEmpty())
     }
 
-    /** SLEEP_OXYGEN (1) and TIMING_OXYGEN (2) are both real sensors — a unit reporting either earns
-     *  SpO2 back through the additive `bitmapGatedCapabilities` path. */
+    /** SLEEP_OXYGEN (1) and TIMING_OXYGEN (2) are the two values that mean "I have the sensor".
+     *
+     *  NOTE: this asserts the *decode* only. Nothing is granted today — `CRPCoordinator` declares no
+     *  `bitmapGatedCapabilities`, so `RingBLEClient.refineActiveCapabilities` intersects with the
+     *  empty set and returns early. SpO2 is already an unconditional CRP capability (hardware-
+     *  confirmed), so the read-back is diagnostic: it puts the ring's own answer in the packet feed.
+     *  Refinement is additive-only and could not remove a capability even if the ring said
+     *  NOT_SUPPORT. */
     @Test
-    fun `a real SpO2 type grants the SpO2 capabilities back`() {
+    fun `a real SpO2 type is decoded as a claim of support`() {
         for (type in listOf<Byte>(1, 2)) {
             val frame = CRPProtocol.frame(
                 CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE, byteArrayOf(type),

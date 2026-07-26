@@ -35,6 +35,11 @@ class CRPSyncEngineTest {
         val engine = CRPSyncEngine(w)
         engine.runStartup()
         // set-time, firmware query, read-backs, default-on monitor enables, then the history pull.
+        //
+        // The read-backs MUST precede the enables: they report each monitor's current interval, and
+        // the enables force everything on moments later. Asking afterwards would only describe the
+        // state we just imposed. If this assertion fails, move the call site back — don't reorder the
+        // expectation. See CRPSyncEngine.sendConnectionReadBacks.
         assertEquals(listOf(1 to 1, 7 to 1) + readBackQueries + timingEnables + historyQueries, w.opcodes())
 
         w.sent.clear()
