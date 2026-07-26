@@ -113,6 +113,9 @@ object CRPDecoder {
             if (cmd == CRPCommands.CMD_QUERY_HISTORY_SLEEP) {
                 return decodeSleep(payload, now, zone)
             }
+            if (cmd == CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE) {
+                return decodeSpO2Support(payload)
+            }
             decodeTimingHistory(cmd, payload, now, zone)?.let { return it }
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
@@ -179,6 +182,40 @@ object CRPDecoder {
     private fun decodeHistoryOrDeviceInfoResponse(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
         return listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE_INFO shl 4) or (cmd and 0x0F)).toUByte()))
     }
+
+    /**
+     * The ring's own answer to "do you have SpO2 hardware?" (`group 2 / cmd 37`). Vendor `g1/a.V0`
+     * hands `payload[0]` to `CRPBloodOxygenType`, which defines exactly three values:
+     * **0 = NOT_SUPPORT, 1 = SLEEP_OXYGEN, 2 = TIMING_OXYGEN** — `getInstance` returns null for
+     * anything else, so only 1 and 2 count as a claim of support.
+     *
+     * Treating "any non-zero" as support would be a real hazard on this ring: it uses `0xFF` as a
+     * no-reading sentinel elsewhere (every failed spot SpO2 answers `group 1 / cmd 11 [FF]`), and a
+     * `0xFF` here would otherwise read as a capability claim.
+     *
+     * **This is currently diagnostic, not capability-driving.** SpO2 is in [CRPCoordinator]'s
+     * unconditional capabilities because it is hardware-confirmed: zaggash's 2026-07-23 capture has a
+     * real reading (`group 1 / cmd 11` payload `0x61` = 97 %). Refinement via
+     * `RingBLEClient.refineActiveCapabilities` is additive-only, so a NOT_SUPPORT answer cannot take
+     * SpO2 away — decoding it simply puts the ring's own answer in the raw-packet feed, where the
+     * next capture can confirm or challenge what we assume. Acting on a NOT_SUPPORT would need a
+     * subtractive mechanism that does not exist yet, and should not be invented without a ring that
+     * actually reports one.
+     */
+    private fun decodeSpO2Support(payload: ByteArray): List<RingDecodedEvent> {
+        val type = payload.firstOrNull()?.toInt()?.and(0xFF) ?: return listOf(supportAck())
+        // Only the two documented "supported" values; 0 = NOT_SUPPORT and anything else is unknown.
+        // Report an empty set rather than nothing, so the feed records that the ring was asked.
+        val granted = if (type == 1 || type == 2)
+            setOf(WearableCapability.SPO2, WearableCapability.MANUAL_SPO2)
+        else emptySet()
+        return listOf(RingDecodedEvent.SupportFunctions(granted))
+    }
+
+    private fun supportAck() = RingDecodedEvent.CommandAck(
+        commandId = ((CRPCommands.GROUP_HISTORY shl 4) or
+            (CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE and 0x0F)).toUByte()
+    )
 
     /** All-day timeline frames carry 144 sample-slots at a fixed 5-minute cadence (`w0.b.a() / 5`
      *  in the vendor). Two slot widths: HR/SpO2/stress store one byte per slot (144 slots/frame,

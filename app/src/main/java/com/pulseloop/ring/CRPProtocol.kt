@@ -98,8 +98,28 @@ object CRPCommands {
     const val CMD_QUERY_TIMING_HRV = 16       // b1/u.b:  q.c(2,16, [day, 0])
     const val CMD_QUERY_TIMING_SPO2 = 17      // b1/h.b:  q.c(2,17, [day, 0])
     const val CMD_QUERY_TIMING_STRESS = 47    // b1/h0.b: q.c(2,47, [day, 0])
-    const val CMD_QUERY_HISTORY_TEMP = 48     // b1/e0.d: q.b(2,48)
+    /** Temperature history. **Not 48** — `q.b(2,48)` is the vendor's `querySleepState` (`d1/b.java`
+     *  line 650); the real temperature history is `i0.b(day, frameIndex)` = `q.c(2,22, [day, idx])`,
+     *  the same `[day, frameIndex]` shape as the other timing histories. We queried 48 for months and
+     *  the ring never answered — see zaggash's 2026-07-25 capture, 23 sends and 0 replies. Its sample
+     *  layout is still unconfirmed by a non-empty capture, so the reply stays an ack for now. */
+    const val CMD_QUERY_HISTORY_TEMP = 22     // b1/i0.b: q.c(2,22, [day, frameIndex])
     const val HISTORY_DAY_TODAY = 0           // CRPHistoryDay.TODAY; YESTERDAY = 1
+
+    // Group 2 — read-back queries. The ring can be *asked* what it supports and what is currently
+    // enabled, so the app doesn't have to guess (vendor `d1/b.java` querySupport*/queryTiming*State).
+    /** `b1/h.e`: q.b(2,37). Reply payload[0] is a `CRPBloodOxygenType`: 0 = NOT_SUPPORT,
+     *  1 = SLEEP_OXYGEN, 2 = TIMING_OXYGEN (`g1/a.V0` → `onSupportBloodOxygenType`). The R11 has no
+     *  SpO2 hardware at all — COLMI's spec lists one optical sensor, a Vcare VC30F heart-rate unit —
+     *  so this is how a ring that *does* have it earns the capability back. */
+    const val CMD_QUERY_SUPPORT_SPO2_TYPE = 37
+    /** The all-day monitor state queries. Each reply carries the configured interval in minutes
+     *  (`g1/a.{p1,r1,n1,t1}` → `onTimingInterval`); 0 means the monitor is off. */
+    const val CMD_QUERY_TIMING_HR_STATE = 6       // b1/t.e:  q.b(2,6)
+    const val CMD_QUERY_TIMING_HRV_STATE = 7      // b1/u.e:  q.b(2,7)
+    const val CMD_QUERY_TIMING_SPO2_STATE = 8     // b1/h.f:  q.b(2,8)
+    const val CMD_QUERY_TIMING_TEMP_STATE = 21    // b1/i0.a: q.b(2,21) → onTimingState(type, state)
+    const val CMD_QUERY_TIMING_STRESS_STATE = 45  // b1/h0.e: q.b(2,45)
 
     // Group 3 — power control + device-state pushes.
     const val GROUP_POWER = 3
@@ -264,8 +284,30 @@ object CRPProtocol {
     fun queryHistorySleep(daysAgo: Int = 0): ByteArray =
         frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_SLEEP, byteArrayOf(daysAgo.toByte()))
 
-    fun queryHistoryTemp(): ByteArray =
-        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_TEMP)
+    fun queryHistoryTemp(day: Int = CRPCommands.HISTORY_DAY_TODAY, frameIndex: Int = 0): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_TEMP,
+            byteArrayOf(day.toByte(), frameIndex.toByte()))
+
+    // ---- Read-back queries: let the ring tell us what it supports and what is enabled ----
+
+    /** Ask whether this unit has SpO2 hardware at all. See [CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE]. */
+    fun querySupportSpO2Type(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_SUPPORT_SPO2_TYPE)
+
+    fun queryTimingHeartRateState(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HR_STATE)
+
+    fun queryTimingHrvState(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_HRV_STATE)
+
+    fun queryTimingSpO2State(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_SPO2_STATE)
+
+    fun queryTimingStressState(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_STRESS_STATE)
+
+    fun queryTimingTempState(): ByteArray =
+        frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_TEMP_STATE)
 
     // ---- Device info queries (group 7) ----
 

@@ -68,9 +68,41 @@ supporting evidence as the cause.
   `RingSyncCoordinator` fast-fails an in-flight CRP spot measure (with a "put the ring on" message)
   when it reports not-worn *before* any reading. Gated to CRP — YCBT's wear polarity is unverified.
   A not-worn measure now fails in ~2 s with guidance instead of spinning the full window silently.
+- **SpO2 works on the R11 — do not "fix" it by removing the capability.** zaggash's 2026-07-23
+  capture (build 26) contains a real reading: `group 1 / cmd 11` payload `0x61` = **97 %**. It is
+  slow and contact-sensitive — the successful measure took **48 s** of silence before answering, and
+  only 1 of 3 attempts in that session succeeded. A later session where every attempt failed is a
+  contact problem, not absent hardware. COLMI's product page lists only a "Vcare VC30F heart rate"
+  sensor; that is a marketing page, not a bill of materials, and reading it as proof of no SpO2
+  hardware already produced one PR that had to be closed (#40).
+- **HR success does not prove contact is good enough for SpO2.** In that same capture HR returned a
+  reading **3 seconds before all three** SpO2 attempts — the two that failed and the one that
+  succeeded. HR reads fine at contact quality SpO2 cannot use, so never gate SpO2 messaging on recent
+  HR. "Put the ring on snugly" is the *correct* advice for an SpO2 failure even when HR just worked.
+- **`group 3 / cmd 7 [00]` predicts measurement failure.** It appeared ~4 s into every failed spot
+  measure across both captures and never before the successful one, landing ~2 ms before the
+  `group 1 / cmd 11 [FF]` no-reading sentinel. Keeping the fast-fail is right: it turns a 60 s dead
+  wait into a ~4.5 s failure. Note the ring never emits `[01]` in either capture, so treat it as a
+  failure signal rather than a literal wear flag — but its user-facing advice (improve contact) is
+  correct either way.
+- **Read-backs exist — ask the ring instead of guessing.** `querySupportSpO2Type` (`2/37`) answers
+  NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN, and the monitor-state queries `2/6` HR, `2/7` HRV,
+  `2/8` SpO2, `2/45` stress, `2/21` temp each report the configured interval (`0` = off). These are
+  how you tell "the monitor is switched off" apart from "this ring lacks the sensor" — the open
+  question for stress (`2/47`), temperature and firmware (`7/1`), all 23-sent/0-answered. Send them
+  **once per connection**, not per poll pass: `runStartup` is also the ~30-minute background sync.
+- **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`
+  (`d1/b.java` line 650); real temp history is `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the
+  same shape as the other timing histories. Its sample layout is still unconfirmed — no non-empty
+  capture yet — so the reply stays an ack.
+- **The multi-frame follow-up is hardware-validated** (was open on rc3): HR asked frames (0,0)+(0,1)
+  and got both; HRV asked (0,0)…(0,3) and got all four. HR history decoded 27 readings at 00:10–11:35
+  local (46–104 bpm), HRV 11 readings (30–56 ms), sleep 12 records across light/deep/REM — so the
+  local-midnight anchoring is right and there is no UTC drift.
 - The single-channel contention theory is **plausible but unproven** — no capture has shown a spot
   measure starved by an active history dump. Don't treat it as established; if you suspect it, prove
-  it from a capture where the channel is actually saturated during a failed measure.
+  it from a capture where the channel is actually saturated during a failed measure. It is still the
+  reason to keep per-pass traffic lean (see the read-backs above).
 - **All-day "timing" vital history is DECODED (build 27, rc3), confirmed against zaggash's rc2
   capture.** Layout (vendor `e1/{f,d,g,l}.java`, group 2): a query `[day, frameIndex]` returns
   `[day][frameIndex][slots…]`, one **5-minute** slot per sample (`w0.b.a()/5`), `0` = no reading.

@@ -32,8 +32,11 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // the ring's step/calorie algorithm has real inputs.
         send(CRPProtocol.setTime())
         // Query firmware version so the UI doesn't show "Firmware: reading" (zaggash's report).
+        // NOTE: still unanswered on his R11 — 23 sends, 0 replies in the 2026-07-25 capture — so the
+        // panel keeps showing "?". The group-7 opcode is the vendor's, but this ring ignores it.
         send(CRPProtocol.queryFirmwareVersion())
         profile?.let { send(userInfoFrame(it)) }
+        sendConnectionReadBacks()
         // Enable all-day vital monitoring. A fresh ring has these OFF, so without this the ring
         // stores no HR/SpO2/HRV/stress/temperature history and every history query below returns an
         // empty reply (issue #29, zaggash's full-day capture). When the user has saved a config we
@@ -50,6 +53,37 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // into HistoryMeasurement samples (confirmed against zaggash's R11 rc2 capture) and this
         // engine walks the remaining frames of each day via the follow-up in handle().
         queryAllHistory()
+    }
+
+    /** Whether this connection's read-backs have been sent. A fresh [CRPSyncEngine] is built per
+     *  connection (`RingBLEClient` calls `driver.makeSyncEngine()` on connect), so instance state
+     *  gives "once per connection" for free. */
+    private var readBacksSent = false
+
+    /**
+     * Ask the ring to describe itself, once per connection.
+     *
+     * `querySupportSpO2Type` answers NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN; the timing-state
+     * queries report each all-day monitor's configured interval (0 = off). Together they are the
+     * evidence base for whether a silent history query means "the monitor is off" or "this ring
+     * lacks the sensor" — stress (`2/47`), temperature (`2/22`) and firmware (`7/1`) all went
+     * unanswered on zaggash's ring, and these replies are how we tell those apart next capture.
+     *
+     * Deliberately **not** part of the poll pass. [runStartup] doubles as the ~30-minute background
+     * re-sync and is also reached from `refresh()`/`querySleep()`, but what a ring supports cannot
+     * change between syncs. Re-asking would add six writes to every pass on a ring that funnels the
+     * handshake, timing config, history pull *and* on-demand measures through the single `fdd2`
+     * channel — and a spot SpO2 needs ~48 s of that channel to return a reading.
+     */
+    private fun sendConnectionReadBacks() {
+        if (readBacksSent) return
+        readBacksSent = true
+        send(CRPProtocol.querySupportSpO2Type())
+        send(CRPProtocol.queryTimingHeartRateState())
+        send(CRPProtocol.queryTimingHrvState())
+        send(CRPProtocol.queryTimingSpO2State())
+        send(CRPProtocol.queryTimingStressState())
+        send(CRPProtocol.queryTimingTempState())
     }
 
     /** Frame follow-ups already requested this poll pass, keyed `cmd * 100 + frameIndex`, so a ring
