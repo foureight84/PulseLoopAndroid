@@ -32,8 +32,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // the ring's step/calorie algorithm has real inputs.
         send(CRPProtocol.setTime())
         // Query firmware version so the UI doesn't show "Firmware: reading" (zaggash's report).
-        // NOTE: still unanswered on his R11 — 23 sends, 0 replies in the 2026-07-25 capture — so the
-        // panel keeps showing "?". The group-7 opcode is the vendor's, but this ring ignores it.
+        // The 23-sends/0-replies in the 2026-07-25 capture were our fault, not the ring's: the old
+        // opcode was group 7 cmd 1, which the vendor SDK uses for `querySavedGomoreKey`, not
+        // firmware. The real query is group 3 cmd 3 (`b1/l.k` → `d1/b.queryFirmwareVersion`), and
+        // it answers with a UTF-8 string — `MOY-R1K3-2.1.6` on zaggash's R11.
         send(CRPProtocol.queryFirmwareVersion())
         profile?.let { send(userInfoFrame(it)) }
         sendConnectionReadBacks()

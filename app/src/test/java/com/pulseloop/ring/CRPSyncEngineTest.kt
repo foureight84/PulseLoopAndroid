@@ -31,6 +31,8 @@ class CRPSyncEngineTest {
 
     @Test
     fun `runStartup sends set-time, firmware query, user info, default monitor enables, then the history pull`() {
+        // The firmware query is 3/3 (`b1/l.k` -> d1/b.queryFirmwareVersion), NOT the 7/1 it used to
+        // send -- that opcode is the vendor's `querySavedGomoreKey` and the R11 never answers it.
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)
         engine.runStartup()
@@ -40,7 +42,7 @@ class CRPSyncEngineTest {
         // the enables force everything on moments later. Asking afterwards would only describe the
         // state we just imposed. If this assertion fails, move the call site back — don't reorder the
         // expectation. See CRPSyncEngine.sendConnectionReadBacks.
-        assertEquals(listOf(1 to 1, 7 to 1) + readBackQueries + timingEnables + historyQueries, w.opcodes())
+        assertEquals(listOf(1 to 1, 3 to 3) + readBackQueries + timingEnables + historyQueries, w.opcodes())
 
         w.sent.clear()
         engine.setUserProfile(
@@ -49,7 +51,7 @@ class CRPSyncEngineTest {
         engine.runStartup()
         // A second pass on the same connection re-sends the poll work but NOT the read-backs —
         // what the ring supports cannot change between syncs.
-        assertEquals(listOf(1 to 1, 7 to 1, 1 to 0) + timingEnables + historyQueries, w.opcodes())
+        assertEquals(listOf(1 to 1, 3 to 3, 1 to 0) + timingEnables + historyQueries, w.opcodes())
     }
 
     /**

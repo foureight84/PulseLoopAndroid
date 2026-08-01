@@ -37,7 +37,45 @@ to need an OS bond, add it to `WearableModel.requiresOsBond`'s allowlist by name
 the condition to "whenever `supportBlePair` is set" to match the vendor app — that is exactly
 the change that caused the regression, and it will cause it again for the R10.
 
+**A driver re-route can silently revoke a bond, too.** `DriverReroute.shouldRerouteToJring` moves a
+ring off its selected driver post-connect, and re-resolving the model against the JRING family lands
+on the generic `JRING` entry, whose `requiresOsBond` is `false`. Root `AGENTS.md` records one hedged
+suspicion — that the **R11**'s full Colmi UART profile (`6e40fff0`/`de5bf728`) *appears* to be gated
+behind an OS bond. Unproven, and about one model, but if it holds anywhere then a re-route fired on
+a table missing that profile is self-sealing: it prevents the very bond that would reveal it, and
+CONNECTED persists the jring family to `LAST_WEARABLE_MODEL_KEY`, so every later reconnect starts
+there and the carousel can't undo it. That is why the re-route is scoped to
+`scanDetectedType == JRING`: only connections where a generic-"SMART_RING" guess was actually
+overridden. Don't widen it to "any driver whose services are missing."
+
 See `docs/qring-ble-adoption.md` §5a for the full history and the decompiled source references.
+
+## Only the client's own connect may rebuild stored data
+
+**Read this before touching `EventPersistenceSubscriber`'s `DeviceStateChanged` branch, or before
+adding a family to `preservesSleepOnConnect`.**
+
+`RingConnectionState.CONNECTED` arrives from two unrelated places, and only one of them means a
+connection was established:
+
+- `RingBLEClient`'s own connect event — always carries `deviceType` (`activeCoordinator` is set by
+  `installDriver`, which runs before the CCCD write that gates CONNECTED).
+- `RingEventBridge`, which maps **every** decoder's `RingDecodedEvent.Status` to CONNECTED and never
+  sets `deviceType`. These are ordinary device-info replies: jring `0x0C`, LuckRing dev-info, YCBT
+  status packets. `runStartup` re-sends them, and `runStartup` is also the ~30-minute background
+  sync — so they recur for the whole life of a connection.
+
+The CONNECTED branch clears and rebuilds (unscoped `DELETE FROM sleep_sessions` /
+`sleep_stage_blocks` for families outside `preservesSleepOnConnect`). Ungated, every background sync
+pass on jring or LuckRing wiped all stored sleep and depended on that same pass re-pulling it —
+losing anything past the ring's retention when the pass was interrupted or came back empty.
+`isConnectTransition(event.deviceType)` is the gate. **Don't remove it, and don't try to fix this
+family-by-family** — `preservesSleepOnConnect` was an attempt at that, and the set of families that
+re-assert CONNECTED turned out to be most of them.
+
+Corollary for new protocol work: a reply that merely reports something about the device (firmware,
+serial, capabilities) is not a connection event. Give it its own `RingDecodedEvent` — as
+`FirmwareRevision` does — rather than hanging it off `Status`.
 
 ## Colmi R11 (CRP "Da Rings") — diagnose from the capture, and decode wear state before blaming code
 
@@ -89,8 +127,25 @@ supporting evidence as the cause.
   NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN, and the monitor-state queries `2/6` HR, `2/7` HRV,
   `2/8` SpO2, `2/45` stress, `2/21` temp each report the configured interval (`0` = off). These are
   how you tell "the monitor is switched off" apart from "this ring lacks the sensor" — the open
-  question for stress (`2/47`), temperature and firmware (`7/1`), all 23-sent/0-answered. Send them
+  question for stress (`2/47`) and temperature, both 23-sent/0-answered. Send them
   **once per connection**, not per poll pass: `runStartup` is also the ~30-minute background sync.
+- **Group 7 is Gomore, not device info — an opcode read off a decompiled builder is a guess until
+  you check its caller.** Firmware was queried on `7/1` and never answered (23 sends, 0 replies),
+  which read like ring firmware ignoring a valid vendor command. It wasn't: every builder in `b1/r`
+  resolves to a Gomore call in `d1/b.java` (`7/0` querySupportGomore, `7/1` **querySavedGomoreKey**,
+  `7/2` queryGomoreEUID, `7/3` sendGomoreKey, `7/13` queryGomoreVersion). The constants had been
+  built by pairing `b1/r`'s methods with opcodes *positionally* (a→0, b→1, c→13) — but jadx
+  alphabetises method names, so letter order carries no meaning. The same slip mislabelled `3/1`
+  (`shutDown`) as `CMD_RESTART`; restart is `3/14`. **Resolve every opcode through its `d1/b.java`
+  caller, never by position in the builder class.**
+- **Firmware version is `3/3`**, replying with a bare UTF-8 string (`g1/a.i1`:
+  `onVersion(new String(payload, UTF_8))`) — `MOY-R1K3-2.1.6` on zaggash's R11, matching the vendor
+  app's Firmware-information screen. Decoded into `RingDecodedEvent.FirmwareRevision`, which exists
+  because neither older event fits: `FirmwareVersion` carries an `Int` (the jring `0xF6` build), and
+  `Status` bridges to `DeviceStateChanged(CONNECTED, …)` — a connection-state event, which a
+  firmware string is not. Sibling group-3 queries confirmed from their callers: `3/0` reset,
+  `3/1` shutDown, `3/4` firmware hash, `3/6` real-time battery, `3/7` wear state, `3/14` restart,
+  `3/22` binding reminder.
 - **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`
   (`d1/b.java` line 650); real temp history is `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the
   same shape as the other timing histories. Its sample layout is still unconfirmed — no non-empty

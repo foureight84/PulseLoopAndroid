@@ -80,17 +80,26 @@ class EventPersistenceSubscriber(
                 val device = existing ?: DeviceEntity()
                 val state = when (event.state) {
                     RingConnectionState.CONNECTED -> {
-                        db.measurementDao().clearDemo()
-                        db.activityDailyDao().clearDemo()
-                        if (preservesSleepOnConnect(event.deviceType, existing?.deviceType)) {
-                            // YCBT status packets re-emit CONNECTED while history is still arriving.
-                            db.sleepStageBlockDao().clearDemo()
-                            db.sleepSessionDao().clearDemo()
-                        } else {
-                            // Packet-based families rebuild sleep on connect. Clear blocks with
-                            // sessions so legacy midnight-keyed blocks cannot contaminate a rebuild.
-                            db.sleepStageBlockDao().clear()
-                            db.sleepSessionDao().clear()
+                        // Only the *client's own* connect event is a connection transition, and it
+                        // is the only CONNECTED that may run the destructive rebuild below. Decoders
+                        // re-assert CONNECTED mid-session from ordinary device-info replies — jring
+                        // `0x0C`, LuckRing dev-info, YCBT status packets — and those replies are
+                        // re-sent by `runStartup`, which is also the ~30-minute background sync. Left
+                        // ungated, each pass would wipe every stored sleep session and then depend on
+                        // that same pass re-pulling it. See [isConnectTransition].
+                        if (isConnectTransition(event.deviceType)) {
+                            db.measurementDao().clearDemo()
+                            db.activityDailyDao().clearDemo()
+                            if (preservesSleepOnConnect(event.deviceType, existing?.deviceType)) {
+                                // YCBT status packets re-emit CONNECTED while history is still arriving.
+                                db.sleepStageBlockDao().clearDemo()
+                                db.sleepSessionDao().clearDemo()
+                            } else {
+                                // Packet-based families rebuild sleep on connect. Clear blocks with
+                                // sessions so legacy midnight-keyed blocks cannot contaminate a rebuild.
+                                db.sleepStageBlockDao().clear()
+                                db.sleepSessionDao().clear()
+                            }
                         }
                         "CONNECTED"
                     }
@@ -294,6 +303,24 @@ class EventPersistenceSubscriber(
                 // The authoritative version comes from 0x0C device-info (see decodeStatus) and is
                 // requested on every connect via runStartup(), with DIS 0x2A26 as a fallback, so
                 // 0xF6 is never needed here. Kept as a decoded event purely for diagnostics.
+            }
+            is PulseEvent.FirmwareRevision -> {
+                // Stamp the version onto an existing row only — never create one, so a late reply
+                // can't resurrect a forgotten ring (same rule as DeviceStateChanged above).
+                //
+                // This is why the firmware string does NOT travel as DeviceStateChanged: that
+                // branch treats every CONNECTED as "a connection was just established" and, for
+                // families outside preservesSleepOnConnect (CRP among them), answers by clearing
+                // sleep_sessions + sleep_stage_blocks outright. CRPSyncEngine.runStartup re-queries
+                // firmware on every pass — including the ~30-minute background sync — so routing it
+                // through there would wipe all stored sleep on each pass and rely on the same pass
+                // re-pulling it, losing everything past the ring's 14-day retention if it didn't.
+                val device = db.deviceDao().currentReal() ?: return
+                if (event.version == device.firmwareVersion) return  // blank is gated in the bridge
+                db.deviceDao().upsert(device.copy(
+                    firmwareVersion = event.version,
+                    updatedAt = System.currentTimeMillis(),
+                ))
             }
         }
     }
@@ -600,6 +627,24 @@ class EventPersistenceSubscriber(
 
 internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
     "history:${kind.key}:$timestamp"
+
+/**
+ * True when a `DeviceStateChanged(CONNECTED, …)` is a real connection transition rather than a
+ * mid-session re-assertion, and may therefore run the clear-and-rebuild in [EventPersistenceSubscriber].
+ *
+ * Exactly two things publish a CONNECTED event, and `deviceType` separates them cleanly:
+ *  - `RingBLEClient`'s own connect always passes `deviceType = activeCoordinator.deviceType`, which
+ *    is non-null by then (`installDriver` ran before the CCCD write that gates CONNECTED).
+ *  - `RingEventBridge` maps every decoder's `RingDecodedEvent.Status` to CONNECTED and never sets
+ *    `deviceType`. Those are ordinary device-info replies — jring `0x0C`, LuckRing dev-info, YCBT
+ *    status packets — re-sent by `runStartup` on every sync pass, not connection events.
+ *
+ * Before this gate, each of those replies ran the rebuild, so a background sync pass on jring or
+ * LuckRing dropped every `sleep_sessions` / `sleep_stage_blocks` row (unscoped `DELETE`s) and relied
+ * on the same pass re-pulling them — losing anything past the ring's retention when it didn't.
+ * A per-family allowlist can't fix this: the families that re-assert CONNECTED are most of them.
+ */
+internal fun isConnectTransition(eventDeviceType: RingDeviceType?): Boolean = eventDeviceType != null
 
 internal fun preservesSleepOnConnect(
     eventDeviceType: RingDeviceType?,

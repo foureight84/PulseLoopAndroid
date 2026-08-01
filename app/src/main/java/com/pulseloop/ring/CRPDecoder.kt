@@ -86,7 +86,8 @@ object CRPDecoder {
 
     /**
      * Framed `fdd3` reply: `FD DA 10 <len> <group> <cmd> <payload>`.
-     * Real-time vital results come on group 1; history queries on group 7; device info on group 7.
+     * Real-time vital results come on group 1; sleep/all-day history on group 2; device identity
+     * and state pushes on group 3. Group 7 is the vendor's Gomore module, not device info.
      */
     private fun decodeFramedReply(frame: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent> {
         if (frame.size < CRPProtocol.HEADER_SIZE) return emptyList()
@@ -99,9 +100,10 @@ object CRPDecoder {
             return decodeVitalResult(cmd, payload, now)
         }
 
-        // Group 7: history queries + device info (decompiled `b1/e0` + `b1/r`).
-        if (group == CRPCommands.GROUP_DEVICE_INFO) {
-            return decodeHistoryOrDeviceInfoResponse(cmd, payload, now)
+        // Group 7: the vendor's Gomore module (`b1/r`). Nothing we send lands here any more; kept so
+        // an unsolicited Gomore frame in a capture is still recorded rather than dropped.
+        if (group == CRPCommands.GROUP_GOMORE) {
+            return decodeGomoreResponse(cmd)
         }
 
         // Group 2: sleep + the all-day "timing" vital timelines + temperature history.
@@ -120,12 +122,17 @@ object CRPDecoder {
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
 
-        // Group 3: power control + the autonomous wear-state push (vendor `g1/a.java` case 3→7,
-        // `onWearStateChange(payload[0] > 0)`). Confirmed against zaggash's R11 (issue #29): a spot
-        // measure returns nothing while `payload[0] == 0` (ring off the finger).
+        // Group 3: device control, the firmware-version string (cmd 3), and the autonomous
+        // wear-state push (vendor `g1/a.java` case 3→7, `onWearStateChange(payload[0] > 0)`).
+        // Confirmed against zaggash's R11 (issue #29): a spot measure returns nothing while
+        // `payload[0] == 0` (ring off the finger).
         if (group == CRPCommands.GROUP_POWER) {
             if (cmd == CRPCommands.CMD_WEAR_STATE && payload.isNotEmpty()) {
                 return listOf(RingDecodedEvent.WearingStatus(worn = (payload[0].toInt() and 0xFF) != 0, _timestamp = now))
+            }
+            if (cmd == CRPCommands.CMD_QUERY_FIRMWARE_VERSION) {
+                // null ⇒ nothing readable in the payload; fall through to the ack below.
+                decodeFirmwareVersion(payload)?.let { return it }
             }
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
@@ -173,14 +180,27 @@ object CRPDecoder {
         }
     }
 
+    /** Group-7 (Gomore) replies. No layout is decoded — acked so the raw-packet feed records them. */
+    private fun decodeGomoreResponse(cmd: Int): List<RingDecodedEvent> {
+        return listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_GOMORE shl 4) or (cmd and 0x0F)).toUByte()))
+    }
+
     /**
-     * Decode group-7 responses: history queries (cmd 4–7, 14, 48) and device info (cmd 0, 1, 13).
-     * History layouts are unconfirmed against hardware — emit as CommandAck so the raw-packet feed
-     * records them without inventing metric values. Extend [decodeHistoryOrDeviceInfoResponse]
-     * as more layouts are confirmed.
+     * The firmware version string (`group 3 / cmd 3`). Vendor `g1/a.i1`:
+     * `onVersion(new String(payload, StandardCharsets.UTF_8))` — a bare UTF-8 string with no
+     * length prefix or terminator, e.g. `MOY-R1K3-2.1.6` on zaggash's R11 (issue #29).
+     *
+     * Surfaced as [RingDecodedEvent.FirmwareRevision], not [RingDecodedEvent.FirmwareVersion]
+     * (which carries an `Int` — the jring 0xF6 numeric build — and can't hold this) and not
+     * [RingDecodedEvent.Status] (which bridges to `DeviceStateChanged(CONNECTED, …)`; persistence
+     * rebuilds the sleep tables on every one of those, and [CRPSyncEngine.runStartup] re-queries
+     * firmware on every sync pass).
      */
-    private fun decodeHistoryOrDeviceInfoResponse(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
-        return listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE_INFO shl 4) or (cmd and 0x0F)).toUByte()))
+    private fun decodeFirmwareVersion(payload: ByteArray): List<RingDecodedEvent>? {
+        // Trims NUL padding as well as whitespace: some firmwares pad the frame to a fixed width.
+        val version = String(payload, Charsets.UTF_8).trim { it <= ' ' }
+        if (version.isEmpty()) return null  // empty or all-padding — the caller acks it instead
+        return listOf(RingDecodedEvent.FirmwareRevision(version))
     }
 
     /**

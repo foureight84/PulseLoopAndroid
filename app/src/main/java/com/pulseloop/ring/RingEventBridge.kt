@@ -89,6 +89,11 @@ object RingEventBridge {
         is RingDecodedEvent.FirmwareVersion ->
             listOf(PulseEvent.FirmwareVersion(decoded.version))
 
+        is RingDecodedEvent.FirmwareRevision -> {
+            if (decoded.version.isBlank()) emptyList()
+            else listOf(PulseEvent.FirmwareRevision(decoded.version))
+        }
+
         is RingDecodedEvent.Spo2Complete ->
             listOf(PulseEvent.Spo2Complete(decoded._timestamp))
 

@@ -23,6 +23,37 @@ class EventPersistenceIdentityTest {
     }
 
     @Test
+    fun `only the client's own connect event is a connection transition`() {
+        // RingBLEClient always stamps the resolved family on its connect event...
+        assertTrue(isConnectTransition(RingDeviceType.JRING))
+        assertTrue(isConnectTransition(RingDeviceType.CRP))
+        assertTrue(isConnectTransition(RingDeviceType.YCBT))
+        // ...and RingEventBridge never does, for any decoder's Status.
+        assertFalse(isConnectTransition(null))
+    }
+
+    @Test
+    fun `a decoder's Status never reaches the rebuild, whatever family it belongs to`() {
+        // The pairing that used to wipe sleep: no deviceType (so it's a mid-session re-assertion
+        // from jring 0x0C / LuckRing dev-info) AND a family outside preservesSleepOnConnect (so the
+        // rebuild branch runs unscoped DELETEs). The transition gate is what breaks it.
+        assertFalse(preservesSleepOnConnect(null, RingDeviceType.JRING))
+        assertFalse(preservesSleepOnConnect(null, RingDeviceType.LUCK_RING))
+        assertFalse(preservesSleepOnConnect(null, RingDeviceType.CRP))
+        assertFalse(isConnectTransition(null))
+    }
+
+    @Test
+    fun `a real connect still rebuilds for the packet-based families`() {
+        // The gate must not suppress the behaviour it is protecting: a genuine connect on a
+        // non-YCBT family still clears and re-pulls.
+        assertTrue(isConnectTransition(RingDeviceType.JRING))
+        assertFalse(preservesSleepOnConnect(RingDeviceType.JRING))
+        assertTrue(isConnectTransition(RingDeviceType.CRP))
+        assertFalse(preservesSleepOnConnect(RingDeviceType.CRP))
+    }
+
+    @Test
     fun `history identity is stable across repeated syncs`() {
         val timestamp = 1_721_234_567_000L
 

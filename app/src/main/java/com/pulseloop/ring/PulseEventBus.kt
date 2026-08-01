@@ -69,6 +69,11 @@ sealed class PulseEvent {
     ) : PulseEvent()
     data class SyncProgress(val stage: String) : PulseEvent()
     data class FirmwareVersion(val version: Int?) : PulseEvent()
+    /** The ring's firmware version as a display string (CRP `3/3` → `MOY-R1K3-2.1.6`). Distinct
+     *  from [FirmwareVersion], which carries the jring `0xF6` numeric build, and deliberately not
+     *  folded into [DeviceStateChanged]: that event means the *connection state* changed, and
+     *  persistence rebuilds the sleep tables on every CONNECTED it sees. */
+    data class FirmwareRevision(val version: String) : PulseEvent()
     /** The ring's on-finger / skin-contact state changed. `worn == false` ⇒ an optical spot
      *  measurement can't produce a reading, so the coordinator fast-fails it (issue #29). */
     data class WearState(val worn: Boolean) : PulseEvent()

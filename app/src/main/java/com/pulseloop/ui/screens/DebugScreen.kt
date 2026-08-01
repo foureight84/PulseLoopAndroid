@@ -278,6 +278,7 @@ private fun labelFor(event: PulseEvent): String = when (event) {
     is PulseEvent.DeviceForgotten -> "Forgot"
     is PulseEvent.SyncProgress -> "Sync"
     is PulseEvent.FirmwareVersion -> "FW Ver"
+    is PulseEvent.FirmwareRevision -> "FW Rev"
     is PulseEvent.RawPacket -> "Raw Pkt"
     is PulseEvent.ActivitySyncReset -> "Act Reset"
 }
@@ -300,6 +301,7 @@ private fun detailFor(event: PulseEvent): String = when (event) {
             ?: event.deviceType.displayName
     is PulseEvent.SyncProgress -> event.stage
     is PulseEvent.FirmwareVersion -> "V${event.version ?: 0}"
+    is PulseEvent.FirmwareRevision -> event.version
     is PulseEvent.RawPacket -> hexDump(event.data) + " ${event.direction.name}"
     else -> ""
 }
@@ -335,6 +337,6 @@ private fun colorFor(event: PulseEvent): Color = when (event) {
     is PulseEvent.DeviceStateChanged -> Color(0xFF90A4AE)
     is PulseEvent.DeviceIdentified -> Color(0xFF42A5F5)
     is PulseEvent.SyncProgress -> Color(0xFF78909C)
-    is PulseEvent.FirmwareVersion -> Color(0xFF90A4AE)
+    is PulseEvent.FirmwareVersion, is PulseEvent.FirmwareRevision -> Color(0xFF90A4AE)
     else -> Color(0xFFBDBDBD)
 }
