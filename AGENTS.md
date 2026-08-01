@@ -89,8 +89,24 @@ supporting evidence as the cause.
   NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN, and the monitor-state queries `2/6` HR, `2/7` HRV,
   `2/8` SpO2, `2/45` stress, `2/21` temp each report the configured interval (`0` = off). These are
   how you tell "the monitor is switched off" apart from "this ring lacks the sensor" — the open
-  question for stress (`2/47`), temperature and firmware (`7/1`), all 23-sent/0-answered. Send them
+  question for stress (`2/47`) and temperature, both 23-sent/0-answered. Send them
   **once per connection**, not per poll pass: `runStartup` is also the ~30-minute background sync.
+- **Group 7 is Gomore, not device info — an opcode read off a decompiled builder is a guess until
+  you check its caller.** Firmware was queried on `7/1` and never answered (23 sends, 0 replies),
+  which read like ring firmware ignoring a valid vendor command. It wasn't: every builder in `b1/r`
+  resolves to a Gomore call in `d1/b.java` (`7/0` querySupportGomore, `7/1` **querySavedGomoreKey**,
+  `7/2` queryGomoreEUID, `7/3` sendGomoreKey, `7/13` queryGomoreVersion). The constants had been
+  built by pairing `b1/r`'s methods with opcodes *positionally* (a→0, b→1, c→13) — but jadx
+  alphabetises method names, so letter order carries no meaning. The same slip mislabelled `3/1`
+  (`shutDown`) as `CMD_RESTART`; restart is `3/14`. **Resolve every opcode through its `d1/b.java`
+  caller, never by position in the builder class.**
+- **Firmware version is `3/3`**, replying with a bare UTF-8 string (`g1/a.i1`:
+  `onVersion(new String(payload, UTF_8))`) — `MOY-R1K3-2.1.6` on zaggash's R11, matching the vendor
+  app's Firmware-information screen. Decoded into `RingDecodedEvent.Status(firmware = …)`, the same
+  path YCBT/LuckRing already use to reach the device record, because `RingDecodedEvent.FirmwareVersion`
+  carries an `Int` and can't hold this. Sibling group-3 queries confirmed from their callers:
+  `3/0` reset, `3/1` shutDown, `3/4` firmware hash, `3/6` real-time battery, `3/7` wear state,
+  `3/14` restart, `3/22` binding reminder.
 - **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`
   (`d1/b.java` line 650); real temp history is `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the
   same shape as the other timing histories. Its sample layout is still unconfirmed — no non-empty

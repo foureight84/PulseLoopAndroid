@@ -106,6 +106,46 @@ class CRPDecoderTest {
     }
 
     @Test
+    fun `firmware version decodes as the UTF-8 string the vendor reads`() {
+        // zaggash's R11, shown as "MOY-R1K3-2.1.6" by the official app's Firmware-information
+        // screen. Vendor `g1/a.i1`: new String(payload, UTF_8) on group 3 / cmd 3.
+        val payload = "MOY-R1K3-2.1.6".toByteArray(Charsets.UTF_8)
+        val frame = CRPProtocol.frame(3, CRPCommands.CMD_QUERY_FIRMWARE_VERSION, payload)
+        val ev = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.Status
+        assertEquals("MOY-R1K3-2.1.6", ev.firmware)
+        assertNull(ev.address)
+    }
+
+    @Test
+    fun `firmware version reaches the device record via DeviceStateChanged`() {
+        val decoded = RingDecodedEvent.Status(address = null, firmware = "MOY-R1K3-2.1.6")
+        val ev = RingEventBridge.eventsFor(decoded).single() as PulseEvent.DeviceStateChanged
+        assertEquals("MOY-R1K3-2.1.6", ev.firmware)
+    }
+
+    @Test
+    fun `firmware version tolerates NUL padding`() {
+        val payload = "MOY-R1K3-2.1.6".toByteArray(Charsets.UTF_8) + byteArrayOf(0, 0)
+        val frame = CRPProtocol.frame(3, CRPCommands.CMD_QUERY_FIRMWARE_VERSION, payload)
+        val ev = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.Status
+        assertEquals("MOY-R1K3-2.1.6", ev.firmware)
+    }
+
+    @Test
+    fun `empty firmware payload yields no event rather than a blank version`() {
+        val frame = CRPProtocol.frame(3, CRPCommands.CMD_QUERY_FIRMWARE_VERSION, byteArrayOf(0))
+        assertTrue(CRPDecoder.decode(frame, fdd3).none { it is RingDecodedEvent.Status })
+    }
+
+    @Test
+    fun `the firmware query targets group 3 cmd 3, not the group-7 Gomore opcode`() {
+        // The old query framed q.b(7,1) = querySavedGomoreKey, which the ring never answers.
+        val sent = CRPProtocol.queryFirmwareVersion()
+        assertEquals(3, sent[4].toInt() and 0xFF)
+        assertEquals(3, sent[5].toInt() and 0xFF)
+    }
+
+    @Test
     fun `unrecognised group3 cmd is acked, not dropped`() {
         val ev = CRPDecoder.decode(CRPProtocol.frame(3, 2, byteArrayOf(0)), fdd3)[0]
         assertTrue(ev is RingDecodedEvent.CommandAck)

@@ -83,10 +83,19 @@ object CRPCommands {
     // Group 7 — history queries + device info (decompiled b1/e0 + b1/r).
     // NOTE: most history queries are group 7 (b1/e0 builders use q.b(7,…)/q.c(7,…)), but sleep
     // and temp are the exception — they live on group 2 (see GROUP_HISTORY below).
-    const val GROUP_DEVICE_INFO = 7
-    const val CMD_QUERY_DEVICE_INFO = 0       // b1/r.a: q.b(7,0)
-    const val CMD_QUERY_FIRMWARE_VERSION = 1  // b1/r.b: q.b(7,1)
-    const val CMD_QUERY_DEVICE_SN = 13        // b1/r.c: q.b(7,13)
+    // Group 7 is the vendor's **Gomore** group (the licensed activity-analytics module), NOT device
+    // info — every builder in `b1/r` resolves to a Gomore call in `d1/b.java`:
+    //   q.b(7,0)=querySupportGomore  q.b(7,1)=querySavedGomoreKey  q.b(7,2)=queryGomoreEUID
+    //   q.c(7,3,str)=sendGomoreKey   q.b(7,13)=queryGomoreVersion
+    // The earlier constants here paired `b1/r`'s methods with opcodes positionally (a→0, b→1, c→13)
+    // and mislabelled all three as device info; `queryFirmwareVersion` was really
+    // `querySavedGomoreKey`, which is why the R11 answered none of the 23 sends (issue #29).
+    // Real device queries live on group 3 — see GROUP_DEVICE_CONTROL below. Kept only so a capture
+    // containing these frames is still identifiable; nothing sends them.
+    const val GROUP_GOMORE = 7
+    const val CMD_QUERY_SUPPORT_GOMORE = 0    // b1/r.e: q.b(7,0)  → d1/b.querySupportGomore
+    const val CMD_QUERY_SAVED_GOMORE_KEY = 1  // b1/r.d: q.b(7,1)  → d1/b.querySavedGomoreKey
+    const val CMD_QUERY_GOMORE_VERSION = 13   // b1/r.c: q.b(7,13) → d1/b.queryGomoreVersion
 
     // Group 2 — the day's stored vital timelines. The all-day "timing" histories the vendor's sync
     // pass actually pulls (`u3/g1.java`) live here with a [day, 0] payload, NOT on group 7: the ring
@@ -121,14 +130,22 @@ object CRPCommands {
     const val CMD_QUERY_TIMING_TEMP_STATE = 21    // b1/i0.a: q.b(2,21) → onTimingState(type, state)
     const val CMD_QUERY_TIMING_STRESS_STATE = 45  // b1/h0.e: q.b(2,45)
 
-    // Group 3 — power control + device-state pushes.
+    // Group 3 — device control, identity queries, and device-state pushes. Opcodes read off the
+    // `b1/l` builders via their `d1/b.java` callers (the method letters are alphabetised by the
+    // decompiler and carry no ordering, so each one is resolved by its caller, not by position).
     const val GROUP_POWER = 3
-    const val CMD_FACTORY_RESET = 0     // b1/l.v: q.b(3,0)
-    const val CMD_RESTART = 1           // b1/l.w: q.b(3,1)
+    const val CMD_FACTORY_RESET = 0     // b1/l.v: q.b(3,0)  → d1/b.reset
+    const val CMD_SHUT_DOWN = 1         // b1/l.y: q.b(3,1)  → d1/b.shutDown (was mislabelled RESTART)
+    // Firmware identity — the pair the vendor's own "Firmware information" screen shows
+    // (`FirmwareInformationActivity`): version is a bare UTF-8 string, hash a hex code.
+    const val CMD_QUERY_FIRMWARE_VERSION = 3  // b1/l.k: q.b(3,3) → d1/b.queryFirmwareVersion
+    const val CMD_QUERY_FIRMWARE_HASH = 4     // b1/l.j: q.b(3,4) → d1/b.queryFirmwareHash
+    const val CMD_QUERY_REALTIME_BATTERY = 6  // b1/l.f: q.b(3,6) → d1/b.queryRealTimeBattery
     // Autonomous wear-state push: vendor `g1/a.java` case 3→7 → onWearStateChange(payload[0] > 0).
     // payload[0] == 0 ⇒ ring not on finger / no skin contact (issue #29: an optical spot measure
     // returns nothing while this is 0; we surface it instead of spinning the full window).
     const val CMD_WEAR_STATE = 7
+    const val CMD_RESTART = 14          // b1/l.w: q.b(3,14) → d1/b.restart
 
     // Group 9 — device actions.
     const val GROUP_ACTION = 9
@@ -309,14 +326,10 @@ object CRPProtocol {
     fun queryTimingTempState(): ByteArray =
         frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_TIMING_TEMP_STATE)
 
-    // ---- Device info queries (group 7) ----
-
-    fun queryDeviceInfo(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_DEVICE_INFO)
+    // ---- Device identity queries (group 3) ----
+    // `queryDeviceInfo`/`queryDeviceSN` are gone: they framed group-7 Gomore opcodes, which the ring
+    // never answers. Firmware version is the one the vendor's Firmware-information screen reads.
 
     fun queryFirmwareVersion(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_FIRMWARE_VERSION)
-
-    fun queryDeviceSN(): ByteArray =
-        frame(CRPCommands.GROUP_DEVICE_INFO, CRPCommands.CMD_QUERY_DEVICE_SN)
+        frame(CRPCommands.GROUP_POWER, CRPCommands.CMD_QUERY_FIRMWARE_VERSION)
 }

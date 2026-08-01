@@ -1346,6 +1346,29 @@ class RingBLEClient(
                 updateState { copy(activeWearableModelID = remodel) }
             }
 
+            // Post-connect re-route (issue #29), the *inverse* of the two above: `connectTo`'s
+            // `honorSelection` lets the carousel pick override a generic-"SMART_RING" JRING
+            // detection, which is wrong for a jring-firmware ring sold under a Colmi badge
+            // (itspuia's R09 — the YCBT driver's be940001/be940003 don't exist on it, so
+            // `topologyFailure()` below hard-failed the connect). Policy in [DriverReroute]; runs
+            // after the Colmi/CRP blocks so a ring exposing both keeps its more specific family.
+            if (DriverReroute.shouldRerouteToJring(
+                    discoveredServices = serviceUuids,
+                    activeDeclaredServices = activeDriver?.serviceUUIDs.orEmpty(),
+                    activeDeviceType = activeCoordinator?.deviceType,
+                )
+            ) {
+                Log.i("RingBLEClient", "Discovered the jring (56ff) service and none of the " +
+                    "${activeCoordinator?.deviceType} driver's own services — re-routing to the jring driver")
+                installDriver(JringCoordinator)
+                val remodel = com.pulseloop.wearables.WearableModel.resolve(
+                    advertisedName = activeAdvertisedName,
+                    selectedModelID = _state.value.activeWearableModelID,
+                    family = RingDeviceType.JRING,
+                )?.id ?: com.pulseloop.wearables.WearableModel.JRING.id
+                updateState { copy(activeWearableModelID = remodel) }
+            }
+
             val driver = activeDriver ?: return
 
             // Bind the ring's own service first and enable its notifications BEFORE any
