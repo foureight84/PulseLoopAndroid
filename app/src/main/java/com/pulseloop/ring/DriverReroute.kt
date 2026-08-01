@@ -26,11 +26,14 @@ internal object DriverReroute {
      *    service UUID) is evidence about the hardware that this function has none of; `connectTo`
      *    already draws that ambiguous-vs-confident line and only overrides the JRING fallback.
      *  - Without it, any driver whose services are missing from the table is fair game — including
-     *    the Colmi driver on an R09/R11, whose UART profile (`6e40fff0`/`de5bf728`) is suspected to
-     *    be gated behind the OS bond (root `AGENTS.md`). Re-routing there would be self-sealing:
-     *    the model re-resolves to generic JRING, whose `requiresOsBond` is false, so the bond that
-     *    would reveal the Colmi profile never fires — and the jring family is persisted to
-     *    `LAST_WEARABLE_MODEL_KEY` on CONNECTED, so every later reconnect starts there too.
+     *    the Colmi driver on a ring whose UART profile (`6e40fff0`/`de5bf728`) isn't in the table
+     *    yet. Root `AGENTS.md` records exactly one such suspicion, hedged, for the **R11**: its full
+     *    Colmi UART profile *appears* to be gated behind an OS bond. That is a hypothesis about one
+     *    model, not an established fact about the family — but re-routing on it would be
+     *    self-sealing, which is what makes it worth guarding against: the model re-resolves to
+     *    generic JRING, whose `requiresOsBond` is false, so the bond that would reveal the Colmi
+     *    profile never fires — and the jring family is persisted to `LAST_WEARABLE_MODEL_KEY` on
+     *    CONNECTED, so every later reconnect starts there too.
      *
      * Cost of the guard: a jring-firmware ring that advertises a *Colmi* name pattern (`R09_ABCD`
      * rather than `SMART_RING`) won't be rescued. No such unit has been reported — itspuia's

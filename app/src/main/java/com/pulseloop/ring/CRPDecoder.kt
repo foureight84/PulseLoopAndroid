@@ -130,8 +130,9 @@ object CRPDecoder {
             if (cmd == CRPCommands.CMD_WEAR_STATE && payload.isNotEmpty()) {
                 return listOf(RingDecodedEvent.WearingStatus(worn = (payload[0].toInt() and 0xFF) != 0, _timestamp = now))
             }
-            if (cmd == CRPCommands.CMD_QUERY_FIRMWARE_VERSION && payload.isNotEmpty()) {
-                return decodeFirmwareVersion(payload)
+            if (cmd == CRPCommands.CMD_QUERY_FIRMWARE_VERSION) {
+                // null ⇒ nothing readable in the payload; fall through to the ack below.
+                decodeFirmwareVersion(payload)?.let { return it }
             }
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
@@ -195,17 +196,10 @@ object CRPDecoder {
      * rebuilds the sleep tables on every one of those, and [CRPSyncEngine.runStartup] re-queries
      * firmware on every sync pass).
      */
-    private fun decodeFirmwareVersion(payload: ByteArray): List<RingDecodedEvent> {
+    private fun decodeFirmwareVersion(payload: ByteArray): List<RingDecodedEvent>? {
         // Trims NUL padding as well as whitespace: some firmwares pad the frame to a fixed width.
         val version = String(payload, Charsets.UTF_8).trim { it <= ' ' }
-        if (version.isEmpty()) {
-            // Still ack it, so an all-padding reply is labelled in the raw-packet feed
-            // rather than showing up as an undecoded frame.
-            return listOf(RingDecodedEvent.CommandAck(
-                commandId = ((CRPCommands.GROUP_POWER shl 4) or
-                    (CRPCommands.CMD_QUERY_FIRMWARE_VERSION and 0x0F)).toUByte()
-            ))
-        }
+        if (version.isEmpty()) return null  // empty or all-padding — the caller acks it instead
         return listOf(RingDecodedEvent.FirmwareRevision(version))
     }
 

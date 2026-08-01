@@ -39,15 +39,43 @@ the change that caused the regression, and it will cause it again for the R10.
 
 **A driver re-route can silently revoke a bond, too.** `DriverReroute.shouldRerouteToJring` moves a
 ring off its selected driver post-connect, and re-resolving the model against the JRING family lands
-on the generic `JRING` entry, whose `requiresOsBond` is `false`. On an R09/R11 that is self-sealing:
-the Colmi UART (`6e40fff0`/`de5bf728`) is suspected to be gated behind the bond (root `AGENTS.md`),
-so a re-route fired on a table that doesn't show it prevents the very bond that would reveal it —
-and CONNECTED persists the jring family to `LAST_WEARABLE_MODEL_KEY`, so every later reconnect
-starts there and the carousel can't undo it. That is why the re-route is scoped to
+on the generic `JRING` entry, whose `requiresOsBond` is `false`. Root `AGENTS.md` records one hedged
+suspicion — that the **R11**'s full Colmi UART profile (`6e40fff0`/`de5bf728`) *appears* to be gated
+behind an OS bond. Unproven, and about one model, but if it holds anywhere then a re-route fired on
+a table missing that profile is self-sealing: it prevents the very bond that would reveal it, and
+CONNECTED persists the jring family to `LAST_WEARABLE_MODEL_KEY`, so every later reconnect starts
+there and the carousel can't undo it. That is why the re-route is scoped to
 `scanDetectedType == JRING`: only connections where a generic-"SMART_RING" guess was actually
 overridden. Don't widen it to "any driver whose services are missing."
 
 See `docs/qring-ble-adoption.md` §5a for the full history and the decompiled source references.
+
+## Only the client's own connect may rebuild stored data
+
+**Read this before touching `EventPersistenceSubscriber`'s `DeviceStateChanged` branch, or before
+adding a family to `preservesSleepOnConnect`.**
+
+`RingConnectionState.CONNECTED` arrives from two unrelated places, and only one of them means a
+connection was established:
+
+- `RingBLEClient`'s own connect event — always carries `deviceType` (`activeCoordinator` is set by
+  `installDriver`, which runs before the CCCD write that gates CONNECTED).
+- `RingEventBridge`, which maps **every** decoder's `RingDecodedEvent.Status` to CONNECTED and never
+  sets `deviceType`. These are ordinary device-info replies: jring `0x0C`, LuckRing dev-info, YCBT
+  status packets. `runStartup` re-sends them, and `runStartup` is also the ~30-minute background
+  sync — so they recur for the whole life of a connection.
+
+The CONNECTED branch clears and rebuilds (unscoped `DELETE FROM sleep_sessions` /
+`sleep_stage_blocks` for families outside `preservesSleepOnConnect`). Ungated, every background sync
+pass on jring or LuckRing wiped all stored sleep and depended on that same pass re-pulling it —
+losing anything past the ring's retention when the pass was interrupted or came back empty.
+`isConnectTransition(event.deviceType)` is the gate. **Don't remove it, and don't try to fix this
+family-by-family** — `preservesSleepOnConnect` was an attempt at that, and the set of families that
+re-assert CONNECTED turned out to be most of them.
+
+Corollary for new protocol work: a reply that merely reports something about the device (firmware,
+serial, capabilities) is not a connection event. Give it its own `RingDecodedEvent` — as
+`FirmwareRevision` does — rather than hanging it off `Status`.
 
 ## Colmi R11 (CRP "Da Rings") — diagnose from the capture, and decode wear state before blaming code
 
@@ -114,15 +142,10 @@ supporting evidence as the cause.
   `onVersion(new String(payload, UTF_8))`) — `MOY-R1K3-2.1.6` on zaggash's R11, matching the vendor
   app's Firmware-information screen. Decoded into `RingDecodedEvent.FirmwareRevision`, which exists
   because neither older event fits: `FirmwareVersion` carries an `Int` (the jring `0xF6` build), and
-  `Status` — the path YCBT/LuckRing use — bridges to `DeviceStateChanged(CONNECTED, …)`. **Never
-  route a firmware reply through `Status`.** Persistence reads every CONNECTED as "a connection was
-  just established" and, for any family outside `preservesSleepOnConnect` (CRP included), answers by
-  running unscoped `DELETE`s on `sleep_sessions` + `sleep_stage_blocks`. `runStartup` re-queries
-  firmware on **every** pass, including the ~30-minute background sync, so that wiring would wipe all
-  stored sleep on each pass and depend on the same pass re-pulling it — losing everything past the
-  ring's 14-day retention whenever it didn't. Sibling group-3 queries confirmed from their callers:
-  `3/0` reset, `3/1` shutDown, `3/4` firmware hash, `3/6` real-time battery, `3/7` wear state,
-  `3/14` restart, `3/22` binding reminder.
+  `Status` bridges to `DeviceStateChanged(CONNECTED, …)` — a connection-state event, which a
+  firmware string is not. Sibling group-3 queries confirmed from their callers: `3/0` reset,
+  `3/1` shutDown, `3/4` firmware hash, `3/6` real-time battery, `3/7` wear state, `3/14` restart,
+  `3/22` binding reminder.
 - **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`
   (`d1/b.java` line 650); real temp history is `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the
   same shape as the other timing histories. Its sample layout is still unconfirmed — no non-empty

@@ -108,12 +108,13 @@ class DriverRerouteTest {
     }
 
     @Test
-    fun `never strands a Colmi R09-R11 whose UART profile is hidden pre-bond`() {
-        // The regression this guard exists to prevent. The Colmi UART (6e40fff0/de5bf728) is
-        // suspected to be bond-gated on the R09/R11 (root AGENTS.md), so a first, unbonded connect
-        // can show a table without it. Re-routing to jring here would be self-sealing: the model
-        // re-resolves to generic JRING, requiresOsBond goes false, the bond that would reveal the
-        // Colmi profile never fires, and the jring family is persisted for every later reconnect.
+    fun `never strands a Colmi ring whose UART profile is missing from the table`() {
+        // The regression this guard exists to prevent. Root AGENTS.md records one hedged suspicion,
+        // for the R11, that the Colmi UART (6e40fff0/de5bf728) is gated behind the OS bond — so an
+        // unbonded first connect could show a table without it. Unproven and single-model, but the
+        // failure would be self-sealing: the model re-resolves to generic JRING, requiresOsBond goes
+        // false, the bond that would reveal the Colmi profile never fires, and the jring family is
+        // persisted for every later reconnect.
         assertFalse(
             DriverReroute.shouldRerouteToJring(
                 discoveredServices = r09Services,
