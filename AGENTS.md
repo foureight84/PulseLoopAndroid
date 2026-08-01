@@ -37,6 +37,16 @@ to need an OS bond, add it to `WearableModel.requiresOsBond`'s allowlist by name
 the condition to "whenever `supportBlePair` is set" to match the vendor app — that is exactly
 the change that caused the regression, and it will cause it again for the R10.
 
+**A driver re-route can silently revoke a bond, too.** `DriverReroute.shouldRerouteToJring` moves a
+ring off its selected driver post-connect, and re-resolving the model against the JRING family lands
+on the generic `JRING` entry, whose `requiresOsBond` is `false`. On an R09/R11 that is self-sealing:
+the Colmi UART (`6e40fff0`/`de5bf728`) is suspected to be gated behind the bond (root `AGENTS.md`),
+so a re-route fired on a table that doesn't show it prevents the very bond that would reveal it —
+and CONNECTED persists the jring family to `LAST_WEARABLE_MODEL_KEY`, so every later reconnect
+starts there and the carousel can't undo it. That is why the re-route is scoped to
+`scanDetectedType == JRING`: only connections where a generic-"SMART_RING" guess was actually
+overridden. Don't widen it to "any driver whose services are missing."
+
 See `docs/qring-ble-adoption.md` §5a for the full history and the decompiled source references.
 
 ## Colmi R11 (CRP "Da Rings") — diagnose from the capture, and decode wear state before blaming code
@@ -102,9 +112,15 @@ supporting evidence as the cause.
   caller, never by position in the builder class.**
 - **Firmware version is `3/3`**, replying with a bare UTF-8 string (`g1/a.i1`:
   `onVersion(new String(payload, UTF_8))`) — `MOY-R1K3-2.1.6` on zaggash's R11, matching the vendor
-  app's Firmware-information screen. Decoded into `RingDecodedEvent.Status(firmware = …)`, the same
-  path YCBT/LuckRing already use to reach the device record, because `RingDecodedEvent.FirmwareVersion`
-  carries an `Int` and can't hold this. Sibling group-3 queries confirmed from their callers:
+  app's Firmware-information screen. Decoded into `RingDecodedEvent.FirmwareRevision`, which exists
+  because neither older event fits: `FirmwareVersion` carries an `Int` (the jring `0xF6` build), and
+  `Status` — the path YCBT/LuckRing use — bridges to `DeviceStateChanged(CONNECTED, …)`. **Never
+  route a firmware reply through `Status`.** Persistence reads every CONNECTED as "a connection was
+  just established" and, for any family outside `preservesSleepOnConnect` (CRP included), answers by
+  running unscoped `DELETE`s on `sleep_sessions` + `sleep_stage_blocks`. `runStartup` re-queries
+  firmware on **every** pass, including the ~30-minute background sync, so that wiring would wipe all
+  stored sleep on each pass and depend on the same pass re-pulling it — losing everything past the
+  ring's 14-day retention whenever it didn't. Sibling group-3 queries confirmed from their callers:
   `3/0` reset, `3/1` shutDown, `3/4` firmware hash, `3/6` real-time battery, `3/7` wear state,
   `3/14` restart, `3/22` binding reminder.
 - **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`

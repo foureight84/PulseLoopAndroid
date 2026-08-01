@@ -80,9 +80,6 @@ object CRPCommands {
     const val CMD_ENABLE_TIMING_TEMP = 13     // b1/i0.c: q.c(1,13, [enable]) — all-day temp timing on/off
     // NOTE: temp's spot-measure toggle is a DIFFERENT opcode (cmd 32, b1/i0.d) — see CMD_MEASURE_TEMP.
 
-    // Group 7 — history queries + device info (decompiled b1/e0 + b1/r).
-    // NOTE: most history queries are group 7 (b1/e0 builders use q.b(7,…)/q.c(7,…)), but sleep
-    // and temp are the exception — they live on group 2 (see GROUP_HISTORY below).
     // Group 7 is the vendor's **Gomore** group (the licensed activity-analytics module), NOT device
     // info — every builder in `b1/r` resolves to a Gomore call in `d1/b.java`:
     //   q.b(7,0)=querySupportGomore  q.b(7,1)=querySavedGomoreKey  q.b(7,2)=queryGomoreEUID
@@ -90,7 +87,7 @@ object CRPCommands {
     // The earlier constants here paired `b1/r`'s methods with opcodes positionally (a→0, b→1, c→13)
     // and mislabelled all three as device info; `queryFirmwareVersion` was really
     // `querySavedGomoreKey`, which is why the R11 answered none of the 23 sends (issue #29).
-    // Real device queries live on group 3 — see GROUP_DEVICE_CONTROL below. Kept only so a capture
+    // Real device queries live on group 3 — see GROUP_POWER below. Kept only so a capture
     // containing these frames is still identifiable; nothing sends them.
     const val GROUP_GOMORE = 7
     const val CMD_QUERY_SUPPORT_GOMORE = 0    // b1/r.e: q.b(7,0)  → d1/b.querySupportGomore
@@ -130,9 +127,10 @@ object CRPCommands {
     const val CMD_QUERY_TIMING_TEMP_STATE = 21    // b1/i0.a: q.b(2,21) → onTimingState(type, state)
     const val CMD_QUERY_TIMING_STRESS_STATE = 45  // b1/h0.e: q.b(2,45)
 
-    // Group 3 — device control, identity queries, and device-state pushes. Opcodes read off the
-    // `b1/l` builders via their `d1/b.java` callers (the method letters are alphabetised by the
-    // decompiler and carry no ordering, so each one is resolved by its caller, not by position).
+    // Group 3 — device control, identity queries, and device-state pushes. (Named GROUP_POWER from
+    // when only the two power opcodes were known; the group is broader than the name.) Opcodes read
+    // off the `b1/l` builders via their `d1/b.java` callers (the method letters are alphabetised by
+    // the decompiler and carry no ordering, so each one is resolved by its caller, not by position).
     const val GROUP_POWER = 3
     const val CMD_FACTORY_RESET = 0     // b1/l.v: q.b(3,0)  → d1/b.reset
     const val CMD_SHUT_DOWN = 1         // b1/l.y: q.b(3,1)  → d1/b.shutDown (was mislabelled RESTART)

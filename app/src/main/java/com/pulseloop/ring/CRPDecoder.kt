@@ -86,7 +86,8 @@ object CRPDecoder {
 
     /**
      * Framed `fdd3` reply: `FD DA 10 <len> <group> <cmd> <payload>`.
-     * Real-time vital results come on group 1; history queries on group 7; device info on group 7.
+     * Real-time vital results come on group 1; sleep/all-day history on group 2; device identity
+     * and state pushes on group 3. Group 7 is the vendor's Gomore module, not device info.
      */
     private fun decodeFramedReply(frame: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent> {
         if (frame.size < CRPProtocol.HEADER_SIZE) return emptyList()
@@ -121,9 +122,10 @@ object CRPDecoder {
             return listOf(RingDecodedEvent.CommandAck(commandId = ((group shl 4) or (cmd and 0x0F)).toUByte()))
         }
 
-        // Group 3: power control + the autonomous wear-state push (vendor `g1/a.java` case 3→7,
-        // `onWearStateChange(payload[0] > 0)`). Confirmed against zaggash's R11 (issue #29): a spot
-        // measure returns nothing while `payload[0] == 0` (ring off the finger).
+        // Group 3: device control, the firmware-version string (cmd 3), and the autonomous
+        // wear-state push (vendor `g1/a.java` case 3→7, `onWearStateChange(payload[0] > 0)`).
+        // Confirmed against zaggash's R11 (issue #29): a spot measure returns nothing while
+        // `payload[0] == 0` (ring off the finger).
         if (group == CRPCommands.GROUP_POWER) {
             if (cmd == CRPCommands.CMD_WEAR_STATE && payload.isNotEmpty()) {
                 return listOf(RingDecodedEvent.WearingStatus(worn = (payload[0].toInt() and 0xFF) != 0, _timestamp = now))
@@ -187,15 +189,24 @@ object CRPDecoder {
      * `onVersion(new String(payload, StandardCharsets.UTF_8))` — a bare UTF-8 string with no
      * length prefix or terminator, e.g. `MOY-R1K3-2.1.6` on zaggash's R11 (issue #29).
      *
-     * Surfaced as [RingDecodedEvent.Status] rather than [RingDecodedEvent.FirmwareVersion] because
-     * that event carries an `Int` — it models the jring 0xF6 numeric version and can't hold this.
-     * `Status.firmware` is the same path YCBT and LuckRing already use to reach the device record.
+     * Surfaced as [RingDecodedEvent.FirmwareRevision], not [RingDecodedEvent.FirmwareVersion]
+     * (which carries an `Int` — the jring 0xF6 numeric build — and can't hold this) and not
+     * [RingDecodedEvent.Status] (which bridges to `DeviceStateChanged(CONNECTED, …)`; persistence
+     * rebuilds the sleep tables on every one of those, and [CRPSyncEngine.runStartup] re-queries
+     * firmware on every sync pass).
      */
     private fun decodeFirmwareVersion(payload: ByteArray): List<RingDecodedEvent> {
         // Trims NUL padding as well as whitespace: some firmwares pad the frame to a fixed width.
         val version = String(payload, Charsets.UTF_8).trim { it <= ' ' }
-        if (version.isEmpty()) return emptyList()
-        return listOf(RingDecodedEvent.Status(address = null, firmware = version))
+        if (version.isEmpty()) {
+            // Still ack it, so an all-padding reply is labelled in the raw-packet feed
+            // rather than showing up as an undecoded frame.
+            return listOf(RingDecodedEvent.CommandAck(
+                commandId = ((CRPCommands.GROUP_POWER shl 4) or
+                    (CRPCommands.CMD_QUERY_FIRMWARE_VERSION and 0x0F)).toUByte()
+            ))
+        }
+        return listOf(RingDecodedEvent.FirmwareRevision(version))
     }
 
     /**

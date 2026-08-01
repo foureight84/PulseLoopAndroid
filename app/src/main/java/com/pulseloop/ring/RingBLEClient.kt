@@ -130,6 +130,10 @@ class RingBLEClient(
     private var activeSyncEngine: RingSyncEngine? = null
     // Advertised name of the connection being established, for exact-model resolution + events.
     private var activeAdvertisedName: String? = null
+    /** Scanner's family classification for the in-flight connection, before any carousel override.
+     *  Read post-connect by the jring re-route, which must only fire against the ambiguous
+     *  generic-"SMART_RING" guess. See [beginConnect]. */
+    private var activeScanDetectedType: RingDeviceType? = null
 
     // Set while a "Forget" is waiting for the ring's UNBOND_ACK (0x4B) before teardown.
     private val forgetLock = Any()
@@ -301,6 +305,7 @@ class RingBLEClient(
             selectedModelID = if (honorSelection) selectedModelID
                 else discoveredRing?.wearableModelID ?: selectedModelID,
             advertisedName = discoveredRing?.name ?: target.name,
+            scanDetectedType = detectedType,
         )
     }
 
@@ -671,6 +676,7 @@ class RingBLEClient(
                 .remove(USER_DISCONNECTED_KEY)
                 .apply()
             activeAdvertisedName = null
+            activeScanDetectedType = null
             updateState {
                 copy(
                     connectionState = RingConnectionState.IDLE,
@@ -729,6 +735,10 @@ class RingBLEClient(
         deviceType: RingDeviceType?,
         selectedModelID: String? = null,
         advertisedName: String? = null,
+        /** What the *scanner* classified this ring as, before any carousel override — null when
+         *  the attempt didn't come from a fresh scan match. [DriverReroute.shouldRerouteToJring]
+         *  needs it to tell a generic-"SMART_RING" guess apart from a confident family match. */
+        scanDetectedType: RingDeviceType? = null,
     ) {
         if (watchdogReconnectPaused) return
         if (synchronized(forgetLock) { forgetPending || forgetFinalizing }) return
@@ -740,7 +750,7 @@ class RingBLEClient(
                 ownershipRetryJob = scope.launch {
                     delay(PROCESS_OWNER_RETRY_MS)
                     ownershipRetryJob = null
-                    beginConnect(target, deviceType, selectedModelID, advertisedName)
+                    beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType)
                 }
             }
             return
@@ -765,6 +775,7 @@ class RingBLEClient(
         // Resolve the exact catalog model for this connection: Bluetooth identity wins over the
         // user's carousel selection; family mismatches are rejected (iOS #49 beginConnect).
         activeAdvertisedName = advertisedName
+        activeScanDetectedType = scanDetectedType
         val resolvedModelID = com.pulseloop.wearables.WearableModel.resolve(
             advertisedName = advertisedName,
             selectedModelID = selectedModelID,
@@ -1190,6 +1201,7 @@ class RingBLEClient(
                     matchedType ?: lastKnownDeviceType,
                     selectedModelID = lastKnownWearableModelID,
                     advertisedName = name,
+                    scanDetectedType = matchedType,
                 )
                 return
             }
@@ -1352,10 +1364,13 @@ class RingBLEClient(
             // (itspuia's R09 — the YCBT driver's be940001/be940003 don't exist on it, so
             // `topologyFailure()` below hard-failed the connect). Policy in [DriverReroute]; runs
             // after the Colmi/CRP blocks so a ring exposing both keeps its more specific family.
+            // Scoped to the connections `honorSelection` actually overrode — see the guard notes
+            // on [DriverReroute.shouldRerouteToJring] for why a confident scan match is off-limits.
             if (DriverReroute.shouldRerouteToJring(
                     discoveredServices = serviceUuids,
                     activeDeclaredServices = activeDriver?.serviceUUIDs.orEmpty(),
                     activeDeviceType = activeCoordinator?.deviceType,
+                    scanDetectedType = activeScanDetectedType,
                 )
             ) {
                 Log.i("RingBLEClient", "Discovered the jring (56ff) service and none of the " +

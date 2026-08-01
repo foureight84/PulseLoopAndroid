@@ -111,30 +111,38 @@ class CRPDecoderTest {
         // screen. Vendor `g1/a.i1`: new String(payload, UTF_8) on group 3 / cmd 3.
         val payload = "MOY-R1K3-2.1.6".toByteArray(Charsets.UTF_8)
         val frame = CRPProtocol.frame(3, CRPCommands.CMD_QUERY_FIRMWARE_VERSION, payload)
-        val ev = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.Status
-        assertEquals("MOY-R1K3-2.1.6", ev.firmware)
-        assertNull(ev.address)
+        val ev = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.FirmwareRevision
+        assertEquals("MOY-R1K3-2.1.6", ev.version)
     }
 
     @Test
-    fun `firmware version reaches the device record via DeviceStateChanged`() {
-        val decoded = RingDecodedEvent.Status(address = null, firmware = "MOY-R1K3-2.1.6")
-        val ev = RingEventBridge.eventsFor(decoded).single() as PulseEvent.DeviceStateChanged
-        assertEquals("MOY-R1K3-2.1.6", ev.firmware)
+    fun `firmware version reaches the device record as its own event, not a connection change`() {
+        // NOT RingDecodedEvent.Status: that bridges to DeviceStateChanged(CONNECTED), which
+        // persistence answers by clearing sleep_sessions for families outside
+        // preservesSleepOnConnect — CRP among them — and runStartup re-queries firmware on every
+        // ~30-minute sync pass, so that path would wipe stored sleep on each one.
+        val decoded = RingDecodedEvent.FirmwareRevision("MOY-R1K3-2.1.6")
+        val events = RingEventBridge.eventsFor(decoded)
+        assertEquals("MOY-R1K3-2.1.6", (events.single() as PulseEvent.FirmwareRevision).version)
+        assertTrue(events.none { it is PulseEvent.DeviceStateChanged })
     }
 
     @Test
     fun `firmware version tolerates NUL padding`() {
         val payload = "MOY-R1K3-2.1.6".toByteArray(Charsets.UTF_8) + byteArrayOf(0, 0)
         val frame = CRPProtocol.frame(3, CRPCommands.CMD_QUERY_FIRMWARE_VERSION, payload)
-        val ev = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.Status
-        assertEquals("MOY-R1K3-2.1.6", ev.firmware)
+        val ev = CRPDecoder.decode(frame, fdd3).single() as RingDecodedEvent.FirmwareRevision
+        assertEquals("MOY-R1K3-2.1.6", ev.version)
     }
 
     @Test
-    fun `empty firmware payload yields no event rather than a blank version`() {
+    fun `empty firmware payload is acked, not reported as a blank version`() {
         val frame = CRPProtocol.frame(3, CRPCommands.CMD_QUERY_FIRMWARE_VERSION, byteArrayOf(0))
-        assertTrue(CRPDecoder.decode(frame, fdd3).none { it is RingDecodedEvent.Status })
+        val events = CRPDecoder.decode(frame, fdd3)
+        assertTrue(events.none { it is RingDecodedEvent.FirmwareRevision })
+        assertTrue(events.single() is RingDecodedEvent.CommandAck)
+        // ...and nothing downstream mistakes the ack for a firmware reading.
+        assertTrue(RingEventBridge.eventsFor(events.single()).isEmpty())
     }
 
     @Test

@@ -84,6 +84,7 @@ sealed class RingDecodedEvent {
         is TimeSyncAck -> this._timestamp
         is CommandAck -> Instant.EPOCH
         is FirmwareVersion -> Instant.EPOCH
+        is FirmwareRevision -> Instant.EPOCH
         is BindNotify -> Instant.EPOCH
         is BandFunction -> Instant.EPOCH
         is SupportFunctions -> Instant.EPOCH
@@ -345,6 +346,23 @@ sealed class RingDecodedEvent {
         override val kind = "firmware_version"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"version":${version ?: 0}}"""
+    }
+
+    /**
+     * A firmware version *string* — e.g. the CRP R11's `MOY-R1K3-2.1.6` (group `3/3`). [FirmwareVersion]
+     * above carries the jring `0xF6` numeric build instead and can't hold this.
+     *
+     * Deliberately its own event rather than [Status]: `Status` bridges to
+     * `DeviceStateChanged(CONNECTED, …)`, which persistence reads as "a connection was just
+     * established" and answers by rebuilding the sleep tables from scratch. A firmware reply says
+     * nothing about the connection, and the CRP engine re-queries it on every ~30-minute sync pass.
+     */
+    data class FirmwareRevision(
+        val version: String,
+    ) : RingDecodedEvent() {
+        override val kind = "firmware_revision"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"version":"$version"}"""
     }
 
     data class TimeSyncAck(

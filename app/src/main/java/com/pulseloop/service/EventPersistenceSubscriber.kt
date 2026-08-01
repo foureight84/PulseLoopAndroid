@@ -295,6 +295,24 @@ class EventPersistenceSubscriber(
                 // requested on every connect via runStartup(), with DIS 0x2A26 as a fallback, so
                 // 0xF6 is never needed here. Kept as a decoded event purely for diagnostics.
             }
+            is PulseEvent.FirmwareRevision -> {
+                // Stamp the version onto an existing row only — never create one, so a late reply
+                // can't resurrect a forgotten ring (same rule as DeviceStateChanged above).
+                //
+                // This is why the firmware string does NOT travel as DeviceStateChanged: that
+                // branch treats every CONNECTED as "a connection was just established" and, for
+                // families outside preservesSleepOnConnect (CRP among them), answers by clearing
+                // sleep_sessions + sleep_stage_blocks outright. CRPSyncEngine.runStartup re-queries
+                // firmware on every pass — including the ~30-minute background sync — so routing it
+                // through there would wipe all stored sleep on each pass and rely on the same pass
+                // re-pulling it, losing everything past the ring's 14-day retention if it didn't.
+                val device = db.deviceDao().currentReal() ?: return
+                if (event.version.isBlank() || event.version == device.firmwareVersion) return
+                db.deviceDao().upsert(device.copy(
+                    firmwareVersion = event.version,
+                    updatedAt = System.currentTimeMillis(),
+                ))
+            }
         }
     }
 
