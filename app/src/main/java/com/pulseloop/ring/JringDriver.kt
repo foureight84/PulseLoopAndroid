@@ -1,5 +1,9 @@
 package com.pulseloop.ring
 
+/** Days of history pulled on the first pass of a jring connection; every later pass asks for one.
+ *  See [JringSyncEngine.historyDaysForThisPass] for why this is shorter than CRP's week. */
+private const val JRING_BACKFILL_DAYS = 3
+
 @OptIn(ExperimentalStdlibApi::class)
 
 /**
@@ -102,8 +106,39 @@ class JringSyncEngine(
         // had to initialise with the vendor app first.
         writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 30))
         writer?.enqueue(encoder.makeBandFunctionCommand())
-        writer?.enqueue(encoder.makeHistoryQueryCommand())
+        writer?.enqueue(encoder.makeHistoryQueryCommand(days = historyDaysForThisPass()))
         writer?.enqueue(encoder.makeHistoryMeasurementQueryCommand())
+    }
+
+    /** Whether this connection has already pulled the deep history window. A fresh engine is built
+     *  per connection ([JringDriver.makeSyncEngine] runs on connect), so instance state gives
+     *  "once per connection" for free — the same trick `CRPSyncEngine` uses for its read-backs. */
+    private var historyBackfilled = false
+
+    /**
+     * How many days of history to ask for on this pass: the deep window once per connection, one
+     * day on every pass after it.
+     *
+     * The ring holds days the app has never asked for. Before issue #43 that didn't matter, because
+     * connecting deleted the stored copy anyway; now that it doesn't, a single-day request means a
+     * user's history can only ever grow one night at a time from install, and never recovers what
+     * the ring already has. `0x10` takes a day count (`triggerActivityReportByDays`, capped at 27)
+     * and the ring replies with the days it actually has, so asking for more is safe.
+     *
+     * **Why the gate matters more here than on CRP.** [runStartup] is also the ~30-minute background
+     * sync (and `refresh()`/`querySleep()` route through it), so an unconditional wider window would
+     * re-pull the whole span every half hour forever. And `0x10` returns activity *and* sleep — there
+     * is no sleep-only request — so each extra day is roughly 96 more packets (activity arrives as
+     * 15× 1-minute buckets each), against the nights we actually came for. That volume, not the
+     * nights, is why this window is deliberately shorter than the CRP backfill's week.
+     *
+     * Re-syncing the same days is harmless: activity buckets upsert by timestamp with the day total
+     * recomputed from distinct buckets, and sleep reconciles one waking day at a time.
+     */
+    private fun historyDaysForThisPass(): Int {
+        if (historyBackfilled) return 1
+        historyBackfilled = true
+        return JRING_BACKFILL_DAYS
     }
 
     override fun handle(event: RingDecodedEvent) {

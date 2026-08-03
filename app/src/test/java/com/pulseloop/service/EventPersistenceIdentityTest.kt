@@ -11,46 +11,37 @@ import org.junit.Test
 
 class EventPersistenceIdentityTest {
     @Test
-    fun `only YCBT protocol families preserve sleep on connect`() {
-        assertTrue(preservesSleepOnConnect(RingDeviceType.YCBT))
-        assertTrue(preservesSleepOnConnect(RingDeviceType.TK5))
-        assertTrue(preservesSleepOnConnect(RingDeviceType.COLMI_SMART_HEALTH))
-        assertTrue(preservesSleepOnConnect(null, RingDeviceType.YCBT))
-        assertTrue(preservesSleepOnConnect(RingDeviceType.YCBT, RingDeviceType.JRING))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.JRING, RingDeviceType.YCBT))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.COLMI_R02))
-        assertFalse(preservesSleepOnConnect(null))
-    }
-
-    @Test
     fun `only the client's own connect event is a connection transition`() {
         // RingBLEClient always stamps the resolved family on its connect event...
-        assertTrue(isConnectTransition(RingDeviceType.JRING))
-        assertTrue(isConnectTransition(RingDeviceType.CRP))
-        assertTrue(isConnectTransition(RingDeviceType.YCBT))
-        // ...and RingEventBridge never does, for any decoder's Status.
+        for (family in RingDeviceType.entries) assertTrue(isConnectTransition(family))
+        // ...and RingEventBridge never does, for any decoder's Status — jring 0x0C, LuckRing
+        // dev-info, YCBT status packets, all re-sent by runStartup on every sync pass.
         assertFalse(isConnectTransition(null))
     }
 
+    /**
+     * Issue #43. Connecting used to run `DELETE FROM sleep_sessions` / `sleep_stage_blocks` for
+     * every family except YCBT and rebuild from the ring, which capped stored history at whatever
+     * the ring still held — one day on CRP (`queryHistorySleep(daysAgo = 0)`) and jring
+     * (`makeHistoryQueryCommand()`'s 1-day default at `JringDriver.kt:105`).
+     *
+     * The `when` below is exhaustive on purpose: it is the actual guard. Adding a [ConnectPurge]
+     * member that deletes real rows stops this file compiling, which is the tripwire the old
+     * per-family `preservesSleepOnConnect` boolean never provided.
+     */
     @Test
-    fun `a decoder's Status never reaches the rebuild, whatever family it belongs to`() {
-        // The pairing that used to wipe sleep: no deviceType (so it's a mid-session re-assertion
-        // from jring 0x0C / LuckRing dev-info) AND a family outside preservesSleepOnConnect (so the
-        // rebuild branch runs unscoped DELETEs). The transition gate is what breaks it.
-        assertFalse(preservesSleepOnConnect(null, RingDeviceType.JRING))
-        assertFalse(preservesSleepOnConnect(null, RingDeviceType.LUCK_RING))
-        assertFalse(preservesSleepOnConnect(null, RingDeviceType.CRP))
-        assertFalse(isConnectTransition(null))
-    }
-
-    @Test
-    fun `a real connect still rebuilds for the packet-based families`() {
-        // The gate must not suppress the behaviour it is protecting: a genuine connect on a
-        // non-YCBT family still clears and re-pulls.
-        assertTrue(isConnectTransition(RingDeviceType.JRING))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.JRING))
-        assertTrue(isConnectTransition(RingDeviceType.CRP))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.CRP))
+    fun `no connect event may purge anything but demo rows, for any family`() {
+        val everyOrigin: List<RingDeviceType?> = RingDeviceType.entries + null
+        for (origin in everyOrigin) {
+            val purge = connectPurge(origin)
+            val deletesRealRows = when (purge) {
+                ConnectPurge.NOTHING -> false
+                ConnectPurge.DEMO_ROWS -> false
+            }
+            assertFalse("connect purge $purge (origin $origin) must not delete real rows", deletesRealRows)
+        }
+        // The decoder-Status case — the one that used to fire all session long — purges nothing.
+        assertEquals(ConnectPurge.NOTHING, connectPurge(null))
     }
 
     @Test
