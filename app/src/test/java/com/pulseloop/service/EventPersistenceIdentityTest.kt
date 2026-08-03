@@ -23,7 +23,7 @@ class EventPersistenceIdentityTest {
      * Issue #43. Connecting used to run `DELETE FROM sleep_sessions` / `sleep_stage_blocks` for
      * every family except YCBT and rebuild from the ring, which capped stored history at whatever
      * the ring still held — one day on CRP (`queryHistorySleep(daysAgo = 0)`) and jring
-     * (`syncWindowDays = 1`).
+     * (`makeHistoryQueryCommand()`'s 1-day default at `JringDriver.kt:105`).
      *
      * The `when` below is exhaustive on purpose: it is the actual guard. Adding a [ConnectPurge]
      * member that deletes real rows stops this file compiling, which is the tripwire the old

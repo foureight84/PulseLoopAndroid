@@ -60,7 +60,8 @@ data-loss bug twice, in two different shapes (issue #43, and the sync-pass varia
 
 The original design deleted all sleep on connect and re-pulled it, carving YCBT out via
 `preservesSleepOnConnect` because YCBT re-asserts CONNECTED mid-history. That premise was false for
-everyone: CRP asks `queryHistorySleep(daysAgo = 0)` and jring `syncWindowDays = 1`, so "delete
+everyone: CRP asks `queryHistorySleep(daysAgo = 0)`, and jring calls `makeHistoryQueryCommand()` with
+its default of 1 day (`JringDriver.kt:105`), so "delete
 everything and ask again" capped stored sleep at a single night — a new night replaced the previous
 one instead of joining it. Both the carve-out and the rebuild are gone. What protects a re-synced
 day now is `upsertSleepSessionAtomic`, which reconciles one waking day at a time, idempotently, and
@@ -72,9 +73,18 @@ carries its own day index in `payload[0]`, which `CRPDecoder.decodeSleep` accept
 night is dated from the reply rather than from the request, and a day the ring has no record of
 simply produces no reply. `CRPSyncEngine.sendSleepBackfill` therefore pulls the prior week **once
 per connection** (not per pass — `runStartup` is also the ~30-minute background sync, and this ring
-funnels everything through one `fdd2` channel). jring has the same gap: `syncWindowDays = 1`, while
-`makeHistoryQueryCommand` accepts up to 27. It is untouched for now only because that constant also
-drives the activity-sync progress window, so widening it is not the one-line change it looks like.
+funnels everything through one `fdd2` channel).
+
+jring has the same gap, for different reasons. Its depth is `makeHistoryQueryCommand()`'s default of
+1, called with no argument at `JringDriver.kt:105`, against a command that accepts up to 27.
+**`RingSyncCoordinator.syncWindowDays` is not that control** — despite its "must match
+makeHistoryQueryCommand's default" comment, it has exactly one use, sizing the sync-progress window
+in `beginSyncProgress`, and it applies to every family. Don't cite it as a per-family request depth;
+that mistake is what deferred this fix once already. Two things do make jring harder than CRP:
+`JringSyncEngine.runStartup` has no once-per-connection gate, so a wider `days` re-pulls the whole
+span on every ~30-minute background pass rather than once; and `0x10` returns activity *and* sleep
+together — there is no sleep-only request — so each extra day costs ~96 activity packets
+(15× 1-minute buckets per packet) on top of the night.
 
 Consequence to keep in mind: nothing bulk-deletes real sleep any more, so a Forget followed by
 pairing a different ring carries the previous ring's history over. If that ever needs to change,
