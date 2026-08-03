@@ -1,5 +1,8 @@
 package com.pulseloop.ring
 
+/** Nights before today to pull once per connection. See [CRPSyncEngine.sendSleepBackfill]. */
+private const val SLEEP_BACKFILL_DAYS = 6
+
 /**
  * Per-connection orchestration for a CRP ("crrepa") ring. Ported in spirit from the Moyoung
  * "Da Rings" connect flow (`d1/b.java` + `b1` package builders): after the link is up the app sets the
@@ -116,6 +119,36 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         send(CRPProtocol.queryTimingStressHistory())
         send(CRPProtocol.queryHistoryTemp())
         send(CRPProtocol.queryHistorySleep())
+        sendSleepBackfill()
+    }
+
+    /** Whether this connection has already backfilled older nights. Same "fresh engine per
+     *  connection" trick as [readBacksSent]. */
+    private var sleepBackfillSent = false
+
+    /**
+     * Pull the nights *before* today, once per connection.
+     *
+     * The poll pass above only ever asks for `daysAgo = 0`, so the app's stored history could only
+     * ever grow one night at a time from whenever the user installed — and before issue #43 it
+     * couldn't grow at all, because each connect deleted the older nights first. Asking for the
+     * ring's own back-catalogue is what actually restores a user's history rather than merely
+     * stopping further loss.
+     *
+     * Safe to send blind. Each reply is self-describing: `payload[0]` is the ring's own day index,
+     * so [CRPDecoder.decodeSleep] dates a night from the reply rather than from what we asked for,
+     * and a day the ring has no record of simply produces no reply — the same nothing we get today.
+     *
+     * Once per connection, and deliberately short of the decoder's 14-day ceiling: [runStartup] is
+     * also the ~30-minute background sync, and this ring funnels the handshake, timing config,
+     * history pull *and* on-demand measures through one `fdd2` channel (a spot SpO2 needs ~48 s of
+     * it). A week is the useful-recovery/quiet-channel trade; raise it once hardware shows the ring
+     * answers deeper.
+     */
+    private fun sendSleepBackfill() {
+        if (sleepBackfillSent) return
+        sleepBackfillSent = true
+        for (daysAgo in 1..SLEEP_BACKFILL_DAYS) send(CRPProtocol.queryHistorySleep(daysAgo))
     }
 
     /** The last frame index each timing vital emits before its day is complete (vendor terminal

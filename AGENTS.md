@@ -66,6 +66,16 @@ one instead of joining it. Both the carve-out and the rebuild are gone. What pro
 day now is `upsertSleepSessionAtomic`, which reconciles one waking day at a time, idempotently, and
 re-points legacy mis-keyed blocks itself — the blanket clear's own stated justification.
 
+**Stopping the deletion only stops further loss; it recovers nothing.** A ring holds days the app
+has never asked for, and asking is cheap because every reply is self-describing — CRP's sleep frame
+carries its own day index in `payload[0]`, which `CRPDecoder.decodeSleep` accepts up to 14, so a
+night is dated from the reply rather than from the request, and a day the ring has no record of
+simply produces no reply. `CRPSyncEngine.sendSleepBackfill` therefore pulls the prior week **once
+per connection** (not per pass — `runStartup` is also the ~30-minute background sync, and this ring
+funnels everything through one `fdd2` channel). jring has the same gap: `syncWindowDays = 1`, while
+`makeHistoryQueryCommand` accepts up to 27. It is untouched for now only because that constant also
+drives the activity-sync progress window, so widening it is not the one-line change it looks like.
+
 Consequence to keep in mind: nothing bulk-deletes real sleep any more, so a Forget followed by
 pairing a different ring carries the previous ring's history over. If that ever needs to change,
 it belongs on `DeviceForgotten` as a deliberate choice, not as a side effect of connecting.
@@ -80,8 +90,23 @@ transition:
   status packets. `runStartup` re-sends them, and `runStartup` is also the ~30-minute background
   sync — so they recur for the whole life of a connection.
 
-`isConnectTransition(event.deviceType)` is that gate. Keep it: it is what stops a device-info reply
-from being mistaken for a connection, and it kept the demo-clear from running all session long.
+`isConnectTransition(event.deviceType)` is that gate, and `connectPurge` is what it feeds. Be precise
+about its scope, because it is narrower than it looks: it decides only what a CONNECTED event may
+*delete*. The row write below it — `stateRaw = "CONNECTED"`, `lastConnectedAt`, `lastSyncAt` — is
+**outside** the gate and still runs for every decoder `Status`, so a jring `0x0C` reply does still
+restamp the device row as freshly connected on each sync pass. That is harmless today; it is not
+something the gate prevents, so don't cite it as if it were.
+
+Two related things worth knowing before changing this area:
+
+- **Nothing bulk-deletes sleep any more, anywhere in the app.** That connect path was the only
+  caller, so there is no retention or pruning mechanism at all now — the tables grow without bound
+  and a Forget doesn't reclaim them. Fine at current row sizes; a deliberate retention policy is a
+  separate piece of work, not something to bolt back onto connect.
+- **One narrow delete path survives**, in `reconcileWakingDay`: `if (groups.isEmpty())` drops that
+  day's rows. It should be unreachable — `upsertSleepSession` returns early on empty stages, so the
+  replacements reaching it are never empty — but it is the one place a *re-sync* can still remove a
+  stored night, so check it first if history goes missing again.
 
 Corollary for new protocol work: a reply that merely reports something about the device (firmware,
 serial, capabilities) is not a connection event. Give it its own `RingDecodedEvent` — as

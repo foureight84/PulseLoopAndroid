@@ -21,6 +21,10 @@ class CRPSyncEngineTest {
     /** Temperature history is 2/22, not 2/48 — `q.b(2,48)` is the vendor's `querySleepState`. */
     private val historyQueries = listOf(2 to 15, 2 to 17, 2 to 16, 2 to 47, 2 to 22, 2 to 14)
 
+    /** The older nights pulled once per connection (issue #43). Same opcode as today's sleep query,
+     *  `daysAgo` rising in the payload — see CRPSyncEngine.sendSleepBackfill. */
+    private val sleepBackfill = List(6) { 2 to 14 }
+
     /** The read-backs that let the ring describe itself instead of us guessing: SpO2 support type,
      *  then each all-day monitor's configured interval. See CRPSyncEngine.runStartup. */
     private val readBackQueries = listOf(2 to 37, 2 to 6, 2 to 7, 2 to 8, 2 to 45, 2 to 21)
@@ -42,16 +46,36 @@ class CRPSyncEngineTest {
         // the enables force everything on moments later. Asking afterwards would only describe the
         // state we just imposed. If this assertion fails, move the call site back — don't reorder the
         // expectation. See CRPSyncEngine.sendConnectionReadBacks.
-        assertEquals(listOf(1 to 1, 3 to 3) + readBackQueries + timingEnables + historyQueries, w.opcodes())
+        assertEquals(
+            listOf(1 to 1, 3 to 3) + readBackQueries + timingEnables + historyQueries + sleepBackfill,
+            w.opcodes(),
+        )
 
         w.sent.clear()
         engine.setUserProfile(
             UserProfileValues(metric = true, gender = 1u, age = 30u, heightCm = 180u, weightKg = 75u),
         )
         engine.runStartup()
-        // A second pass on the same connection re-sends the poll work but NOT the read-backs —
-        // what the ring supports cannot change between syncs.
+        // A second pass on the same connection re-sends the poll work but NOT the read-backs, and
+        // NOT the sleep backfill — what the ring supports cannot change between syncs, and the older
+        // nights were already pulled. runStartup is the ~30-minute background sync, so anything
+        // repeated here lands on the single fdd2 channel every half hour forever.
         assertEquals(listOf(1 to 1, 3 to 3, 1 to 0) + timingEnables + historyQueries, w.opcodes())
+    }
+
+    @Test
+    fun `the sleep backfill asks for consecutive prior days, dated by the ring not by us`() {
+        // Issue #43. The poll pass only ever asks daysAgo=0, so without this the app could only ever
+        // accumulate one night per day going forward and never recover what the ring already holds.
+        val w = FakeWriter()
+        CRPSyncEngine(w).runStartup()
+        val sleepFrames = w.sent.filter { (it[4].toInt() to it[5].toInt()) == (2 to 14) }
+        // Today, then one frame per prior day, each carrying its own daysAgo in the payload.
+        assertEquals(1 + 6, sleepFrames.size)
+        assertEquals((0..6).toList(), sleepFrames.map { it[6].toInt() })
+        // Every requested day stays inside the range CRPDecoder.decodeSleep will accept (<= 14),
+        // so a reply can't be discarded as a corrupt day index.
+        assertTrue(sleepFrames.all { it[6].toInt() <= 14 })
     }
 
     /**

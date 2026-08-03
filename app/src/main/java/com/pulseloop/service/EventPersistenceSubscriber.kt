@@ -95,11 +95,14 @@ class EventPersistenceSubscriber(
                         // [upsertSleepSessionAtomic] reconciles one waking day at a time,
                         // idempotently, and re-points legacy mis-keyed blocks itself — which was the
                         // blanket clear's stated reason for existing.
-                        if (isConnectTransition(event.deviceType)) {
-                            db.measurementDao().clearDemo()
-                            db.activityDailyDao().clearDemo()
-                            db.sleepStageBlockDao().clearDemo()
-                            db.sleepSessionDao().clearDemo()
+                        when (connectPurge(event.deviceType)) {
+                            ConnectPurge.NOTHING -> {}
+                            ConnectPurge.DEMO_ROWS -> {
+                                db.measurementDao().clearDemo()
+                                db.activityDailyDao().clearDemo()
+                                db.sleepStageBlockDao().clearDemo()
+                                db.sleepSessionDao().clearDemo()
+                            }
                         }
                         "CONNECTED"
                     }
@@ -645,6 +648,21 @@ internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): Strin
  * capped stored history at whatever the ring still had — one day, on CRP and jring.
  */
 internal fun isConnectTransition(eventDeviceType: RingDeviceType?): Boolean = eventDeviceType != null
+
+/**
+ * What a CONNECTED event is allowed to remove.
+ *
+ * There is deliberately **no member meaning "real rows"**. Connecting must never delete stored
+ * history (issue #43), and encoding that as a type instead of a comment means re-introducing the old
+ * behaviour takes more than adding a `.clear()` call: it needs a new member here, which fails to
+ * compile against the exhaustive `when`s in [EventPersistenceSubscriber] and in
+ * `EventPersistenceIdentityTest`. That is the tripwire the deleted `preservesSleepOnConnect` never
+ * had — it made destructive clearing a per-family *option*, and every family took it but one.
+ */
+internal enum class ConnectPurge { NOTHING, DEMO_ROWS }
+
+internal fun connectPurge(eventDeviceType: RingDeviceType?): ConnectPurge =
+    if (isConnectTransition(eventDeviceType)) ConnectPurge.DEMO_ROWS else ConnectPurge.NOTHING
 
 internal fun shouldReplaceCompleteSleep(
     existingStart: Long,

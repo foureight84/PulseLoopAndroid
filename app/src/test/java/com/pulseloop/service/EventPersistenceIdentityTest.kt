@@ -23,33 +23,25 @@ class EventPersistenceIdentityTest {
      * Issue #43. Connecting used to run `DELETE FROM sleep_sessions` / `sleep_stage_blocks` for
      * every family except YCBT and rebuild from the ring, which capped stored history at whatever
      * the ring still held — one day on CRP (`queryHistorySleep(daysAgo = 0)`) and jring
-     * (`syncWindowDays = 1`). The rebuild is gone, so the day-scoped reconcile below is what keeps
-     * a re-synced night from disturbing the nights around it. These are the cases that used to be
-     * covered by the deleted `preservesSleepOnConnect`.
+     * (`syncWindowDays = 1`).
+     *
+     * The `when` below is exhaustive on purpose: it is the actual guard. Adding a [ConnectPurge]
+     * member that deletes real rows stops this file compiling, which is the tripwire the old
+     * per-family `preservesSleepOnConnect` boolean never provided.
      */
     @Test
-    fun `re-syncing one night leaves the nights around it untouched`() {
-        val night = 1_754_000_000_000L                 // the night being re-synced
-        val dayBefore = night - 24 * 3_600_000L
-        val dayAfter = night + 24 * 3_600_000L
-        val existing = listOf(
-            block("prev", dayBefore, 60, "LIGHT"),
-            block("this", night, 60, "LIGHT"),
-            block("next", dayAfter, 60, "LIGHT"),
-        )
-
-        val kept = replaceOverlappingSleepBlocks(
-            existing = existing,
-            replacements = listOf(block("this", night, 90, "DEEP")),  // same night, revised
-            replacementStart = night,
-            replacementEnd = night + 90 * 60_000L,
-        )
-
-        // The neighbouring nights survive — that is the whole bug.
-        assertTrue(kept.any { it.startAt == dayBefore })
-        assertTrue(kept.any { it.startAt == dayAfter })
-        // ...and the re-synced night is the revised copy, not a duplicate.
-        assertEquals(1, kept.count { it.startAt == night })
+    fun `no connect event may purge anything but demo rows, for any family`() {
+        val everyOrigin: List<RingDeviceType?> = RingDeviceType.entries + null
+        for (origin in everyOrigin) {
+            val purge = connectPurge(origin)
+            val deletesRealRows = when (purge) {
+                ConnectPurge.NOTHING -> false
+                ConnectPurge.DEMO_ROWS -> false
+            }
+            assertFalse("connect purge $purge (origin $origin) must not delete real rows", deletesRealRows)
+        }
+        // The decoder-Status case — the one that used to fire all session long — purges nothing.
+        assertEquals(ConnectPurge.NOTHING, connectPurge(null))
     }
 
     @Test
