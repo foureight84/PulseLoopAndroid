@@ -80,26 +80,26 @@ class EventPersistenceSubscriber(
                 val device = existing ?: DeviceEntity()
                 val state = when (event.state) {
                     RingConnectionState.CONNECTED -> {
-                        // Only the *client's own* connect event is a connection transition, and it
-                        // is the only CONNECTED that may run the destructive rebuild below. Decoders
-                        // re-assert CONNECTED mid-session from ordinary device-info replies — jring
-                        // `0x0C`, LuckRing dev-info, YCBT status packets — and those replies are
-                        // re-sent by `runStartup`, which is also the ~30-minute background sync. Left
-                        // ungated, each pass would wipe every stored sleep session and then depend on
-                        // that same pass re-pulling it. See [isConnectTransition].
+                        // Connecting retires demo rows so a real ring's data replaces the seeded
+                        // preview. It destroys nothing else. Gated to the client's own connect (see
+                        // [isConnectTransition]) because decoders re-assert CONNECTED mid-session
+                        // from ordinary device-info replies — jring `0x0C`, LuckRing dev-info, YCBT
+                        // status packets — which `runStartup` re-sends on every sync pass.
+                        //
+                        // This used to clear *all* sleep for every family except YCBT and rebuild it
+                        // from the ring. No ring re-supplies more than its own buffer, and the two
+                        // smallest re-supply a single day — CRP sends `queryHistorySleep(daysAgo=0)`,
+                        // jring `syncWindowDays = 1` — so every connect destroyed each night older
+                        // than that, and a new night replaced the last one instead of joining it
+                        // (issue #43, zaggash's R11). The rebuild was never load-bearing:
+                        // [upsertSleepSessionAtomic] reconciles one waking day at a time,
+                        // idempotently, and re-points legacy mis-keyed blocks itself — which was the
+                        // blanket clear's stated reason for existing.
                         if (isConnectTransition(event.deviceType)) {
                             db.measurementDao().clearDemo()
                             db.activityDailyDao().clearDemo()
-                            if (preservesSleepOnConnect(event.deviceType, existing?.deviceType)) {
-                                // YCBT status packets re-emit CONNECTED while history is still arriving.
-                                db.sleepStageBlockDao().clearDemo()
-                                db.sleepSessionDao().clearDemo()
-                            } else {
-                                // Packet-based families rebuild sleep on connect. Clear blocks with
-                                // sessions so legacy midnight-keyed blocks cannot contaminate a rebuild.
-                                db.sleepStageBlockDao().clear()
-                                db.sleepSessionDao().clear()
-                            }
+                            db.sleepStageBlockDao().clearDemo()
+                            db.sleepSessionDao().clearDemo()
                         }
                         "CONNECTED"
                     }
@@ -308,13 +308,10 @@ class EventPersistenceSubscriber(
                 // Stamp the version onto an existing row only — never create one, so a late reply
                 // can't resurrect a forgotten ring (same rule as DeviceStateChanged above).
                 //
-                // This is why the firmware string does NOT travel as DeviceStateChanged: that
-                // branch treats every CONNECTED as "a connection was just established" and, for
-                // families outside preservesSleepOnConnect (CRP among them), answers by clearing
-                // sleep_sessions + sleep_stage_blocks outright. CRPSyncEngine.runStartup re-queries
-                // firmware on every pass — including the ~30-minute background sync — so routing it
-                // through there would wipe all stored sleep on each pass and rely on the same pass
-                // re-pulling it, losing everything past the ring's 14-day retention if it didn't.
+                // The firmware string also does NOT travel as DeviceStateChanged: that event means
+                // the *connection state* changed, which a device-info reply doesn't, and
+                // CRPSyncEngine.runStartup re-queries firmware on every pass — including the
+                // ~30-minute background sync — so it would restate CONNECTED all session long.
                 val device = db.deviceDao().currentReal() ?: return
                 if (event.version == device.firmwareVersion) return  // blank is gated in the bridge
                 db.deviceDao().upsert(device.copy(
@@ -470,8 +467,11 @@ class EventPersistenceSubscriber(
      *
      * Ported from iOS `SleepService.reconcileWakingDay`. Unlike iOS this emits no DerivedUpdateRow
      * change signal: Room's reactive Flows (SleepViewModel observes `recentFlow`) already refresh
-     * the UI on any sleep-table write, and sleep is cleared + rebuilt from the ring on every connect
-     * anyway — there is no unchanged-day re-sync to optimize away.
+     * the UI on any sleep-table write.
+     *
+     * This function's idempotence is now what protects stored history. Connecting no longer clears
+     * the sleep tables (issue #43), so a re-synced day arrives on top of rows that are already
+     * there and has to reconcile with them rather than repopulate an emptied table.
      *
      * Wrapped in one transaction: the body below deletes every existing row's blocks up front, then
      * re-upserts sessions and re-inserts blocks per segment one write at a time. Without a
@@ -630,7 +630,7 @@ internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): Strin
 
 /**
  * True when a `DeviceStateChanged(CONNECTED, …)` is a real connection transition rather than a
- * mid-session re-assertion, and may therefore run the clear-and-rebuild in [EventPersistenceSubscriber].
+ * mid-session re-assertion, and may therefore retire the demo rows in [EventPersistenceSubscriber].
  *
  * Exactly two things publish a CONNECTED event, and `deviceType` separates them cleanly:
  *  - `RingBLEClient`'s own connect always passes `deviceType = activeCoordinator.deviceType`, which
@@ -639,22 +639,12 @@ internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): Strin
  *    `deviceType`. Those are ordinary device-info replies — jring `0x0C`, LuckRing dev-info, YCBT
  *    status packets — re-sent by `runStartup` on every sync pass, not connection events.
  *
- * Before this gate, each of those replies ran the rebuild, so a background sync pass on jring or
- * LuckRing dropped every `sleep_sessions` / `sleep_stage_blocks` row (unscoped `DELETE`s) and relied
- * on the same pass re-pulling them — losing anything past the ring's retention when it didn't.
- * A per-family allowlist can't fix this: the families that re-assert CONNECTED are most of them.
+ * `preservesSleepOnConnect` used to live beside this, carving YCBT out of a clear-and-rebuild that
+ * every other family ran on connect. Both the carve-out and the rebuild are gone (issue #43): no
+ * ring re-supplies more sleep than its own buffer holds, so "delete everything and ask again"
+ * capped stored history at whatever the ring still had — one day, on CRP and jring.
  */
 internal fun isConnectTransition(eventDeviceType: RingDeviceType?): Boolean = eventDeviceType != null
-
-internal fun preservesSleepOnConnect(
-    eventDeviceType: RingDeviceType?,
-    persistedDeviceType: RingDeviceType? = null,
-): Boolean = when (eventDeviceType ?: persistedDeviceType) {
-    // All three identifiers use YCBTDriver and share its repeated status packets plus async
-    // history transfer. Packet-based Colmi/Jring/CRP families still clear and rebuild on connect.
-    RingDeviceType.YCBT, RingDeviceType.TK5, RingDeviceType.COLMI_SMART_HEALTH -> true
-    else -> false
-}
 
 internal fun shouldReplaceCompleteSleep(
     existingStart: Long,

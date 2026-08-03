@@ -50,13 +50,28 @@ overridden. Don't widen it to "any driver whose services are missing."
 
 See `docs/qring-ble-adoption.md` §5a for the full history and the decompiled source references.
 
-## Only the client's own connect may rebuild stored data
+## Connecting must never delete stored history
 
-**Read this before touching `EventPersistenceSubscriber`'s `DeviceStateChanged` branch, or before
-adding a family to `preservesSleepOnConnect`.**
+**Read this before touching `EventPersistenceSubscriber`'s `DeviceStateChanged` branch.**
 
-`RingConnectionState.CONNECTED` arrives from two unrelated places, and only one of them means a
-connection was established:
+**No ring re-supplies more history than its own buffer holds, so the app's copy is the only durable
+one.** A connect may retire *demo* rows and nothing else. This is not a style preference — it was a
+data-loss bug twice, in two different shapes (issue #43, and the sync-pass variant before it).
+
+The original design deleted all sleep on connect and re-pulled it, carving YCBT out via
+`preservesSleepOnConnect` because YCBT re-asserts CONNECTED mid-history. That premise was false for
+everyone: CRP asks `queryHistorySleep(daysAgo = 0)` and jring `syncWindowDays = 1`, so "delete
+everything and ask again" capped stored sleep at a single night — a new night replaced the previous
+one instead of joining it. Both the carve-out and the rebuild are gone. What protects a re-synced
+day now is `upsertSleepSessionAtomic`, which reconciles one waking day at a time, idempotently, and
+re-points legacy mis-keyed blocks itself — the blanket clear's own stated justification.
+
+Consequence to keep in mind: nothing bulk-deletes real sleep any more, so a Forget followed by
+pairing a different ring carries the previous ring's history over. If that ever needs to change,
+it belongs on `DeviceForgotten` as a deliberate choice, not as a side effect of connecting.
+
+`RingConnectionState.CONNECTED` also arrives from two unrelated places, and only one is a real
+transition:
 
 - `RingBLEClient`'s own connect event — always carries `deviceType` (`activeCoordinator` is set by
   `installDriver`, which runs before the CCCD write that gates CONNECTED).
@@ -65,13 +80,8 @@ connection was established:
   status packets. `runStartup` re-sends them, and `runStartup` is also the ~30-minute background
   sync — so they recur for the whole life of a connection.
 
-The CONNECTED branch clears and rebuilds (unscoped `DELETE FROM sleep_sessions` /
-`sleep_stage_blocks` for families outside `preservesSleepOnConnect`). Ungated, every background sync
-pass on jring or LuckRing wiped all stored sleep and depended on that same pass re-pulling it —
-losing anything past the ring's retention when the pass was interrupted or came back empty.
-`isConnectTransition(event.deviceType)` is the gate. **Don't remove it, and don't try to fix this
-family-by-family** — `preservesSleepOnConnect` was an attempt at that, and the set of families that
-re-assert CONNECTED turned out to be most of them.
+`isConnectTransition(event.deviceType)` is that gate. Keep it: it is what stops a device-info reply
+from being mistaken for a connection, and it kept the demo-clear from running all session long.
 
 Corollary for new protocol work: a reply that merely reports something about the device (firmware,
 serial, capabilities) is not a connection event. Give it its own `RingDecodedEvent` — as

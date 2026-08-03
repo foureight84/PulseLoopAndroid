@@ -11,46 +11,45 @@ import org.junit.Test
 
 class EventPersistenceIdentityTest {
     @Test
-    fun `only YCBT protocol families preserve sleep on connect`() {
-        assertTrue(preservesSleepOnConnect(RingDeviceType.YCBT))
-        assertTrue(preservesSleepOnConnect(RingDeviceType.TK5))
-        assertTrue(preservesSleepOnConnect(RingDeviceType.COLMI_SMART_HEALTH))
-        assertTrue(preservesSleepOnConnect(null, RingDeviceType.YCBT))
-        assertTrue(preservesSleepOnConnect(RingDeviceType.YCBT, RingDeviceType.JRING))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.JRING, RingDeviceType.YCBT))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.COLMI_R02))
-        assertFalse(preservesSleepOnConnect(null))
-    }
-
-    @Test
     fun `only the client's own connect event is a connection transition`() {
         // RingBLEClient always stamps the resolved family on its connect event...
-        assertTrue(isConnectTransition(RingDeviceType.JRING))
-        assertTrue(isConnectTransition(RingDeviceType.CRP))
-        assertTrue(isConnectTransition(RingDeviceType.YCBT))
-        // ...and RingEventBridge never does, for any decoder's Status.
+        for (family in RingDeviceType.entries) assertTrue(isConnectTransition(family))
+        // ...and RingEventBridge never does, for any decoder's Status — jring 0x0C, LuckRing
+        // dev-info, YCBT status packets, all re-sent by runStartup on every sync pass.
         assertFalse(isConnectTransition(null))
     }
 
+    /**
+     * Issue #43. Connecting used to run `DELETE FROM sleep_sessions` / `sleep_stage_blocks` for
+     * every family except YCBT and rebuild from the ring, which capped stored history at whatever
+     * the ring still held — one day on CRP (`queryHistorySleep(daysAgo = 0)`) and jring
+     * (`syncWindowDays = 1`). The rebuild is gone, so the day-scoped reconcile below is what keeps
+     * a re-synced night from disturbing the nights around it. These are the cases that used to be
+     * covered by the deleted `preservesSleepOnConnect`.
+     */
     @Test
-    fun `a decoder's Status never reaches the rebuild, whatever family it belongs to`() {
-        // The pairing that used to wipe sleep: no deviceType (so it's a mid-session re-assertion
-        // from jring 0x0C / LuckRing dev-info) AND a family outside preservesSleepOnConnect (so the
-        // rebuild branch runs unscoped DELETEs). The transition gate is what breaks it.
-        assertFalse(preservesSleepOnConnect(null, RingDeviceType.JRING))
-        assertFalse(preservesSleepOnConnect(null, RingDeviceType.LUCK_RING))
-        assertFalse(preservesSleepOnConnect(null, RingDeviceType.CRP))
-        assertFalse(isConnectTransition(null))
-    }
+    fun `re-syncing one night leaves the nights around it untouched`() {
+        val night = 1_754_000_000_000L                 // the night being re-synced
+        val dayBefore = night - 24 * 3_600_000L
+        val dayAfter = night + 24 * 3_600_000L
+        val existing = listOf(
+            block("prev", dayBefore, 60, "LIGHT"),
+            block("this", night, 60, "LIGHT"),
+            block("next", dayAfter, 60, "LIGHT"),
+        )
 
-    @Test
-    fun `a real connect still rebuilds for the packet-based families`() {
-        // The gate must not suppress the behaviour it is protecting: a genuine connect on a
-        // non-YCBT family still clears and re-pulls.
-        assertTrue(isConnectTransition(RingDeviceType.JRING))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.JRING))
-        assertTrue(isConnectTransition(RingDeviceType.CRP))
-        assertFalse(preservesSleepOnConnect(RingDeviceType.CRP))
+        val kept = replaceOverlappingSleepBlocks(
+            existing = existing,
+            replacements = listOf(block("this", night, 90, "DEEP")),  // same night, revised
+            replacementStart = night,
+            replacementEnd = night + 90 * 60_000L,
+        )
+
+        // The neighbouring nights survive — that is the whole bug.
+        assertTrue(kept.any { it.startAt == dayBefore })
+        assertTrue(kept.any { it.startAt == dayAfter })
+        // ...and the re-synced night is the revised copy, not a duplicate.
+        assertEquals(1, kept.count { it.startAt == night })
     }
 
     @Test

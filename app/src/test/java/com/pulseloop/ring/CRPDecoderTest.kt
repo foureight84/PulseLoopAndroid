@@ -117,10 +117,9 @@ class CRPDecoderTest {
 
     @Test
     fun `firmware version reaches the device record as its own event, not a connection change`() {
-        // NOT RingDecodedEvent.Status: that bridges to DeviceStateChanged(CONNECTED), which
-        // persistence answers by clearing sleep_sessions for families outside
-        // preservesSleepOnConnect — CRP among them — and runStartup re-queries firmware on every
-        // ~30-minute sync pass, so that path would wipe stored sleep on each one.
+        // NOT RingDecodedEvent.Status: that bridges to DeviceStateChanged(CONNECTED), and a
+        // device-info reply says nothing about the connection. runStartup re-queries firmware on
+        // every ~30-minute sync pass, so that path would restate CONNECTED all session long.
         val decoded = RingDecodedEvent.FirmwareRevision("MOY-R1K3-2.1.6")
         val events = RingEventBridge.eventsFor(decoded)
         assertEquals("MOY-R1K3-2.1.6", (events.single() as PulseEvent.FirmwareRevision).version)
