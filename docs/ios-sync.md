@@ -26,7 +26,8 @@ intentional platform differences listed at the bottom.
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
 | **Last triaged iOS commit** | `88c0f6b` — Merge PR #131 (sleep hypnogram alignment + scrubber), 2026-08-08 |
 | **Last triage date** | 2026-08-08 |
-| **Range covered** | 11 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131 + 1 direct commit (`160c775`) |
+| **Last port date** | 2026-08-08 — PR #45 (ios_sync_2026-08-08, 5 plan commits + 2 CR remediation commits = 7 total) |
+| **Range covered** | 11 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131 + 1 direct commit (`160c775`) → **all ported** |
 
 ---
 
@@ -101,58 +102,28 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 
 | # | iOS PR | Merged | Title | Verdict | Effort | Android commit |
 |---|--------|--------|-------|---------|--------|----------------|
-| ☐ | [#73](https://github.com/saksham2001/PulseLoopiOS/pull/73) `7a30014` | ~07-20 | Privacy & Data Reset (Unpair Ring / Reset App Data / Unpair+Reset) | **PORT** | S–M | |
-| ☐ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | |
-| ☐ | [#95](https://github.com/saksham2001/PulseLoopiOS/pull/95) `dae95ab` | ~07-22 | HR zone colors/thresholds (evidence-based defaults + Standard/Auto/Custom modes + resting-HR baseline learning) | **PORT** | M–L | |
-| ☐ | [#97](https://github.com/saksham2001/PulseLoopiOS/pull/97) `cb8e1cd` | ~07-23 | LittleMeatball R10M YCBT support + 9 shared YCBT bugfixes | **ALREADY-HAVE** | — | iOS PR is itself a port of PulseLoopAndroid#31 |
-| ☐ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **PORT** | XL | |
-| ☐ | [#99](https://github.com/saksham2001/PulseLoopiOS/pull/99) `f06be51` | ~07-25 | Full-data JSON export/import (all models → single JSON file, atomic wipe-and-restore on import) | **PORT** | M | |
-| ☐ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | |
-| — | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | Android already uses `BuildConfig.VERSION_NAME`/`VERSION_CODE` |
-| ☐ | [#98](https://github.com/saksham2001/PulseLoopiOS/pull/98) `ac01555` | ~07-27 | On-device daily calorie estimation (Mifflin-St Jeor BMR + Keytel/MET active energy, HR-gated) for rings that don't report calories | **PORT** | M | |
-| ☐ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | |
-| ☐ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | |
+| ☑ | [#73](https://github.com/saksham2001/PulseLoopiOS/pull/73) `7a30014` | ~07-20 | Privacy & Data Reset (Unpair Ring / Reset App Data / Unpair+Reset) | **PORT** | S–M | `802789d` |
+| ☑ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | `0ca53a1` + `c4aab74` (CR fix: wire STALE_DATA_WINDOW_MS) |
+| ☑ | [#95](https://github.com/saksham2001/PulseLoopiOS/pull/95) `dae95ab` | ~07-22 | HR zone colors/thresholds (evidence-based defaults + Standard/Auto/Custom modes + resting-HR baseline learning) | **PORT** | M–L | `0ca53a1` |
+| ☑ | [#97](https://github.com/saksham2001/PulseLoopiOS/pull/97) `cb8e1cd` | ~07-23 | LittleMeatball R10M YCBT support + 9 shared YCBT bugfixes | **ALREADY-HAVE** | — | iOS PR is itself a port of PulseLoopAndroid#31 |
+| ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **PORT** | XL | `4084671` + `c4aab74` (CR fix: null-goal guard, dead button wired) |
+| ☑ | [#99](https://github.com/saksham2001/PulseLoopiOS/pull/99) `f06be51` | ~07-25 | Full-data JSON export/import (all models → single JSON file, atomic wipe-and-restore on import) | **PORT** | M | `802789d` + `c4aab74` (CR fix: atomic transaction, wearableLogs roundtrip, BuildConfig appVersion) |
+| ☑ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | `4ce34dc` + `c4aab74` (CR fix: mobile endpoint, intent-filter, redirect handler, pollUntilDone, BuildConfig secrets, shared OkHttpClient) |
+| ☑ | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | `68c9788` (versionName → 2.5.0 to match iOS MARKETING_VERSION) |
+| ☑ | [#98](https://github.com/saksham2001/PulseLoopiOS/pull/98) `ac01555` | ~07-27 | On-device daily calorie estimation (Mifflin-St Jeor BMR + Keytel/MET active energy, HR-gated) for rings that don't report calories | **PORT** | M | `0ca53a1` |
+| ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | `4084671` |
+| ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
 
 ## Port priority — open items (as of 2026-08-08)
 
-Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
-wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
+> **STATUS: ALL PORTED.** PR #45 (`ios_sync_2026-08-08`) ported all 11 items across
+> Tiers 1–3 in 5 plan commits. Code review remediation (`c4aab74`) fixed 14 findings
+> including atomic import, Strava OAuth correctness, stacked dialogs, dead code, and
+> stale-data wiring. Version bumped to 2.5.0 (`68c9788`) to match iOS MARKETING_VERSION.
 
-> **▶ RESUME HERE (2026-08-08 session):** First triage pass since 2026-07-18 — **11 new items**
-> found on `upstream/main`. All prior Tiers 1–4 are fully cleared. New open items ranked below:
->
-> **Tier 1 — quick wins (S–M effort):**
-> 1. **#73 Privacy & Data Reset** (PORT, S–M) — 3 destructive actions (Unpair/Reset/Both), pure
->    app-state logic: clear Room DB, evict encrypted prefs, forget BLE bond, show onboarding.
-> 2. **#131 Sleep hypnogram alignment + scrubber** (ADAPT, S–M) — label alignment to bar fractions
->    + press-and-hold stage readout with vertical indicator. Compose has `detectDragGesturesAfterLongPress`.
-> 3. **#99 Data export/import** (PORT, M) — serialize Room tables to JSON via kotlinx.serialization,
->    write via SAF, import with atomic wipe-and-restore. Android has no user-facing backup at all.
->
-> **Tier 2 — medium features (M–L effort):**
-> 4. **#94 Background syncs + data-gated coach notifications** (ADAPT, M) — `StaleDataPolicy`,
->    `CoachNotificationDataTrigger` pattern, 30-min re-sync threshold. Android already has
->    `RingSyncWorker` + `CoachNotificationWorker`; the iOS BLE background-mode plumbing doesn't
->    port directly but the concepts do.
-> 5. **#95 HR zone colors/thresholds** (PORT, M–L) — pure algorithmic logic: evidence-based
->    defaults, 3 configurable modes (Standard/Auto/Custom), p10 resting-HR baseline learning over
->    30 days. Settings UI needs a Compose equivalent.
-> 6. **#98 Daily calorie estimation** (PORT, M) — Mifflin-St Jeor BMR + Keytel/MET active energy,
->    HR-gated (60% HRmax threshold), cadence-tiered step energy. Pure math, no platform deps.
-> 7. **#100 Strava integration** (ADAPT, L) — OAuth (Chrome Custom Tabs), TCX builder (GPS-HR merge),
->    token refresh, shareable stat card rendering. API layer + TCX carry directly.
->
-> **Tier 3 — large features (XL effort, branch-appropriate):**
-> 8. **#96 Calorie/macro nutrition tracking** (PORT, XL) — full nutrition feature: meal logging,
->    Open Food Facts search, barcode scan (CameraX), AI photo analysis, coach integration, intake
->    goals. Largest new feature in this batch (~59 files on iOS). Worth its own branch.
-> 9. **#130 RWfit ring family** (ADAPT, L–XL) — dual 0x7E/0xAB protocol, full metric set, service-UUID
->    recognition. Protocol codecs are pure Kotlin-translatable; BLE transport needs Android adaptation.
->    Own branch per Tier-4 convention.
->
-> **Already-have / skip:**
-> * **#97 R10M YCBT** — iOS PR is itself a port of PulseLoopAndroid#31. Already on Android.
-> * **`160c775` Version 2.5.0** — independent per-platform. Android already reads `BuildConfig.VERSION_NAME`.
+> **▶ RESUME HERE (next session):** All 11 items from the 2026-08-08 triage are ported
+> and CR-remediated. Next triage: `git -C <ios-repo> log --first-parent --oneline 88c0f6b..main`.
+> No open port items remain on this ledger.
 
 > **▶ RESUME HERE (next session):** Tier 1 and Tier 2 both fully clear — **#65 is DONE**, re-triaged
 > into #65a–f, all landed 2026-07-17/18: **#65a** persistence (`daed897`), **#65b** usage tracking
@@ -1287,6 +1258,65 @@ main-thread access from a background worker, and Room calls on the right dispatc
 | [#81](https://github.com/saksham2001/PulseLoopiOS/pull/81) `32dfbe3` | Automated contributor recognition (Action + script + README) | Repo governance; Android repo has its own |
 | [#89](https://github.com/saksham2001/PulseLoopiOS/pull/89) `0a8ab4e` | iOS-26 Liquid Glass rendering correctness + Dynamic Type a11y | Glass is an iOS visual language (standing SKIP); portable reactivity bit folds into #88 |
 | `25e49fd` `577c5f3` `35d1aa7` `ee42b10` `b3697c0` `0f500fc` | Direct commits: docs/screenshots/tagline/YCBT-spec/Discord/jring-URLs | Docs |
+
+---
+
+## Session notes — 2026-08-08 CR remediation
+
+Code review of PR #45 (`ios_sync_2026-08-08`) against the official Strava Android OAuth
+documentation + runtime-correctness checks. 14 findings, 11 fixed:
+
+### Showstoppers fixed
+- **Strava: wrong auth endpoint** → switched from `/oauth/authorize` to `/oauth/mobile/authorize`
+  (per Strava Android docs — mobile and web endpoints are explicitly different)
+- **Strava: no OAuth redirect capture** → added intent-filter for `pulseloop://` in
+  AndroidManifest, `onNewIntent()` handler + cold-start handler in `MainActivity` calling
+  `exchangeCode()`, LaunchedEffect polling in `StravaSettingsScreen` to pick up stored tokens
+- **Strava: hardcoded secrets burned** → moved `CLIENT_ID`/`CLIENT_SECRET` to `local.properties`
+  → `BuildConfig` (gitignored, matching iOS `StravaSecrets.plist` pattern), added `isConfigured` gate
+- **Data import not atomic** → wrapped entire nuke+insert flow in single `beginTransaction()/
+  setTransactionSuccessful()/endTransaction()` block
+- **`pollUntilDone` no-op** → implemented with retry loop polling `GET /api/v3/uploads/{id}`
+
+### High issues fixed
+- **Stacked AlertDialogs** (PrivacySettingsScreen) → 5 independent `if` blocks converted to
+  single `when` chain, preventing simultaneous dialog stacking
+- **WearableLogs roundtrip data loss** → added `categoryRaw`/`levelRaw` to `WearableLogDTO`;
+  import uses DTO fields instead of hardcoded "CONNECTION"/"INFO"
+- **`appVersion` hardcoded** → changed from `"android-unknown"` to `BuildConfig.VERSION_NAME`
+- **Nutrition toggle creates fresh entity** → added `goalLoaded` guard; Switch disabled until
+  goal loads from DB, `copy()` preserves existing fields for non-null case
+- **Dead "Open Nutrition Log" button** → wired `onNavigateToNutrition` callback through
+  `PulseLoopApp` routing
+
+### Medium issues fixed
+- **Dead imports** (`SleepScreen.kt`) → removed `SimpleDateFormat`, `Date`, `Locale`, `abs`
+- **`STALE_DATA_WINDOW_MS` unused** → wired into `ensureFreshData()`: when data is older than
+  1h, force connect+sync even if app is foregrounded (the `isAppForeground()` early-return is
+  now `!dataIsStale && isAppForeground()`)
+- **Redundant `deviceDao().clear()`** in `performUnpairAndReset` → removed (already covered
+  by `nukeAllTables()`)
+- **New `OkHttpClient` per call** → shared singleton with 30s timeouts in `StravaAuth`
+
+### Not fixed (deferred)
+- **RWfitDecoder checksum/CRC validation** — needs protocol-level verification against vendor
+  app captures; not fixable without hardware or reference data
+- **Nutrition toggle comment in review (#9)** — the review claimed `copy()` creates fresh entity
+  with all defaults, but Kotlin `copy()` preserves existing fields. The null-goal guard added
+  above is sufficient.
+
+### Strava integration — architecture validation
+
+Validated against official Strava docs at developers.strava.com/docs/authentication:
+
+| Element | Android spec | Before fix | After fix |
+|---------|-------------|------------|-----------|
+| Auth endpoint | `/oauth/mobile/authorize` | `/oauth/authorize` | `/oauth/mobile/authorize` |
+| Redirect URI | `pulseloop://` + intent-filter | `pulseloop://` no filter | `pulseloop://` + intent-filter |
+| Token exchange | `POST /oauth/token` | `POST /oauth/token` | same (was correct) |
+| Credentials | Per-developer `local.properties` | Hardcoded in source | `BuildConfig` from `local.properties` |
+| State param | Not required (mobile flow) | Generated, never validated | Removed |
+| OkHttpClient | Shared singleton | New instance per call | Shared singleton |
 
 ---
 
