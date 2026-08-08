@@ -126,6 +126,9 @@ fun SettingsScreen(
                 SettingsRowItem(Icons.Filled.TrackChanges, PulseColors.readiness, "Goals") {
                     navigate("settings/goals")
                 },
+                SettingsRowItem(Icons.Filled.RestaurantMenu, PulseColors.calories, "Nutrition") {
+                    navigate("settings/nutrition")
+                },
             ),
         )
 

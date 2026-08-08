@@ -52,9 +52,7 @@ class RingBLEClient(
         ColmiSmartHealthCoordinator,
         LuckRingCoordinator,
         TK5Coordinator,
-        // CRP matches only its family-exclusive `fdda` service (or an explicit CRP carousel pick),
-        // so its position is not load-bearing. Like the CRP R11, it's usually reached by the
-        // post-connect re-route below rather than by a scan match.
+        RWfitCoordinator,
         CRPCoordinator,
     )
 

@@ -242,6 +242,12 @@ data class UserGoalEntity(
     val sleepMinutes: Int = 480,
     val activeMinutes: Int = 45,
     val workoutsPerWeek: Int = 4,
+    /** iOS #96: Nutrition intake goals + master toggle. */
+    val intakeCalories: Double? = null,
+    val intakeProteinG: Double? = null,
+    val intakeCarbsG: Double? = null,
+    val intakeFatG: Double? = null,
+    val nutritionEnabled: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     companion object {

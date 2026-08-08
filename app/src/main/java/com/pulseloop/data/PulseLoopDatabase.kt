@@ -39,8 +39,10 @@ import com.pulseloop.data.entity.*
         WearableLogEntity::class,
         BatterySampleEntity::class,
         CoachNotificationRecordEntity::class,
+        MealEntryEntity::class,
+        CachedFoodProductEntity::class,
     ],
-    version = 19,
+    version = 20,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -64,6 +66,9 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun rawPacketDao(): RawPacketDao
     abstract fun batterySampleDao(): BatterySampleDao
     abstract fun coachNotificationRecordDao(): CoachNotificationRecordDao
+    // iOS #96: Nutrition
+    abstract fun mealEntryDao(): MealEntryDao
+    abstract fun foodProductDao(): FoodProductDao
 
     suspend fun nukeAllTables() {
         val tables = listOf(
@@ -74,7 +79,8 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             "coach_conversations", "coach_messages", "coach_memories",
             "coach_tool_calls", "user_profiles", "user_goals",
             "raw_packets", "derived_updates", "coach_summaries",
-            "wearable_logs", "coach_notification_records"
+            "wearable_logs", "coach_notification_records",
+            "meal_entries", "food_products",
         )
         openHelper.writableDatabase.apply {
             beginTransaction()
@@ -337,6 +343,43 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeCalories` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeProteinG` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeCarbsG` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeFatG` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `nutritionEnabled` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `meal_entries` (
+                        `id` TEXT NOT NULL, `date` INTEGER NOT NULL, `timestamp` INTEGER NOT NULL,
+                        `name` TEXT NOT NULL, `mealTypeRaw` TEXT NOT NULL DEFAULT 'snack',
+                        `calories` REAL NOT NULL, `proteinG` REAL NOT NULL DEFAULT 0,
+                        `carbsG` REAL NOT NULL DEFAULT 0, `fatG` REAL NOT NULL DEFAULT 0,
+                        `fiberG` REAL, `sugarG` REAL, `sodiumMg` REAL,
+                        `sourceRaw` TEXT NOT NULL DEFAULT 'manual', `offProductCode` TEXT,
+                        `servingDescription` TEXT, `servingGrams` REAL, `quantity` REAL NOT NULL DEFAULT 1,
+                        `confidenceRaw` TEXT NOT NULL DEFAULT 'medium', `userEdited` INTEGER NOT NULL DEFAULT 0,
+                        `notes` TEXT, `loggedByCoach` INTEGER NOT NULL DEFAULT 0,
+                        `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_meal_entries_date` ON `meal_entries` (`date`)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `food_products` (
+                        `code` TEXT NOT NULL, `name` TEXT NOT NULL, `brand` TEXT,
+                        `energyKcal100g` REAL NOT NULL, `protein100g` REAL NOT NULL DEFAULT 0,
+                        `carbs100g` REAL NOT NULL DEFAULT 0, `fat100g` REAL NOT NULL DEFAULT 0,
+                        `fiber100g` REAL, `sugars100g` REAL, `saturatedFat100g` REAL,
+                        `sodiumMg100g` REAL, `servingSizeText` TEXT, `servingQuantityG` REAL,
+                        `lastUsedAt` INTEGER NOT NULL, `useCount` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`code`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_food_products_lastUsedAt` ON `food_products` (`lastUsedAt`)")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -422,6 +465,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_16_17,
                         MIGRATION_17_18,
                         MIGRATION_18_19,
+                        MIGRATION_19_20,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

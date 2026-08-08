@@ -40,6 +40,7 @@ import com.pulseloop.coach.config.MiniMaxModel
 import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.entity.UserGoalEntity
 import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
@@ -2161,6 +2162,93 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
 
 private const val DEVELOPER_TAP_THRESHOLD = 7
 private const val REPO_URL = "https://github.com/foureight84/PulseLoop"
+
+// MARK: - Nutrition
+
+@Composable
+fun NutritionSettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val db = remember { PulseLoopDatabase.getInstance(context) }
+    var goal by remember { mutableStateOf<UserGoalEntity?>(null) }
+    LaunchedEffect(Unit) { goal = db.userGoalDao().get() }
+
+    SettingsSubScreen(title = "Nutrition", onBack = onBack) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Enable Nutrition Tracking", fontWeight = FontWeight.Medium)
+                        Text("Log meals and track calories & macros", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = goal?.nutritionEnabled == true,
+                        onCheckedChange = { enabled ->
+                            val g = goal ?: com.pulseloop.data.entity.UserGoalEntity()
+                            scope.launch {
+                                goal = g.copy(nutritionEnabled = enabled).also { db.userGoalDao().upsert(it) }
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        if (goal?.nutritionEnabled == true) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Daily Goals", fontWeight = FontWeight.SemiBold)
+                    NutrientStepper("Calories (kcal)", goal?.intakeCalories ?: 2000.0, 50.0, 100.0, 10000.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeCalories = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    NutrientStepper("Protein (g)", goal?.intakeProteinG ?: 150.0, 5.0, 0.0, 500.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeProteinG = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    NutrientStepper("Carbs (g)", goal?.intakeCarbsG ?: 250.0, 5.0, 0.0, 800.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeCarbsG = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    NutrientStepper("Fat (g)", goal?.intakeFatG ?: 65.0, 5.0, 0.0, 300.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeFatG = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            val cal = (goal?.intakeCalories ?: 2000.0)
+                            goal = goal?.copy(intakeProteinG = cal * 0.30 / 4.0, intakeCarbsG = cal * 0.40 / 4.0, intakeFatG = cal * 0.30 / 9.0)
+                                ?.also { db.userGoalDao().upsert(it) }
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Balance Macros (30/40/30)")
+                    }
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Quick Access", fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { /* Navigate to nutrition screen */ },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Open Nutrition Log")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NutrientStepper(label: String, value: Double, step: Double, min: Double, max: Double, onChange: (Double) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { if (value > min) onChange((value - step).coerceAtLeast(min)) }) { Text("−", fontSize = 18.sp) }
+            Text("${value.roundToInt()}", fontWeight = FontWeight.Medium)
+            TextButton(onClick = { if (value < max) onChange((value + step).coerceAtMost(max)) }) { Text("+", fontSize = 18.sp) }
+        }
+    }
+}
 
 // MARK: - Strava
 
