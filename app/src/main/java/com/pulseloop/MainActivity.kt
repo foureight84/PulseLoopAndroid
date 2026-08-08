@@ -14,7 +14,7 @@ import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.strava.StravaAuth
 import com.pulseloop.strava.StravaTokenStore
 import com.pulseloop.ui.PulseLoopApp
-import kotlinx.coroutines.CoroutineScope
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
         val code = uri.getQueryParameter("code") ?: return
         if (!StravaAuth.isConfigured) return
 
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val tokens = StravaAuth.exchangeCode(code)
                 StravaTokenStore(this@MainActivity).save(tokens)

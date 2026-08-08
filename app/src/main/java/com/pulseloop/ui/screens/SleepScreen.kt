@@ -534,7 +534,8 @@ private fun SleepHypnogram(
                         plotWidthPx = size.width.toFloat()
                         plotHeightPx = size.height.toFloat()
                     }
-                    .pointerInput(sorted) {
+                    .pointerInput(sorted, plotWidthPx) {
+                        if (plotWidthPx <= 0f) return@pointerInput
                         detectDragGesturesAfterLongPress(
                             onDragStart = { offset ->
                                 val min = minuteForX(offset.x, plotWidthPx)

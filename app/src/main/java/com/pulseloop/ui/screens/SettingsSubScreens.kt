@@ -1869,7 +1869,7 @@ fun PrivacyDataSettingsScreen(
     // Confirmation/alert dialogs — mutually exclusive via when chain (prevent stacking).
     when {
         statusMessage != null -> {
-            val msg = statusMessage ?: return@when
+            val msg = statusMessage!!
             AlertDialog(
                 onDismissRequest = { statusMessage = null },
                 title = { Text("Error") },
@@ -1921,7 +1921,7 @@ fun PrivacyDataSettingsScreen(
         )
 
         pendingReset != null -> {
-            val action = pendingReset ?: return@when
+            val action = pendingReset!!
             AlertDialog(
                 onDismissRequest = { pendingReset = null },
                 title = { Text(action.title) },
@@ -2202,10 +2202,11 @@ fun NutritionSettingsScreen(onBack: () -> Unit, onNavigateToNutrition: () -> Uni
                         scope.launch { goal = goal?.copy(intakeFatG = v)?.also { db.userGoalDao().upsert(it) } }
                     }
                     OutlinedButton(onClick = {
+                        val g = goal ?: return@OutlinedButton
                         scope.launch {
-                            val cal = (goal?.intakeCalories ?: 2000.0)
-                            goal = goal?.copy(intakeProteinG = cal * 0.30 / 4.0, intakeCarbsG = cal * 0.40 / 4.0, intakeFatG = cal * 0.30 / 9.0)
-                                ?.also { db.userGoalDao().upsert(it) }
+                            val cal = g.intakeCalories ?: 2000.0
+                            goal = g.copy(intakeProteinG = cal * 0.30 / 4.0, intakeCarbsG = cal * 0.40 / 4.0, intakeFatG = cal * 0.30 / 9.0)
+                                .also { db.userGoalDao().upsert(it) }
                         }
                     }, modifier = Modifier.fillMaxWidth()) {
                         Text("Balance Macros (30/40/30)")
@@ -2248,7 +2249,7 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val tokenStore = remember { com.pulseloop.strava.StravaTokenStore(context) }
-    val isConfigured = remember { com.pulseloop.strava.StravaAuth.isConfigured }
+    val isConfigured = com.pulseloop.strava.StravaAuth.isConfigured
     var isConnected by remember { mutableStateOf(tokenStore.isConnected) }
     var athleteName by remember { mutableStateOf(tokenStore.get()?.athleteName) }
     var isUploading by remember { mutableStateOf(false) }
@@ -2256,13 +2257,16 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
 
     // Poll for tokens after OAuth redirect completes (MainActivity handles the callback
     // and stores tokens via StravaTokenStore; this just picks them up on next recomposition).
+    // Only polls aggressively for 60 s after entering the screen, then stops to avoid waste.
     LaunchedEffect(Unit) {
-        while (true) {
+        val deadline = System.currentTimeMillis() + 60_000L
+        while (System.currentTimeMillis() < deadline) {
             val tokens = tokenStore.get()
             if (tokens != null && !isConnected) {
                 isConnected = true
                 athleteName = tokens.athleteName
                 statusMessage = null
+                return@LaunchedEffect
             }
             kotlinx.coroutines.delay(1000)
         }

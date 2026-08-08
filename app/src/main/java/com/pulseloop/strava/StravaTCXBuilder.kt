@@ -78,6 +78,8 @@ object StravaTCXBuilder {
         }
     }
 
+    // TCX XML <Activity Sport="..."> names (Garmin TCX spec enum) — distinct from
+    // the Strava API sport_type values used in StravaSportMapping.
     private fun sportName(type: String): String = when (type) {
         "run" -> "Running"
         "cycle" -> "Biking"

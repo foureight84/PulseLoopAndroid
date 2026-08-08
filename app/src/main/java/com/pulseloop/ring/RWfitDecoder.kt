@@ -17,6 +17,8 @@ class RWfitDecoder {
                 if (buffer.size < 6) break
                 val cmd = buffer[1].toInt() and 0xFF
                 val payloadLen = buffer.size - 6
+                // CRC16 validation deferred — needs hardware captures to confirm the
+                // checksum is actually placed at the expected offset in real frames.
                 val payload = if (payloadLen > 0) buffer.subList(4, 4 + payloadLen).toByteArray() else ByteArray(0)
                 events.addAll(decodeRaw(cmd, payload))
                 buffer.clear()
@@ -25,6 +27,7 @@ class RWfitDecoder {
                 val len = buffer[1].toInt() and 0xFF
                 if (buffer.size < len + 2) break
                 val cmd = buffer[2].toInt() and 0xFF
+                // XOR checksum validation deferred — see 0xAB note above.
                 val payload = if (len > 2) buffer.subList(3, 1 + len).toByteArray() else ByteArray(0)
                 events.addAll(decodeRaw(cmd, payload))
                 repeat(len + 2) { buffer.removeAt(0) }

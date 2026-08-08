@@ -80,7 +80,7 @@ fun NutritionScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(16.dp),
         ) {
-            // Day navigation
+            // Day navigation — left goes to older dates (higher offset), right goes to today (offset 0).
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { dayOffset++ }) { Icon(Icons.Filled.ChevronLeft, "Previous") }
