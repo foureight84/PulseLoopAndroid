@@ -191,6 +191,7 @@ data class PulseArchive(
 @Serializable data class WearableLogDTO(
     val id: String, val timestamp: Long, val event: String,
     val detail: String? = null, val deviceId: String? = null,
+    val categoryRaw: String? = null, val levelRaw: String? = null,
 )
 
 @Serializable data class CoachNotificationRecordDTO(

@@ -71,7 +71,20 @@ object StravaUploader {
         return null
     }
 
-    private suspend fun pollUntilDone(uploadId: Long, tokens: StravaTokens, tokenStore: StravaTokenStore) {}
+    private suspend fun pollUntilDone(uploadId: Long, tokens: StravaTokens, tokenStore: StravaTokenStore) {
+        repeat(15) {
+            kotlinx.coroutines.delay(2000)
+            val response = StravaAuth.authenticatedRequest(tokens, tokenStore, "GET", "https://www.strava.com/api/v3/uploads/$uploadId")
+            val body = response.body?.string() ?: return@repeat
+            try {
+                val status = json.decodeFromString<UploadStatus>(body)
+                if (status.activity_id != null) return
+                if (status.error?.isNotBlank() == true && status.activity_id == null) return@repeat
+            } catch (_: Exception) {
+                return@repeat
+            }
+        }
+    }
 
     private suspend fun fixSportType(activityId: Long, type: String, tokens: StravaTokens, tokenStore: StravaTokenStore) {
         val stravaType = StravaSportMapping.toStravaType(type)

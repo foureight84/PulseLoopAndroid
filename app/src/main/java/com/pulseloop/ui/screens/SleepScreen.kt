@@ -51,10 +51,6 @@ import com.pulseloop.service.SleepRangeKey
 import com.pulseloop.ui.components.CoachMessageCard
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.SleepViewModel
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**

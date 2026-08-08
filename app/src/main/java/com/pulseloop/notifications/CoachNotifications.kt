@@ -262,6 +262,11 @@ class CoachNotificationWorker(
         val latestMeasurementAt = db.measurementDao().latestTimestamp()
         if (latestMeasurementAt != null && now - latestMeasurementAt < RECENT_DATA_WINDOW_MS) return
 
+        // iOS #94 StaleDataPolicy: when the last measurement is older than STALE_DATA_WINDOW_MS,
+        // force a connect + sync even if the app is foregrounded — the data is clearly out of
+        // date and the check-in would be misleading without a refresh.
+        val dataIsStale = latestMeasurementAt == null || now - latestMeasurementAt > STALE_DATA_WINDOW_MS
+
         // iOS branches on the app's *shared* coordinator and never opens a second client: when
         // the ring is already connected (the foreground app holding the link — its CONNECTED
         // event is what stamps this state), just give any in-flight sync a bounded chance to
@@ -272,7 +277,7 @@ class CoachNotificationWorker(
             awaitSyncDone()
             return
         }
-        if (isAppForeground()) return
+        if (!dataIsStale && isAppForeground()) return
 
         val bleClient = RingBLEClient(applicationContext, transientOwner = true)
         if (!bleClient.hasPermissions()) {

@@ -1682,14 +1682,11 @@ fun PrivacyDataSettingsScreen(
         scope.launch {
             RingSyncWorker.cancel(context)
             if (coordinator != null) {
-                coordinator.forgetRing { PulseLoopDatabase.getInstance(context).deviceDao().clear() }
+                coordinator.forgetRing { }
                 PulseLoopDatabase.getInstance(context).nukeAllTables()
             } else {
                 bleClient?.forget()
-                PulseLoopDatabase.getInstance(context).apply {
-                    deviceDao().clear()
-                    nukeAllTables()
-                }
+                PulseLoopDatabase.getInstance(context).nukeAllTables()
             }
             clearAllPreferences()
             onNavigateToOnboarding()
@@ -1869,34 +1866,30 @@ fun PrivacyDataSettingsScreen(
         }
     }
 
-    // Confirmation dialog for destructive actions.
-    val action = pendingReset
-    if (action != null) {
-        AlertDialog(
-            onDismissRequest = { pendingReset = null },
-            title = { Text(action.title) },
-            text = { Text(action.message) },
+    // Confirmation/alert dialogs — mutually exclusive via when chain (prevent stacking).
+    when {
+        statusMessage != null -> {
+            val msg = statusMessage ?: return@when
+            AlertDialog(
+                onDismissRequest = { statusMessage = null },
+                title = { Text("Error") },
+                text = { Text(msg) },
+                confirmButton = {
+                    TextButton(onClick = { statusMessage = null }) { Text("OK") }
+                },
+            )
+        }
+
+        showImportSuccess -> AlertDialog(
+            onDismissRequest = { showImportSuccess = false },
+            title = { Text("Import Complete") },
+            text = { Text("Your data has been restored from the backup.") },
             confirmButton = {
-                TextButton(onClick = {
-                    pendingReset = null
-                    when (action) {
-                        is ResetAction.UnpairRing -> performUnpair()
-                        is ResetAction.ResetAppData -> performResetAppData()
-                        is ResetAction.UnpairAndReset -> performUnpairAndReset()
-                    }
-                }) {
-                    Text(action.confirmLabel, color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingReset = null }) { Text("Cancel") }
+                TextButton(onClick = { showImportSuccess = false }) { Text("OK") }
             },
         )
-    }
 
-    // Import confirmation dialog.
-    if (showImportConfirm) {
-        AlertDialog(
+        showImportConfirm -> AlertDialog(
             onDismissRequest = { showImportConfirm = false; pendingImportUri = null },
             title = { Text("Replace all data?") },
             text = {
@@ -1926,34 +1919,32 @@ fun PrivacyDataSettingsScreen(
                 TextButton(onClick = { showImportConfirm = false; pendingImportUri = null }) { Text("Cancel") }
             },
         )
-    }
 
-    // Import success alert.
-    if (showImportSuccess) {
-        AlertDialog(
-            onDismissRequest = { showImportSuccess = false },
-            title = { Text("Import Complete") },
-            text = { Text("Your data has been restored from the backup.") },
-            confirmButton = {
-                TextButton(onClick = { showImportSuccess = false }) { Text("OK") }
-            },
-        )
-    }
+        pendingReset != null -> {
+            val action = pendingReset ?: return@when
+            AlertDialog(
+                onDismissRequest = { pendingReset = null },
+                title = { Text(action.title) },
+                text = { Text(action.message) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingReset = null
+                        when (action) {
+                            is ResetAction.UnpairRing -> performUnpair()
+                            is ResetAction.ResetAppData -> performResetAppData()
+                            is ResetAction.UnpairAndReset -> performUnpairAndReset()
+                        }
+                    }) {
+                        Text(action.confirmLabel, color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingReset = null }) { Text("Cancel") }
+                },
+            )
+        }
 
-    // Generic error alert.
-    statusMessage?.let { msg ->
-        AlertDialog(
-            onDismissRequest = { statusMessage = null },
-            title = { Text("Error") },
-            text = { Text(msg) },
-            confirmButton = {
-                TextButton(onClick = { statusMessage = null }) { Text("OK") }
-            },
-        )
-    }
-
-    if (showSeedDialog) {
-        AlertDialog(
+        showSeedDialog -> AlertDialog(
             onDismissRequest = { showSeedDialog = false },
             title = { Text("Reseed Demo Data?") },
             text = { Text("This will replace all existing demo data. Your synced ring data — including sleep history — will not be affected.") },
@@ -1970,10 +1961,8 @@ fun PrivacyDataSettingsScreen(
                 TextButton(onClick = { showSeedDialog = false }) { Text("Cancel") }
             },
         )
-    }
 
-    if (showClearDialog) {
-        AlertDialog(
+        showClearDialog -> AlertDialog(
             onDismissRequest = { showClearDialog = false },
             title = { Text("Clear Demo Data?") },
             text = {
@@ -2166,12 +2155,13 @@ private const val REPO_URL = "https://github.com/foureight84/PulseLoop"
 // MARK: - Nutrition
 
 @Composable
-fun NutritionSettingsScreen(onBack: () -> Unit) {
+fun NutritionSettingsScreen(onBack: () -> Unit, onNavigateToNutrition: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val db = remember { PulseLoopDatabase.getInstance(context) }
     var goal by remember { mutableStateOf<UserGoalEntity?>(null) }
-    LaunchedEffect(Unit) { goal = db.userGoalDao().get() }
+    var goalLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { goal = db.userGoalDao().get(); goalLoaded = true }
 
     SettingsSubScreen(title = "Nutrition", onBack = onBack) {
         Card(Modifier.fillMaxWidth()) {
@@ -2183,8 +2173,9 @@ fun NutritionSettingsScreen(onBack: () -> Unit) {
                     }
                     Switch(
                         checked = goal?.nutritionEnabled == true,
+                        enabled = goalLoaded,
                         onCheckedChange = { enabled ->
-                            val g = goal ?: com.pulseloop.data.entity.UserGoalEntity()
+                            val g = goal ?: return@Switch
                             scope.launch {
                                 goal = g.copy(nutritionEnabled = enabled).also { db.userGoalDao().upsert(it) }
                             }
@@ -2227,7 +2218,7 @@ fun NutritionSettingsScreen(onBack: () -> Unit) {
                     Text("Quick Access", fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick = { /* Navigate to nutrition screen */ },
+                        onClick = onNavigateToNutrition,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("Open Nutrition Log")
@@ -2257,12 +2248,42 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val tokenStore = remember { com.pulseloop.strava.StravaTokenStore(context) }
+    val isConfigured = remember { com.pulseloop.strava.StravaAuth.isConfigured }
     var isConnected by remember { mutableStateOf(tokenStore.isConnected) }
     var athleteName by remember { mutableStateOf(tokenStore.get()?.athleteName) }
     var isUploading by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
+    // Poll for tokens after OAuth redirect completes (MainActivity handles the callback
+    // and stores tokens via StravaTokenStore; this just picks them up on next recomposition).
+    LaunchedEffect(Unit) {
+        while (true) {
+            val tokens = tokenStore.get()
+            if (tokens != null && !isConnected) {
+                isConnected = true
+                athleteName = tokens.athleteName
+                statusMessage = null
+            }
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+
     SettingsSubScreen(title = "Strava", onBack = onBack) {
+        if (!isConfigured) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Strava Not Configured", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Add stravaClientId and stravaClientSecret to local.properties to enable Strava integration.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            return@SettingsSubScreen
+        }
+
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("Strava Integration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -2310,16 +2331,13 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                 } else {
                     Button(
                         onClick = {
-                            scope.launch {
-                                try {
-                                    val authUrl = com.pulseloop.strava.StravaAuth.authUrl
-                                    // Open in browser for OAuth
-                                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
-                                    context.startActivity(intent)
-                                    statusMessage = "After authorizing in your browser, restart the app to complete the connection."
-                                } catch (_: Exception) {
-                                    statusMessage = "Could not open browser"
-                                }
+                            val authUrl = com.pulseloop.strava.StravaAuth.authUrl
+                            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
+                            try {
+                                context.startActivity(intent)
+                                statusMessage = "Authorize in your browser — you'll return to PulseLoop automatically."
+                            } catch (_: Exception) {
+                                statusMessage = "Could not open browser"
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),

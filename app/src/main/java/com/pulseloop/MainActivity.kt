@@ -1,6 +1,7 @@
 package com.pulseloop
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -10,7 +11,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.pulseloop.notifications.CoachNotifications
+import com.pulseloop.strava.StravaAuth
+import com.pulseloop.strava.StravaTokenStore
 import com.pulseloop.ui.PulseLoopApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Single-activity host for the PulseLoop Compose UI.
@@ -52,6 +58,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             PulseLoopApp()
         }
+
+        // Handle Strava redirect on cold start (app launched from browser callback).
+        handleStravaRedirect(intent)
     }
 
     override fun onResume() {
@@ -60,6 +69,28 @@ class MainActivity : ComponentActivity() {
         requestAllPermissions()
         if (hasAllBlePermissions() && hasNotificationPermission()) {
             CoachNotifications.schedule(this)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleStravaRedirect(intent)
+    }
+
+    private fun handleStravaRedirect(intent: Intent) {
+        val uri = intent.data ?: return
+        if (uri.scheme != "pulseloop") return
+        val code = uri.getQueryParameter("code") ?: return
+        if (!StravaAuth.isConfigured) return
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val tokens = StravaAuth.exchangeCode(code)
+                StravaTokenStore(this@MainActivity).save(tokens)
+            } catch (_: Exception) {
+                // Token exchange failed — the code may have expired or the secrets are invalid.
+                // The user can retry from the Strava settings screen.
+            }
         }
     }
 

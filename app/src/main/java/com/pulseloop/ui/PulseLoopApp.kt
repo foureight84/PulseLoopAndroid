@@ -587,7 +587,10 @@ fun PulseLoopApp() {
                     StravaSettingsScreen(onBack = { navController.popBackStack() })
                 }
                 paddedComposable("settings/nutrition") {
-                    NutritionSettingsScreen(onBack = { navController.popBackStack() })
+                    NutritionSettingsScreen(
+                        onBack = { navController.popBackStack() },
+                        onNavigateToNutrition = { navController.navigate("nutrition") },
+                    )
                 }
                 paddedComposable("nutrition") {
                     NutritionScreen(onBack = { navController.popBackStack() })

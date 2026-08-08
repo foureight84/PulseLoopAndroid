@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.sqlite.db.SimpleSQLiteQuery
+import com.pulseloop.BuildConfig
 import com.pulseloop.data.entity.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -45,7 +46,7 @@ object DataArchiveService {
         PulseArchive(
             formatVersion = 1,
             exportedAt = System.currentTimeMillis(),
-            appVersion = "android-unknown",
+            appVersion = BuildConfig.VERSION_NAME,
             counts = counts,
             devices = collect("devices") { c ->
                 DeviceDTO(
@@ -247,6 +248,8 @@ object DataArchiveService {
                     event = "${c.str("categoryRaw")}/${c.str("levelRaw")}: ${c.str("message")}",
                     detail = c.strOrNull("metadataJSON"),
                     deviceId = c.strOrNull("deviceTypeRaw"),
+                    categoryRaw = c.str("categoryRaw"),
+                    levelRaw = c.str("levelRaw"),
                 )
             },
             coachNotificationRecords = collect("coach_notification_records") { c ->
@@ -273,10 +276,27 @@ object DataArchiveService {
         val jsonStr = stream.bufferedReader().use { it.readText() }
         val archive = json.decodeFromString(PulseArchive.serializer(), jsonStr)
 
-        db.nukeAllTables()
+        // Wrap the entire restore in a single transaction so a process kill mid-import
+        // leaves the original database intact (no data loss) rather than permanently empty.
+        val writableDb = db.openHelper.writableDatabase
+        writableDb.beginTransaction()
+        try {
+            writableDb.execSQL("PRAGMA foreign_keys = OFF")
+            for (table in listOf(
+                "devices", "measurements", "activity_daily", "activity_buckets",
+                "battery_samples", "device_measurement_configs", "activity_sessions",
+                "activity_gps_points", "activity_events", "activity_samples",
+                "activity_sensor_polls", "sleep_sessions", "sleep_stage_blocks",
+                "coach_conversations", "coach_messages", "coach_memories",
+                "coach_tool_calls", "user_profiles", "user_goals",
+                "raw_packets", "derived_updates", "coach_summaries",
+                "wearable_logs", "coach_notification_records",
+                "meal_entries", "food_products",
+            )) {
+                writableDb.execSQL("DELETE FROM $table")
+            }
 
-        // Re-insert all data after clearing. Each DAO call is its own transaction — fine for restore.
-        for (d in archive.devices) {
+            for (d in archive.devices) {
                 db.deviceDao().upsert(DeviceEntity(
                     id = d.id, name = d.name, advertisedName = d.advertisedName,
                     peripheralIdentifier = d.peripheralIdentifier, bleAddressHint = d.bleAddressHint,
@@ -467,7 +487,8 @@ object DataArchiveService {
             for (wl in archive.wearableLogs) {
                 db.wearableLogDao().insert(WearableLogEntity(
                     id = wl.id, timestamp = wl.timestamp,
-                    categoryRaw = "CONNECTION", levelRaw = "INFO",
+                    categoryRaw = wl.categoryRaw ?: "CONNECTION",
+                    levelRaw = wl.levelRaw ?: "INFO",
                     message = wl.event, metadataJSON = wl.detail,
                     deviceTypeRaw = wl.deviceId ?: "",
                 ))
@@ -477,6 +498,12 @@ object DataArchiveService {
                     id = nr.id, title = nr.title, body = nr.body, createdAt = nr.createdAt,
                 ))
             }
+
+            writableDb.execSQL("PRAGMA foreign_keys = ON")
+            writableDb.setTransactionSuccessful()
+        } finally {
+            writableDb.endTransaction()
+        }
 
         archive
     }
