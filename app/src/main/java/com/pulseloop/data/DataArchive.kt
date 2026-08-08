@@ -88,7 +88,8 @@ data class PulseArchive(
     val hrPollCount: Int = 0, val hrPollFailureCount: Int = 0,
     val spo2PollCount: Int = 0, val spo2PollFailureCount: Int = 0,
     val liveActivityID: String? = null, val lastSensorPollAt: Long? = null,
-    val lastGpsPointAt: Long? = null, val createdAt: Long, val updatedAt: Long,
+    val lastGpsPointAt: Long? = null, val stravaActivityId: Long? = null,
+    val createdAt: Long, val updatedAt: Long,
 )
 
 @Serializable data class ActivityGpsPointDTO(
@@ -159,6 +160,13 @@ data class PulseArchive(
     val id: String, val name: String? = null, val age: Int? = null,
     val sex: String? = null, val heightCm: Double? = null, val weightKg: Double? = null,
     val onboardingCompleted: Boolean = false, val baselineCompleted: Boolean = false,
+    val hrZoneModeRaw: String = "auto",
+    val hrRestingBaseline: Double? = null,
+    val hrRestingBaselineUpdatedAt: Long? = null,
+    val hrCustomLowUpper: Double? = null,
+    val hrCustomAthleticUpper: Double? = null,
+    val hrCustomElevatedStart: Double? = null,
+    val hrCustomHighStart: Double? = null,
     val createdAt: Long, val updatedAt: Long,
 )
 

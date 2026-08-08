@@ -81,7 +81,9 @@ class MainActivity : ComponentActivity() {
         val uri = intent.data ?: return
         if (uri.scheme != "pulseloop") return
         val code = uri.getQueryParameter("code") ?: return
+        val state = uri.getQueryParameter("state")
         if (!StravaAuth.isConfigured) return
+        if (state == null || !StravaAuth.validateState(state)) return
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {

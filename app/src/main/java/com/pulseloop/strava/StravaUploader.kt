@@ -18,7 +18,8 @@ object StravaUploader {
     ): Long? {
         val tokens = tokenStore.get() ?: return null
         val gpsPoints = db.activityGpsPointDao().forSession(session.id)
-        val hrSamples = db.measurementDao().range(MeasurementKind.HEART_RATE.name, session.startedAt, session.endedAt ?: System.currentTimeMillis())
+        val hrEnd = session.endedAt ?: System.currentTimeMillis()
+        val hrSamples = db.measurementDao().range(MeasurementKind.HEART_RATE.name, session.startedAt, hrEnd)
 
         val tcx = StravaTCXBuilder.build(session, gpsPoints, hrSamples)
         val tcxBytes = tcx.toByteArray(Charsets.UTF_8)
@@ -48,9 +49,11 @@ object StravaUploader {
 
         val uploadResp = json.decodeFromString<UploadResponse>(respBody)
         return if (uploadResp.activity_id != null) {
-            pollUntilDone(uploadResp.id, tokens, tokenStore)
-            fixSportType(uploadResp.activity_id, session.type, tokens, tokenStore)
-            uploadResp.activity_id
+            val finalId = pollUntilDone(uploadResp.id, uploadResp.activity_id, tokens, tokenStore)
+            if (finalId != null) {
+                fixSportType(finalId, session.type, tokens, tokenStore)
+            }
+            finalId ?: uploadResp.activity_id
         } else {
             pollUploadId(uploadResp.id, tokens, tokenStore)
         }
@@ -71,7 +74,7 @@ object StravaUploader {
         return null
     }
 
-    private suspend fun pollUntilDone(uploadId: Long, tokens: StravaTokens, tokenStore: StravaTokenStore) {
+    private suspend fun pollUntilDone(uploadId: Long, initialActivityId: Long, tokens: StravaTokens, tokenStore: StravaTokenStore): Long? {
         var lastError: String? = null
         repeat(15) {
             kotlinx.coroutines.delay(2000)
@@ -79,7 +82,7 @@ object StravaUploader {
             val body = response.body?.string() ?: return@repeat
             try {
                 val status = json.decodeFromString<UploadStatus>(body)
-                if (status.activity_id != null) return
+                if (status.activity_id != null) return status.activity_id
                 if (status.error?.isNotBlank() == true && status.activity_id == null) {
                     lastError = status.error
                     return@repeat
@@ -90,6 +93,7 @@ object StravaUploader {
             }
         }
         if (lastError != null) android.util.Log.w("StravaUploader", "pollUntilDone $uploadId failed after 15 retries: $lastError")
+        return null
     }
 
     private suspend fun fixSportType(activityId: Long, type: String, tokens: StravaTokens, tokenStore: StravaTokenStore) {
@@ -111,7 +115,7 @@ object StravaUploader {
             if (activityId != null) {
                 db.activitySessionDao().upsert(session.copy(stravaActivityId = activityId))
             } else {
-                continue
+                break
             }
         }
     }

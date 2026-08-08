@@ -2,9 +2,12 @@ package com.pulseloop.strava
 
 import android.net.Uri
 import com.pulseloop.BuildConfig
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -29,13 +32,29 @@ object StravaAuth {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    private val refreshMutex = Mutex()
+    private var pendingAuthState: String? = null
+
     val isConfigured: Boolean
         get() = BuildConfig.STRAVA_CLIENT_ID.isNotBlank() && BuildConfig.STRAVA_CLIENT_SECRET.isNotBlank()
 
-    val authUrl: String
-        get() = "$AUTH_BASE/mobile/authorize?" +
+    fun generateAuthUrl(): Pair<String, String> {
+        val state = UUID.randomUUID().toString()
+        pendingAuthState = state
+        val url = "$AUTH_BASE/mobile/authorize?" +
             "client_id=${BuildConfig.STRAVA_CLIENT_ID}&redirect_uri=${Uri.encode(REDIRECT_URI)}" +
-            "&response_type=code&scope=${Uri.encode(SCOPES)}&approval_prompt=auto"
+            "&response_type=code&scope=${Uri.encode(SCOPES)}&approval_prompt=auto&state=${Uri.encode(state)}"
+        return Pair(url, state)
+    }
+
+    val authUrl: String
+        get() = generateAuthUrl().first
+
+    fun validateState(state: String): Boolean {
+        val expected = pendingAuthState
+        pendingAuthState = null
+        return expected != null && expected == state
+    }
 
     suspend fun exchangeCode(code: String): StravaTokens {
         val body = okhttp3.FormBody.Builder()
@@ -54,7 +73,11 @@ object StravaAuth {
         return parseTokenResponse(raw)
     }
 
-    suspend fun refreshToken(tokens: StravaTokens): StravaTokens {
+    suspend fun refreshToken(tokens: StravaTokens): StravaTokens = refreshMutex.withLock {
+        refreshTokenInternal(tokens)
+    }
+
+    private suspend fun refreshTokenInternal(tokens: StravaTokens): StravaTokens {
         val body = okhttp3.FormBody.Builder()
             .add("client_id", BuildConfig.STRAVA_CLIENT_ID)
             .add("client_secret", BuildConfig.STRAVA_CLIENT_SECRET)

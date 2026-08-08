@@ -18,6 +18,10 @@ object DailyCalorieEstimator {
     private const val FLEX_HR_FRACTION = 0.6
     private const val MAX_HR = 220.0
     private const val HR_SAMPLE_MAX_COVERAGE_SECONDS = 600
+    private const val BUCKET_DURATION_SECONDS = 900.0
+    private const val INTERMITTENT_CADENCE_SPM = 100.0
+    private const val BRISK_CADENCE_SPM = 100.0
+    private const val RUN_CADENCE_SPM = 130.0
     private const val DEFAULT_WEIGHT_KG = 70.0
     private const val DEFAULT_HEIGHT_CM = 170.0
     private const val DEFAULT_AGE = 35
@@ -94,7 +98,7 @@ object DailyCalorieEstimator {
         val bpm = bmrPerMinute(weightKg, heightCm, age, sex)
         var hrKcal = 0.0
 
-        // HR-based active calories (gated: only readings ≥ flex-HR).
+        // HR-based active calories (gated: only readings ≥ flex-HR), net of resting BMR.
         val valid = hrSamples.filter { it.value >= threshold }.sortedBy { it.timestamp }
         if (valid.isNotEmpty()) {
             for (i in valid.indices) {
@@ -102,14 +106,14 @@ object DailyCalorieEstimator {
                     ((valid[i + 1].timestamp - valid[i].timestamp) / 1000.0).coerceAtMost(HR_SAMPLE_MAX_COVERAGE_SECONDS.toDouble())
                 else HR_SAMPLE_MAX_COVERAGE_SECONDS.toDouble()
                 val rate = WorkoutMetricsEngine.keytelCalorieRate(valid[i].value, sex, age, weightKg)
-                hrKcal += rate * durSec / 60.0
+                hrKcal += maxOf(0.0, rate - bpm) * durSec / 60.0
             }
         }
 
-        // Step-based MET calories (cadence-tiered).
+        // Step-based MET calories (cadence-tiered), net of 1 MET.
         val stepKcal = estimateStepCalories(stepBuckets, heightCm, weightKg)
 
-        return maxOf(0.0, hrKcal + stepKcal - bpm * (1440.0))
+        return maxOf(0.0, hrKcal + stepKcal)
     }
 
     private fun estimateStepCalories(
@@ -119,29 +123,34 @@ object DailyCalorieEstimator {
     ): Double {
         var total = 0.0
         for (bucket in buckets) {
-            val intervalSeconds = when {
-                bucket.distanceMeters > 0 -> (bucket.distanceMeters / 1.0) * 600.0  // placeholder: ~10 min
-                else -> 3600.0
+            if (bucket.steps <= 0) continue
+            val durationMinutes = BUCKET_DURATION_SECONDS / 60.0
+            val cadence = bucket.steps / durationMinutes
+            val met: Double
+            val activeMinutes: Double
+            if (cadence >= RUN_CADENCE_SPM) {
+                met = 8.3
+                activeMinutes = durationMinutes
+            } else if (cadence >= BRISK_CADENCE_SPM) {
+                met = 3.5
+                activeMinutes = durationMinutes
+            } else {
+                met = intermittentWalkMET(heightCm)
+                activeMinutes = bucket.steps / INTERMITTENT_CADENCE_SPM
             }
-            val cadence = if (intervalSeconds > 0) bucket.steps / (intervalSeconds / 60.0) else 0.0
-            val met = when {
-                cadence >= 130 -> 8.3
-                cadence >= 100 -> 3.5
-                cadence < 100 -> {
-                    val strideM = 0.414 * heightCm / 100.0
-                    val speedMps = strideM * 100.0 / 60.0
-                    when {
-                        speedMps < 1.0 -> 2.8
-                        speedMps < 1.35 -> 3.5
-                        speedMps < 1.65 -> 4.3
-                        else -> 5.0
-                    }
-                }
-                else -> 3.5
-            }
-            val hours = intervalSeconds / 3600.0
-            total += met * weightKg * hours
+            total += maxOf(0.0, met - 1) * weightKg * activeMinutes / 60.0
         }
         return total
+    }
+
+    private fun intermittentWalkMET(heightCm: Double): Double {
+        val strideM = 0.414 * heightCm / 100.0
+        val speedMps = strideM * INTERMITTENT_CADENCE_SPM / 60.0
+        return when {
+            speedMps < 1.0 -> 2.8
+            speedMps < 1.35 -> 3.5
+            speedMps < 1.65 -> 4.3
+            else -> 5.0
+        }
     }
 }

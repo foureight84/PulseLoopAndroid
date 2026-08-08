@@ -114,6 +114,7 @@ object DataArchiveService {
                     liveActivityID = c.strOrNull("liveActivityID"),
                     lastSensorPollAt = c.longOrNull("lastSensorPollAt"),
                     lastGpsPointAt = c.longOrNull("lastGpsPointAt"),
+                    stravaActivityId = c.longOrNull("stravaActivityId"),
                     createdAt = c.long("createdAt"), updatedAt = c.long("updatedAt"),
                 )
             },
@@ -206,6 +207,13 @@ object DataArchiveService {
                     sex = c.strOrNull("sex"), heightCm = c.dblOrNull("heightCm"),
                     weightKg = c.dblOrNull("weightKg"), onboardingCompleted = c.bool("onboardingCompleted"),
                     baselineCompleted = c.bool("baselineCompleted"),
+                    hrZoneModeRaw = c.strOrNull("hrZoneModeRaw") ?: "auto",
+                    hrRestingBaseline = c.dblOrNull("hrRestingBaseline"),
+                    hrRestingBaselineUpdatedAt = c.longOrNull("hrRestingBaselineUpdatedAt"),
+                    hrCustomLowUpper = c.dblOrNull("hrCustomLowUpper"),
+                    hrCustomAthleticUpper = c.dblOrNull("hrCustomAthleticUpper"),
+                    hrCustomElevatedStart = c.dblOrNull("hrCustomElevatedStart"),
+                    hrCustomHighStart = c.dblOrNull("hrCustomHighStart"),
                     createdAt = c.long("createdAt"), updatedAt = c.long("updatedAt"),
                 )
             },
@@ -291,7 +299,6 @@ object DataArchiveService {
                 "coach_tool_calls", "user_profiles", "user_goals",
                 "raw_packets", "derived_updates", "coach_summaries",
                 "wearable_logs", "coach_notification_records",
-                "meal_entries", "food_products",
             )) {
                 writableDb.execSQL("DELETE FROM $table")
             }
@@ -358,8 +365,8 @@ object DataArchiveService {
                     hrPollCount = as_.hrPollCount, hrPollFailureCount = as_.hrPollFailureCount,
                     spo2PollCount = as_.spo2PollCount, spo2PollFailureCount = as_.spo2PollFailureCount,
                     liveActivityID = as_.liveActivityID, lastSensorPollAt = as_.lastSensorPollAt,
-                    lastGpsPointAt = as_.lastGpsPointAt, createdAt = as_.createdAt,
-                    updatedAt = as_.updatedAt,
+                    lastGpsPointAt = as_.lastGpsPointAt, stravaActivityId = as_.stravaActivityId,
+                    createdAt = as_.createdAt, updatedAt = as_.updatedAt,
                 ))
             }
             for (gp in archive.activityGpsPoints) {
@@ -450,6 +457,13 @@ object DataArchiveService {
                     heightCm = up.heightCm, weightKg = up.weightKg,
                     onboardingCompleted = up.onboardingCompleted,
                     baselineCompleted = up.baselineCompleted,
+                    hrZoneModeRaw = up.hrZoneModeRaw,
+                    hrRestingBaseline = up.hrRestingBaseline,
+                    hrRestingBaselineUpdatedAt = up.hrRestingBaselineUpdatedAt,
+                    hrCustomLowUpper = up.hrCustomLowUpper,
+                    hrCustomAthleticUpper = up.hrCustomAthleticUpper,
+                    hrCustomElevatedStart = up.hrCustomElevatedStart,
+                    hrCustomHighStart = up.hrCustomHighStart,
                     createdAt = up.createdAt, updatedAt = up.updatedAt,
                 ))
             }
