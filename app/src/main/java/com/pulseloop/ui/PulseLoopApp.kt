@@ -583,6 +583,9 @@ fun PulseLoopApp() {
                         },
                     )
                 }
+                paddedComposable("settings/strava") {
+                    StravaSettingsScreen(onBack = { navController.popBackStack() })
+                }
                 paddedComposable("settings/about") {
                     AboutSettingsScreen(
                         onOpenDebug = { navController.navigate("debug") },

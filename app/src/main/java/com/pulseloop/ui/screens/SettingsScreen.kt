@@ -149,6 +149,9 @@ fun SettingsScreen(
                 add(SettingsRowItem(Icons.Filled.Shield, PulseColors.success, "Privacy & Data") {
                     navigate("settings/privacy")
                 })
+                add(SettingsRowItem(Icons.Filled.TrendingUp, PulseColors.calories, "Strava") {
+                    navigate("settings/strava")
+                })
                 add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, "About PulseLoop") {
                     navigate("settings/about")
                 })

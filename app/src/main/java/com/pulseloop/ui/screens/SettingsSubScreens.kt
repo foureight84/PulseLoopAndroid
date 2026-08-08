@@ -2161,3 +2161,105 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
 
 private const val DEVELOPER_TAP_THRESHOLD = 7
 private const val REPO_URL = "https://github.com/foureight84/PulseLoop"
+
+// MARK: - Strava
+
+@Composable
+fun StravaSettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val tokenStore = remember { com.pulseloop.strava.StravaTokenStore(context) }
+    var isConnected by remember { mutableStateOf(tokenStore.isConnected) }
+    var athleteName by remember { mutableStateOf(tokenStore.get()?.athleteName) }
+    var isUploading by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    SettingsSubScreen(title = "Strava", onBack = onBack) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Strava Integration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (isConnected) "Connected as $athleteName. Workouts sync automatically when finished."
+                    else "Connect your Strava account to automatically upload workouts with GPS routes and heart rate data.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                if (isConnected) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                isUploading = true
+                                scope.launch {
+                                    try {
+                                        val db = PulseLoopDatabase.getInstance(context)
+                                        com.pulseloop.strava.StravaUploader.uploadAuto(db, tokenStore)
+                                        statusMessage = "Sync complete"
+                                    } catch (_: Exception) {
+                                        statusMessage = "Upload failed"
+                                    }
+                                    isUploading = false
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isUploading,
+                        ) {
+                            Text(if (isUploading) "Syncing…" else "Sync Now")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                tokenStore.clear()
+                                isConnected = false
+                                athleteName = null
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        ) {
+                            Text("Disconnect")
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                try {
+                                    val authUrl = com.pulseloop.strava.StravaAuth.authUrl
+                                    // Open in browser for OAuth
+                                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
+                                    context.startActivity(intent)
+                                    statusMessage = "After authorizing in your browser, restart the app to complete the connection."
+                                } catch (_: Exception) {
+                                    statusMessage = "Could not open browser"
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Connect Strava")
+                    }
+                }
+            }
+        }
+
+        if (isConnected) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Auto Upload", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Finished workouts are automatically uploaded to Strava. GPS routes, heart rate data, and sport type are included.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        statusMessage?.let { msg ->
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = PulseColors.cardSoft)) {
+                Text(msg, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
