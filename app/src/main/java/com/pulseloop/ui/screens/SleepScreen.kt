@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
@@ -30,8 +31,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.data.entity.SleepSessionEntity
@@ -44,6 +51,11 @@ import com.pulseloop.service.SleepRangeKey
 import com.pulseloop.ui.components.CoachMessageCard
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.SleepViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Sleep dashboard — ported from SleepView.swift (+ DesignSystem sleep components):
@@ -426,6 +438,10 @@ private fun LegendItem(label: String, color: Color) {
 /**
  * Step-style hypnogram: AWAKE/REM/LIGHT/DEEP lanes, glowing stage-colored segments,
  * dashed vertical transition connectors, time ticks below (SleepHypnogramView in Swift).
+ *
+ * iOS #131 port: lane labels now share the same laneFraction math as the Canvas bars
+ * (single source of truth), and a press-and-hold gesture shows a stage-readout pill
+ * with haptic feedback.
  */
 @Composable
 private fun SleepHypnogram(
@@ -451,6 +467,51 @@ private fun SleepHypnogram(
         clockTime(startTs + offset * 60_000L)
     }
 
+    // Shared plot insets — single source of truth for labels and canvas.
+    val plotInsets = androidx.compose.ui.unit.DpOffset(64.0.dp, 16.0.dp)
+    val plotBottom = 16.0.dp
+    val plotTrailing = 16.0.dp
+
+    // Press-and-hold scrub state.
+    var scrubBlockIndex by remember { mutableIntStateOf(-1) }
+    var scrubMinute by remember { mutableIntStateOf(0) }
+    var isScrubbing by remember { mutableStateOf(false) }
+    var pillWidth by remember { mutableIntStateOf(0) }
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+
+    fun laneY(stage: String, plotHeightPx: Float) = plotHeightPx * (laneFrac[stage] ?: 0.62f)
+    fun xForMinute(minute: Int, plotWidthPx: Float) =
+        (minute.toFloat() / safeTotal).coerceIn(0f, 1f) * plotWidthPx
+
+    fun minuteForX(touchX: Float, plotWidthPx: Float): Int {
+        if (plotWidthPx <= 0f) return 0
+        return ((touchX / plotWidthPx) * safeTotal).roundToInt().coerceIn(0, safeTotal)
+    }
+
+    fun blockIndexAtMinute(minute: Int): Int {
+        if (sorted.isEmpty()) return -1
+        val exact = sorted.indexOfFirst { minute in it.startMinute until (it.startMinute + it.durationMinutes) }
+        if (exact >= 0) return exact
+        // Snap to nearest block by interval distance.
+        var best = 0
+        var bestDist = Int.MAX_VALUE
+        for (i in sorted.indices) {
+            val b = sorted[i]
+            val dist = if (minute < b.startMinute) b.startMinute - minute
+                       else minute - (b.startMinute + b.durationMinutes)
+            if (dist < bestDist) { bestDist = dist; best = i }
+        }
+        return best.coerceIn(0, sorted.lastIndex)
+    }
+
+    fun readoutText(block: SleepStageBlockEntity): String {
+        val stage = block.stageRaw.replaceFirstChar { it.uppercase() }
+        val startTime = clockTime(startTs + block.startMinute * 60_000L)
+        val endTime = clockTime(startTs + (block.startMinute + block.durationMinutes) * 60_000L)
+        return "$stage · $startTime – $endTime"
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
             Modifier
@@ -460,65 +521,160 @@ private fun SleepHypnogram(
                 .background(Color(0xFF0F141F))
                 .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp)),
         ) {
-            // Lane labels on the left.
-            Column(
-                Modifier.fillMaxHeight().padding(vertical = 14.dp, horizontal = 12.dp),
-                verticalArrangement = Arrangement.SpaceBetween,
-            ) {
-                lanes.forEach { stage ->
-                    Text(
-                        stage,
-                        fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 1.4.sp, color = stageColor(stage),
-                    )
-                }
-            }
+            var plotWidthPx by remember { mutableFloatStateOf(0f) }
+            var plotHeightPx by remember { mutableFloatStateOf(0f) }
+
             // Plot area, inset to clear the labels.
-            Canvas(
+            Box(
                 Modifier
                     .fillMaxSize()
-                    .padding(start = 64.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
+                    .padding(
+                        start = plotInsets.x,
+                        end = plotTrailing,
+                        top = plotInsets.y,
+                        bottom = plotBottom,
+                    )
+                    .onSizeChanged { size ->
+                        plotWidthPx = size.width.toFloat()
+                        plotHeightPx = size.height.toFloat()
+                    }
+                    .pointerInput(sorted) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                val min = minuteForX(offset.x, plotWidthPx)
+                                val idx = blockIndexAtMinute(min)
+                                scrubBlockIndex = idx
+                                scrubMinute = min
+                                isScrubbing = true
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            },
+                            onDrag = { _, dragAmount ->
+                                val currentMin = minuteForX(
+                                    (xForMinute(scrubMinute, plotWidthPx) + dragAmount.x),
+                                    plotWidthPx,
+                                )
+                                scrubMinute = currentMin
+                                val newIdx = blockIndexAtMinute(currentMin)
+                                if (newIdx != scrubBlockIndex) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                                scrubBlockIndex = newIdx
+                            },
+                            onDragEnd = {
+                                scrubBlockIndex = -1
+                                isScrubbing = false
+                            },
+                            onDragCancel = {
+                                scrubBlockIndex = -1
+                                isScrubbing = false
+                            },
+                        )
+                    },
             ) {
-                if (sorted.isEmpty()) return@Canvas
-                fun laneY(stage: String) = size.height * (laneFrac[stage] ?: 0.62f)
-                fun x(minute: Int) = (minute.toFloat() / safeTotal).coerceIn(0f, 1f) * size.width
+                Canvas(Modifier.fillMaxSize()) {
+                    if (sorted.isEmpty()) return@Canvas
 
-                // Dashed vertical connectors between consecutive blocks.
-                for (i in 1 until sorted.size) {
-                    val prev = sorted[i - 1]
-                    val cur = sorted[i]
-                    val cx = x(cur.startMinute)
-                    drawLine(
-                        color = Color(0xFFD2CDFF).copy(alpha = 0.46f),
-                        start = Offset(cx, laneY(prev.stageRaw)),
-                        end = Offset(cx, laneY(cur.stageRaw)),
-                        strokeWidth = 1.2.dp.toPx(),
-                        cap = StrokeCap.Round,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(2.5.dp.toPx(), 3.dp.toPx())),
-                    )
+                    // Dashed vertical connectors between consecutive blocks.
+                    for (i in 1 until sorted.size) {
+                        val prev = sorted[i - 1]
+                        val cur = sorted[i]
+                        val cx = xForMinute(cur.startMinute, size.width)
+                        drawLine(
+                            color = Color(0xFFD2CDFF).copy(alpha = 0.46f),
+                            start = Offset(cx, laneY(prev.stageRaw, size.height)),
+                            end = Offset(cx, laneY(cur.stageRaw, size.height)),
+                            strokeWidth = 1.2.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(2.5.dp.toPx(), 3.dp.toPx())),
+                        )
+                    }
+                    // Horizontal segment per block: soft halo underlay + solid line.
+                    sorted.forEach { block ->
+                        val y = laneY(block.stageRaw, size.height)
+                        val startX = xForMinute(block.startMinute, size.width)
+                        val endX = xForMinute(block.startMinute + block.durationMinutes, size.width)
+                            .coerceAtLeast(startX)
+                        val color = stageColor(block.stageRaw)
+                        drawLine(
+                            color = color.copy(alpha = 0.16f),
+                            start = Offset(startX, y), end = Offset(endX, y),
+                            strokeWidth = 12.dp.toPx(), cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = color,
+                            start = Offset(startX, y), end = Offset(endX, y),
+                            strokeWidth = 6.5.dp.toPx(), cap = StrokeCap.Round,
+                        )
+                        // Scrub indicator line.
+                        if (isScrubbing && scrubBlockIndex == sorted.indexOf(block)) {
+                            val sx = xForMinute(scrubMinute, size.width)
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.7f),
+                                start = Offset(sx, 0f),
+                                end = Offset(sx, size.height),
+                                strokeWidth = 2.dp.toPx(),
+                            )
+                        }
+                    }
                 }
-                // Horizontal segment per block: soft halo underlay + solid line.
-                sorted.forEach { block ->
-                    val y = laneY(block.stageRaw)
-                    val startX = x(block.startMinute)
-                    val endX = x(block.startMinute + block.durationMinutes).coerceAtLeast(startX)
-                    val color = stageColor(block.stageRaw)
-                    drawLine(
-                        color = color.copy(alpha = 0.16f),
-                        start = Offset(startX, y), end = Offset(endX, y),
-                        strokeWidth = 12.dp.toPx(), cap = StrokeCap.Round,
-                    )
-                    drawLine(
-                        color = color,
-                        start = Offset(startX, y), end = Offset(endX, y),
-                        strokeWidth = 6.5.dp.toPx(), cap = StrokeCap.Round,
-                    )
+
+                // Lane labels — positioned using the same laneFraction math.
+                Box(Modifier.fillMaxSize()) {
+                    lanes.forEach { stage ->
+                        val yFrac = laneFrac[stage] ?: 0.62f
+                        val labelY = yFrac * plotHeightPx
+                        val densityPx = density.density
+                        Text(
+                            stage,
+                            fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 1.4.sp, color = stageColor(stage),
+                            modifier = Modifier.offset {
+                                IntOffset(
+                                    x = with(density) { (-32.0).dp.roundToPx() },
+                                    y = (labelY / densityPx - 7.dp.value).dp.roundToPx(),
+                                )
+                            },
+                        )
+                    }
+                }
+
+                // Stage readout pill.
+                if (isScrubbing && scrubBlockIndex in sorted.indices) {
+                    val block = sorted[scrubBlockIndex]
+                    val yFrac = laneFrac[block.stageRaw] ?: 0.62f
+                    val pillY = yFrac * plotHeightPx
+                    val densityPx = density.density
+                    val pillOffsetX = ((xForMinute(scrubMinute, plotWidthPx) / plotWidthPx) * plotWidthPx).toInt()
+                    Box(
+                        Modifier
+                            .offset {
+                                IntOffset(
+                                    x = (pillOffsetX / densityPx - (pillWidth / 2f / densityPx))
+                                        .dp.roundToPx().coerceAtLeast(4.dp.roundToPx()),
+                                    y = ((pillY / densityPx) - 30.dp.value).dp.roundToPx(),
+                                )
+                            }
+                            .onSizeChanged { pillWidth = it.width },
+                    ) {
+                        androidx.compose.foundation.layout.Box(
+                            Modifier
+                                .background(Color.Black.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                readoutText(block),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color.White,
+                            )
+                        }
+                    }
                 }
             }
         }
         // Time ticks.
         Row(
-            Modifier.fillMaxWidth().padding(start = 64.dp, end = 16.dp),
+            Modifier.fillMaxWidth().padding(start = plotInsets.x, end = plotTrailing),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             ticks.forEach { Text(it, fontSize = 10.sp, color = PulseColors.textMuted) }

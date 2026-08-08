@@ -24,9 +24,9 @@ intentional platform differences listed at the bottom.
 |---|---|
 | **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `0d1b965` — seed: month of demo workouts + 30-day vitals series, 2026-07-18 |
-| **Last triage date** | 2026-07-18 |
-| **Range covered** | 48 commits / 9 first-parent items since `b3697c0` (2026-07-12), plus 1 direct commit (`0d1b965`) |
+| **Last triaged iOS commit** | `88c0f6b` — Merge PR #131 (sleep hypnogram alignment + scrubber), 2026-08-08 |
+| **Last triage date** | 2026-08-08 |
+| **Range covered** | 11 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131 + 1 direct commit (`160c775`) |
 
 ---
 
@@ -97,10 +97,62 @@ Ordered roughly by value-for-effort. Status: ☐ open · ☑ done.
 series", dev-only `PulseLoop/Persistence/SeedData.swift` change (denser demo data for iOS's own
 seeded-data mode). **SKIP** — no portable behavior, Android has its own independent seed data.
 
-## Port priority — open items (as of 2026-07-17)
+--- NEW (2026-08-08 triage, 11 items since `0d1b965`) ---
+
+| # | iOS PR | Merged | Title | Verdict | Effort | Android commit |
+|---|--------|--------|-------|---------|--------|----------------|
+| ☐ | [#73](https://github.com/saksham2001/PulseLoopiOS/pull/73) `7a30014` | ~07-20 | Privacy & Data Reset (Unpair Ring / Reset App Data / Unpair+Reset) | **PORT** | S–M | |
+| ☐ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | |
+| ☐ | [#95](https://github.com/saksham2001/PulseLoopiOS/pull/95) `dae95ab` | ~07-22 | HR zone colors/thresholds (evidence-based defaults + Standard/Auto/Custom modes + resting-HR baseline learning) | **PORT** | M–L | |
+| ☐ | [#97](https://github.com/saksham2001/PulseLoopiOS/pull/97) `cb8e1cd` | ~07-23 | LittleMeatball R10M YCBT support + 9 shared YCBT bugfixes | **ALREADY-HAVE** | — | iOS PR is itself a port of PulseLoopAndroid#31 |
+| ☐ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **PORT** | XL | |
+| ☐ | [#99](https://github.com/saksham2001/PulseLoopiOS/pull/99) `f06be51` | ~07-25 | Full-data JSON export/import (all models → single JSON file, atomic wipe-and-restore on import) | **PORT** | M | |
+| ☐ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | |
+| — | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | Android already uses `BuildConfig.VERSION_NAME`/`VERSION_CODE` |
+| ☐ | [#98](https://github.com/saksham2001/PulseLoopiOS/pull/98) `ac01555` | ~07-27 | On-device daily calorie estimation (Mifflin-St Jeor BMR + Keytel/MET active energy, HR-gated) for rings that don't report calories | **PORT** | M | |
+| ☐ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | |
+| ☐ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | |
+
+## Port priority — open items (as of 2026-08-08)
 
 Single source of truth for what to port next, ranked value-for-effort. Small correctness/feature
 wins first, XL ring rebuilds last on their own branches, blocked/deferred at the bottom.
+
+> **▶ RESUME HERE (2026-08-08 session):** First triage pass since 2026-07-18 — **11 new items**
+> found on `upstream/main`. All prior Tiers 1–4 are fully cleared. New open items ranked below:
+>
+> **Tier 1 — quick wins (S–M effort):**
+> 1. **#73 Privacy & Data Reset** (PORT, S–M) — 3 destructive actions (Unpair/Reset/Both), pure
+>    app-state logic: clear Room DB, evict encrypted prefs, forget BLE bond, show onboarding.
+> 2. **#131 Sleep hypnogram alignment + scrubber** (ADAPT, S–M) — label alignment to bar fractions
+>    + press-and-hold stage readout with vertical indicator. Compose has `detectDragGesturesAfterLongPress`.
+> 3. **#99 Data export/import** (PORT, M) — serialize Room tables to JSON via kotlinx.serialization,
+>    write via SAF, import with atomic wipe-and-restore. Android has no user-facing backup at all.
+>
+> **Tier 2 — medium features (M–L effort):**
+> 4. **#94 Background syncs + data-gated coach notifications** (ADAPT, M) — `StaleDataPolicy`,
+>    `CoachNotificationDataTrigger` pattern, 30-min re-sync threshold. Android already has
+>    `RingSyncWorker` + `CoachNotificationWorker`; the iOS BLE background-mode plumbing doesn't
+>    port directly but the concepts do.
+> 5. **#95 HR zone colors/thresholds** (PORT, M–L) — pure algorithmic logic: evidence-based
+>    defaults, 3 configurable modes (Standard/Auto/Custom), p10 resting-HR baseline learning over
+>    30 days. Settings UI needs a Compose equivalent.
+> 6. **#98 Daily calorie estimation** (PORT, M) — Mifflin-St Jeor BMR + Keytel/MET active energy,
+>    HR-gated (60% HRmax threshold), cadence-tiered step energy. Pure math, no platform deps.
+> 7. **#100 Strava integration** (ADAPT, L) — OAuth (Chrome Custom Tabs), TCX builder (GPS-HR merge),
+>    token refresh, shareable stat card rendering. API layer + TCX carry directly.
+>
+> **Tier 3 — large features (XL effort, branch-appropriate):**
+> 8. **#96 Calorie/macro nutrition tracking** (PORT, XL) — full nutrition feature: meal logging,
+>    Open Food Facts search, barcode scan (CameraX), AI photo analysis, coach integration, intake
+>    goals. Largest new feature in this batch (~59 files on iOS). Worth its own branch.
+> 9. **#130 RWfit ring family** (ADAPT, L–XL) — dual 0x7E/0xAB protocol, full metric set, service-UUID
+>    recognition. Protocol codecs are pure Kotlin-translatable; BLE transport needs Android adaptation.
+>    Own branch per Tier-4 convention.
+>
+> **Already-have / skip:**
+> * **#97 R10M YCBT** — iOS PR is itself a port of PulseLoopAndroid#31. Already on Android.
+> * **`160c775` Version 2.5.0** — independent per-platform. Android already reads `BuildConfig.VERSION_NAME`.
 
 > **▶ RESUME HERE (next session):** Tier 1 and Tier 2 both fully clear — **#65 is DONE**, re-triaged
 > into #65a–f, all landed 2026-07-17/18: **#65a** persistence (`daed897`), **#65b** usage tracking

@@ -65,6 +65,30 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun batterySampleDao(): BatterySampleDao
     abstract fun coachNotificationRecordDao(): CoachNotificationRecordDao
 
+    suspend fun nukeAllTables() {
+        val tables = listOf(
+            "devices", "measurements", "activity_daily", "activity_buckets",
+            "battery_samples", "device_measurement_configs", "activity_sessions",
+            "activity_gps_points", "activity_events", "activity_samples",
+            "activity_sensor_polls", "sleep_sessions", "sleep_stage_blocks",
+            "coach_conversations", "coach_messages", "coach_memories",
+            "coach_tool_calls", "user_profiles", "user_goals",
+            "raw_packets", "derived_updates", "coach_summaries",
+            "wearable_logs", "coach_notification_records"
+        )
+        openHelper.writableDatabase.apply {
+            beginTransaction()
+            try {
+                for (table in tables) {
+                    execSQL("DELETE FROM $table")
+                }
+                setTransactionSuccessful()
+            } finally {
+                endTransaction()
+            }
+        }
+    }
+
     companion object {
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
 

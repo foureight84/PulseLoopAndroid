@@ -1591,20 +1591,213 @@ private fun BatteryHistorySection(db: PulseLoopDatabase) {
 
 // MARK: - Privacy & Data
 
+/** Destructive data-action options for the Privacy & Data screen. */
+private sealed class ResetAction {
+    data object UnpairRing : ResetAction()
+    data object ResetAppData : ResetAction()
+    data object UnpairAndReset : ResetAction()
+
+    val title: String get() = when (this) {
+        is UnpairRing -> "Unpair ring?"
+        is ResetAppData -> "Reset app data?"
+        is UnpairAndReset -> "Unpair ring & reset app data?"
+    }
+    val message: String get() = when (this) {
+        is UnpairRing -> "Unpair your ring? The ring will forget this phone; your data stays."
+        is ResetAppData -> "This permanently erases all your data — metrics, sleep, activity, coach history, settings, and saved API keys — and can't be undone."
+        is UnpairAndReset -> "This unpairs your ring, then permanently erases all your data — metrics, sleep, activity, coach history, settings, and saved API keys — and can't be undone."
+    }
+    val confirmLabel: String get() = when (this) {
+        is UnpairRing -> "Unpair ring"
+        is ResetAppData -> "Reset app data"
+        is UnpairAndReset -> "Unpair & reset"
+    }
+}
+
 /**
- * Privacy & Data detail screen (iOS PrivacyDataView): demo-data controls (reseed + clear,
- * moved here from About) and the diagnostics export with its anonymization opt-out.
- * The mask toggle deliberately defaults ON for every visit and is never persisted off —
- * an unmasked export (full BLE frames, health values) is a one-shot, explicit choice.
+ * Privacy & Data detail screen (iOS PrivacyDataView): grouped sections for diagnostics export,
+ * destructive App-data reset actions (Unpair Ring, Reset App Data, Unpair & Reset),
+ * data backup (export/import as JSON), and demo-data controls. Reflects the app's
+ * transparency/privacy ethos — everything here is local and explicit.
  */
 @Composable
-fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
+fun PrivacyDataSettingsScreen(
+    onBack: () -> Unit,
+    coordinator: RingSyncCoordinator? = null,
+    bleClient: RingBLEClient? = null,
+    onNavigateToOnboarding: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showSeedDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
 
+    /** Which destructive App-data action is awaiting confirmation. */
+    var pendingReset by remember { mutableStateOf<ResetAction?>(null) }
+
+    // Data export/import state.
+    var exportInProgress by remember { mutableStateOf(false) }
+    var importInProgress by remember { mutableStateOf(false) }
+    var showImportConfirm by remember { mutableStateOf(false) }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var showImportSuccess by remember { mutableStateOf(false) }
+
+    val filePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            pendingImportUri = uri
+            showImportConfirm = true
+        }
+    }
+
+    fun clearAllPreferences() {
+        listOf("pulseloop_secure", "ring_ble", "pulseloop_prefs").forEach { name ->
+            context.getSharedPreferences(name, 0).edit().clear().apply()
+        }
+    }
+
+    fun performUnpair() {
+        scope.launch {
+            RingSyncWorker.cancel(context)
+            coordinator?.forgetRing { PulseLoopDatabase.getInstance(context).deviceDao().clear() }
+                ?: run {
+                    bleClient?.forget()
+                    PulseLoopDatabase.getInstance(context).deviceDao().clear()
+                }
+        }
+    }
+
+    fun performResetAppData() {
+        scope.launch {
+            PulseLoopDatabase.getInstance(context).nukeAllTables()
+            clearAllPreferences()
+            onNavigateToOnboarding()
+        }
+    }
+
+    fun performUnpairAndReset() {
+        scope.launch {
+            RingSyncWorker.cancel(context)
+            if (coordinator != null) {
+                coordinator.forgetRing { PulseLoopDatabase.getInstance(context).deviceDao().clear() }
+                PulseLoopDatabase.getInstance(context).nukeAllTables()
+            } else {
+                bleClient?.forget()
+                PulseLoopDatabase.getInstance(context).apply {
+                    deviceDao().clear()
+                    nukeAllTables()
+                }
+            }
+            clearAllPreferences()
+            onNavigateToOnboarding()
+        }
+    }
+
     SettingsSubScreen(title = "Privacy & Data", onBack = onBack) {
+        // Data Backup — export/import full app data as JSON.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Data Backup", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Export all your data to a single JSON file for backup, device migration, or external analysis. Import restores everything — replacing all current data.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            exportInProgress = true
+                            scope.launch {
+                                try {
+                                    val db = PulseLoopDatabase.getInstance(context)
+                                    val uri = com.pulseloop.data.DataArchiveService.exportToFile(context, db)
+                                    if (uri != null) {
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "application/json"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(Intent.createChooser(shareIntent, "Export PulseLoop Data"))
+                                    }
+                                } catch (_: Exception) {
+                                    statusMessage = "Export failed"
+                                }
+                                exportInProgress = false
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !exportInProgress,
+                    ) {
+                        if (exportInProgress) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (exportInProgress) "Exporting…" else "Export All Data")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            filePicker.launch(arrayOf("application/json"))
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !importInProgress,
+                    ) {
+                        if (importInProgress) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (importInProgress) "Importing…" else "Import Data")
+                    }
+                }
+            }
+        }
+
+        // App data — destructive reset/restore actions.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("App Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Destructive actions: unpair the ring, factory-reset app data, or both.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { pendingReset = ResetAction.UnpairRing },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Icon(Icons.Filled.BluetoothDisabled, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Unpair Ring")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { pendingReset = ResetAction.ResetAppData },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Icon(Icons.Filled.DeleteForever, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Reset App Data")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { pendingReset = ResetAction.UnpairAndReset },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Icon(Icons.Filled.Warning, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Unpair & Reset")
+                }
+            }
+        }
+
         // Demo data — Android-only (iOS seeds via the Simulator's SeedData).
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
@@ -1626,8 +1819,7 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
             }
         }
 
-        // Diagnostics export — same exporter the Developer screen uses, surfaced here so
-        // sharing an anonymized log for a bug report doesn't require the 7-tap unlock.
+        // Diagnostics export.
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 var maskSensitive by remember { mutableStateOf(true) }
@@ -1676,6 +1868,89 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
         }
     }
 
+    // Confirmation dialog for destructive actions.
+    val action = pendingReset
+    if (action != null) {
+        AlertDialog(
+            onDismissRequest = { pendingReset = null },
+            title = { Text(action.title) },
+            text = { Text(action.message) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingReset = null
+                    when (action) {
+                        is ResetAction.UnpairRing -> performUnpair()
+                        is ResetAction.ResetAppData -> performResetAppData()
+                        is ResetAction.UnpairAndReset -> performUnpairAndReset()
+                    }
+                }) {
+                    Text(action.confirmLabel, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingReset = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Import confirmation dialog.
+    if (showImportConfirm) {
+        AlertDialog(
+            onDismissRequest = { showImportConfirm = false; pendingImportUri = null },
+            title = { Text("Replace all data?") },
+            text = {
+                Text("This permanently deletes everything currently in the app and replaces it with the contents of this file. This can't be undone.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showImportConfirm = false
+                    val uri = pendingImportUri ?: return@TextButton
+                    pendingImportUri = null
+                    importInProgress = true
+                    scope.launch {
+                        try {
+                            val db = PulseLoopDatabase.getInstance(context)
+                            com.pulseloop.data.DataArchiveService.importFile(context, uri, db)
+                            showImportSuccess = true
+                        } catch (_: Exception) {
+                            statusMessage = "Import failed — the file may be corrupt or from a newer version."
+                        }
+                        importInProgress = false
+                    }
+                }) {
+                    Text("Delete old data & import", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportConfirm = false; pendingImportUri = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Import success alert.
+    if (showImportSuccess) {
+        AlertDialog(
+            onDismissRequest = { showImportSuccess = false },
+            title = { Text("Import Complete") },
+            text = { Text("Your data has been restored from the backup.") },
+            confirmButton = {
+                TextButton(onClick = { showImportSuccess = false }) { Text("OK") }
+            },
+        )
+    }
+
+    // Generic error alert.
+    statusMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { statusMessage = null },
+            title = { Text("Error") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { statusMessage = null }) { Text("OK") }
+            },
+        )
+    }
+
     if (showSeedDialog) {
         AlertDialog(
             onDismissRequest = { showSeedDialog = false },
@@ -1686,7 +1961,6 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
                     showSeedDialog = false
                     scope.launch {
                         DemoDataSeeder.seed(PulseLoopDatabase.getInstance(context))
-                        // Freshly seeded demo data should show up on the widgets too.
                         com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                     }
                 }) { Text("Reseed") }

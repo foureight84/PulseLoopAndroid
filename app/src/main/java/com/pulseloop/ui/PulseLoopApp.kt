@@ -572,7 +572,16 @@ fun PulseLoopApp() {
                     GoalsSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }
                 paddedComposable("settings/privacy") {
-                    PrivacyDataSettingsScreen(onBack = { navController.popBackStack() })
+                    PrivacyDataSettingsScreen(
+                        onBack = { navController.popBackStack() },
+                        coordinator = coordinator,
+                        bleClient = bleClient,
+                        onNavigateToOnboarding = {
+                            navController.navigate("onboarding") {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        },
+                    )
                 }
                 paddedComposable("settings/about") {
                     AboutSettingsScreen(
