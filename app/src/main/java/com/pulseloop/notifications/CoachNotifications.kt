@@ -159,6 +159,8 @@ class CoachNotificationWorker(
         /** iOS `freshnessWindow` (3h) — a live measurement this recent counts as fresh data even
          *  without a completed full sync (covers rings that stream continuously). */
         private const val RECENT_DATA_WINDOW_MS = 3 * 60 * 60_000L
+        /** iOS #94 `hasRecentData` window — broader staleness check separate from the sync window. */
+        private const val STALE_DATA_WINDOW_MS = 60 * 60_000L
     }
 
     override suspend fun doWork(): Result {

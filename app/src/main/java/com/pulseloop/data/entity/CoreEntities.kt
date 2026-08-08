@@ -84,6 +84,9 @@ data class ActivityDailyEntity(
     val syncedAt: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** Ported from iOS #98: net active calories estimated from all-day HR + step buckets when the
+     *  ring does not report device-side calories. Read through [effectiveActiveCalories]. */
+    val estimatedActiveCalories: Double? = null,
 )
 
 /**
@@ -211,6 +214,16 @@ data class UserProfileEntity(
     val baselineCompleted: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** iOS #95: HR zone mode — "standard", "auto" (from baseline), or "custom". Default "auto". */
+    val hrZoneModeRaw: String = "auto",
+    /** iOS #95: Resting-HR baseline learned from 30-day p10. */
+    val hrRestingBaseline: Double? = null,
+    val hrRestingBaselineUpdatedAt: Long? = null,
+    /** iOS #95: Custom HR zone boundaries (only used when hrZoneModeRaw == "custom"). */
+    val hrCustomLowUpper: Double? = null,
+    val hrCustomAthleticUpper: Double? = null,
+    val hrCustomElevatedStart: Double? = null,
+    val hrCustomHighStart: Double? = null,
 )
 
 /**

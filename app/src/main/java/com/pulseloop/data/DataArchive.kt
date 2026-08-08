@@ -56,6 +56,7 @@ data class PulseArchive(
     val distanceMeters: Double = 0.0, val activeMinutes: Int = 0,
     val source: String = "mock", val syncedAt: Long? = null,
     val createdAt: Long, val updatedAt: Long,
+    val estimatedActiveCalories: Double? = null,
 )
 
 @Serializable data class ActivityBucketDTO(

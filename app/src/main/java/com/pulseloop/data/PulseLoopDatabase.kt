@@ -40,7 +40,7 @@ import com.pulseloop.data.entity.*
         BatterySampleEntity::class,
         CoachNotificationRecordEntity::class,
     ],
-    version = 16,
+    version = 18,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -313,6 +313,24 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `estimatedActiveCalories` REAL")
+            }
+        }
+
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrZoneModeRaw` TEXT NOT NULL DEFAULT 'auto'")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrRestingBaseline` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrRestingBaselineUpdatedAt` INTEGER")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomLowUpper` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomAthleticUpper` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomElevatedStart` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomHighStart` REAL")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -395,6 +413,8 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_13_14,
                         MIGRATION_14_15,
                         MIGRATION_15_16,
+                        MIGRATION_16_17,
+                        MIGRATION_17_18,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

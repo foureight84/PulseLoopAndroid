@@ -140,17 +140,51 @@ object VitalsThresholdEngine {
     // ─────────────────────────── Heart rate ───────────────────────────
 
     private fun heartRateZones(profile: UserPhysiologyProfile): List<MetricZone> {
-        // Athletes commonly rest below 60 (and even near 40) — that is optimal, not a concern.
-        // Beta-blockers also lower resting HR; we relabel rather than alarm.
+        val mode = profile.hrZoneModeRaw ?: "auto"
+        val athlete = profile.athleteMode
+        val baseline = profile.hrRestingBaseline
+
+        val lowUpper: Double
+        val athleticUpper: Double?
+        val elevatedStart: Double
+        val highStart: Double
+
+        when (mode) {
+            "custom" -> {
+                lowUpper = profile.hrCustomLowUpper ?: 50.0
+                athleticUpper = if (athlete) profile.hrCustomAthleticUpper ?: 60.0 else null
+                elevatedStart = profile.hrCustomElevatedStart ?: 90.0
+                highStart = profile.hrCustomHighStart ?: 120.0
+            }
+            "auto" -> {
+                if (baseline != null) {
+                    lowUpper = clamp(baseline - 12, min = 35.0, max = if (athlete) 40.0 else 55.0)
+                    elevatedStart = clamp(baseline + 40, min = 85.0, max = 105.0)
+                    highStart = elevatedStart + 25
+                } else {
+                    lowUpper = if (athlete) 40.0 else 50.0
+                    elevatedStart = 90.0
+                    highStart = 120.0
+                }
+                athleticUpper = if (athlete) 60.0 else null
+            }
+            else -> { // "standard"
+                lowUpper = if (athlete) 40.0 else 50.0
+                athleticUpper = if (athlete) 60.0 else null
+                elevatedStart = 90.0
+                highStart = 120.0
+            }
+        }
+
         val lowLabel: String
         val lowSeverity: ZoneSeverity
         val lowExplanation: String
         val lowColor: VitalColorToken
         when {
-            profile.athleteMode -> {
+            athlete -> {
                 lowLabel = "Athletic"
                 lowSeverity = ZoneSeverity.OPTIMAL
-                lowColor = VitalColorToken.MetricAccent(MetricKind.HEART_RATE)   // a low athletic HR is good, not a caution
+                lowColor = VitalColorToken.MetricAccent(MetricKind.HEART_RATE)
                 lowExplanation = "A low resting heart rate is common with high fitness."
             }
             profile.usesBetaBlockers -> {
@@ -166,26 +200,27 @@ object VitalsThresholdEngine {
                 lowExplanation = "Below the typical resting range. Often fine, but worth noting if you feel faint."
             }
         }
-        return listOf(
-            MetricZone("hr.low", lowLabel, null, 60.0, lowSeverity, lowColor, lowExplanation),
-            // 60–100 inclusive is normal, so the half-open upper bound is 101.
-            MetricZone(
-                "hr.normal", "Normal", 60.0, 101.0,
-                ZoneSeverity.NORMAL, VitalColorToken.MetricAccent(MetricKind.HEART_RATE),
-                "A typical resting heart rate for adults is 60–100 bpm.",
-            ),
-            MetricZone(
-                "hr.elevated", "Elevated", 101.0, 120.0,
-                ZoneSeverity.WATCH, VitalColorToken.Amber,
-                "Above the typical resting range. Activity, caffeine, or stress can raise it.",
-            ),
-            MetricZone(
-                "hr.high", "High", 120.0, null,
-                ZoneSeverity.HIGH, VitalColorToken.BrightRed,
-                "A high resting heart rate. Talk to a clinician if it persists at rest.",
-            ),
-        )
+
+        val zones = mutableListOf<MetricZone>()
+        zones.add(MetricZone("hr.low", lowLabel, null, lowUpper, lowSeverity, lowColor, lowExplanation))
+        if (athlete && athleticUpper != null) {
+            zones.add(MetricZone("hr.athletic", "Athletic", lowUpper, athleticUpper, ZoneSeverity.OPTIMAL, VitalColorToken.Mint, "Athletic resting range."))
+        }
+        val normalLow = if (athlete && athleticUpper != null) athleticUpper else lowUpper
+        zones.add(MetricZone("hr.normal", "Normal", normalLow, elevatedStart,
+            ZoneSeverity.NORMAL, VitalColorToken.MetricAccent(MetricKind.HEART_RATE),
+            "A typical resting heart rate for adults."))
+        zones.add(MetricZone("hr.elevated", "Elevated", elevatedStart, highStart,
+            ZoneSeverity.WATCH, VitalColorToken.Amber,
+            "Above the typical resting range. Activity, caffeine, or stress can raise it."))
+        zones.add(MetricZone("hr.high", "High", highStart, null,
+            ZoneSeverity.HIGH, VitalColorToken.BrightRed,
+            "A high resting heart rate. Talk to a clinician if it persists at rest."))
+        return zones
     }
+
+    private fun clamp(value: Double, min: Double, max: Double): Double =
+        value.coerceIn(min, max)
 
     // ─────────────────────────── SpO₂ ───────────────────────────
 

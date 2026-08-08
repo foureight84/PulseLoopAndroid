@@ -275,15 +275,13 @@ class EventPersistenceSubscriber(
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
             }
             is PulseEvent.SyncProgress -> {
-                // Only "done" (a history sync actually completed) stamps lastFullSyncAt — the
-                // coach-notification freshness gate (iOS #61c). Bare CONNECT already re-stamps
-                // the looser lastSyncAt elsewhere and must not touch this one.
                 if (event.stage == "done") {
                     val device = db.deviceDao().currentReal()
                     if (device != null) {
                         db.deviceDao().upsert(device.copy(lastFullSyncAt = System.currentTimeMillis()))
                     }
                     reconcileRecentlyFinishedWorkouts()
+                    recomputeCalorieEstimates()
                 }
             }
             is PulseEvent.HeartRateComplete -> {}
@@ -625,6 +623,22 @@ class EventPersistenceSubscriber(
         }
     }
 
+    // ── Calorie estimation recompute (iOS #98) ───────────────────────────────────
+
+    private suspend fun recomputeCalorieEstimates() {
+        val profile = db.userProfileDao().get() ?: return
+        val estimator = DailyCalorieEstimator.Profile(
+            sex = profile.sex, age = profile.age,
+            weightKg = profile.weightKg, heightCm = profile.heightCm,
+        )
+        val now = System.currentTimeMillis()
+        val dayMs = 86_400_000L
+        for (d in 0 until 7) {
+            val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(now - d * dayMs)
+            DailyCalorieEstimator.recompute(dayStart, db, estimator)
+        }
+    }
+
     private companion object {
         const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
     }
@@ -699,6 +713,7 @@ internal fun replaceOverlappingSleepBlocks(
             )
         }
     }
+
     for (block in replacements) byStart[block.startAt] = block
     return byStart.values.sortedBy { it.startAt }
 }
