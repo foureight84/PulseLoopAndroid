@@ -7,6 +7,7 @@ import com.pulseloop.data.dao.Bucket
 import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
 import com.pulseloop.coach.summaries.CoachSummaryKind
+import com.pulseloop.service.DailyCalorieEstimator
 import com.pulseloop.service.HeartRateZones
 import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepInsights
@@ -79,9 +80,20 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
     init {
         viewModelScope.launch {
             currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { activity ->
+                // iOS #98: the ring's own calorie figure wins when it reported one; otherwise show
+                // the on-device estimate (BMR accrued so far + net active). Reading `calories`
+                // straight off the row would show 0 all day for rings that report none — which is
+                // the whole reason the estimator exists.
+                val profile = db.userProfileDao().get()?.let {
+                    DailyCalorieEstimator.Profile(it.sex, it.age, it.weightKg, it.heightCm)
+                }
+                val calories = activity?.let { row ->
+                    profile?.let { DailyCalorieEstimator.effectiveCalories(row, it) }
+                        ?: DailyCalorieEstimator.deviceReportedCalories(row)
+                }
                 _state.update { it.copy(
                     steps = activity?.steps,
-                    calories = activity?.calories,
+                    calories = calories,
                     distanceMeters = activity?.distanceMeters,
                     activeMinutes = activity?.activeMinutes,
                 ) }
@@ -619,7 +631,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             bpDiaSeries = bpDia.map { VitalSample(it.timestamp, it.value) },
             glucoseSeries = gluc.map { VitalSample(it.timestamp, it.value + glucoseOffset) },
             peakHr = hr.maxOfOrNull { it.value },
-            profile = apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex),
+            profile = apiKeyStore.physiologyProfile(userProfile),
             // "Reference entered" ⇔ a non-zero calibration offset in Settings (0 = not set).
             hasBPReference = (apiKeyStore?.bpAdjustSystolic ?: 0) != 0 || (apiKeyStore?.bpAdjustDiastolic ?: 0) != 0,
             isGlucoseCalibrated = glucoseOffset != 0.0 || (apiKeyStore?.glucoseRefMgdl ?: 0.0) != 0.0,
@@ -638,19 +650,29 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
 }
 
 /**
- * Build the [UserPhysiologyProfile] from the stored age/sex plus the app-side physiology prefs
+ * Build the [UserPhysiologyProfile] from the stored profile row plus the app-side physiology prefs
  * (iOS #35). Nullable receiver so the (rare) no-store path still yields a sensible default profile.
  * The tri-state Settings values (`Boolean?`) collapse to the engine's non-null flags: null/false
  * both mean "no adjustment", only true tightens/relaxes a range.
+ *
+ * Takes the whole [UserProfileEntity] rather than just age/sex so the iOS #95 HR-zone fields travel
+ * with it — dropping them here left [VitalsThresholdEngine] with a null baseline and no way to see
+ * the user's chosen mode or custom boundaries, so every zone computation took the default branch.
  */
-private fun ApiKeyStore?.physiologyProfile(age: Int?, sex: String?): UserPhysiologyProfile =
+private fun ApiKeyStore?.physiologyProfile(profile: UserProfileEntity?): UserPhysiologyProfile =
     UserPhysiologyProfile.fromProfile(
-        age, sex,
+        profile?.age, profile?.sex,
         athleteMode = this?.athleteMode ?: false,
         altitudeMeters = this?.altitudeMeters,
         usesBetaBlockers = this?.usesBetaBlockers == true,
         hasKnownLungCondition = this?.hasKnownLungCondition == true,
         preferredGlucoseUnit = this?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL,
+        hrZoneModeRaw = profile?.hrZoneModeRaw ?: "auto",
+        hrRestingBaseline = profile?.hrRestingBaseline,
+        hrCustomLowUpper = profile?.hrCustomLowUpper,
+        hrCustomAthleticUpper = profile?.hrCustomAthleticUpper,
+        hrCustomElevatedStart = profile?.hrCustomElevatedStart,
+        hrCustomHighStart = profile?.hrCustomHighStart,
     )
 
 /**
@@ -934,7 +956,7 @@ class VitalDetailViewModel(
         viewModelScope.launch {
             try {
                 val userProfile = db.userProfileDao().get()
-                val physiology = apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex)
+                val physiology = apiKeyStore.physiologyProfile(userProfile)
                 engineThresholds(metric, physiology)?.let { engine ->
                     _state.update { it.copy(thresholds = engine) }
                 }
@@ -1092,7 +1114,7 @@ class VitalDetailViewModel(
         // baseline-relative zones from the window's samples further below.
         val physiology = try {
             val userProfile = db.userProfileDao().get()
-            apiKeyStore.physiologyProfile(userProfile?.age, userProfile?.sex)
+            apiKeyStore.physiologyProfile(userProfile)
         } catch (_: Exception) { UserPhysiologyProfile.UNKNOWN }
 
         if (metric == "bp") {

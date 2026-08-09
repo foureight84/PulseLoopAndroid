@@ -32,6 +32,9 @@ data class PulseArchive(
     val coachSummaries: List<CoachSummaryDTO> = emptyList(),
     val wearableLogs: List<WearableLogDTO> = emptyList(),
     val coachNotificationRecords: List<CoachNotificationRecordDTO> = emptyList(),
+    /** iOS #96 nutrition. Not in iOS's own `DataArchive.swift` — see the note on [MealEntryDTO]. */
+    val mealEntries: List<MealEntryDTO> = emptyList(),
+    val foodProducts: List<CachedFoodProductDTO> = emptyList(),
 )
 
 @Serializable data class DeviceDTO(
@@ -174,6 +177,10 @@ data class PulseArchive(
     val id: String, val steps: Int = 10000, val distanceMeters: Double = 8000.0,
     val calories: Int = 500, val sleepMinutes: Int = 480,
     val activeMinutes: Int = 45, val workoutsPerWeek: Int = 4,
+    // iOS #96 intake goals. Defaulted so archives written before these existed still import.
+    val intakeCalories: Double? = null, val intakeProteinG: Double? = null,
+    val intakeCarbsG: Double? = null, val intakeFatG: Double? = null,
+    val nutritionEnabled: Boolean = false,
     val updatedAt: Long,
 )
 
@@ -204,4 +211,34 @@ data class PulseArchive(
 
 @Serializable data class CoachNotificationRecordDTO(
     val id: String, val title: String, val body: String, val createdAt: Long,
+)
+
+/**
+ * iOS #96 meal log. **Android-originated — iOS's `DataArchive.swift` does not carry these.** Its
+ * exporter landed in the same week as the nutrition models and was never extended, so an iOS
+ * export→import silently drops the user's meals. Included here because the Android import dialog
+ * promises to "permanently delete everything currently in the app and replace it", and wiping
+ * meal_entries without restoring them would make that literally true in the worst way. Upstream
+ * candidate for iOS.
+ */
+@Serializable data class MealEntryDTO(
+    val id: String, val date: Long, val timestamp: Long, val name: String,
+    val mealTypeRaw: String = "snack", val calories: Double,
+    val proteinG: Double = 0.0, val carbsG: Double = 0.0, val fatG: Double = 0.0,
+    val fiberG: Double? = null, val sugarG: Double? = null, val sodiumMg: Double? = null,
+    val sourceRaw: String = "manual", val offProductCode: String? = null,
+    val servingDescription: String? = null, val servingGrams: Double? = null,
+    val quantity: Double = 1.0, val confidenceRaw: String = "medium",
+    val userEdited: Boolean = false, val notes: String? = null,
+    val loggedByCoach: Boolean = false, val createdAt: Long,
+)
+
+@Serializable data class CachedFoodProductDTO(
+    val code: String, val name: String, val brand: String? = null,
+    val energyKcal100g: Double, val protein100g: Double = 0.0,
+    val carbs100g: Double = 0.0, val fat100g: Double = 0.0,
+    val fiber100g: Double? = null, val sugars100g: Double? = null,
+    val saturatedFat100g: Double? = null, val sodiumMg100g: Double? = null,
+    val servingSizeText: String? = null, val servingQuantityG: Double? = null,
+    val lastUsedAt: Long, val useCount: Int = 0,
 )

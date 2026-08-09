@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.core.content.FileProvider
+import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
 import com.pulseloop.BuildConfig
 import com.pulseloop.data.entity.*
@@ -75,6 +76,7 @@ object DataArchiveService {
                     activeMinutes = c.int_("activeMinutes"), source = c.str("source"),
                     syncedAt = c.longOrNull("syncedAt"), createdAt = c.long("createdAt"),
                     updatedAt = c.long("updatedAt"),
+                    estimatedActiveCalories = c.dblOrNull("estimatedActiveCalories"),
                 )
             },
             activityBuckets = collect("activity_buckets") { c ->
@@ -222,7 +224,13 @@ object DataArchiveService {
                     id = c.str("id"), steps = c.int_("steps"),
                     distanceMeters = c.dbl("distanceMeters"), calories = c.int_("calories"),
                     sleepMinutes = c.int_("sleepMinutes"), activeMinutes = c.int_("activeMinutes"),
-                    workoutsPerWeek = c.int_("workoutsPerWeek"), updatedAt = c.long("updatedAt"),
+                    workoutsPerWeek = c.int_("workoutsPerWeek"),
+                    intakeCalories = c.dblOrNull("intakeCalories"),
+                    intakeProteinG = c.dblOrNull("intakeProteinG"),
+                    intakeCarbsG = c.dblOrNull("intakeCarbsG"),
+                    intakeFatG = c.dblOrNull("intakeFatG"),
+                    nutritionEnabled = c.bool("nutritionEnabled"),
+                    updatedAt = c.long("updatedAt"),
                 )
             },
             rawPackets = collect("raw_packets") { c ->
@@ -251,9 +259,13 @@ object DataArchiveService {
                 )
             },
             wearableLogs = collect("wearable_logs") { c ->
+                // `event` is the raw message. It used to be packed as "CATEGORY/LEVEL: message",
+                // which the importer then assigned straight back to `message` — so every
+                // export→import cycle prefixed the text again. Category and level travel in their
+                // own fields.
                 WearableLogDTO(
                     id = c.str("id"), timestamp = c.long("timestamp"),
-                    event = "${c.str("categoryRaw")}/${c.str("levelRaw")}: ${c.str("message")}",
+                    event = c.str("message"),
                     detail = c.strOrNull("metadataJSON"),
                     deviceId = c.strOrNull("deviceTypeRaw"),
                     categoryRaw = c.str("categoryRaw"),
@@ -264,6 +276,35 @@ object DataArchiveService {
                 CoachNotificationRecordDTO(
                     id = c.str("id"), title = c.str("title"), body = c.str("body"),
                     createdAt = c.long("createdAt"),
+                )
+            },
+            mealEntries = collect("meal_entries") { c ->
+                MealEntryDTO(
+                    id = c.str("id"), date = c.long("date"), timestamp = c.long("timestamp"),
+                    name = c.str("name"), mealTypeRaw = c.str("mealTypeRaw"),
+                    calories = c.dbl("calories"), proteinG = c.dbl("proteinG"),
+                    carbsG = c.dbl("carbsG"), fatG = c.dbl("fatG"),
+                    fiberG = c.dblOrNull("fiberG"), sugarG = c.dblOrNull("sugarG"),
+                    sodiumMg = c.dblOrNull("sodiumMg"), sourceRaw = c.str("sourceRaw"),
+                    offProductCode = c.strOrNull("offProductCode"),
+                    servingDescription = c.strOrNull("servingDescription"),
+                    servingGrams = c.dblOrNull("servingGrams"), quantity = c.dbl("quantity"),
+                    confidenceRaw = c.str("confidenceRaw"), userEdited = c.bool("userEdited"),
+                    notes = c.strOrNull("notes"), loggedByCoach = c.bool("loggedByCoach"),
+                    createdAt = c.long("createdAt"),
+                )
+            },
+            foodProducts = collect("food_products") { c ->
+                CachedFoodProductDTO(
+                    code = c.str("code"), name = c.str("name"), brand = c.strOrNull("brand"),
+                    energyKcal100g = c.dbl("energyKcal100g"), protein100g = c.dbl("protein100g"),
+                    carbs100g = c.dbl("carbs100g"), fat100g = c.dbl("fat100g"),
+                    fiber100g = c.dblOrNull("fiber100g"), sugars100g = c.dblOrNull("sugars100g"),
+                    saturatedFat100g = c.dblOrNull("saturatedFat100g"),
+                    sodiumMg100g = c.dblOrNull("sodiumMg100g"),
+                    servingSizeText = c.strOrNull("servingSizeText"),
+                    servingQuantityG = c.dblOrNull("servingQuantityG"),
+                    lastUsedAt = c.long("lastUsedAt"), useCount = c.int_("useCount"),
                 )
             },
         )
@@ -284,23 +325,25 @@ object DataArchiveService {
         val jsonStr = stream.bufferedReader().use { it.readText() }
         val archive = json.decodeFromString(PulseArchive.serializer(), jsonStr)
 
-        // Wrap the entire restore in a single transaction so a process kill mid-import
-        // leaves the original database intact (no data loss) rather than permanently empty.
-        val writableDb = db.openHelper.writableDatabase
-        writableDb.beginTransaction()
-        try {
-            writableDb.execSQL("PRAGMA foreign_keys = OFF")
-            for (table in listOf(
-                "devices", "measurements", "activity_daily", "activity_buckets",
-                "battery_samples", "device_measurement_configs", "activity_sessions",
-                "activity_gps_points", "activity_events", "activity_samples",
-                "activity_sensor_polls", "sleep_sessions", "sleep_stage_blocks",
-                "coach_conversations", "coach_messages", "coach_memories",
-                "coach_tool_calls", "user_profiles", "user_goals",
-                "raw_packets", "derived_updates", "coach_summaries",
-                "wearable_logs", "coach_notification_records",
-            )) {
-                writableDb.execSQL("DELETE FROM $table")
+        // One transaction for the whole restore, so a process kill mid-import leaves the original
+        // database intact rather than permanently empty.
+        //
+        // This MUST go through Room's `withTransaction`, not `openHelper.writableDatabase
+        // .beginTransaction()`. A framework SQLite transaction is bound to the thread that opened
+        // it, while a suspend DAO call hops to Room's query dispatcher — so a raw transaction here
+        // would leave every `db.xxxDao()` call below blocking on a write connection held by this
+        // (suspended) thread. `withTransaction` installs a TransactionElement that keeps those DAO
+        // calls on the transaction's own dispatcher. It also routes through
+        // `RoomDatabase.endTransaction()`, which is what fires the invalidation tracker — a raw
+        // transaction leaves every observing Flow stale after the restore.
+        db.withTransaction {
+            // Deletes go through the same transaction connection, so Room's invalidation triggers
+            // still fire for them. Parent-before-child ordering means the CASCADE foreign keys
+            // (sleep_stage_blocks, coach_messages) resolve on their own — the previous
+            // `PRAGMA foreign_keys = OFF` was a no-op anyway, since SQLite refuses to toggle FK
+            // enforcement inside a transaction.
+            for (table in PulseLoopDatabase.ALL_TABLES) {
+                db.openHelper.writableDatabase.execSQL("DELETE FROM $table")
             }
 
             for (d in archive.devices) {
@@ -329,6 +372,7 @@ object DataArchiveService {
                     distanceMeters = a.distanceMeters, activeMinutes = a.activeMinutes,
                     source = a.source, syncedAt = a.syncedAt, createdAt = a.createdAt,
                     updatedAt = a.updatedAt,
+                    estimatedActiveCalories = a.estimatedActiveCalories,
                 ))
             }
             for (b in archive.activityBuckets) {
@@ -472,6 +516,9 @@ object DataArchiveService {
                     id = ug.id, steps = ug.steps, distanceMeters = ug.distanceMeters,
                     calories = ug.calories, sleepMinutes = ug.sleepMinutes,
                     activeMinutes = ug.activeMinutes, workoutsPerWeek = ug.workoutsPerWeek,
+                    intakeCalories = ug.intakeCalories, intakeProteinG = ug.intakeProteinG,
+                    intakeCarbsG = ug.intakeCarbsG, intakeFatG = ug.intakeFatG,
+                    nutritionEnabled = ug.nutritionEnabled,
                     updatedAt = ug.updatedAt,
                 ))
             }
@@ -512,15 +559,33 @@ object DataArchiveService {
                     id = nr.id, title = nr.title, body = nr.body, createdAt = nr.createdAt,
                 ))
             }
-
-            writableDb.execSQL("PRAGMA foreign_keys = ON")
-            writableDb.setTransactionSuccessful()
-        } finally {
-            writableDb.endTransaction()
+            for (m in archive.mealEntries) {
+                db.mealEntryDao().upsert(MealEntryEntity(
+                    id = m.id, date = m.date, timestamp = m.timestamp, name = m.name,
+                    mealTypeRaw = m.mealTypeRaw, calories = m.calories, proteinG = m.proteinG,
+                    carbsG = m.carbsG, fatG = m.fatG, fiberG = m.fiberG, sugarG = m.sugarG,
+                    sodiumMg = m.sodiumMg, sourceRaw = m.sourceRaw, offProductCode = m.offProductCode,
+                    servingDescription = m.servingDescription, servingGrams = m.servingGrams,
+                    quantity = m.quantity, confidenceRaw = m.confidenceRaw, userEdited = m.userEdited,
+                    notes = m.notes, loggedByCoach = m.loggedByCoach, createdAt = m.createdAt,
+                ))
+            }
+            for (fp in archive.foodProducts) {
+                db.foodProductDao().upsert(CachedFoodProductEntity(
+                    code = fp.code, name = fp.name, brand = fp.brand,
+                    energyKcal100g = fp.energyKcal100g, protein100g = fp.protein100g,
+                    carbs100g = fp.carbs100g, fat100g = fp.fat100g, fiber100g = fp.fiber100g,
+                    sugars100g = fp.sugars100g, saturatedFat100g = fp.saturatedFat100g,
+                    sodiumMg100g = fp.sodiumMg100g, servingSizeText = fp.servingSizeText,
+                    servingQuantityG = fp.servingQuantityG, lastUsedAt = fp.lastUsedAt,
+                    useCount = fp.useCount,
+                ))
+            }
         }
 
         archive
     }
+
 
     // --- Cursor helpers ---
 

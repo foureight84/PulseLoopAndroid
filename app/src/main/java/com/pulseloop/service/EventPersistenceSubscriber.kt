@@ -282,6 +282,10 @@ class EventPersistenceSubscriber(
                     }
                     reconcileRecentlyFinishedWorkouts()
                     recomputeCalorieEstimates()
+                    // iOS #95: re-learn the resting-HR baseline that drives the "auto" HR zone
+                    // mode. Self-throttled to every 6h, so calling it on every completed sync is
+                    // cheap.
+                    RestingHRBaselineService.refreshIfStale(db)
                 }
             }
             is PulseEvent.HeartRateComplete -> {}

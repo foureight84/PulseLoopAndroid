@@ -5,6 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.pulseloop.data.dao.*
 import com.pulseloop.data.entity.*
@@ -70,8 +71,31 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun mealEntryDao(): MealEntryDao
     abstract fun foodProductDao(): FoodProductDao
 
-    suspend fun nukeAllTables() {
-        val tables = listOf(
+    /**
+     * Empty every table, atomically. Goes through Room's [withTransaction] rather than a raw
+     * `openHelper.writableDatabase.beginTransaction()`: only the Room path runs
+     * `RoomDatabase.endTransaction()`, which is what kicks the invalidation tracker — without it
+     * every observing Flow keeps serving the rows we just deleted until something else writes.
+     *
+     * Not [clearAllTables]: that also drops the sqlite_sequence rows and checkpoints the WAL, and
+     * it throws if called while a transaction is open — which is exactly how `DataArchiveService`
+     * uses this list during a restore.
+     */
+    suspend fun nukeAllTables() = withTransaction {
+        for (table in ALL_TABLES) {
+            openHelper.writableDatabase.execSQL("DELETE FROM $table")
+        }
+    }
+
+    companion object {
+        /**
+         * Every table in the schema, in parent-before-child order so the CASCADE foreign keys
+         * (sleep_stage_blocks → sleep_sessions, coach_messages → coach_conversations) resolve on
+         * their own. Shared by [nukeAllTables] and `DataArchiveService`'s restore so the two can
+         * never drift — they were separate literals before, and the restore list was already two
+         * tables short.
+         */
+        val ALL_TABLES = listOf(
             "devices", "measurements", "activity_daily", "activity_buckets",
             "battery_samples", "device_measurement_configs", "activity_sessions",
             "activity_gps_points", "activity_events", "activity_samples",
@@ -82,20 +106,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             "wearable_logs", "coach_notification_records",
             "meal_entries", "food_products",
         )
-        openHelper.writableDatabase.apply {
-            beginTransaction()
-            try {
-                for (table in tables) {
-                    execSQL("DELETE FROM $table")
-                }
-                setTransactionSuccessful()
-            } finally {
-                endTransaction()
-            }
-        }
-    }
 
-    companion object {
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
 
         /** v2 → v3: adds the activity_buckets table (idempotent re-sync of activity history). */
