@@ -106,7 +106,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | `0ca53a1` + `c4aab74` (CR fix: wire STALE_DATA_WINDOW_MS) |
 | ☑ | [#95](https://github.com/saksham2001/PulseLoopiOS/pull/95) `dae95ab` | ~07-22 | HR zone colors/thresholds (evidence-based defaults + Standard/Auto/Custom modes + resting-HR baseline learning) | **PORT** | M–L | `0ca53a1` |
 | ☑ | [#97](https://github.com/saksham2001/PulseLoopiOS/pull/97) `cb8e1cd` | ~07-23 | LittleMeatball R10M YCBT support + 9 shared YCBT bugfixes | **ALREADY-HAVE** | — | iOS PR is itself a port of PulseLoopAndroid#31 |
-| ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **PORT** | XL | `4084671` + `c4aab74` (CR fix: null-goal guard, dead button wired) |
+| ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **ADAPT (subset — manual meal logging + goals only; no OFF search, barcode, AI photo or coach `log_meal`)** | XL | `4084671` + `c4aab74` (CR fix: null-goal guard, dead button wired) |
 | ☑ | [#99](https://github.com/saksham2001/PulseLoopiOS/pull/99) `f06be51` | ~07-25 | Full-data JSON export/import (all models → single JSON file, atomic wipe-and-restore on import) | **PORT** | M | `802789d` + `c4aab74` (CR fix: atomic transaction, wearableLogs roundtrip, BuildConfig appVersion) |
 | ☑ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | `4ce34dc` + `c4aab74` (CR fix: mobile endpoint, intent-filter, redirect handler, pollUntilDone, BuildConfig secrets, shared OkHttpClient) |
 | ☑ | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | `68c9788` (versionName → 2.5.0 to match iOS MARKETING_VERSION) |
@@ -1324,6 +1324,76 @@ Validated against official Strava docs at developers.strava.com/docs/authenticat
 | Credentials | Per-developer `local.properties` | Hardcoded in source | `BuildConfig` from `local.properties` |
 | State param | Optional, echoed back | Generated, never validated | Generated + validated (`b073dad`) |
 | OkHttpClient | Shared singleton | New instance per call | Shared singleton |
+
+---
+
+## Session notes — 2026-08-09 cross-platform review
+
+A second review pass on PR #45, this time diffing each ported item against the iOS source it came
+from and validating Strava against the official Android OAuth docs. Everything below is fixed
+(`8df67b1`, `8f81c40`); #130 was backed out separately.
+
+### The recurring failure mode: wired-up-but-inert
+
+Three items shipped as code with **no caller**, so they passed review and tests while doing nothing:
+
+- **#98** `effectiveCalories` / `effectiveActiveCalories` — zero callers. The estimator computed and
+  stored `estimatedActiveCalories` every sync and no screen ever read it. Now read by
+  `TodayViewModel`.
+- **#95** `RestingHRBaselineService` — zero callers, so `hrRestingBaseline` stayed null forever and
+  the default `"auto"` HR-zone mode always took the no-baseline branch. The net effect of the port
+  was to move everyone's "normal" band from 60–100 to 50–90 *without* the personalisation that
+  justified moving it. Now called on sync completion.
+- **#96** `food_products` / `FoodProductDao` / `CachedFoodProductEntity` — zero callers outside
+  their own definitions. No Open Food Facts client and no barcode scanner were ported, so the table
+  can never be populated. Left in place (the archive now round-trips it) but the ledger row is
+  corrected: #96 is **ADAPT (subset)**, not PORT.
+
+Worth adding to the port checklist: *grep for a caller before marking an item done.*
+
+### Correctness bugs
+
+| Item | Bug |
+|---|---|
+| #99 | `importFile` opened a raw framework transaction on `Dispatchers.Default`, then called suspend Room DAOs that hop to Room's query dispatcher — deadlocking on the write connection the suspended thread held. `db.withTransaction { }` fixes it, and is also what fires the invalidation tracker. |
+| #98 | `deviceReportedCalories` was **inverted**: it returned the row's calories only for `source == "ring_history"` (the one case iOS excludes) and ignored real device values everywhere else. |
+| #98 | Missing the workout term, the overlap accounting and the residual-steps term — so HR-covered minutes were paid for twice, and live-only days scored zero. |
+| #98 | `recompute` inserted an `activity_daily` row when none existed, fabricating up to 7 phantom zero-step days per sync. |
+| #94 | `STALE_DATA_WINDOW_MS` (1h) was evaluated only after the 3h early-return, so `dataIsStale` was always true — silently deleting the foreground guard and letting the coach worker open a second GATT client while the app held the link. |
+| #99 | `wearableLogs` packed `"CATEGORY/LEVEL: message"` into `event` and the importer assigned it back to `message`, re-prefixing on every round-trip. |
+| #99/#96 | `ActivityDailyDTO.estimatedActiveCalories` declared but never populated; `UserGoalDTO` dropped all five intake fields; `meal_entries`/`food_products` wiped on import but never restored. |
+| #100 | OAuth state held in memory across a browser round-trip that can outlive the process; no `error=access_denied` handling; no granted-scope check; refresh "single-flight" that still burned the rotated token; no deauthorize on disconnect; `Reset App Data` left the Strava tokens on device. |
+| #100 | TCX `<Id>` was epoch seconds (schema wants `xsd:dateTime`), no `<TriggerMethod>`, wall-clock `TotalTimeSeconds`, and an empty `<Track>` uploaded for workouts with no GPS and no HR instead of the manual-activity fallback. |
+| #100 | `uploadAuto` had one caller (the manual button) while the UI claimed automatic upload, and would back-fill 20 historical workouts to a public feed on first connect. |
+| #131 | Scrub indicator drawn inside the per-block loop (later bars painted over it) via an O(n²) `indexOf`; pill unclamped at the right edge; labels stacked for one frame. |
+
+### Strava — validated against developers.strava.com/docs/authentication
+
+| Element | Android spec | Status |
+|---------|-------------|--------|
+| Auth endpoint | `GET /oauth/mobile/authorize` via implicit `ACTION_VIEW` | correct |
+| Redirect URI | custom scheme + intent-filter, `localhost` whitelisted | correct |
+| Token exchange / refresh | `POST /oauth/token` | correct |
+| `state` | optional, always echoed back | **was generated then dropped on process death** → persisted |
+| `error=access_denied` | returned on decline | **was ignored** → handled |
+| Granted `scope` | echoed; `activity:write` is optional for the user | **was unchecked** → verified |
+| Refresh-token rotation | every exchange rotates it | **concurrent refreshes burned it** → re-read under lock |
+| Deauthorize | `POST /oauth/deauthorize` (docs now prefer `/oauth/revoke`) | **was never called** → called on disconnect |
+
+### Test coverage
+
+iOS shipped ~1,400 lines of tests with #99/#98/#100; the Android port added none. This pass adds
+`StravaTCXBuilderTest` (12) and `StravaAuthTest` (6) — every assertion in the TCX file fails against
+the pre-fix builder. Suite: 794 → 812.
+
+### Still open
+
+- **#94's actual feature** is `CoachNotificationDataTrigger` (run the due slot when a sync
+  completes, recovering a slot skipped for stale data). Not ported — it's an event-bus subscriber,
+  not the window constant that was mistaken for it.
+- **#96 subset**: no OFF search, no barcode scan, no AI photo analysis, no coach `log_meal` tool.
+- **Pause intervals**: `activity_events` is never written on Android, so TCX can't drop paused
+  trackpoints yet. `totalPauseSeconds` is honoured.
 
 ---
 
