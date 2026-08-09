@@ -1657,6 +1657,10 @@ fun PrivacyDataSettingsScreen(
         listOf("pulseloop_secure", "ring_ble", "pulseloop_prefs").forEach { name ->
             context.getSharedPreferences(name, 0).edit().clear().apply()
         }
+        // Strava OAuth tokens live in their own EncryptedSharedPreferences file, so the loop above
+        // misses them — a "Reset App Data" that leaves the account connected is not a reset. iOS
+        // deletes the equivalent Keychain entry alongside the coach API keys for the same reason.
+        runCatching { com.pulseloop.strava.StravaTokenStore(context).clear() }
     }
 
     fun performUnpair() {
@@ -2255,12 +2259,16 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
     var isUploading by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
-    // Poll for tokens after OAuth redirect completes (MainActivity handles the callback
-    // and stores tokens via StravaTokenStore; this just picks them up on next recomposition).
-    // Only polls aggressively for 60 s after entering the screen, then stops to avoid waste.
+    // The OAuth callback lands in MainActivity, which writes tokens (or a failure message) into
+    // the store. Poll for either for 60 s after entering the screen, then stop.
     LaunchedEffect(Unit) {
         val deadline = System.currentTimeMillis() + 60_000L
         while (System.currentTimeMillis() < deadline) {
+            tokenStore.lastError()?.let { error ->
+                statusMessage = error
+                tokenStore.clearLastError()
+                return@LaunchedEffect
+            }
             val tokens = tokenStore.get()
             if (tokens != null && !isConnected) {
                 isConnected = true
@@ -2307,10 +2315,16 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                                 scope.launch {
                                     try {
                                         val db = PulseLoopDatabase.getInstance(context)
-                                        com.pulseloop.strava.StravaUploader.uploadAuto(db, tokenStore)
-                                        statusMessage = "Sync complete"
-                                    } catch (_: Exception) {
-                                        statusMessage = "Upload failed"
+                                        val count = com.pulseloop.strava.StravaUploader.uploadAuto(db, tokenStore)
+                                        // uploadAuto records why it stopped, if it stopped.
+                                        statusMessage = tokenStore.lastError()?.also { tokenStore.clearLastError() }
+                                            ?: when (count) {
+                                                0 -> "Nothing new to upload"
+                                                1 -> "Uploaded 1 workout"
+                                                else -> "Uploaded $count workouts"
+                                            }
+                                    } catch (e: Exception) {
+                                        statusMessage = "Upload failed: ${e.message ?: "unknown error"}"
                                     }
                                     isUploading = false
                                 }
@@ -2322,9 +2336,18 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                         }
                         OutlinedButton(
                             onClick = {
-                                tokenStore.clear()
-                                isConnected = false
-                                athleteName = null
+                                scope.launch {
+                                    // Revoke on Strava's side first, so PulseLoop also disappears
+                                    // from the athlete's "My Apps" list — clearing local tokens
+                                    // alone leaves the authorization live forever.
+                                    tokenStore.get()?.let {
+                                        runCatching { com.pulseloop.strava.StravaAuth.deauthorize(it) }
+                                    }
+                                    tokenStore.clear()
+                                    isConnected = false
+                                    athleteName = null
+                                    statusMessage = "Disconnected from Strava"
+                                }
                             },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
@@ -2335,7 +2358,11 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                 } else {
                     Button(
                         onClick = {
-                            val authUrl = com.pulseloop.strava.StravaAuth.authUrl
+                            statusMessage = null
+                            tokenStore.clearLastError()
+                            // Implicit ACTION_VIEW on /oauth/mobile/authorize: the Strava app takes
+                            // it when installed, the browser otherwise (Strava's Android docs).
+                            val authUrl = com.pulseloop.strava.StravaAuth.generateAuthUrl(tokenStore)
                             val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
                             try {
                                 context.startActivity(intent)

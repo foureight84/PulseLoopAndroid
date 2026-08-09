@@ -33,28 +33,44 @@ object StravaAuth {
         .build()
 
     private val refreshMutex = Mutex()
-    private var pendingAuthState: String? = null
 
     val isConfigured: Boolean
         get() = BuildConfig.STRAVA_CLIENT_ID.isNotBlank() && BuildConfig.STRAVA_CLIENT_SECRET.isNotBlank()
 
-    fun generateAuthUrl(): Pair<String, String> {
+    /**
+     * Build the authorize URL and record its CSRF state.
+     *
+     * The state is persisted, not held in a field: the flow leaves for a browser or the Strava app,
+     * and Android is free to kill this process while it's gone — which is exactly why
+     * `MainActivity` has a cold-start redirect handler at all. An in-memory state would be null on
+     * that path, so every process-death authorization would fail validation and be dropped in
+     * silence.
+     *
+     * `GET /oauth/mobile/authorize` (not `/oauth/authorize`) is the Android endpoint per Strava's
+     * own docs — dispatched with an implicit ACTION_VIEW intent so the Strava app handles it when
+     * installed and the browser otherwise.
+     */
+    fun generateAuthUrl(store: StravaTokenStore): String {
         val state = UUID.randomUUID().toString()
-        pendingAuthState = state
-        val url = "$AUTH_BASE/mobile/authorize?" +
+        store.savePendingAuthState(state)
+        return "$AUTH_BASE/mobile/authorize?" +
             "client_id=${BuildConfig.STRAVA_CLIENT_ID}&redirect_uri=${Uri.encode(REDIRECT_URI)}" +
             "&response_type=code&scope=${Uri.encode(SCOPES)}&approval_prompt=auto&state=${Uri.encode(state)}"
-        return Pair(url, state)
     }
 
-    val authUrl: String
-        get() = generateAuthUrl().first
-
-    fun validateState(state: String): Boolean {
-        val expected = pendingAuthState
-        pendingAuthState = null
-        return expected != null && expected == state
+    /** One-shot: a state can only be redeemed once, and is cleared whether or not it matched. */
+    fun validateState(store: StravaTokenStore, state: String?): Boolean {
+        val expected = store.takePendingAuthState()
+        return expected != null && state != null && expected == state
     }
+
+    /**
+     * Strava echoes the granted scopes on the callback, and the user can untick "Upload your
+     * activities" on the consent screen. Without `activity:write` every upload would fail later
+     * with an opaque 401, so the connect is rejected up front instead.
+     */
+    fun grantedScopeIncludesWrite(scope: String?): Boolean =
+        scope?.split(",")?.map { it.trim() }?.contains("activity:write") == true
 
     suspend fun exchangeCode(code: String): StravaTokens {
         val body = okhttp3.FormBody.Builder()
@@ -73,9 +89,26 @@ object StravaAuth {
         return parseTokenResponse(raw)
     }
 
-    suspend fun refreshToken(tokens: StravaTokens): StravaTokens = refreshMutex.withLock {
-        refreshTokenInternal(tokens)
-    }
+    /**
+     * Single-flight refresh. Strava **rotates** the refresh token on every exchange, so two
+     * concurrent callers must not each run a refresh: the second would present a token the first
+     * already burned and get rejected, and its failure would look like a revoked authorization.
+     *
+     * Holding a mutex is not enough on its own — the previous version serialized the two calls but
+     * each still used the refresh token it had captured *before* the lock. The fix is to re-read
+     * the store inside the lock: whoever gets there second sees the rotated token already saved by
+     * the first and returns it instead of spending it again.
+     */
+    suspend fun refreshToken(tokens: StravaTokens, tokenStore: StravaTokenStore): StravaTokens =
+        refreshMutex.withLock {
+            val current = tokenStore.get() ?: tokens
+            val alreadyRotated = current.refreshToken != tokens.refreshToken ||
+                current.expiresAt - EXPIRY_LEEWAY_SECONDS > System.currentTimeMillis() / 1000
+            if (alreadyRotated) return@withLock current
+            val rotated = refreshTokenInternal(current)
+            tokenStore.save(rotated)
+            rotated
+        }
 
     private suspend fun refreshTokenInternal(tokens: StravaTokens): StravaTokens {
         val body = okhttp3.FormBody.Builder()
@@ -102,9 +135,8 @@ object StravaAuth {
         body: okhttp3.RequestBody? = null,
     ): okhttp3.Response {
         var current = tokens
-        if (current.expiresAt - 300 < System.currentTimeMillis() / 1000) {
-            current = refreshToken(current)
-            tokenStore.save(current)
+        if (current.expiresAt - EXPIRY_LEEWAY_SECONDS < System.currentTimeMillis() / 1000) {
+            current = refreshToken(current, tokenStore)
         }
         val builder = okhttp3.Request.Builder()
             .url(url)
@@ -116,8 +148,8 @@ object StravaAuth {
         }
         val response = httpClient.newCall(builder.build()).execute()
         if (response.code == 401) {
-            val refreshed = refreshToken(current)
-            tokenStore.save(refreshed)
+            response.close()
+            val refreshed = refreshToken(current, tokenStore)
             val retry = httpClient.newCall(
                 okhttp3.Request.Builder()
                     .url(url)
@@ -135,6 +167,26 @@ object StravaAuth {
         }
         return response
     }
+
+    /**
+     * Best-effort revoke, so disconnecting here also drops PulseLoop from the athlete's
+     * "My Apps" list on strava.com. Without it, clearing the local tokens leaves the
+     * authorization live forever — iOS calls this on every disconnect.
+     *
+     * Uses the legacy `POST /oauth/deauthorize`; Strava's docs now recommend `/oauth/revoke` with
+     * HTTP Basic client credentials (as of 2026-06-01) but keep deauthorize working.
+     */
+    suspend fun deauthorize(tokens: StravaTokens) {
+        val request = okhttp3.Request.Builder()
+            .url("$AUTH_BASE/deauthorize")
+            .header("Authorization", "Bearer ${tokens.accessToken}")
+            .post(okhttp3.FormBody.Builder().build())
+            .build()
+        runCatching { httpClient.newCall(request).execute().close() }
+    }
+
+    /** Refresh when fewer than this many seconds of validity remain (iOS `expiryLeeway`). */
+    private const val EXPIRY_LEEWAY_SECONDS = 300L
 
     @Serializable
     private data class TokenResponse(

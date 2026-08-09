@@ -77,21 +77,54 @@ class MainActivity : ComponentActivity() {
         handleStravaRedirect(intent)
     }
 
+    /**
+     * Strava OAuth callback (`pulseloop://localhost/strava-auth?…`). Reached via `onNewIntent` for
+     * the usual case, and via `onCreate` when the browser round-trip outlived our process.
+     *
+     * Failures are recorded in the token store rather than dropped, so the Strava settings screen
+     * can say what went wrong — a silent return leaves the user staring at a "Connect" button that
+     * appears to do nothing.
+     */
     private fun handleStravaRedirect(intent: Intent) {
         val uri = intent.data ?: return
         if (uri.scheme != "pulseloop") return
-        val code = uri.getQueryParameter("code") ?: return
-        val state = uri.getQueryParameter("state")
         if (!StravaAuth.isConfigured) return
-        if (state == null || !StravaAuth.validateState(state)) return
+        val store = StravaTokenStore(this)
+
+        // Strava returns `error=access_denied` when the user declines on the consent screen.
+        uri.getQueryParameter("error")?.takeIf { it.isNotBlank() }?.let { error ->
+            store.takePendingAuthState()
+            store.saveLastError(
+                if (error == "access_denied") "Strava authorization was declined." else "Strava denied authorization: $error"
+            )
+            return
+        }
+
+        // CSRF: the state we generated must come back. One-shot, cleared either way.
+        if (!StravaAuth.validateState(store, uri.getQueryParameter("state"))) {
+            store.saveLastError("Strava authorization could not be verified. Please try connecting again.")
+            return
+        }
+
+        // The consent screen lets the user untick "Upload your activities". Catch it here rather
+        // than letting every future upload fail with an opaque 401.
+        if (!StravaAuth.grantedScopeIncludesWrite(uri.getQueryParameter("scope"))) {
+            store.saveLastError("Strava did not grant upload permission. Reconnect and keep \"Upload your activities\" checked.")
+            return
+        }
+
+        val code = uri.getQueryParameter("code")?.takeIf { it.isNotBlank() } ?: run {
+            store.saveLastError("Strava returned an unexpected authorization response.")
+            return
+        }
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val tokens = StravaAuth.exchangeCode(code)
-                StravaTokenStore(this@MainActivity).save(tokens)
-            } catch (_: Exception) {
-                // Token exchange failed — the code may have expired or the secrets are invalid.
-                // The user can retry from the Strava settings screen.
+                store.save(StravaAuth.exchangeCode(code))
+                store.clearLastError()
+            } catch (e: Exception) {
+                // The code may have expired, or the configured secrets are wrong.
+                store.saveLastError("Could not complete the Strava sign-in: ${e.message ?: "unknown error"}")
             }
         }
     }

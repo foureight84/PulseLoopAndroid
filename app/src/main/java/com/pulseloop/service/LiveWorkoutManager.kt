@@ -148,6 +148,25 @@ class LiveWorkoutManager(
         coordinator.stopWorkoutHeartRate()
         finishForegroundService(summarized)
         _state.value = WorkoutState(finishedSessionId = summarized.id)
+        uploadToStravaIfConnected()
+    }
+
+    /**
+     * iOS #100 auto-upload. This is what makes the Strava settings screen's "finished workouts are
+     * automatically uploaded" true — before it existed, `uploadAuto` had exactly one caller, the
+     * manual "Sync Now" button.
+     *
+     * Best-effort and non-blocking: a Strava outage must never fail or delay finishing a workout.
+     * `uploadAuto` no-ops when disconnected and skips anything that predates the connection.
+     */
+    private suspend fun uploadToStravaIfConnected() {
+        if (!com.pulseloop.strava.StravaAuth.isConfigured) return
+        runCatching {
+            val store = com.pulseloop.strava.StravaTokenStore(context)
+            if (store.isConnected) com.pulseloop.strava.StravaUploader.uploadAuto(db, store)
+        }.onFailure {
+            android.util.Log.w("LiveWorkoutManager", "Strava auto-upload failed: ${it.message}")
+        }
     }
 
     suspend fun cancel(session: ActivitySessionEntity) {

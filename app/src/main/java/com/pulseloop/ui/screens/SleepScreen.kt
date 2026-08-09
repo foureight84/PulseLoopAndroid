@@ -34,7 +34,6 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -474,7 +473,6 @@ private fun SleepHypnogram(
     var isScrubbing by remember { mutableStateOf(false) }
     var pillWidth by remember { mutableIntStateOf(0) }
     val haptics = LocalHapticFeedback.current
-    val density = LocalDensity.current
 
     fun laneY(stage: String, plotHeightPx: Float) = plotHeightPx * (laneFrac[stage] ?: 0.62f)
     fun xForMinute(minute: Int, plotWidthPx: Float) =
@@ -602,53 +600,60 @@ private fun SleepHypnogram(
                             start = Offset(startX, y), end = Offset(endX, y),
                             strokeWidth = 6.5.dp.toPx(), cap = StrokeCap.Round,
                         )
-                        // Scrub indicator line.
-                        if (isScrubbing && scrubBlockIndex == sorted.indexOf(block)) {
-                            val sx = xForMinute(scrubMinute, size.width)
-                            drawLine(
-                                color = Color.White.copy(alpha = 0.7f),
-                                start = Offset(sx, 0f),
-                                end = Offset(sx, size.height),
-                                strokeWidth = 2.dp.toPx(),
+                    }
+
+                    // Scrub indicator, drawn after every block so later bars can't paint over it
+                    // (it used to live inside the loop, keyed off sorted.indexOf(block) — which is
+                    // also O(n²) and resolves duplicate blocks to the same index).
+                    if (isScrubbing && scrubBlockIndex in sorted.indices) {
+                        val sx = xForMinute(scrubMinute, size.width)
+                        drawLine(
+                            color = Color.White.copy(alpha = 0.7f),
+                            start = Offset(sx, 0f),
+                            end = Offset(sx, size.height),
+                            strokeWidth = 2.dp.toPx(),
+                        )
+                    }
+                }
+
+                // Lane labels — positioned using the same laneFraction math as the Canvas bars.
+                // Held back until the plot has been measured: at plotHeightPx == 0 every label
+                // resolves to the same y and they render stacked for a frame.
+                if (plotHeightPx > 0f) {
+                    Box(Modifier.fillMaxSize()) {
+                        lanes.forEach { stage ->
+                            val yFrac = laneFrac[stage] ?: 0.62f
+                            val labelY = yFrac * plotHeightPx
+                            Text(
+                                stage,
+                                fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 1.4.sp, color = stageColor(stage),
+                                modifier = Modifier.offset {
+                                    IntOffset(
+                                        x = -LABEL_GUTTER_DP.dp.roundToPx(),
+                                        y = (labelY - LABEL_BASELINE_NUDGE_DP.dp.toPx()).roundToInt(),
+                                    )
+                                },
                             )
                         }
                     }
                 }
 
-                // Lane labels — positioned using the same laneFraction math.
-                Box(Modifier.fillMaxSize()) {
-                    lanes.forEach { stage ->
-                        val yFrac = laneFrac[stage] ?: 0.62f
-                        val labelY = yFrac * plotHeightPx
-                        val densityPx = density.density
-                        Text(
-                            stage,
-                            fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
-                            letterSpacing = 1.4.sp, color = stageColor(stage),
-                            modifier = Modifier.offset {
-                                IntOffset(
-                                    x = with(density) { (-32.0).dp.roundToPx() },
-                                    y = (labelY / densityPx - 7.dp.value).dp.roundToPx(),
-                                )
-                            },
-                        )
-                    }
-                }
-
                 // Stage readout pill.
-                if (isScrubbing && scrubBlockIndex in sorted.indices) {
+                if (isScrubbing && scrubBlockIndex in sorted.indices && plotWidthPx > 0f) {
                     val block = sorted[scrubBlockIndex]
                     val yFrac = laneFrac[block.stageRaw] ?: 0.62f
                     val pillY = yFrac * plotHeightPx
-                    val densityPx = density.density
-                    val pillOffsetX = ((xForMinute(scrubMinute, plotWidthPx) / plotWidthPx) * plotWidthPx).toInt()
+                    val scrubX = xForMinute(scrubMinute, plotWidthPx)
                     Box(
                         Modifier
                             .offset {
+                                // Centre on the scrub line, then clamp to both edges so the pill
+                                // stays on screen at the very start and end of the night.
+                                val maxX = (plotWidthPx - pillWidth).coerceAtLeast(0f)
                                 IntOffset(
-                                    x = (pillOffsetX / densityPx - (pillWidth / 2f / densityPx))
-                                        .dp.roundToPx().coerceAtLeast(4.dp.roundToPx()),
-                                    y = ((pillY / densityPx) - 30.dp.value).dp.roundToPx(),
+                                    x = (scrubX - pillWidth / 2f).coerceIn(0f, maxX).roundToInt(),
+                                    y = (pillY - PILL_OFFSET_ABOVE_LANE_DP.dp.toPx()).roundToInt(),
                                 )
                             }
                             .onSizeChanged { pillWidth = it.width },
@@ -943,3 +948,11 @@ internal fun parseChipsJson(json: String?): List<String> {
         emptyList()
     }
 }
+
+// Hypnogram layout constants (iOS #131). The plot Box is inset by `plotInsets.x` (64dp) from the
+// card edge; the lane labels sit in that gutter, so they offset back by LABEL_GUTTER_DP.
+private const val LABEL_GUTTER_DP = 32f
+/** Half the label's line height, so the text centres on its lane rather than hanging below it. */
+private const val LABEL_BASELINE_NUDGE_DP = 7f
+/** Clearance between the scrubbed lane and the readout pill. */
+private const val PILL_OFFSET_ABOVE_LANE_DP = 30f
