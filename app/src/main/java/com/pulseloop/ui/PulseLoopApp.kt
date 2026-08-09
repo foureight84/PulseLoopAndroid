@@ -572,7 +572,28 @@ fun PulseLoopApp() {
                     GoalsSettingsScreen(coordinator, onBack = { navController.popBackStack() })
                 }
                 paddedComposable("settings/privacy") {
-                    PrivacyDataSettingsScreen(onBack = { navController.popBackStack() })
+                    PrivacyDataSettingsScreen(
+                        onBack = { navController.popBackStack() },
+                        coordinator = coordinator,
+                        bleClient = bleClient,
+                        onNavigateToOnboarding = {
+                            navController.navigate("onboarding") {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        },
+                    )
+                }
+                paddedComposable("settings/strava") {
+                    StravaSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/nutrition") {
+                    NutritionSettingsScreen(
+                        onBack = { navController.popBackStack() },
+                        onNavigateToNutrition = { navController.navigate("nutrition") },
+                    )
+                }
+                paddedComposable("nutrition") {
+                    NutritionScreen(onBack = { navController.popBackStack() })
                 }
                 paddedComposable("settings/about") {
                     AboutSettingsScreen(

@@ -394,10 +394,56 @@ interface CoachNotificationRecordDao {
     @Insert
     suspend fun insert(record: CoachNotificationRecordEntity)
 
-    /** Most recent delivered check-ins, newest first — anti-repeat prompt hint (iOS #65). */
     @Query("SELECT * FROM coach_notification_records ORDER BY createdAt DESC LIMIT :limit")
     suspend fun recent(limit: Int = 6): List<CoachNotificationRecordEntity>
 
     @Query("DELETE FROM coach_notification_records")
+    suspend fun clear()
+}
+
+// ── Nutrition (iOS #96) ──────────────────────────────────────────────────────────
+
+@Dao
+interface MealEntryDao {
+    @Query("SELECT * FROM meal_entries WHERE date = :day ORDER BY timestamp ASC")
+    suspend fun byDay(day: Long): List<MealEntryEntity>
+
+    @Query("""
+        SELECT mealTypeRaw, SUM(calories) as totalCal, SUM(proteinG) as totalP,
+               SUM(carbsG) as totalC, SUM(fatG) as totalF
+        FROM meal_entries WHERE date = :day GROUP BY mealTypeRaw
+    """)
+    suspend fun dayTotals(day: Long): List<MealTotals>
+
+    @Upsert
+    suspend fun upsert(entry: MealEntryEntity)
+
+    @Query("DELETE FROM meal_entries WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM meal_entries")
+    suspend fun clear()
+}
+
+data class MealTotals(
+    val mealTypeRaw: String, val totalCal: Double, val totalP: Double,
+    val totalC: Double, val totalF: Double,
+)
+
+@Dao
+interface FoodProductDao {
+    @Query("SELECT * FROM food_products WHERE code = :code LIMIT 1")
+    suspend fun byCode(code: String): CachedFoodProductEntity?
+
+    @Query("SELECT * FROM food_products ORDER BY lastUsedAt DESC LIMIT :limit")
+    suspend fun recent(limit: Int = 20): List<CachedFoodProductEntity>
+
+    @Query("SELECT * FROM food_products WHERE name LIKE '%' || :q || '%' ORDER BY useCount DESC LIMIT :limit")
+    suspend fun search(q: String, limit: Int = 10): List<CachedFoodProductEntity>
+
+    @Upsert
+    suspend fun upsert(product: CachedFoodProductEntity)
+
+    @Query("DELETE FROM food_products")
     suspend fun clear()
 }

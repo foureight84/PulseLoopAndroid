@@ -126,6 +126,9 @@ fun SettingsScreen(
                 SettingsRowItem(Icons.Filled.TrackChanges, PulseColors.readiness, "Goals") {
                     navigate("settings/goals")
                 },
+                SettingsRowItem(Icons.Filled.RestaurantMenu, PulseColors.calories, "Nutrition") {
+                    navigate("settings/nutrition")
+                },
             ),
         )
 
@@ -148,6 +151,9 @@ fun SettingsScreen(
                 }
                 add(SettingsRowItem(Icons.Filled.Shield, PulseColors.success, "Privacy & Data") {
                     navigate("settings/privacy")
+                })
+                add(SettingsRowItem(Icons.Filled.TrendingUp, PulseColors.calories, "Strava") {
+                    navigate("settings/strava")
                 })
                 add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, "About PulseLoop") {
                     navigate("settings/about")

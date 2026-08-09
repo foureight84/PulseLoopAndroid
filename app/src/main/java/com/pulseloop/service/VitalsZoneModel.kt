@@ -200,6 +200,13 @@ data class UserPhysiologyProfile(
     val usesBetaBlockers: Boolean = false,
     val hasKnownLungCondition: Boolean = false,
     val preferredGlucoseUnit: GlucoseUnit = GlucoseUnit.MGDL,
+    /** iOS #95: HR zone mode. */
+    val hrZoneModeRaw: String? = "auto",
+    val hrRestingBaseline: Double? = null,
+    val hrCustomLowUpper: Double? = null,
+    val hrCustomAthleticUpper: Double? = null,
+    val hrCustomElevatedStart: Double? = null,
+    val hrCustomHighStart: Double? = null,
 ) {
     /** Age-predicted maximum heart rate (`220 − age`), used for effort-zone overlays. Falls back to
      *  190 when age is unknown. */
@@ -225,6 +232,12 @@ data class UserPhysiologyProfile(
             usesBetaBlockers: Boolean = false,
             hasKnownLungCondition: Boolean = false,
             preferredGlucoseUnit: GlucoseUnit = GlucoseUnit.MGDL,
+            hrZoneModeRaw: String? = "auto",
+            hrRestingBaseline: Double? = null,
+            hrCustomLowUpper: Double? = null,
+            hrCustomAthleticUpper: Double? = null,
+            hrCustomElevatedStart: Double? = null,
+            hrCustomHighStart: Double? = null,
         ): UserPhysiologyProfile =
             UserPhysiologyProfile(
                 age = age,
@@ -234,6 +247,12 @@ data class UserPhysiologyProfile(
                 usesBetaBlockers = usesBetaBlockers,
                 hasKnownLungCondition = hasKnownLungCondition,
                 preferredGlucoseUnit = preferredGlucoseUnit,
+                hrZoneModeRaw = hrZoneModeRaw,
+                hrRestingBaseline = hrRestingBaseline,
+                hrCustomLowUpper = hrCustomLowUpper,
+                hrCustomAthleticUpper = hrCustomAthleticUpper,
+                hrCustomElevatedStart = hrCustomElevatedStart,
+                hrCustomHighStart = hrCustomHighStart,
             )
     }
 }

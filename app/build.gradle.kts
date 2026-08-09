@@ -19,12 +19,23 @@ android {
         // versionCode/versionName are overridable from Gradle properties so the release CI
         // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
         // Local builds fall back to the literals below.
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 33
-        versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 34
+        versionName = (project.findProperty("appVersionName") as String?) ?: "2.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Repo the self-updater polls for new releases.
         buildConfigField("String", "GITHUB_REPO", "\"foureight84/PulseLoopAndroid\"")
+
+        // Strava OAuth — credentials from local.properties (gitignored), fall back to
+        // empty placeholders so non-Strava builds compile without the file.
+        val localProps = Properties().apply {
+            val f = rootProject.file("local.properties")
+            if (f.exists()) f.inputStream().use { load(it) }
+        }
+        buildConfigField("String", "STRAVA_CLIENT_ID",
+            "\"${localProps.getProperty("stravaClientId") ?: ""}\"")
+        buildConfigField("String", "STRAVA_CLIENT_SECRET",
+            "\"${localProps.getProperty("stravaClientSecret") ?: ""}\"")
     }
 
     buildFeatures {

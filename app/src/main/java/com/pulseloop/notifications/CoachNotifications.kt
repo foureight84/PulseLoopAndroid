@@ -159,6 +159,17 @@ class CoachNotificationWorker(
         /** iOS `freshnessWindow` (3h) — a live measurement this recent counts as fresh data even
          *  without a completed full sync (covers rings that stream continuously). */
         private const val RECENT_DATA_WINDOW_MS = 3 * 60 * 60_000L
+        // There was a STALE_DATA_WINDOW_MS (1h) here, added for iOS #94. It could never be false:
+        // it was evaluated only *after* the 3h RECENT_DATA_WINDOW_MS early-return above, so
+        // `now - latestMeasurementAt` was already ≥ 3h by the time it ran. Wiring it into the
+        // foreground check therefore deleted that guard outright, letting this worker open a
+        // second transient GATT client while the foreground app held the link — the exact thing
+        // the comment in ensureFreshData says iOS never does.
+        //
+        // iOS #94's real contribution is CoachNotificationDataTrigger: it runs the due slot when a
+        // sync *completes*, so a slot skipped for stale data is delivered a few minutes later
+        // instead of being lost. That is an event-bus subscriber, not a window constant, and it is
+        // not ported yet — see docs/ios-sync.md.
     }
 
     override suspend fun doWork(): Result {

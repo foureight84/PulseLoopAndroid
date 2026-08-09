@@ -76,14 +76,16 @@ object WorkoutMetricsEngine {
         if (byMinute.isEmpty() || byMinute.size / minutes < KEYTEL_COVERAGE_THRESHOLD) return null
         val rates = byMinute.values.map { bucket ->
             val meanHR = bucket.sumOf { it.second } / bucket.size
-            keytelRate(meanHR, male = sex == "male", age = age.toDouble(), weightKg = weight)
+            keytelCalorieRate(meanHR, sex, age, weight)
         }
         val meanRate = rates.sum() / rates.size
         return maxOf(0.0, meanRate * minutes)
     }
 
-    /** kcal/min for a given heart rate (Keytel et al. 2005, without VO2max), clamped >= 0. */
-    private fun keytelRate(hr: Double, male: Boolean, age: Double, weightKg: Double): Double {
+    /** kcal/min for a given heart rate (Keytel et al. 2005, without VO2max), clamped >= 0.
+     *  Made public for DailyCalorieEstimator (iOS #98). */
+    fun keytelCalorieRate(hr: Double, sex: String?, age: Int, weightKg: Double): Double {
+        val male = sex?.lowercase() == "male"
         val kj = if (male)
             -55.0969 + 0.6309 * hr + 0.1988 * weightKg + 0.2017 * age
         else

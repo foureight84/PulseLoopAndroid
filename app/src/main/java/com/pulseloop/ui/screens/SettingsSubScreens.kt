@@ -40,6 +40,7 @@ import com.pulseloop.coach.config.MiniMaxModel
 import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.entity.UserGoalEntity
 import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
@@ -1591,20 +1592,214 @@ private fun BatteryHistorySection(db: PulseLoopDatabase) {
 
 // MARK: - Privacy & Data
 
+/** Destructive data-action options for the Privacy & Data screen. */
+private sealed class ResetAction {
+    data object UnpairRing : ResetAction()
+    data object ResetAppData : ResetAction()
+    data object UnpairAndReset : ResetAction()
+
+    val title: String get() = when (this) {
+        is UnpairRing -> "Unpair ring?"
+        is ResetAppData -> "Reset app data?"
+        is UnpairAndReset -> "Unpair ring & reset app data?"
+    }
+    val message: String get() = when (this) {
+        is UnpairRing -> "Unpair your ring? The ring will forget this phone; your data stays."
+        is ResetAppData -> "This permanently erases all your data — metrics, sleep, activity, coach history, settings, and saved API keys — and can't be undone."
+        is UnpairAndReset -> "This unpairs your ring, then permanently erases all your data — metrics, sleep, activity, coach history, settings, and saved API keys — and can't be undone."
+    }
+    val confirmLabel: String get() = when (this) {
+        is UnpairRing -> "Unpair ring"
+        is ResetAppData -> "Reset app data"
+        is UnpairAndReset -> "Unpair & reset"
+    }
+}
+
 /**
- * Privacy & Data detail screen (iOS PrivacyDataView): demo-data controls (reseed + clear,
- * moved here from About) and the diagnostics export with its anonymization opt-out.
- * The mask toggle deliberately defaults ON for every visit and is never persisted off —
- * an unmasked export (full BLE frames, health values) is a one-shot, explicit choice.
+ * Privacy & Data detail screen (iOS PrivacyDataView): grouped sections for diagnostics export,
+ * destructive App-data reset actions (Unpair Ring, Reset App Data, Unpair & Reset),
+ * data backup (export/import as JSON), and demo-data controls. Reflects the app's
+ * transparency/privacy ethos — everything here is local and explicit.
  */
 @Composable
-fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
+fun PrivacyDataSettingsScreen(
+    onBack: () -> Unit,
+    coordinator: RingSyncCoordinator? = null,
+    bleClient: RingBLEClient? = null,
+    onNavigateToOnboarding: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showSeedDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
 
+    /** Which destructive App-data action is awaiting confirmation. */
+    var pendingReset by remember { mutableStateOf<ResetAction?>(null) }
+
+    // Data export/import state.
+    var exportInProgress by remember { mutableStateOf(false) }
+    var importInProgress by remember { mutableStateOf(false) }
+    var showImportConfirm by remember { mutableStateOf(false) }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var showImportSuccess by remember { mutableStateOf(false) }
+
+    val filePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            pendingImportUri = uri
+            showImportConfirm = true
+        }
+    }
+
+    fun clearAllPreferences() {
+        listOf("pulseloop_secure", "ring_ble", "pulseloop_prefs").forEach { name ->
+            context.getSharedPreferences(name, 0).edit().clear().apply()
+        }
+        // Strava OAuth tokens live in their own EncryptedSharedPreferences file, so the loop above
+        // misses them — a "Reset App Data" that leaves the account connected is not a reset. iOS
+        // deletes the equivalent Keychain entry alongside the coach API keys for the same reason.
+        runCatching { com.pulseloop.strava.StravaTokenStore(context).clear() }
+    }
+
+    fun performUnpair() {
+        scope.launch {
+            RingSyncWorker.cancel(context)
+            coordinator?.forgetRing { PulseLoopDatabase.getInstance(context).deviceDao().clear() }
+                ?: run {
+                    bleClient?.forget()
+                    PulseLoopDatabase.getInstance(context).deviceDao().clear()
+                }
+        }
+    }
+
+    fun performResetAppData() {
+        scope.launch {
+            PulseLoopDatabase.getInstance(context).nukeAllTables()
+            clearAllPreferences()
+            onNavigateToOnboarding()
+        }
+    }
+
+    fun performUnpairAndReset() {
+        scope.launch {
+            RingSyncWorker.cancel(context)
+            if (coordinator != null) {
+                coordinator.forgetRing { }
+                PulseLoopDatabase.getInstance(context).nukeAllTables()
+            } else {
+                bleClient?.forget()
+                PulseLoopDatabase.getInstance(context).nukeAllTables()
+            }
+            clearAllPreferences()
+            onNavigateToOnboarding()
+        }
+    }
+
     SettingsSubScreen(title = "Privacy & Data", onBack = onBack) {
+        // Data Backup — export/import full app data as JSON.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Data Backup", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Export all your data to a single JSON file for backup, device migration, or external analysis. Import restores everything — replacing all current data.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            exportInProgress = true
+                            scope.launch {
+                                try {
+                                    val db = PulseLoopDatabase.getInstance(context)
+                                    val uri = com.pulseloop.data.DataArchiveService.exportToFile(context, db)
+                                    if (uri != null) {
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "application/json"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(Intent.createChooser(shareIntent, "Export PulseLoop Data"))
+                                    }
+                                } catch (_: Exception) {
+                                    statusMessage = "Export failed"
+                                }
+                                exportInProgress = false
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !exportInProgress,
+                    ) {
+                        if (exportInProgress) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (exportInProgress) "Exporting…" else "Export All Data")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            filePicker.launch(arrayOf("application/json"))
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !importInProgress,
+                    ) {
+                        if (importInProgress) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (importInProgress) "Importing…" else "Import Data")
+                    }
+                }
+            }
+        }
+
+        // App data — destructive reset/restore actions.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("App Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Destructive actions: unpair the ring, factory-reset app data, or both.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { pendingReset = ResetAction.UnpairRing },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Icon(Icons.Filled.BluetoothDisabled, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Unpair Ring")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { pendingReset = ResetAction.ResetAppData },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Icon(Icons.Filled.DeleteForever, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Reset App Data")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { pendingReset = ResetAction.UnpairAndReset },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Icon(Icons.Filled.Warning, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Unpair & Reset")
+                }
+            }
+        }
+
         // Demo data — Android-only (iOS seeds via the Simulator's SeedData).
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
@@ -1626,8 +1821,7 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
             }
         }
 
-        // Diagnostics export — same exporter the Developer screen uses, surfaced here so
-        // sharing an anonymized log for a bug report doesn't require the 7-tap unlock.
+        // Diagnostics export.
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 var maskSensitive by remember { mutableStateOf(true) }
@@ -1676,8 +1870,85 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    if (showSeedDialog) {
-        AlertDialog(
+    // Confirmation/alert dialogs — mutually exclusive via when chain (prevent stacking).
+    when {
+        statusMessage != null -> {
+            val msg = statusMessage!!
+            AlertDialog(
+                onDismissRequest = { statusMessage = null },
+                title = { Text("Error") },
+                text = { Text(msg) },
+                confirmButton = {
+                    TextButton(onClick = { statusMessage = null }) { Text("OK") }
+                },
+            )
+        }
+
+        showImportSuccess -> AlertDialog(
+            onDismissRequest = { showImportSuccess = false },
+            title = { Text("Import Complete") },
+            text = { Text("Your data has been restored from the backup.") },
+            confirmButton = {
+                TextButton(onClick = { showImportSuccess = false }) { Text("OK") }
+            },
+        )
+
+        showImportConfirm -> AlertDialog(
+            onDismissRequest = { showImportConfirm = false; pendingImportUri = null },
+            title = { Text("Replace all data?") },
+            text = {
+                Text("This permanently deletes everything currently in the app and replaces it with the contents of this file. This can't be undone.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showImportConfirm = false
+                    val uri = pendingImportUri ?: return@TextButton
+                    pendingImportUri = null
+                    importInProgress = true
+                    scope.launch {
+                        try {
+                            val db = PulseLoopDatabase.getInstance(context)
+                            com.pulseloop.data.DataArchiveService.importFile(context, uri, db)
+                            showImportSuccess = true
+                        } catch (_: Exception) {
+                            statusMessage = "Import failed — the file may be corrupt or from a newer version."
+                        }
+                        importInProgress = false
+                    }
+                }) {
+                    Text("Delete old data & import", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportConfirm = false; pendingImportUri = null }) { Text("Cancel") }
+            },
+        )
+
+        pendingReset != null -> {
+            val action = pendingReset!!
+            AlertDialog(
+                onDismissRequest = { pendingReset = null },
+                title = { Text(action.title) },
+                text = { Text(action.message) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingReset = null
+                        when (action) {
+                            is ResetAction.UnpairRing -> performUnpair()
+                            is ResetAction.ResetAppData -> performResetAppData()
+                            is ResetAction.UnpairAndReset -> performUnpairAndReset()
+                        }
+                    }) {
+                        Text(action.confirmLabel, color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingReset = null }) { Text("Cancel") }
+                },
+            )
+        }
+
+        showSeedDialog -> AlertDialog(
             onDismissRequest = { showSeedDialog = false },
             title = { Text("Reseed Demo Data?") },
             text = { Text("This will replace all existing demo data. Your synced ring data — including sleep history — will not be affected.") },
@@ -1686,7 +1957,6 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
                     showSeedDialog = false
                     scope.launch {
                         DemoDataSeeder.seed(PulseLoopDatabase.getInstance(context))
-                        // Freshly seeded demo data should show up on the widgets too.
                         com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                     }
                 }) { Text("Reseed") }
@@ -1695,10 +1965,8 @@ fun PrivacyDataSettingsScreen(onBack: () -> Unit) {
                 TextButton(onClick = { showSeedDialog = false }) { Text("Cancel") }
             },
         )
-    }
 
-    if (showClearDialog) {
-        AlertDialog(
+        showClearDialog -> AlertDialog(
             onDismissRequest = { showClearDialog = false },
             title = { Text("Clear Demo Data?") },
             text = {
@@ -1887,3 +2155,248 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
 
 private const val DEVELOPER_TAP_THRESHOLD = 7
 private const val REPO_URL = "https://github.com/foureight84/PulseLoop"
+
+// MARK: - Nutrition
+
+@Composable
+fun NutritionSettingsScreen(onBack: () -> Unit, onNavigateToNutrition: () -> Unit = {}) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val db = remember { PulseLoopDatabase.getInstance(context) }
+    var goal by remember { mutableStateOf<UserGoalEntity?>(null) }
+    var goalLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { goal = db.userGoalDao().get(); goalLoaded = true }
+
+    SettingsSubScreen(title = "Nutrition", onBack = onBack) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Enable Nutrition Tracking", fontWeight = FontWeight.Medium)
+                        Text("Log meals and track calories & macros", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = goal?.nutritionEnabled == true,
+                        enabled = goalLoaded,
+                        onCheckedChange = { enabled ->
+                            val g = goal ?: return@Switch
+                            scope.launch {
+                                goal = g.copy(nutritionEnabled = enabled).also { db.userGoalDao().upsert(it) }
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        if (goal?.nutritionEnabled == true) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Daily Goals", fontWeight = FontWeight.SemiBold)
+                    NutrientStepper("Calories (kcal)", goal?.intakeCalories ?: 2000.0, 50.0, 100.0, 10000.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeCalories = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    NutrientStepper("Protein (g)", goal?.intakeProteinG ?: 150.0, 5.0, 0.0, 500.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeProteinG = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    NutrientStepper("Carbs (g)", goal?.intakeCarbsG ?: 250.0, 5.0, 0.0, 800.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeCarbsG = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    NutrientStepper("Fat (g)", goal?.intakeFatG ?: 65.0, 5.0, 0.0, 300.0) { v ->
+                        scope.launch { goal = goal?.copy(intakeFatG = v)?.also { db.userGoalDao().upsert(it) } }
+                    }
+                    OutlinedButton(onClick = {
+                        val g = goal ?: return@OutlinedButton
+                        scope.launch {
+                            val cal = g.intakeCalories ?: 2000.0
+                            goal = g.copy(intakeProteinG = cal * 0.30 / 4.0, intakeCarbsG = cal * 0.40 / 4.0, intakeFatG = cal * 0.30 / 9.0)
+                                .also { db.userGoalDao().upsert(it) }
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Balance Macros (30/40/30)")
+                    }
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Quick Access", fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = onNavigateToNutrition,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Open Nutrition Log")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NutrientStepper(label: String, value: Double, step: Double, min: Double, max: Double, onChange: (Double) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { if (value > min) onChange((value - step).coerceAtLeast(min)) }) { Text("−", fontSize = 18.sp) }
+            Text("${value.roundToInt()}", fontWeight = FontWeight.Medium)
+            TextButton(onClick = { if (value < max) onChange((value + step).coerceAtMost(max)) }) { Text("+", fontSize = 18.sp) }
+        }
+    }
+}
+
+// MARK: - Strava
+
+@Composable
+fun StravaSettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val tokenStore = remember { com.pulseloop.strava.StravaTokenStore(context) }
+    val isConfigured = com.pulseloop.strava.StravaAuth.isConfigured
+    var isConnected by remember { mutableStateOf(tokenStore.isConnected) }
+    var athleteName by remember { mutableStateOf(tokenStore.get()?.athleteName) }
+    var isUploading by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    // The OAuth callback lands in MainActivity, which writes tokens (or a failure message) into
+    // the store. Poll for either for 60 s after entering the screen, then stop.
+    LaunchedEffect(Unit) {
+        val deadline = System.currentTimeMillis() + 60_000L
+        while (System.currentTimeMillis() < deadline) {
+            tokenStore.lastError()?.let { error ->
+                statusMessage = error
+                tokenStore.clearLastError()
+                return@LaunchedEffect
+            }
+            val tokens = tokenStore.get()
+            if (tokens != null && !isConnected) {
+                isConnected = true
+                athleteName = tokens.athleteName
+                statusMessage = null
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+
+    SettingsSubScreen(title = "Strava", onBack = onBack) {
+        if (!isConfigured) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Strava Not Configured", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Add stravaClientId and stravaClientSecret to local.properties to enable Strava integration.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            return@SettingsSubScreen
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Strava Integration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (isConnected) "Connected as $athleteName. Workouts sync automatically when finished."
+                    else "Connect your Strava account to automatically upload workouts with GPS routes and heart rate data.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                if (isConnected) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                isUploading = true
+                                scope.launch {
+                                    try {
+                                        val db = PulseLoopDatabase.getInstance(context)
+                                        val count = com.pulseloop.strava.StravaUploader.uploadAuto(db, tokenStore)
+                                        // uploadAuto records why it stopped, if it stopped.
+                                        statusMessage = tokenStore.lastError()?.also { tokenStore.clearLastError() }
+                                            ?: when (count) {
+                                                0 -> "Nothing new to upload"
+                                                1 -> "Uploaded 1 workout"
+                                                else -> "Uploaded $count workouts"
+                                            }
+                                    } catch (e: Exception) {
+                                        statusMessage = "Upload failed: ${e.message ?: "unknown error"}"
+                                    }
+                                    isUploading = false
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isUploading,
+                        ) {
+                            Text(if (isUploading) "Syncing…" else "Sync Now")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    // Revoke on Strava's side first, so PulseLoop also disappears
+                                    // from the athlete's "My Apps" list — clearing local tokens
+                                    // alone leaves the authorization live forever.
+                                    tokenStore.get()?.let {
+                                        runCatching { com.pulseloop.strava.StravaAuth.deauthorize(it) }
+                                    }
+                                    tokenStore.clear()
+                                    isConnected = false
+                                    athleteName = null
+                                    statusMessage = "Disconnected from Strava"
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        ) {
+                            Text("Disconnect")
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            statusMessage = null
+                            tokenStore.clearLastError()
+                            // Implicit ACTION_VIEW on /oauth/mobile/authorize: the Strava app takes
+                            // it when installed, the browser otherwise (Strava's Android docs).
+                            val authUrl = com.pulseloop.strava.StravaAuth.generateAuthUrl(tokenStore)
+                            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
+                            try {
+                                context.startActivity(intent)
+                                statusMessage = "Authorize in your browser — you'll return to PulseLoop automatically."
+                            } catch (_: Exception) {
+                                statusMessage = "Could not open browser"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Connect Strava")
+                    }
+                }
+            }
+        }
+
+        if (isConnected) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Auto Upload", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Finished workouts are automatically uploaded to Strava. GPS routes, heart rate data, and sport type are included.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        statusMessage?.let { msg ->
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = PulseColors.cardSoft)) {
+                Text(msg, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}

@@ -5,6 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.pulseloop.data.dao.*
 import com.pulseloop.data.entity.*
@@ -39,8 +40,10 @@ import com.pulseloop.data.entity.*
         WearableLogEntity::class,
         BatterySampleEntity::class,
         CoachNotificationRecordEntity::class,
+        MealEntryEntity::class,
+        CachedFoodProductEntity::class,
     ],
-    version = 16,
+    version = 20,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -64,8 +67,46 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun rawPacketDao(): RawPacketDao
     abstract fun batterySampleDao(): BatterySampleDao
     abstract fun coachNotificationRecordDao(): CoachNotificationRecordDao
+    // iOS #96: Nutrition
+    abstract fun mealEntryDao(): MealEntryDao
+    abstract fun foodProductDao(): FoodProductDao
+
+    /**
+     * Empty every table, atomically. Goes through Room's [withTransaction] rather than a raw
+     * `openHelper.writableDatabase.beginTransaction()`: only the Room path runs
+     * `RoomDatabase.endTransaction()`, which is what kicks the invalidation tracker — without it
+     * every observing Flow keeps serving the rows we just deleted until something else writes.
+     *
+     * Not [clearAllTables]: that also drops the sqlite_sequence rows and checkpoints the WAL, and
+     * it throws if called while a transaction is open — which is exactly how `DataArchiveService`
+     * uses this list during a restore.
+     */
+    suspend fun nukeAllTables() = withTransaction {
+        for (table in ALL_TABLES) {
+            openHelper.writableDatabase.execSQL("DELETE FROM $table")
+        }
+    }
 
     companion object {
+        /**
+         * Every table in the schema, in parent-before-child order so the CASCADE foreign keys
+         * (sleep_stage_blocks → sleep_sessions, coach_messages → coach_conversations) resolve on
+         * their own. Shared by [nukeAllTables] and `DataArchiveService`'s restore so the two can
+         * never drift — they were separate literals before, and the restore list was already two
+         * tables short.
+         */
+        val ALL_TABLES = listOf(
+            "devices", "measurements", "activity_daily", "activity_buckets",
+            "battery_samples", "device_measurement_configs", "activity_sessions",
+            "activity_gps_points", "activity_events", "activity_samples",
+            "activity_sensor_polls", "sleep_sessions", "sleep_stage_blocks",
+            "coach_conversations", "coach_messages", "coach_memories",
+            "coach_tool_calls", "user_profiles", "user_goals",
+            "raw_packets", "derived_updates", "coach_summaries",
+            "wearable_logs", "coach_notification_records",
+            "meal_entries", "food_products",
+        )
+
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
 
         /** v2 → v3: adds the activity_buckets table (idempotent re-sync of activity history). */
@@ -289,6 +330,67 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `estimatedActiveCalories` REAL")
+            }
+        }
+
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrZoneModeRaw` TEXT NOT NULL DEFAULT 'auto'")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrRestingBaseline` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrRestingBaselineUpdatedAt` INTEGER")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomLowUpper` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomAthleticUpper` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomElevatedStart` REAL")
+                db.execSQL("ALTER TABLE `user_profiles` ADD COLUMN `hrCustomHighStart` REAL")
+            }
+        }
+
+        private val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `activity_sessions` ADD COLUMN `stravaActivityId` INTEGER")
+            }
+        }
+
+        private val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeCalories` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeProteinG` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeCarbsG` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `intakeFatG` REAL")
+                db.execSQL("ALTER TABLE `user_goals` ADD COLUMN `nutritionEnabled` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `meal_entries` (
+                        `id` TEXT NOT NULL, `date` INTEGER NOT NULL, `timestamp` INTEGER NOT NULL,
+                        `name` TEXT NOT NULL, `mealTypeRaw` TEXT NOT NULL DEFAULT 'snack',
+                        `calories` REAL NOT NULL, `proteinG` REAL NOT NULL DEFAULT 0,
+                        `carbsG` REAL NOT NULL DEFAULT 0, `fatG` REAL NOT NULL DEFAULT 0,
+                        `fiberG` REAL, `sugarG` REAL, `sodiumMg` REAL,
+                        `sourceRaw` TEXT NOT NULL DEFAULT 'manual', `offProductCode` TEXT,
+                        `servingDescription` TEXT, `servingGrams` REAL, `quantity` REAL NOT NULL DEFAULT 1,
+                        `confidenceRaw` TEXT NOT NULL DEFAULT 'medium', `userEdited` INTEGER NOT NULL DEFAULT 0,
+                        `notes` TEXT, `loggedByCoach` INTEGER NOT NULL DEFAULT 0,
+                        `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_meal_entries_date` ON `meal_entries` (`date`)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `food_products` (
+                        `code` TEXT NOT NULL, `name` TEXT NOT NULL, `brand` TEXT,
+                        `energyKcal100g` REAL NOT NULL, `protein100g` REAL NOT NULL DEFAULT 0,
+                        `carbs100g` REAL NOT NULL DEFAULT 0, `fat100g` REAL NOT NULL DEFAULT 0,
+                        `fiber100g` REAL, `sugars100g` REAL, `saturatedFat100g` REAL,
+                        `sodiumMg100g` REAL, `servingSizeText` TEXT, `servingQuantityG` REAL,
+                        `lastUsedAt` INTEGER NOT NULL, `useCount` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`code`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_food_products_lastUsedAt` ON `food_products` (`lastUsedAt`)")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -371,6 +473,10 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_13_14,
                         MIGRATION_14_15,
                         MIGRATION_15_16,
+                        MIGRATION_16_17,
+                        MIGRATION_17_18,
+                        MIGRATION_18_19,
+                        MIGRATION_19_20,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

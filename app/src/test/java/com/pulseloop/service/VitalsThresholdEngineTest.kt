@@ -37,10 +37,10 @@ class VitalsThresholdEngineTest {
 
     @Test
     fun heartRateBoundaries() {
-        assertEquals("59 is below the 60 normal floor", ZoneSeverity.WATCH, severity(59.0, MetricKind.HEART_RATE, base))
-        assertEquals(ZoneSeverity.NORMAL, severity(60.0, MetricKind.HEART_RATE, base))
-        assertEquals(ZoneSeverity.NORMAL, severity(100.0, MetricKind.HEART_RATE, base))
-        assertEquals("101 is above the 100 normal ceiling", ZoneSeverity.WATCH, severity(101.0, MetricKind.HEART_RATE, base))
+        assertEquals("49 is below the 50 normal floor", ZoneSeverity.WATCH, severity(49.0, MetricKind.HEART_RATE, base))
+        assertEquals(ZoneSeverity.NORMAL, severity(50.0, MetricKind.HEART_RATE, base))
+        assertEquals(ZoneSeverity.NORMAL, severity(89.0, MetricKind.HEART_RATE, base))
+        assertEquals("90 is at the elevated threshold", ZoneSeverity.WATCH, severity(90.0, MetricKind.HEART_RATE, base))
     }
 
     @Test
@@ -259,7 +259,7 @@ class VitalsThresholdEngineTest {
     @Test
     fun zoneThresholdsAreSortedBoundaries() {
         val thresholds = VitalsThresholdEngine.zoneThresholds(MetricKind.HEART_RATE, base)
-        assertEquals(listOf(60.0, 101.0, 120.0), thresholds)   // the finite upper bounds, sorted
+        assertEquals(listOf(50.0, 90.0, 120.0), thresholds)   // the finite upper bounds, sorted
     }
 
     // ── Android-specific additions ───────────────────────────────────────

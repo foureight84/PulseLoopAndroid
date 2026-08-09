@@ -84,6 +84,9 @@ data class ActivityDailyEntity(
     val syncedAt: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** Ported from iOS #98: net active calories estimated from all-day HR + step buckets when the
+     *  ring does not report device-side calories. Read through [effectiveActiveCalories]. */
+    val estimatedActiveCalories: Double? = null,
 )
 
 /**
@@ -174,6 +177,8 @@ data class ActivitySessionEntity(
     val liveActivityID: String? = null,
     val lastSensorPollAt: Long? = null,
     val lastGpsPointAt: Long? = null,
+    /** iOS #100: Strava activity ID after successful upload. null = not uploaded yet. */
+    val stravaActivityId: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 )
@@ -211,6 +216,16 @@ data class UserProfileEntity(
     val baselineCompleted: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** iOS #95: HR zone mode — "standard", "auto" (from baseline), or "custom". Default "auto". */
+    val hrZoneModeRaw: String = "auto",
+    /** iOS #95: Resting-HR baseline learned from 30-day p10. */
+    val hrRestingBaseline: Double? = null,
+    val hrRestingBaselineUpdatedAt: Long? = null,
+    /** iOS #95: Custom HR zone boundaries (only used when hrZoneModeRaw == "custom"). */
+    val hrCustomLowUpper: Double? = null,
+    val hrCustomAthleticUpper: Double? = null,
+    val hrCustomElevatedStart: Double? = null,
+    val hrCustomHighStart: Double? = null,
 )
 
 /**
@@ -227,6 +242,12 @@ data class UserGoalEntity(
     val sleepMinutes: Int = 480,
     val activeMinutes: Int = 45,
     val workoutsPerWeek: Int = 4,
+    /** iOS #96: Nutrition intake goals + master toggle. */
+    val intakeCalories: Double? = null,
+    val intakeProteinG: Double? = null,
+    val intakeCarbsG: Double? = null,
+    val intakeFatG: Double? = null,
+    val nutritionEnabled: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     companion object {
