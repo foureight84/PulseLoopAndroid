@@ -52,6 +52,9 @@ class RingBLEClient(
         ColmiSmartHealthCoordinator,
         LuckRingCoordinator,
         TK5Coordinator,
+        // RWfit matches only the `A00A` advertisement or its two manufacturer IDs — no name
+        // matching at all — so it can't shadow anything above it.
+        RWfitCoordinator,
         // CRP matches only its family-exclusive `fdda` service (or an explicit CRP carousel pick),
         // so its position is not load-bearing. Like the CRP R11, it's usually reached by the
         // post-connect re-route below rather than by a scan match.
@@ -1385,6 +1388,11 @@ class RingBLEClient(
             }
 
             val driver = activeDriver ?: return
+
+            // Hand the driver the service table before any GATT work: RWfit decides which of its
+            // two wire framings to speak from the sibling services present here, and must know
+            // before its first write.
+            driver.servicesDiscovered(serviceUuids)
 
             // Bind the ring's own service first and enable its notifications BEFORE any
             // other GATT work. The CONNECTED transition is gated on a notify-CCCD descriptor

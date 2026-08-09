@@ -49,6 +49,16 @@ interface WearableDriver {
     /** Reset connection-scoped protocol state. */
     fun connectionDidStart() {}
     fun connectionDidEnd() {}
+
+    /**
+     * The connected GATT's full service table, delivered once after discovery.
+     *
+     * For families whose wire format isn't decidable from the advertisement: RWfit serves one data
+     * service (`A00A`) over two incompatible framings, and the vendor app picks between them purely
+     * from which *sibling* services the ring exposes (`r5/b.java onServicesDiscovered`). No-op for
+     * everyone else.
+     */
+    fun servicesDiscovered(serviceUUIDs: Collection<String>) {}
 }
 
 /**
