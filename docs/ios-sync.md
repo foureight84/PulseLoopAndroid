@@ -27,7 +27,7 @@ intentional platform differences listed at the bottom.
 | **Last triaged iOS commit** | `88c0f6b` — Merge PR #131 (sleep hypnogram alignment + scrubber), 2026-08-08 |
 | **Last triage date** | 2026-08-08 |
 | **Last port date** | 2026-08-08 — PR #45 (ios_sync_2026-08-08, 5 plan commits + 2 CR remediation commits = 7 total) |
-| **Range covered** | 11 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131 + 1 direct commit (`160c775`) → **all ported** |
+| **Range covered** | 11 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131 + 1 direct commit (`160c775`) → **10 ported, #130 backed out** |
 
 ---
 
@@ -111,19 +111,26 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | `4ce34dc` + `c4aab74` (CR fix: mobile endpoint, intent-filter, redirect handler, pollUntilDone, BuildConfig secrets, shared OkHttpClient) |
 | ☑ | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | `68c9788` (versionName → 2.5.0 to match iOS MARKETING_VERSION) |
 | ☑ | [#98](https://github.com/saksham2001/PulseLoopiOS/pull/98) `ac01555` | ~07-27 | On-device daily calorie estimation (Mifflin-St Jeor BMR + Keytel/MET active energy, HR-gated) for rings that don't report calories | **PORT** | M | `0ca53a1` |
-| ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | `4084671` |
+| ☐ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | **BACKED OUT of PR #45** — see "RWfit (#130) — backed out" below. Work preserved on `feat/rwfit-ring-family`; redo against `decompiled-rwfit-official/`. |
 | ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
 
 ## Port priority — open items (as of 2026-08-08)
 
-> **STATUS: ALL PORTED.** PR #45 (`ios_sync_2026-08-08`) ported all 11 items across
-> Tiers 1–3 in 5 plan commits. Code review remediation (`c4aab74`) fixed 14 findings
-> including atomic import, Strava OAuth correctness, stacked dialogs, dead code, and
-> stale-data wiring. Version bumped to 2.5.0 (`68c9788`) to match iOS MARKETING_VERSION.
+> **STATUS: 10 of 11 ported; #130 backed out.** PR #45 (`ios_sync_2026-08-08`) ported all
+> 11 items across Tiers 1–3 in 5 plan commits, then a cross-platform review against the iOS
+> sources found #130 (RWfit) to be a fabricated protocol rather than a port — it was backed
+> out so the other 10 items can land. Version bumped to 2.5.0 (`68c9788`) to match iOS
+> MARKETING_VERSION.
 
-> **▶ RESUME HERE (next session):** All 11 items from the 2026-08-08 triage are ported
-> and CR-remediated. Next triage: `git -C <ios-repo> log --first-parent --oneline 88c0f6b..main`.
-> No open port items remain on this ledger.
+> **▶ RESUME HERE (next session):** Two open threads, in order:
+> 1. **PR #45 review remediation** — the 2026-08-09 review found parity bugs in #95, #98,
+>    #99, #100 and a regression in #94. See "Session notes — 2026-08-09 cross-platform
+>    review" below.
+> 2. **#130 RWfit redo** — on `feat/rwfit-ring-family`, rebuilt from
+>    `decompiled-rwfit-official/` (see the backed-out section below for what was wrong),
+>    then recombined.
+>
+> Next triage after those: `git -C <ios-repo> log --first-parent --oneline 88c0f6b..main`.
 
 > **▶ RESUME HERE (next session):** Tier 1 and Tier 2 both fully clear — **#65 is DONE**, re-triaged
 > into #65a–f, all landed 2026-07-17/18: **#65a** persistence (`daed897`), **#65b** usage tracking
@@ -1315,8 +1322,54 @@ Validated against official Strava docs at developers.strava.com/docs/authenticat
 | Redirect URI | `pulseloop://` + intent-filter | `pulseloop://` no filter | `pulseloop://` + intent-filter |
 | Token exchange | `POST /oauth/token` | `POST /oauth/token` | same (was correct) |
 | Credentials | Per-developer `local.properties` | Hardcoded in source | `BuildConfig` from `local.properties` |
-| State param | Not required (mobile flow) | Generated, never validated | Removed |
+| State param | Optional, echoed back | Generated, never validated | Generated + validated (`b073dad`) |
 | OkHttpClient | Shared singleton | New instance per call | Shared singleton |
+
+---
+
+## RWfit (#130) — backed out of PR #45, 2026-08-09
+
+**The Android port did not come from the vendor app.** Every wire-level constant was invented,
+so none of it could ever have talked to a real ring. iOS `RWfitProtocol.swift` cites its source
+file-by-file (`com.rw.revivalfit`, paths relative to `rwfit-official/sources/`); the same
+decompile is at this repo's root as **`decompiled-rwfit-official/`** — use it, not iOS and not
+guesswork (root `AGENTS.md` rule).
+
+| | iOS / vendor app | Backed-out Android port |
+|---|---|---|
+| Service | `0000a00a-…` | `0000a00a-…` ✅ |
+| **Write characteristic** | `0000b002-…` (`y5/a.java f19995b`) | `0000a002-…` ❌ |
+| **Notify characteristic** | `0000b003-…` (`f19996c`) | `0000a003-…` ❌ |
+| Legacy `0x7E` frame | `7E 01 cmd flags dataLen serHi serLo xor <payload>` (`x5/d.java`) | `7E len cmd <payload> xor` ❌ |
+| deviceInfo / battery / setTime | `0x00` / `0x01` / `0x21` | `0x01` / `0x02` / `0x03` ❌ |
+| History | `0xA0` manifest + `0xA1`–`0xA7` per-stream | invented `0x10` / `0x11` ❌ |
+| Unbind | `0x44` (`h0.java:319`) | `0xFF` ❌ |
+| `0xFE`/`0xFF` ACK handshake | mandatory | absent ❌ |
+| JieLi addressing | `{cmd, key, keyFlag}` triples (`y5/c.java`) | always `key=0, keyFlag=0` ❌ |
+| Framing selection | post-connect, from sibling `AE00` / Telink OTA / PixArt `FF00` services (`r5/b.java:703-727`) | hardcoded legacy; `useAbProtocol` never set true ❌ |
+| Recognition | `A00A` advertisement + manufacturer prefixes `d6050200`/`d6054154`/`d6060200`; **no name matching, on purpose** | `name.startsWith("RW")` ❌ |
+| Capabilities | baseline set + `bitmapGatedCapabilities` (no manual-measure on a legacy link) | all 13 granted unconditionally ❌ |
+
+Logic bugs found in the same pass, independent of the vendor mismatch:
+
+- `decodeStress`: `p[0].toInt() and 0xFF.coerceIn(0, 100)` — precedence makes this `p[0] and 0x64`,
+  a garbage bitmask rather than a clamp.
+- `decodeSleep`: computes `totalMin`/`deep`, discards both, returns `stages = emptyList()`.
+- `decodeRaw`'s `else` branch emits a bogus `Status` event for every unknown frame.
+- `RWfitSyncEngine`: no time sync, never calls `requestHistory()`, empty `handle()` — nothing
+  would ever pull history.
+- `0xAB` deframing treats the whole buffer as exactly one frame (`payloadLen = buffer.size - 6`,
+  then `buffer.clear()`), with no length field.
+- `RWfitDriver` holds an encoder whose `setProtocol()` result is discarded; `RWfitSyncEngine`
+  builds a second, independent one.
+
+**What was removed** (`ios_sync_2026-08-08`): the six `RWfit*.kt` files, `RingDeviceType.RWFIT`,
+`WearableModel.RWFIT` + its catalog entry, the `RWfitCoordinator` registration in `RingBLEClient`,
+the `DeviceHeroCard` fallback arm, and the `PairingMatchingTest` registered-type entry. The
+gratuitously-deleted CRP ordering comment in `RingBLEClient` was restored.
+
+**Where the work lives:** `feat/rwfit-ring-family` (bookmarked at `b073dad`). Rebuild the protocol
+layer there from `decompiled-rwfit-official/`, then recombine.
 
 ---
 

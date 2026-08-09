@@ -143,12 +143,6 @@ data class WearableModel(
             advertisedNamePatterns = listOf("^TK18([ _-].*)?$"),
         )
 
-        val RWFIT = WearableModel(
-            id = "rwfit", displayName = "RWfit Ring", brand = "RWfit", family = RingDeviceType.RWFIT,
-            tint = PulseColors.bloodPressure, blurb = "HR · SpO₂ · BP · HRV · Temp · Sleep · Steps · Stress · Glucose",
-            advertisedNamePatterns = listOf("^RWfit([ _-].*)?$", "^RW([ _-].*)?$"),
-        )
-
         private fun colmi(
             id: String,
             name: String,
@@ -181,7 +175,7 @@ data class WearableModel(
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
             COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP, RWFIT,
+            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
             COLMI_SMARTHEALTH,

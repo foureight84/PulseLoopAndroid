@@ -75,6 +75,5 @@ enum class RingDeviceType(val displayName: String) {
     // reveals its `fdda` service post-connect (issue #29, zaggash's ring). See CRPCoordinator.
     CRP("Colmi / Moyoung ring (CRP)"),
     // Hardware-validated SmartHealth R10M path, kept separate from the broader YCBT families.
-    YCBT("YCBT / SmartHealth ring"),
-    RWFIT("RWfit ring");
+    YCBT("YCBT / SmartHealth ring");
 }
