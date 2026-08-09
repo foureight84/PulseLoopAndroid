@@ -111,7 +111,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | `4ce34dc` + `c4aab74` (CR fix: mobile endpoint, intent-filter, redirect handler, pollUntilDone, BuildConfig secrets, shared OkHttpClient) |
 | ☑ | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | `68c9788` (versionName → 2.5.0 to match iOS MARKETING_VERSION) |
 | ☑ | [#98](https://github.com/saksham2001/PulseLoopiOS/pull/98) `ac01555` | ~07-27 | On-device daily calorie estimation (Mifflin-St Jeor BMR + Keytel/MET active energy, HR-gated) for rings that don't report calories | **PORT** | M | `0ca53a1` |
-| ☐ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | **BACKED OUT of PR #45** — see "RWfit (#130) — backed out" below. Work preserved on `feat/rwfit-ring-family`; redo against `decompiled-rwfit-official/`. |
+| ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | Backed out of PR #45, then **rebuilt from `decompiled-rwfit-official/`** on `feat/rwfit-vendor-rebuild`. Legacy `0x7E` path complete; JieLi `0xAB` framing complete but its history bodies are not decoded yet. **No hardware validation.** See below. |
 | ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
 
 ## Port priority — open items (as of 2026-08-08)
@@ -1438,8 +1438,70 @@ Logic bugs found in the same pass, independent of the vendor mismatch:
 the `DeviceHeroCard` fallback arm, and the `PairingMatchingTest` registered-type entry. The
 gratuitously-deleted CRP ordering comment in `RingBLEClient` was restored.
 
-**Where the work lives:** `feat/rwfit-ring-family` (bookmarked at `b073dad`). Rebuild the protocol
-layer there from `decompiled-rwfit-official/`, then recombine.
+**Where the work lives:** `feat/rwfit-ring-family` (bookmarked at `b073dad`) is the archive of the
+backed-out code. The rebuild is `feat/rwfit-vendor-rebuild`, described next.
+
+---
+
+## RWfit (#130) — rebuilt from the vendor app, 2026-08-09
+
+Branch `feat/rwfit-vendor-rebuild`, on top of the remediated `ios_sync_2026-08-08`. Every constant
+is cited to the vendor file it came from. **Every claim iOS's `RWfitProtocol.swift` makes was
+re-derived from the decompile rather than trusted** — and it checks out, with one exception noted
+below.
+
+### What was verified, and what iOS's summary didn't carry
+
+| Source | Fact |
+|---|---|
+| `y5/a.java` | service `a00a`, write `b002`, notify `b003`; discriminators `ae00` / `ff00` / Telink `…1912` |
+| `r5/b.java:700-727` | framing chosen **post-connect** from sibling services — never from the advertisement |
+| `x5/d.java` | legacy header `7E 01 cmd flags dataLen serHi serLo xor`; XOR over payload only; serials 1…65535 wrapping; 12-byte multi-packet variant; **ack-before-parse** ordering |
+| `x5/c.java`, `r5/b.java:386-476` | JieLi header `AB flag lenHi lenLo crcHi crcLo`; CRC-16/ARC **big-endian**; length *and* CRC cover the `{cmd,key,keyFlag}` triple opening the body; flag `0x11` = ACK; the `06/09` ACK carries a trailing `0x00` |
+| `y5/c.java` | the full triple table and `05`-group data types |
+| `x5/b.java` + senders | command ids — and **battery percent is payload byte 2**, not byte 0 |
+| `p.java u()` vs `v()` | legacy `setTime` sends the full 4-digit year BE; JieLi sends `year − 2000`. Not a shared encoder. |
+| `x5/b.java w0/r0/s0/u0` | HR/SpO2/BP/temp share `[dayTs u32][itemCount u16]` + fixed items; temperature is offset-encoded, **°C = (raw + 200) / 10** |
+| `x5/b.java C0/A0` | steps has a 15-byte day header, sleep a 16-byte one with 2-byte `[minutes][stage]` runs |
+| `s1.java:1636-1645` | sleep stage types **0 awake, 1 light, 2 deep, 3 REM**, from the vendor's own aggregation |
+| `r5/d.java c()` | four raw-advertisement signatures; a non-empty name is required but **never matched on** |
+
+### One iOS error found
+
+iOS records the JieLi unbind triple as `{0x03, 0x01, 0x30}`. The vendor's table (`y5/c.java`) has no
+such entry — the only other group-3 `0x20` triple is `{0x03, 0x02, 0x20}`. Left as
+`JieLi.UNBIND_UNCONFIRMED` and **not sent**: guessing inside the bind group risks re-binding or
+factory-resetting someone's ring. Worth an upstream issue on PulseLoopiOS.
+
+### Deliberate quirk replication
+
+The ring stamps history timestamps as local wall-clock pretending to be UTC, and the vendor corrects
+them by subtracting the zone's raw offset **plus a flat hour whenever the zone observes DST at all**
+— `useDaylightTime()`, not `inDaylightTime(date)`. That is an hour out for half the year, and it is
+replicated exactly: matching it keeps our decode aligned with what the ring and the vendor app agree
+on, whereas "fixing" it would put us an hour off theirs.
+
+### Scope
+
+- **Legacy `0x7E`: complete.** Framing, serials, XOR, the `0xFE`/`0xFF` handshake, multi-packet
+  reassembly, all six history streams, battery, manifest-gated cascade.
+- **JieLi `0xAB`: framing complete, payloads not.** Handshake, battery, time sync and the ACK
+  discipline work; the `05`-group history bodies have their own per-type layouts that have **not**
+  been extracted. `RWfitSyncEngine` therefore does not request history on a JieLi link, and the
+  driver logs those frames rather than guessing at them.
+- **Feature bitmap not decoded** (`x5/b.java i()` → `SupportMenuBean`), so `bitmapGatedCapabilities`
+  is declared but nothing grants from it yet. Manual/realtime measurement and the per-SKU sensors
+  stay ungranted rather than being handed out unconditionally — the vendor has no legacy on-demand
+  measurement command at all, so a Measure button on a `0x7E` link could only time out.
+- **Step intraday buckets not emitted**: the per-item `index` doesn't pin a wall-clock bucket
+  without the ring's bucket width, which the vendor never states. Day totals only.
+
+### Testing
+
+49 unit tests across `RWfitCodecTest` (20), `RWfitDecoderTest` (16) and `RWfitDriverTest` (13),
+asserting vendor byte layouts rather than the implementation. Suite: 812 → 866.
+
+**No hardware validation.** Nothing here has talked to a real RWfit ring. Say so on the PR.
 
 ---
 

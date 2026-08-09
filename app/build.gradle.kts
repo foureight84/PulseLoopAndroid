@@ -42,6 +42,16 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests {
+            // Let JVM unit tests exercise code that logs. Without this, `android.util.Log` throws
+            // "not mocked" and any class with a Log call becomes untestable off-device — which
+            // would mean choosing between covering the ring drivers and being able to diagnose
+            // them in the field.
+            isReturnDefaultValues = true
+        }
+    }
+
     splits {
         abi {
             isEnable = true
