@@ -52,7 +52,7 @@ data class CoachTurnError(
                 reason = "No API key is configured for the selected provider. Add one in Settings → AI Coach.")
             is ResponsesError.Transport -> CoachTurnError(
                 code = "Network",
-                reason = error.underlying.message ?: "The network request failed.")
+                reason = transportReason(error.underlying))
             is ResponsesError.Http -> CoachTurnError(
                 code = "HTTP ${error.status}",
                 reason = cleanReason(error.body, error.status))
@@ -62,6 +62,44 @@ data class CoachTurnError(
                 reason = "The model returned an empty response. Try again, or pick a different model.")
             else -> CoachTurnError(code = "Error", reason = error.message ?: "Something went wrong.")
         }
+
+        /**
+         * Turns a raw transport exception into something the user can act on.
+         *
+         * The JDK's own strings are useless in a chat bubble — a blocked resolver surfaces as
+         * `Unable to resolve host "generativelanguage.googleapis.com": No address associated with
+         * hostname`, and a socket timeout as the single word `timeout`. Neither hints that the
+         * usual causes are an active VPN, a Private DNS entry that doesn't resolve Google hosts, or
+         * simply no connectivity. The underlying text is still appended so a bug report keeps it.
+         */
+        internal fun transportReason(underlying: Throwable): String {
+            val detail = underlying.message?.trim().orEmpty()
+            return when (underlying) {
+                is java.net.UnknownHostException -> {
+                    val host = hostFrom(detail)
+                    "Couldn't look up ${host ?: "the provider"}. Your device can't resolve it right " +
+                        "now — check your connection, and whether a VPN or a Private DNS setting is " +
+                        "blocking it. (${detail.ifEmpty { "unknown host" }})"
+                }
+                // OkHttp reports connect and read timeouts as this same exception, and only the
+                // message tells them apart ("failed to connect to … after 30000ms" vs "timeout").
+                // The copy therefore stays neutral about which one happened, and the raw text is
+                // appended like every other branch so a bug report can still distinguish them.
+                is java.net.SocketTimeoutException ->
+                    "The provider took too long to answer. Check your connection and try again — a " +
+                        "VPN or a weak signal will do this. (${detail.ifEmpty { "timeout" }})"
+                is javax.net.ssl.SSLException ->
+                    "The secure connection to the provider failed. This is usually a VPN, a proxy, " +
+                        "or a network that intercepts traffic. (${detail.ifEmpty { "TLS error" }})"
+                is java.net.ConnectException ->
+                    "Couldn't connect to the provider. (${detail.ifEmpty { "connection refused" }})"
+                else -> detail.ifEmpty { "The network request failed." }
+            }
+        }
+
+        /** Pulls `example.com` out of `Unable to resolve host "example.com": …`, if present. */
+        private fun hostFrom(message: String): String? =
+            Regex("\"([^\"]+)\"").find(message)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
 
         /** Extracts a readable message from a provider error body, which is
          *  usually JSON like `{"error":{"message":"..."}}` (OpenAI/OpenRouter) or

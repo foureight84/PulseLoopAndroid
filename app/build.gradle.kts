@@ -19,7 +19,7 @@ android {
         // versionCode/versionName are overridable from Gradle properties so the release CI
         // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
         // Local builds fall back to the literals below.
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 34
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 35
         versionName = (project.findProperty("appVersionName") as String?) ?: "2.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -171,4 +171,7 @@ dependencies {
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    // Drives ResponsesHttp against a real socket so the retry/transport-mapping rules are tested
+    // end-to-end rather than by hand-constructing the error wrappers. Matches the okhttp version.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

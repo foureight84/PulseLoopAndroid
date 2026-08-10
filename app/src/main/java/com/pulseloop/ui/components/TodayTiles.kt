@@ -17,10 +17,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.ui.theme.PulseColors
@@ -33,8 +35,44 @@ import com.pulseloop.ui.theme.PulseColors
 
 /** Shared sizing so every Today tile is identical (TodayTileMetrics in Swift). */
 object TodayTileMetrics {
-    val height = 168.dp
+    /** The design height, at the default font scale (1.0). */
+    private val baseHeight = 168.dp
     val corner = 20.dp
+
+    /**
+     * The tile height, grown with the user's font-size setting.
+     *
+     * The grid is a fixed-height design, but everything inside a tile is sized in `sp` — so a tile
+     * stops fitting its own contents the moment the user raises the font scale. That is what clipped
+     * the Activity tile's third row (calories, issue #24 round two): the three label/value pairs need
+     * `3 × (12 + 18)sp + 2 × 3dp`, and only ~108dp of the 168dp tile is left after the 16dp padding,
+     * the eyebrow row, and the 8dp spacer. They stop fitting at roughly **fontScale 1.15**.
+     *
+     * **This is not a density/DPI problem.** dp and sp both scale by density, so a 420dpi Pixel 8 and
+     * a 480dpi Pixel 10 Pro XL lay out identically at the same font scale — which is why this passed
+     * verification on the Pixel 8. Only `fontScale` moves sp relative to dp. Shrinking the text again
+     * would just move the breaking point; the container has to grow instead.
+     *
+     * Sampling the scale at 16.sp (the Activity value size) rather than reading `fontScale` directly
+     * matters on Android 14+, where font scaling is non-linear and every sp size has its own curve —
+     * `fontScale` alone would under-report the growth of the text that actually overflows.
+     *
+     * Clamped at the bottom so a small-text user still gets the designed layout, and at the top so an
+     * accessibility-max setting can't produce an absurd grid. The clamp is safe: at the 2.0 ceiling the
+     * values block needs 186dp and a 1.6×-clamped tile still offers ~199dp.
+     *
+     * **Only helps tiles whose content is a plain sp-measured column** — Activity, Sleep, Chart. The
+     * gauge tiles are unaffected by this: `GaugeTile` and `BpRingColumn` pin `VitalRingGauge` to a dp
+     * literal (108.dp / 66.dp) and derive the centre font sizes from it (`size.value * 0.30f`), inside
+     * a `Box(modifier.size(size))` — so their centre text still overflows its ring at a high font
+     * scale while the tile around it has spare room. Pre-existing and separate; fixing it means making
+     * the gauge size font-scale-aware too, not making the tile taller.
+     */
+    val height: Dp
+        @Composable get() {
+            val scale = with(LocalDensity.current) { 16.sp.toDp() / 16.dp }
+            return baseHeight * scale.coerceIn(1f, 1.6f)
+        }
 }
 
 /**
@@ -110,10 +148,15 @@ fun ActivityTile(
                 strokeWidth = 9.dp,
                 ringSpacing = 4.dp,
             )
-            // Three metrics (steps/distance/calories) share the fixed-height tile. At 22.sp the
-            // third value overflowed and clipped the calories row (issue #24). Keep each pair
-            // compact — 16.sp value, tight line heights, and no font padding (Compose's default
-            // includeFontPadding adds several dp per line) — so all three fit with margin.
+            // Three metrics (steps/distance/calories) share one tile. At 22.sp the third value
+            // overflowed and clipped the calories row (issue #24), so each pair is compact —
+            // 16.sp value, tight line heights, and no font padding (Compose's default
+            // includeFontPadding adds several dp per line).
+            //
+            // That alone was not enough: this block is measured in sp while the tile was a fixed
+            // 168.dp, so calories clipped again on a device with a raised font scale. Shrinking the
+            // text further would only move the breaking point — [TodayTileMetrics.height] now grows
+            // the tile with the font scale instead. Don't re-pin the height to a dp literal.
             val compact = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
             Column(verticalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.weight(1f)) {
                 values.forEach { value ->
