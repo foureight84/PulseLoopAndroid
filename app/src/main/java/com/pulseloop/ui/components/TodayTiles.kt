@@ -36,7 +36,7 @@ import com.pulseloop.ui.theme.PulseColors
 /** Shared sizing so every Today tile is identical (TodayTileMetrics in Swift). */
 object TodayTileMetrics {
     /** The design height, at the default font scale (1.0). */
-    val baseHeight = 168.dp
+    private val baseHeight = 168.dp
     val corner = 20.dp
 
     /**
@@ -60,6 +60,13 @@ object TodayTileMetrics {
      * Clamped at the bottom so a small-text user still gets the designed layout, and at the top so an
      * accessibility-max setting can't produce an absurd grid. The clamp is safe: at the 2.0 ceiling the
      * values block needs 186dp and a 1.6×-clamped tile still offers ~199dp.
+     *
+     * **Only helps tiles whose content is a plain sp-measured column** — Activity, Sleep, Chart. The
+     * gauge tiles are unaffected by this: `GaugeTile` and `BpRingColumn` pin `VitalRingGauge` to a dp
+     * literal (108.dp / 66.dp) and derive the centre font sizes from it (`size.value * 0.30f`), inside
+     * a `Box(modifier.size(size))` — so their centre text still overflows its ring at a high font
+     * scale while the tile around it has spare room. Pre-existing and separate; fixing it means making
+     * the gauge size font-scale-aware too, not making the tile taller.
      */
     val height: Dp
         @Composable get() {

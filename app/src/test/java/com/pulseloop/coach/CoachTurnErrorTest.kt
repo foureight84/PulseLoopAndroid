@@ -83,7 +83,25 @@ class CoachTurnErrorTest {
         val e = CoachTurnError.from(ResponsesError.Transport(java.net.SocketTimeoutException("timeout")))
         assertEquals("Network", e.code)
         assertNotEquals("timeout", e.reason)
-        assertTrue(e.reason.contains("didn't respond in time"))
+        assertTrue(e.reason.contains("took too long to answer"))
+    }
+
+    /**
+     * OkHttp reports connect and read timeouts as the same exception, so the raw message is the
+     * only thing that tells a bug report which one happened. Every other transport branch appends
+     * it; this one used to drop it.
+     */
+    @Test
+    fun testSocketTimeoutKeepsTheRawTextForBugReports() {
+        val connect = CoachTurnError.from(
+            ResponsesError.Transport(
+                java.net.SocketTimeoutException("failed to connect to api.openai.com after 30000ms"),
+            ),
+        )
+        assertTrue(connect.reason.contains("failed to connect to api.openai.com after 30000ms"))
+
+        val read = CoachTurnError.from(ResponsesError.Transport(java.net.SocketTimeoutException("timeout")))
+        assertTrue(read.reason.contains("(timeout)"))
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.pulseloop.coach.openai
 
 import com.pulseloop.coach.attachments.CoachImagePayload
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -51,19 +52,30 @@ internal object ResponsesHttp {
      * [ResponsesError.Transport] on network failure and [ResponsesError.Http]
      * (with the error body) on a non-2xx status.
      */
-    fun post(url: String, body: ByteArray, headers: Map<String, String> = emptyMap()): String {
+    suspend fun post(url: String, body: ByteArray, headers: Map<String, String> = emptyMap()): String {
         val builder = okhttp3.Request.Builder()
             .url(url)
             .post(okhttp3.RequestBody.create(jsonMediaType, body))
         for ((name, value) in headers) builder.header(name, value)
         val request = builder.build()
 
-        var lastFailure: Exception? = null
         for (attempt in 0..MAX_UNSENT_RETRIES) {
-            val response = try {
-                client.newCall(request).execute()
+            try {
+                // Both the call and the body read live inside the try. A read timeout can fire
+                // while the body is still streaming, and if that escaped uncaught it would reach
+                // CoachTurnError as a bare SocketTimeoutException — bypassing the transport copy
+                // and printing the JDK's one-word "timeout" again, the exact bug this fixes.
+                // `use` closes the response on every path, including a mid-read failure.
+                return client.newCall(request).execute().use { response ->
+                    val text = response.body?.string() ?: ""
+                    if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
+                    text
+                }
+            } catch (e: ResponsesError) {
+                // An HTTP status is an answer from the provider, not a transport failure. Never
+                // retried, and never re-wrapped as Transport by the catch below.
+                throw e
             } catch (e: Exception) {
-                lastFailure = e
                 // Only retry failures that provably never reached the provider: DNS resolution and
                 // TCP connect. A momentary DNS miss (radio handover, a VPN or private-DNS resolver
                 // still coming up) otherwise kills the whole turn and burns the user's message.
@@ -73,15 +85,14 @@ internal object ResponsesHttp {
                 // "sent, answer lost" — and re-sending the latter bills the user's API key for a
                 // generation that already ran.
                 if (!isProvablyUnsent(e) || attempt == MAX_UNSENT_RETRIES) throw ResponsesError.Transport(e)
-                Thread.sleep(RETRY_BACKOFF_MS shl attempt)   // 400ms, 800ms
-                continue
+                // delay(), not Thread.sleep(): the turn is cancellable (the user leaves the coach
+                // screen, WorkManager stops the summary worker), and a blocking sleep would keep an
+                // IO thread parked and then fire the remaining doomed attempts anyway.
+                delay(RETRY_BACKOFF_MS shl attempt)   // 400ms, 800ms
             }
-            val text = response.body?.string() ?: ""
-            if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
-            return text
         }
-        // Unreachable — the loop either returns or throws — but keeps the compiler happy.
-        throw ResponsesError.Transport(lastFailure ?: IllegalStateException("request never ran"))
+        // Unreachable — the final attempt either returns or throws — but keeps the compiler happy.
+        throw IllegalStateException("request never ran")
     }
 
     /**

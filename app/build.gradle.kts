@@ -171,4 +171,7 @@ dependencies {
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    // Drives ResponsesHttp against a real socket so the retry/transport-mapping rules are tested
+    // end-to-end rather than by hand-constructing the error wrappers. Matches the okhttp version.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

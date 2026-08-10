@@ -81,9 +81,13 @@ data class CoachTurnError(
                         "now — check your connection, and whether a VPN or a Private DNS setting is " +
                         "blocking it. (${detail.ifEmpty { "unknown host" }})"
                 }
+                // OkHttp reports connect and read timeouts as this same exception, and only the
+                // message tells them apart ("failed to connect to … after 30000ms" vs "timeout").
+                // The copy therefore stays neutral about which one happened, and the raw text is
+                // appended like every other branch so a bug report can still distinguish them.
                 is java.net.SocketTimeoutException ->
-                    "The provider didn't respond in time. Check your connection and try again — a " +
-                        "VPN or a weak signal will do this."
+                    "The provider took too long to answer. Check your connection and try again — a " +
+                        "VPN or a weak signal will do this. (${detail.ifEmpty { "timeout" }})"
                 is javax.net.ssl.SSLException ->
                     "The secure connection to the provider failed. This is usually a VPN, a proxy, " +
                         "or a network that intercepts traffic. (${detail.ifEmpty { "TLS error" }})"
