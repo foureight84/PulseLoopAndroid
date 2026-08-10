@@ -56,16 +56,43 @@ internal object ResponsesHttp {
             .url(url)
             .post(okhttp3.RequestBody.create(jsonMediaType, body))
         for ((name, value) in headers) builder.header(name, value)
+        val request = builder.build()
 
-        val response = try {
-            client.newCall(builder.build()).execute()
-        } catch (e: Exception) {
-            throw ResponsesError.Transport(e)
+        var lastFailure: Exception? = null
+        for (attempt in 0..MAX_UNSENT_RETRIES) {
+            val response = try {
+                client.newCall(request).execute()
+            } catch (e: Exception) {
+                lastFailure = e
+                // Only retry failures that provably never reached the provider: DNS resolution and
+                // TCP connect. A momentary DNS miss (radio handover, a VPN or private-DNS resolver
+                // still coming up) otherwise kills the whole turn and burns the user's message.
+                //
+                // A read timeout is deliberately NOT retried. OkHttp reports connect and read
+                // timeouts as the same SocketTimeoutException, so we cannot tell "never sent" from
+                // "sent, answer lost" — and re-sending the latter bills the user's API key for a
+                // generation that already ran.
+                if (!isProvablyUnsent(e) || attempt == MAX_UNSENT_RETRIES) throw ResponsesError.Transport(e)
+                Thread.sleep(RETRY_BACKOFF_MS shl attempt)   // 400ms, 800ms
+                continue
+            }
+            val text = response.body?.string() ?: ""
+            if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
+            return text
         }
-        val text = response.body?.string() ?: ""
-        if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
-        return text
+        // Unreachable — the loop either returns or throws — but keeps the compiler happy.
+        throw ResponsesError.Transport(lastFailure ?: IllegalStateException("request never ran"))
     }
+
+    /**
+     * True when [e] means the request never left the device, so re-sending it is side-effect free.
+     * `UnknownHostException` is DNS; `ConnectException` is a refused/unreachable TCP connect.
+     */
+    internal fun isProvablyUnsent(e: Throwable): Boolean =
+        e is java.net.UnknownHostException || e is java.net.ConnectException
+
+    private const val MAX_UNSENT_RETRIES = 2
+    private const val RETRY_BACKOFF_MS = 400L
 }
 
 /** One parsed Responses-API function tool spec, provider-neutral. */
