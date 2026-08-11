@@ -16,7 +16,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Parse version from tag
         id: ver
@@ -39,12 +39,16 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "Building versionName=$NAME versionCode=$CODE prerelease=$PRERELEASE"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      # cache-provider: basic — see the note in ci.yml. Keeps caching on the open-source
+      # implementation rather than v6's default commercial `gradle-actions-caching`.
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
 
       - name: Decode release keystore
         env:
@@ -93,7 +97,7 @@ jobs:
           ls -la dist
 
       - name: Create / update release and attach APKs
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: PulseLoop ${{ steps.ver.outputs.name }} (${{ steps.ver.outputs.code }})

@@ -14,18 +14,27 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
+      # `cache-provider: basic` is load-bearing, not a tuning knob. v6 moved the default caching
+      # implementation into `gradle-actions-caching`, a proprietary component governed by Gradle's
+      # commercial Terms of Use (https://blog.gradle.org/github-actions-for-gradle-v6); 'basic' is
+      # the open-source GitHub-Actions-cache implementation and keeps this repo off those terms.
+      # Don't drop this line to "take the default" — that silently opts into the commercial
+      # component. (v5 was the last fully-MIT line but is dead: v5.0.2, 2026-02, no security
+      # updates since.)
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - name: Unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
       - name: Build debug APK
         run: ./gradlew --no-daemon :app:assembleDebug
       - name: Upload test APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pulseloop-debug-apk
           path: app/build/outputs/apk/debug/*.apk
