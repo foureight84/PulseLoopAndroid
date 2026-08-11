@@ -44,10 +44,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Deliberately v5, not the latest v6 — see the note in ci.yml: v6's caching moved to a
-      # proprietary component under Gradle's commercial Terms of Use. v5 is the last MIT line
-      # and already runs on Node 24.
-      - uses: gradle/actions/setup-gradle@v5
+      # cache-provider: basic — see the note in ci.yml. Keeps caching on the open-source
+      # implementation rather than v6's default commercial `gradle-actions-caching`.
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
 
       - name: Decode release keystore
         env:

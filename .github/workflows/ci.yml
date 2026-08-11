@@ -19,11 +19,16 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      # Deliberately v5, not the latest v6: v6 extracts caching into `gradle-actions-caching`,
-      # a proprietary component under Gradle's commercial Terms of Use rather than the MIT
-      # licence. v5 is the last MIT line and already runs on Node 24, which is all this bump
-      # needs. Read https://blog.gradle.org/github-actions-for-gradle-v6 before moving to v6.
-      - uses: gradle/actions/setup-gradle@v5
+      # `cache-provider: basic` is load-bearing, not a tuning knob. v6 moved the default caching
+      # implementation into `gradle-actions-caching`, a proprietary component governed by Gradle's
+      # commercial Terms of Use (https://blog.gradle.org/github-actions-for-gradle-v6); 'basic' is
+      # the open-source GitHub-Actions-cache implementation and keeps this repo off those terms.
+      # Don't drop this line to "take the default" — that silently opts into the commercial
+      # component. (v5 was the last fully-MIT line but is dead: v5.0.2, 2026-02, no security
+      # updates since.)
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - name: Unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
       - name: Build debug APK
