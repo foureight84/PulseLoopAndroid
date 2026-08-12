@@ -11,16 +11,22 @@ import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -35,44 +41,46 @@ import com.pulseloop.ui.theme.PulseColors
 
 /** Shared sizing so every Today tile is identical (TodayTileMetrics in Swift). */
 object TodayTileMetrics {
-    /** The design height, at the default font scale (1.0). */
-    private val baseHeight = 168.dp
     val corner = 20.dp
 
     /**
-     * The tile height, grown with the user's font-size setting.
+     * The tile height *floor*, not a fixed height. Tiles grow past it to fit their own contents.
      *
-     * The grid is a fixed-height design, but everything inside a tile is sized in `sp` — so a tile
-     * stops fitting its own contents the moment the user raises the font scale. That is what clipped
-     * the Activity tile's third row (calories, issue #24 round two): the three label/value pairs need
-     * `3 × (12 + 18)sp + 2 × 3dp`, and only ~108dp of the 168dp tile is left after the 16dp padding,
-     * the eyebrow row, and the 8dp spacer. They stop fitting at roughly **fontScale 1.15**.
+     * The grid started as a fixed 168.dp design while everything inside a tile is sized in `sp`, so
+     * a tile clipped the moment its content outgrew the box. Two rounds of that shipped: the
+     * Activity tile's calories row (issue #24), then the Sleep tile's score — which overflowed
+     * **at the default font scale**, not just a raised one. Its column needs ~135dp (30sp duration +
+     * 10dp + a 28dp stage bar + 10dp + a 32sp score row) and the tile leaves ~111dp after the 16dp
+     * padding, the eyebrow row and the 8dp spacer.
      *
-     * **This is not a density/DPI problem.** dp and sp both scale by density, so a 420dpi Pixel 8 and
-     * a 480dpi Pixel 10 Pro XL lay out identically at the same font scale — which is why this passed
-     * verification on the Pixel 8. Only `fontScale` moves sp relative to dp. Shrinking the text again
-     * would just move the breaking point; the container has to grow instead.
+     * The previous fix grew the height by the font scale, which is why Activity survived and Sleep
+     * did not: scaling a box that was already too small at 1.0 just scales the overflow. So the
+     * height is now driven by content — [TodayTile] uses `heightIn(min = …)` and each grid row is
+     * measured with `IntrinsicSize.Min`, so a row is exactly as tall as its tallest tile needs and
+     * both tiles in it match. Nothing can clip, at any font scale, for any value the tile shows.
      *
-     * Sampling the scale at 16.sp (the Activity value size) rather than reading `fontScale` directly
-     * matters on Android 14+, where font scaling is non-linear and every sp size has its own curve —
-     * `fontScale` alone would under-report the growth of the text that actually overflows.
+     * This subsumes the font-scale multiplier that used to live here — sp content grows, the
+     * intrinsic measurement sees it, the tile grows. No sampling, no clamp, no breaking point.
      *
-     * Clamped at the bottom so a small-text user still gets the designed layout, and at the top so an
-     * accessibility-max setting can't produce an absurd grid. The clamp is safe: at the 2.0 ceiling the
-     * values block needs 186dp and a 1.6×-clamped tile still offers ~199dp.
-     *
-     * **Only helps tiles whose content is a plain sp-measured column** — Activity, Sleep, Chart. The
-     * gauge tiles are unaffected by this: `GaugeTile` and `BpRingColumn` pin `VitalRingGauge` to a dp
-     * literal (108.dp / 66.dp) and derive the centre font sizes from it (`size.value * 0.30f`), inside
-     * a `Box(modifier.size(size))` — so their centre text still overflows its ring at a high font
-     * scale while the tile around it has spare room. Pre-existing and separate; fixing it means making
-     * the gauge size font-scale-aware too, not making the tile taller.
+     * **Don't put this back on a fixed `.height()`.** That is the bug, twice over.
      */
-    val height: Dp
-        @Composable get() {
-            val scale = with(LocalDensity.current) { 16.sp.toDp() / 16.dp }
-            return baseHeight * scale.coerceIn(1f, 1.6f)
-        }
+    val minHeight = 168.dp
+
+    /**
+     * The user's font scale, sampled at 16.sp and clamped to 1.0–1.6.
+     *
+     * For the few places that must scale a **dp** box by hand because the text inside it is sized
+     * off that same dp value — the ring gauges, whose centre value is `size.value * 0.30f`.sp inside
+     * a `Box(modifier.size(size))`. A fixed-dp ring with sp text in the middle overflows its own
+     * ring as the font scale rises; growing the ring with the text keeps them proportional, and the
+     * tile then grows to fit the bigger ring on its own.
+     *
+     * Sampled at 16.sp rather than read from `fontScale` directly because Android 14+ scales each sp
+     * size on its own non-linear curve, so `fontScale` alone under-reports it. Clamped at the top so
+     * an accessibility-max setting can't produce an absurd grid.
+     */
+    val fontScale: Float
+        @Composable get() = with(LocalDensity.current) { 16.sp.toDp() / 16.dp }.coerceIn(1f, 1.6f)
 }
 
 /**
@@ -90,7 +98,10 @@ fun TodayTile(
     val shape = RoundedCornerShape(TodayTileMetrics.corner)
     Column(
         modifier = modifier
-            .height(TodayTileMetrics.height)
+            // A floor, not a fixed height — see [TodayTileMetrics.minHeight]. The grid row measures
+            // its tiles with IntrinsicSize.Min and stretches both to match, so this grows to fit
+            // whatever the tile actually contains instead of clipping it.
+            .heightIn(min = TodayTileMetrics.minHeight)
             .clip(shape)
             .background(PulseColors.card)
             .border(1.dp, PulseColors.borderSubtle, shape)
@@ -217,7 +228,20 @@ fun buildSleepStageSegments(
 @Composable
 fun SleepStageBar(segments: List<SleepStageSegment>, modifier: Modifier = Modifier) {
     val total = segments.sumOf { it.minutes }.coerceAtLeast(1.0)
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    val measurer = rememberTextMeasurer()
+    val labelStyle = TextStyle(
+        fontSize = 9.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.5.sp,
+    )
+    // Measured rather than subcomposed: BoxWithConstraints would give the per-segment width
+    // directly, but it is a SubcomposeLayout and the Today grid measures these tiles with
+    // IntrinsicSize.Min, which subcomposition can't answer. onSizeChanged keeps intrinsics intact.
+    var barWidthPx by remember { mutableIntStateOf(0) }
+    Column(
+        modifier = modifier.fillMaxWidth().onSizeChanged { barWidthPx = it.width },
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
         Row(Modifier.fillMaxWidth().height(12.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             segments.forEach { seg ->
                 Box(
@@ -231,14 +255,19 @@ fun SleepStageBar(segments: List<SleepStageSegment>, modifier: Modifier = Modifi
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             segments.forEach { seg ->
-                Box(Modifier.weight((seg.minutes / total).toFloat().coerceAtLeast(0.01f))) {
-                    // A sliver's label would dominate the sliver itself — only label ≥10% shares.
-                    if (seg.minutes / total >= 0.10) {
+                val fraction = (seg.minutes / total).toFloat().coerceAtLeast(0.01f)
+                Box(Modifier.weight(fraction)) {
+                    // Show a label only when its segment can carry the *whole* word. The old
+                    // "≥10% of the bar" rule was a proxy for that and broke as soon as the text
+                    // grew relative to the bar: REM rendered as "RE" at font scale 1.3 and DEEP as
+                    // "DEE" at 2.0. A truncated stage name reads as a different stage, so drop the
+                    // label instead of clipping it — the colored segment still carries the meaning.
+                    // The measurer picks up the current density and font scale on its own.
+                    val labelPx = measurer.measure(seg.label, labelStyle).size.width
+                    if (barWidthPx > 0 && labelPx <= barWidthPx * fraction) {
                         Text(
                             seg.label,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            letterSpacing = 0.5.sp,
+                            style = labelStyle,
                             color = seg.color,
                             maxLines = 1,
                             overflow = TextOverflow.Clip,

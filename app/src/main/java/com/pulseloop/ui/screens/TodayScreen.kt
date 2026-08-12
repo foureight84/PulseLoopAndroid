@@ -174,10 +174,17 @@ fun TodayScreen(
             val rows = visibleOrdered.chunked(2)
             items(rows.size) { rowIndex ->
                 val row = rows[rowIndex]
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                // IntrinsicSize.Min + fillMaxHeight is what keeps the grid uniform now that tiles
+                // size to their content: the row takes the height its tallest tile actually needs,
+                // and the other tile stretches to match. Without it a tall Sleep tile would sit
+                // next to a short Activity tile; with a fixed height instead, the tall one clips.
+                Row(
+                    Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     row.forEach { card ->
-                        EditableCard(editState, card, Modifier.weight(1f)) {
-                            todayCardFor(card, Modifier.fillMaxWidth())
+                        EditableCard(editState, card, Modifier.weight(1f).fillMaxHeight()) {
+                            todayCardFor(card, Modifier.fillMaxWidth().fillMaxHeight())
                         }
                     }
                     if (row.size == 1) Spacer(Modifier.weight(1f))
@@ -287,8 +294,12 @@ private fun GaugeTile(card: VitalCardState, modifier: Modifier, onTap: () -> Uni
             if (card.latestValue == null) {
                 Text(card.statusText, fontSize = 12.sp, color = PulseColors.textMuted)
             } else {
-                // 108dp is what actually fits the 168dp tile after chrome (118 on iOS whose
-                // padding differs); the gauge draws its inscribed square either way.
+                // 108dp is the design size at font scale 1.0 (118 on iOS whose padding differs);
+                // the gauge draws its inscribed square either way. Scaled with the font scale
+                // because the centre value is sized off this dp value (`size.value * 0.30f`.sp)
+                // inside a Box pinned to it — a fixed ring with growing text overflows its own
+                // ring. The tile is no longer fixed-height, so a taller ring just makes it taller.
+                val gaugeScale = TodayTileMetrics.fontScale
                 VitalRingGauge(
                     value = card.latestValue,
                     domain = card.yDomain,
@@ -296,8 +307,8 @@ private fun GaugeTile(card: VitalCardState, modifier: Modifier, onTap: () -> Uni
                     valueColor = card.statusToken.toColor(),
                     centerValue = card.valueText,
                     centerStatus = card.statusText,
-                    size = 108.dp,
-                    lineWidth = 11.dp,
+                    size = 108.dp * gaugeScale,
+                    lineWidth = 11.dp * gaugeScale,
                 )
             }
         }
@@ -349,8 +360,9 @@ private fun BpRingColumn(
             zones = zones,
             valueColor = valueColor,
             centerValue = "${value.toInt()}",
-            size = 66.dp,
-            lineWidth = 7.dp,
+            // Scaled for the same reason as the GaugeTile ring above.
+            size = 66.dp * TodayTileMetrics.fontScale,
+            lineWidth = 7.dp * TodayTileMetrics.fontScale,
         )
         Text(
             title, fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
