@@ -96,6 +96,23 @@ interface MeasurementDao {
         GROUP BY bucket ORDER BY bucket ASC
     """)
     suspend fun hourlyAggregates(kind: String, start: Long, end: Long): List<Bucket>
+
+    /**
+     * Health Connect export selection: rows committed after [watermark], by `createdAt` —
+     * deliberately NOT the sample timestamp, so late-arriving ring history is still picked up
+     * (plan §3). Demo/mock-seeded rows never reach Health Connect (mirrors iOS). There was
+     * previously no `createdAt`-based query at all — only [range] by sample timestamp.
+     */
+    @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND createdAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY createdAt ASC")
+    suspend fun createdSince(kind: String, watermark: Long): List<MeasurementEntity>
+
+    /**
+     * Full window re-read by sample timestamp for the heart-rate hour rebuild (plan Phase 1):
+     * after [createdSince] tells us which local hours are touched, each hour is re-read in full
+     * and its series records rebuilt from scratch. Demo/mock excluded, same as [createdSince].
+     */
+    @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND timestamp BETWEEN :start AND :end AND sourceRaw NOT IN ('demo','mock') ORDER BY timestamp ASC")
+    suspend fun rangeReal(kind: String, start: Long, end: Long): List<MeasurementEntity>
 }
 
 @Dao

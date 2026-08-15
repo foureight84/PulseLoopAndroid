@@ -470,7 +470,7 @@ around it.
 ## 8. Session log
 
 Append a dated entry here as work progresses (persistent memory via `mcp_memory` is the parallel
-record). Status: **Phase 0 implemented** on `feat/health-connect-foundation` (pre-merge); Phases 1–6 pending.
+record). Status: **Phase 1 implemented** on `feat/health-connect-foundation` (pre-merge); Phases 2–6 pending.
 
 - **2026-08-14 — prep, no code.** Plan read and re-verified against the live official docs.
   - Official Google Health Connect guide indexed into the `mcp_docs` server as library
@@ -535,4 +535,59 @@ record). Status: **Phase 0 implemented** on `feat/health-connect-foundation` (pr
   - Note: the subagent runtime (worker/observer pattern) was broken this session — even a trivial
     "reply ok" prompt failed with `subagent run failed` — so Phase 0 ran in the main session with a
     self-review pass against the plan, the official docs, and Gadgetbridge instead.
+- **2026-08-15 — Phase 1 implemented (vitals export engine + worker)** (branch
+  `feat/health-connect-foundation`).
+  - Shipped: `health/HealthConnectTypeMappings.kt` (pure, unit-testable: the `pl-hr-<hourEpochMs>`
+    / `pl-hr-<hourEpochMs>-<i>` and `pl-m-<kind>-<epochMs>` clientRecordId scheme ported from iOS
+    `HealthKitTypeMappings.swift`; local-hour bucketing; Gadgetbridge HR segmentation — split on
+    local-date change, >15 min gap, or 1000 samples; plausibility guards matching platform insert
+    validation; `demo`/`mock` source exclusion); `health/HealthConnectExporter.kt` (the pass
+    orchestrator + `healthConnectInsertChunked`: 200 records/call, 5 retries, 1/2/4/8/16 s backoff,
+    SecurityException aborts immediately, watermark = max high-water of the last *successful* chunk);
+    `health/exporters/VitalsExporter.kt` (HR as per-hour series of `HeartRateRecord`s with per-segment
+    clientRecordId and version = max `createdAt` in the hour; SpO₂, HRV-as-RMSSD, and body
+    temperature as one instantaneous record per row, version 1); `health/HealthConnectExportWorker.kt`
+    (debounced OneTimeWorkRequest, `REPLACE`; hard gate on `NOT_ASKED`; live per-kind re-check of the
+    granted set on every pass; group watermark = min of per-kind highs); DAO `createdSince` /
+    `rangeReal` queries; triggers on ring-sync done, background-sync done, **first-enable grant**,
+    and **backfill-dialog answer** (the last two so a user who enables the export with history
+    already in the DB gets an export without waiting for the next ring sync).
+  - 1.1.0 API gotchas found by `javap` (beyond Phase 0's): the client factory is the synchronous
+    companion `HealthConnectClient.getOrCreate(Context)` — there is **no suspend `get`** in stable
+    1.1.0 (Gadgetbridge's 1.1.0 provider matches); `PermissionController` is an **interface**
+    obtained as `client.permissionController` (no `(client)` constructor); `Metadata`'s factories
+    require a **non-null** `Device`, so with no real ring paired the export is attributed to an app
+    device (`TYPE_PHONE`/"PulseLoop"/"app") — the Android form of iOS' "attributed to the app only";
+    the HRV record class is `HeartRateVariabilityRmssdRecord` (not `HeartRateVariabilityRecord` —
+    the plan's name is wrong; platform bounds 1.0–200.0 ms match `isPlausibleHrvRmssd`).
+  - Verified: `testDebugUnitTest` — 25 new tests (17 type-mappings: id formats, hour bucketing in
+    UTC and +05:30, all four plausibility bound pairs, segmentation edge cases including the exact
+    15:00 gap, the 1000-sample cap, and unsorted input; 8 chunk/retry: chunk sizes, the 400-boundary,
+    backoff timing under virtual time, SecurityException no-retry, retry exhaustion, watermark
+    stopping at the last successful chunk) — full suite **915 green**; `installDebug`.
+  - **Runtime verification (API 35) DONE on `pulseloop_test`** by injecting known rows through
+    `run-as … sqlite3 pulseloop.db` (5 live HR rows in one local hour — 3 samples + a 38-min gap +
+    2 samples, so exactly two segments; 1 **demo** HR row; SpO₂ 97 %; HRV 42 ms; temp 36.6 °C), then
+    driving the real worker (grant-result trigger; 15 s debounce) and reading `logcat -s
+    HealthConnectExport` + the persisted prefs:
+    1. Pass 1 (backfill, `EXPORT_ALL`): `pass done: exported hr 2, spo2 1, hrv 1, temp 1` — the two
+       HR series records carry the suffixed segment ids, the demo row was excluded, and the
+       platform accepted every insert (HC validates value/units on insert).
+    2. Pass 2 (immediate re-run): `pass done: nothing new to export` — the vitals watermark
+       advanced to the injected rows' `createdAt`, so no rework.
+    3. Pass 3 (watermark reset to null in the prefs file, app restarted): the **same five** records
+       re-exported — identical deterministic clientRecordIds re-inserted without error, i.e. the
+       upsert identity holds for the write-only path.
+    4. Group watermark observed as `min(per-kind highs)` in the persisted blob after each pass.
+  - Bug found and fixed during verification: the worker wrote `lastSyncSummary` but not
+    `lastSyncAt`, so the settings "Last sync" card could never update; now both are stamped and the
+    card renders (`Last sync: nothing new to export` observed on-screen).
+  - Verification limitation (honest report): this image has no Health Connect data-browser app
+    (no Play Store), so "record count unchanged on re-run" was verified as identical-id re-upserts
+    accepted by the platform (Pass 3) plus the logcat counts, not by visually inspecting the HC
+    store. The API 30 no-HC graceful-degradation check and the CI platform-36 confirmation remain
+    pending (see Phase 0 entry).
+  - Subagents still broken (`subagent run failed` on the trivial probe) — Phase 1 also ran solo with
+    the self-review pass; the `read_image` capability declaration for this model still rejects image
+    input, so UI verification stayed on `uiautomator dump` + coordinate taps.
 

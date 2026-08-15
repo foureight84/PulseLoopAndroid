@@ -5,6 +5,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.*
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.ring.PulseEvent
 import com.pulseloop.ring.PulseEventBus
 import com.pulseloop.ring.RingBLEClient
@@ -118,6 +119,11 @@ class RingSyncWorker(
                     delay(1000L)
                     if (isAppForeground()) return@withTimeout Result.success()
                 }
+
+                // Health Connect export trigger (Phase 1): the background sync has streamed its
+                // data — run the (debounced) export pass. The foreground path triggers the same
+                // worker via the SyncProgress("done") event, so both sync owners cover it.
+                HealthConnectExportWorker.enqueue(applicationContext)
 
                 Result.success()
             }

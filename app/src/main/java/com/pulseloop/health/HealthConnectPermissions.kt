@@ -80,4 +80,16 @@ object HealthConnectPermissions {
         DataTypeRow.WORKOUTS -> exercise + exerciseRoute
         DataTypeRow.NUTRITION -> emptySet()
     }
+
+    /**
+     * The single write permission per measurement kind, for the exporter's per-kind check
+     * (plan: "each pass re-checks its own record class against the granted set"). Keys are
+     * `MeasurementEntity.kindRaw` values.
+     */
+    val WRITE_PERMISSION_BY_KIND: Map<String, String> = mapOf(
+        "hr" to heartRate.first(),
+        "spo2" to oxygenSaturation.first(),
+        "hrv" to heartRateVariability.first(),
+        "temp" to bodyTemperature.first(),
+    )
 }

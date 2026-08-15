@@ -46,6 +46,7 @@ import com.pulseloop.data.entity.UserGoalEntity
 import com.pulseloop.health.HealthConnectAvailability
 import com.pulseloop.health.HealthConnectPermissions
 import com.pulseloop.health.HealthConnectPrefs
+import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.health.HealthConnectPrefsStore
 import com.pulseloop.health.HealthConnectSdk
 import com.pulseloop.notifications.CoachNotifications
@@ -2412,9 +2413,9 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
 
 /**
  * Health Connect export settings — the Android analogue of iOS' Apple Health settings
- * (docs/health-connect-integration.md, Phase 0). Phase 0 is foundation only: availability,
- * permissions, and preferences. The export engine lands in Phase 1, so this screen stores
- * the backfill choice but writes no data yet.
+ * (docs/health-connect-integration.md, Phase 0/1). Availability, permissions, and preferences;
+ * the Phase 1 worker owns the actual export. Granting permissions and answering the backfill
+ * dialog both enqueue the (debounced, hard-gated) export worker.
  */
 @Composable
 fun HealthConnectSettingsScreen(onBack: () -> Unit) {
@@ -2438,10 +2439,15 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
         } else {
             "Connected. ${got.size} of ${HealthConnectPermissions.all.size} permission types granted."
         }
-        // First-enable backfill dialog; the hard export gate on NOT_ASKED lands in Phase 1.
+        // First-enable backfill dialog; while NOT_ASKED the Phase 1 worker's hard gate keeps the
+        // export from running, so the enqueue below is a no-op until the choice is made.
         if (got.isNotEmpty() && store.current.backfillChoice == HealthConnectPrefs.BackfillChoice.NOT_ASKED) {
             showBackfillDialog = true
         }
+        // First-enable trigger (Phase 1): a grant is the moment an export should attempt to run —
+        // e.g. the user enables the export with history already in the DB and no further ring
+        // sync pending. Debounced 15 s + REPLACE, so this is cheap even on re-grants.
+        if (got.isNotEmpty()) HealthConnectExportWorker.enqueue(context)
     }
 
     SettingsSubScreen(title = "Health Connect", onBack = onBack) {
@@ -2590,12 +2596,14 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                 TextButton(onClick = {
                     store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_ALL) }
                     showBackfillDialog = false
+                    HealthConnectExportWorker.enqueue(context) // answer the gate → run the pass
                 }) { Text("Sync all history") }
             },
             dismissButton = {
                 TextButton(onClick = {
                     store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) }
                     showBackfillDialog = false
+                    HealthConnectExportWorker.enqueue(context) // stamps watermarks, exports nothing
                 }) { Text("Only new data from now on") }
             },
         )

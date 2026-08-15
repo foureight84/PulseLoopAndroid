@@ -70,7 +70,7 @@ fun PulseLoopApp() {
         val persistence = remember {
             // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
             // mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
-            EventPersistenceSubscriber(db) {
+            EventPersistenceSubscriber(context, db) {
                 com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
             }
         }
