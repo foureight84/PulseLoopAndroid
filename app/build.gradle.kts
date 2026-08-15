@@ -10,7 +10,9 @@ plugins {
 
 android {
     namespace = "com.pulseloop"
-    compileSdk = 35
+    // compileSdk 36 (required by androidx.health.connect:connect-client:1.1.0); targetSdk
+    // stays 35 — compileSdk gates available APIs, targetSdk gates runtime behavior.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.pulseloop"
@@ -164,6 +166,11 @@ dependencies {
     // Phase 7: Polish — WorkManager, EncryptedSharedPreferences
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Phase 8: Health Connect export (write-only mirror of the iOS HealthKit export).
+    // 1.1.0 is the current stable (verified 2026-08-14); the official guide targets the 1.1.0
+    // series, so it is a faithful API reference for this pin.
+    implementation("androidx.health.connect:connect-client:1.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

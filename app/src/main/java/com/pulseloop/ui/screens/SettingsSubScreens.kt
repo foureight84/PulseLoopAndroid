@@ -1,11 +1,13 @@
 package com.pulseloop.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.health.connect.client.PermissionController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,6 +43,11 @@ import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.UserGoalEntity
+import com.pulseloop.health.HealthConnectAvailability
+import com.pulseloop.health.HealthConnectPermissions
+import com.pulseloop.health.HealthConnectPrefs
+import com.pulseloop.health.HealthConnectPrefsStore
+import com.pulseloop.health.HealthConnectSdk
 import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
@@ -2400,3 +2407,210 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
         }
     }
 }
+
+// MARK: - Health Connect
+
+/**
+ * Health Connect export settings — the Android analogue of iOS' Apple Health settings
+ * (docs/health-connect-integration.md, Phase 0). Phase 0 is foundation only: availability,
+ * permissions, and preferences. The export engine lands in Phase 1, so this screen stores
+ * the backfill choice but writes no data yet.
+ */
+@Composable
+fun HealthConnectSettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val store = remember { HealthConnectPrefsStore.get(context) }
+    val prefs by store.prefs.collectAsState()
+    val availability = remember { HealthConnectSdk.availability(context) }
+    val granted = prefs.lastGrantedPermissions.toSet()
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var showBackfillDialog by remember { mutableStateOf(false) }
+
+    // Master toggle → Health Connect permission sheet. Partial grants are first-class:
+    // any granted permission counts as connected.
+    val permissionLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract()
+    ) { grantedPermissions ->
+        val got = grantedPermissions.filter { it in HealthConnectPermissions.all }
+        store.update { it.copy(enabled = got.isNotEmpty(), lastGrantedPermissions = got.sorted()) }
+        statusMessage = if (got.isEmpty()) {
+            "No Health Connect permissions granted — nothing to export."
+        } else {
+            "Connected. ${got.size} of ${HealthConnectPermissions.all.size} permission types granted."
+        }
+        // First-enable backfill dialog; the hard export gate on NOT_ASKED lands in Phase 1.
+        if (got.isNotEmpty() && store.current.backfillChoice == HealthConnectPrefs.BackfillChoice.NOT_ASKED) {
+            showBackfillDialog = true
+        }
+    }
+
+    SettingsSubScreen(title = "Health Connect", onBack = onBack) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Health Connect", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Export ring data to Health Connect so other apps and dashboards can show it. Write-only: PulseLoop never reads data back.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                when (availability) {
+                    HealthConnectAvailability.UNAVAILABLE -> {
+                        Text(
+                            "Health Connect isn't available on this device. Install the Health Connect app to use this feature.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { openHealthConnectPlayStore(context) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Install Health Connect")
+                        }
+                    }
+
+                    HealthConnectAvailability.PROVIDER_UPDATE_REQUIRED -> {
+                        Text(
+                            "The Health Connect app on this device needs an update before it can be used.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { openHealthConnectPlayStore(context) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Update Health Connect")
+                        }
+                    }
+
+                    HealthConnectAvailability.AVAILABLE -> {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Export PulseLoop data", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    if (prefs.isConnected) "Connected" else "Not connected",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = prefs.enabled,
+                                onCheckedChange = { on ->
+                                    if (on) {
+                                        permissionLauncher.launch(HealthConnectPermissions.all)
+                                    } else {
+                                        store.update { it.copy(enabled = false) }
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (availability == HealthConnectAvailability.AVAILABLE && prefs.isConnected) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Data Types", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Exported only when switched on. A row stays dim until its permission is granted.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val rows = listOf(
+                        HealthConnectPermissions.DataTypeRow.HEART_RATE to "Heart rate",
+                        HealthConnectPermissions.DataTypeRow.OXYGEN_SATURATION to "Oxygen saturation (SpO₂)",
+                        HealthConnectPermissions.DataTypeRow.HEART_RATE_VARIABILITY to "Heart rate variability (HRV)",
+                        HealthConnectPermissions.DataTypeRow.BODY_TEMPERATURE to "Body temperature",
+                        HealthConnectPermissions.DataTypeRow.SLEEP to "Sleep",
+                        HealthConnectPermissions.DataTypeRow.STEPS_AND_ACTIVITY to "Steps & activity",
+                        HealthConnectPermissions.DataTypeRow.WORKOUTS to "Workouts",
+                        HealthConnectPermissions.DataTypeRow.NUTRITION to "Nutrition",
+                    )
+                    for ((row, label) in rows) {
+                        val rowPerms = HealthConnectPermissions.permissionsForRow(row)
+                        val rowGranted = rowPerms.isEmpty() || rowPerms.any { it in granted }
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(label, style = MaterialTheme.typography.bodyMedium)
+                                if (!rowGranted) {
+                                    Text(
+                                        "Awaiting permission",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = prefs.toggleFor(row),
+                                enabled = rowGranted,
+                                onCheckedChange = { on -> store.update { p -> p.withToggleFor(row, on) } },
+                            )
+                        }
+                        if (row == HealthConnectPermissions.DataTypeRow.HEART_RATE_VARIABILITY) {
+                            // Plan §7 open item: the rings' HRV metric is vendor-undocumented, and
+                            // Health Connect has no SDNN type — we export it as RMSSD.
+                            Text(
+                                "HRV is exported as RMSSD — Health Connect has no SDNN type, and the rings' metric is vendor-undocumented.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = PulseColors.cardSoft)) {
+                Text(
+                    if (prefs.lastSyncAt != null) "Last sync: ${prefs.lastSyncSummary ?: "unknown"}"
+                    else "No export has run yet — the export engine lands in the next phase.",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+
+        statusMessage?.let { msg ->
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = PulseColors.cardSoft)) {
+                Text(msg, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+
+    if (showBackfillDialog) {
+        AlertDialog(
+            onDismissRequest = { showBackfillDialog = false },
+            title = { Text("How much history should we export?") },
+            text = { Text("Exporting all history can take a while on the first run. You can change this later.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_ALL) }
+                    showBackfillDialog = false
+                }) { Text("Sync all history") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) }
+                    showBackfillDialog = false
+                }) { Text("Only new data from now on") }
+            },
+        )
+    }
+}
+
+private fun openHealthConnectPlayStore(context: Context) {
+    // API < 34: Health Connect is a separate APK from Play (plan §2, caveat 1).
+    val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata"))
+    val web = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.apps.healthdata"))
+    try {
+        context.startActivity(market)
+    } catch (_: Exception) {
+        // Devices without Play (e.g. F-Droid) at least get the web listing.
+        runCatching { context.startActivity(web) }
+    }
+}
+

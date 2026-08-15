@@ -284,7 +284,9 @@ trailer.
 ### Phase 0 — Foundation (no data written yet)
 
 - `app/build.gradle.kts`: `implementation("androidx.health.connect:connect-client:1.1.0")`. No version
-  catalog in this repo — add the coordinate as a literal alongside the others. Add
+  catalog in this repo — add the coordinate as a literal alongside the others. **Toolchain note
+  (2026-08-15):** 1.1.0 is the only stable and its AAR requires compileSdk 36 + AGP 8.9.1 (Gradle
+  8.11.1+), which forced a toolchain bump — see §8. Add
   `<uses-sdk tools:overrideLibrary="androidx.health.connect.client"/>` **only if** the manifest merger
   complains (`minSdk = 26` should already satisfy it; Gadgetbridge needs it because it's on 23).
 - `AndroidManifest.xml`: the `WRITE_*` permissions for Phases 1–4 only (add Phase 5's when Phase 5
@@ -462,3 +464,55 @@ around it.
 - **Background persistence gap** (pre-existing, noted above): `EventPersistenceSubscriber` lives in the
   composable while `RingSyncWorker` runs backgrounded. Not this plan's problem, but it bounds how much
   data a background-only user actually accumulates to export.
+
+---
+
+## 8. Session log
+
+Append a dated entry here as work progresses (persistent memory via `mcp_memory` is the parallel
+record). Status: **Phase 0 implemented** on `feat/health-connect-foundation` (pre-merge); Phases 1–6 pending.
+
+- **2026-08-14 — prep, no code.** Plan read and re-verified against the live official docs.
+  - Official Google Health Connect guide indexed into the `mcp_docs` server as library
+    `android-health-connect` (scrape job `09c779f9-e338-44ef-90f5-bed6bca31bd2`, from
+    `developer.android.com/health-and-fitness/health-connect?hl=en`). Gotcha: URLs **without**
+    `?hl=en` fall into a redirect loop for the crawler.
+  - Version pin confirmed current: `androidx.health.connect:connect-client:1.1.0` is the latest
+    **stable** (1.2.0-alpha05 is the newest alpha). The official write-data guide targets the
+    1.1.0 series, so the guide is a faithful reference for the pinned version.
+  - Task context and the working agreement (verify against official docs via the MCP servers;
+    log progress here *and* in `mcp_memory`) saved to persistent memory.
+- **2026-08-15 — Phase 0 implemented** (branch `feat/health-connect-foundation`).
+  - **Toolchain bump (user-approved "bump the toolchain"):** `connect-client:1.1.0` is the only
+    stable, and its AAR metadata requires compileSdk 36 + AGP 8.9.1 (verified for 1.1.0, rc01–rc03,
+    beta02; only 1.1.0-beta01 and 1.1.0-alpha12 fit SDK 35 / AGP 8.7). Bumped: AGP 8.7.0 → 8.9.1
+    (`android/build.gradle.kts`), Gradle wrapper 8.9 → 8.11.1, compileSdk 35 → 36 (**targetSdk stays
+    35**), `platforms;android-36` installed locally. **CI implication:** the PulseLoopAndroid release
+    pipeline now needs platform-36 (AGP auto-download requires accepted SDK licenses in CI).
+  - Shipped: the 1.1.0 dependency; manifest (exactly the ten Phase 1–4 `WRITE_*` permissions — no
+    `READ_*`, no Phase 5 types; `<queries>` for `com.google.android.apps.healthdata` + the rationale
+    action; `HealthConnectRationaleActivity` and the API 34+ `ViewPermissionUsageActivity` alias
+    guarded by `START_VIEW_PERMISSION_USAGE`); the `health/` package (`HealthConnectSdk` three-state
+    `getSdkStatus` wrapper, `HealthConnectPermissions` derived via `HealthPermission.getWritePermission`
+    — the route uses `PERMISSION_WRITE_EXERCISE_ROUTE` since `ExerciseRoute` is an embedded type,
+    `HealthConnectPrefsStore` in the MetricPrefsStore pattern with a **separate watermark key** and
+    monotonic `setWatermark`, `HealthConnectRationaleActivity` — in-app rationale, no hosted URL);
+    `HealthConnectSettingsScreen` (master toggle → permission sheet, partial grants first-class,
+    per-type toggles, availability install/update rows with Play deep link, first-enable backfill
+    dialog, last-sync row, HRV RMSSD caveat), the Settings row, and the `settings/health-connect`
+    route.
+  - API gotchas found by inspecting the 1.1.0 jar (`javap`), beyond the docs: `PermissionController`
+    is top-level `androidx.health.connect.client.PermissionController` (NOT in `.permission`), and
+    `createRequestPermissionResultContract()` is `ActivityResultContract<Set<String>, Set<String>>` —
+    the launcher input is a **`Set`**, so `launch(HealthConnectPermissions.all)` (no `.toTypedArray()`).
+  - Verified: `compileDebugKotlin`, `testDebugUnitTest` (15 new tests; full suite **890 green**),
+    `assembleDebug`, and the **merged debug manifest** (exactly ten WRITE permissions, zero READ,
+    queries + both activities present, no `overrideLibrary` needed at minSdk 26).
+  - **Runtime verification pending (needs `emulator-5554`):** screen renders on API 35; granting
+    shows PulseLoop in Health Connect's connected-apps list; the privacy-policy link opens the
+    rationale screen; an API 30 image without the Health Connect APK degrades gracefully. No AVD
+    exists on this machine yet (only `android-commandlinetools` installed).
+  - Note: the subagent runtime (worker/observer pattern) was broken this session — even a trivial
+    "reply ok" prompt failed with `subagent run failed` — so Phase 0 ran in the main session with a
+    self-review pass against the plan, the official docs, and Gadgetbridge instead.
+
