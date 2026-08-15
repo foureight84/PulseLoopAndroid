@@ -508,10 +508,30 @@ record). Status: **Phase 0 implemented** on `feat/health-connect-foundation` (pr
   - Verified: `compileDebugKotlin`, `testDebugUnitTest` (15 new tests; full suite **890 green**),
     `assembleDebug`, and the **merged debug manifest** (exactly ten WRITE permissions, zero READ,
     queries + both activities present, no `overrideLibrary` needed at minSdk 26).
-  - **Runtime verification pending (needs `emulator-5554`):** screen renders on API 35; granting
-    shows PulseLoop in Health Connect's connected-apps list; the privacy-policy link opens the
-    rationale screen; an API 30 image without the Health Connect APK degrades gracefully. No AVD
-    exists on this machine yet (only `android-commandlinetools` installed).
+  - **Runtime verification (API 35) DONE on the user's `pulseloop_test` AVD** (Pixel 7, arm64-v8a,
+    `android-35/google_apis`, headless; UI driven with `uiautomator dump` + `input tap`). On
+    Android 15 Health Connect ships as the `com.android.healthfitness` **APEX** with
+    `com.google.android.healthconnect.controller` as the provider/permission-flow package — there is
+    **no** `com.google.android.apps.healthdata` app on this image (so "connected apps list" was
+    verified at the OS level instead), and the 1.1.0 client's `getSdkStatus` correctly reports the
+    provider **available**. Verified end-to-end:
+      1. Settings → Health Connect row and screen render in the AVAILABLE state (no install prompt).
+      2. Master toggle launches the official HC permission sheet ("Allow PulseLoop Debug to access
+         Health Connect?"), privacy-policy link present.
+      3. Tapping the privacy link fired the system `VIEW_PERMISSION_USAGE` intent, which routed to
+         **our `ViewPermissionUsageActivity` alias** (the alias also shows up in the package
+         manager's resolution for that action); the rationale screen rendered with title + body.
+      4. "Allow" returned to our screen and showed the first-enable backfill dialog (chose
+         "Sync all history"); screen then read **"Connected. 10 of 10 permission types granted."**
+      5. All eight per-type rows + switches present (default ON), HRV RMSSD caveat visible,
+         "No export has run yet — the export engine lands in the next phase."
+      6. State survived force-stop + relaunch; the persisted prefs blob was exactly
+         `pulseloop.healthconnect.v1` with `enabled=true`, all toggles true, `backfillChoice=
+         EXPORT_ALL`, and all ten `lastGrantedPermissions`.
+      7. `dumpsys package` shows all ten `android.permission.health.WRITE_*` as
+         `granted=true, USER_SET` (plus the library's own `FOREGROUND_SERVICE_HEALTH` from the AAR).
+  - **Still pending:** the API 30 graceful-degradation check (no-Health-Connect-APK image) — needs a
+    second AVD/image; and the CI platform-36 confirmation on first push.
   - Note: the subagent runtime (worker/observer pattern) was broken this session — even a trivial
     "reply ok" prompt failed with `subagent run failed` — so Phase 0 ran in the main session with a
     self-review pass against the plan, the official docs, and Gadgetbridge instead.
