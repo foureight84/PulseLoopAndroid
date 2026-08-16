@@ -815,3 +815,121 @@ record). Status: **Phase 3 implemented** on `feat/health-connect-foundation` (pr
     here, as the emulator does for `~/.android`.
   - Left behind on the AVD: app connected (10/10, all toggles on, `EXPORT_ALL`), five activity days
     + three sessions in the app DB, 9 activity records in the HC store (un-netted), `adb` as root.
+
+- **2026-08-16 — Phase 4 implemented (workouts + GPS route)** (branch
+  `feat/health-connect-foundation`, commit `44d9794`, on top of Phase 3's `1ec0c1e`).
+  - Shipped: `health/exporters/WorkoutExporter.kt` (one `ExerciseSessionRecord` per finished
+    `ActivitySessionEntity` — type map, `ActivityMeta.label` title, session notes, embedded
+    `ExerciseRoute` from the session's `accepted` GPS fixes plus sibling
+    `ActiveCaloriesBurnedRecord` / `DistanceRecord` over the session window);
+    `health/HealthConnectWorkoutDeletion.kt` (the Phase 4 deletion hooks); the workouts group in
+    `HealthConnectExporter.run()`; `insertChunkWithRouteShrink` + `shrinkOversizedRoute` (the
+    1 MB single-record fallback); the pure helpers in `HealthConnectTypeMappings`
+    (`workoutRecordId`/`workoutChildRecordId`, `exerciseType`, `selectWorkoutSession`,
+    `GpsRoutePoint`/`sanitizeRoutePoints`, `parseRecordSizeLimit`, `decimateToSize`,
+    `creditedActiveMinutes`); `ActivitySessionDao.finishedUpdatedSince`
+    (`ORDER BY updatedAt ASC` — the chunked-watermark invariant) and
+    `ActivityGpsPointDao.forSessions` (one query for the whole pending set); deletion hooks in
+    `WorkoutSummaryScreen` (UI trash) and `PendingActionExecutor` (coach
+    `delete_activity_session` — the Android confirm flow is not wired to a UI yet, so that path is
+    dead code today; the hook is in place for when it lands). No manifest change —
+    `WRITE_EXERCISE` + `WRITE_EXERCISE_ROUTE` landed in Phase 0, and there are still **no
+    READ_* permissions**.
+  - **Siblings == netting set, enforced structurally:** energy is written for every finished
+    session with plausible calories (the exact set `workoutNetting` subtracts); distance is
+    written only for `useGps` sessions (the Phase 3 amendment — the set `ActivityRollup.credit`
+    folds into the daily row). Each sibling is also gated on its **own** write permission — the
+    first observer-flagged defect of the phase, fixed before the first runtime pass.
+  - **WORKOUTS_EXPORTED flipped to true in this commit** (plan: same commit as the exporter), with
+    one addition the plan's stale-record question forced: a **one-time netting-flip reset**. The
+    ≤ 0-leftover case (decided: **drop, do not floor** — the floor cannot reliably repair the stale
+    record because the stale day is not re-selected, and the write-data guide says to omit zero
+    values) is one window; the *other* pre-flip staleness is that every daily record exported under
+    the Phase 3 build is UN-netted, and with the workout siblings now live, every such day containing
+    a workout over-counts by the workout's own energy/distance until the day happens to be
+    re-selected. `HealthConnectPrefs.nettingFlipDone` (absent from Phase 3 blobs → false, which is
+    exactly the "still needs the flip" state for upgrading users) +
+    `HealthConnectPrefsStore.resetWatermarks(setOf(ACTIVITY, WORKOUTS))` (monotonic
+    `setWatermark` can never rewind, so the reset is its own method) re-export every day and
+    session on the first netting-live pass; the re-upsert is idempotent — same clientRecordIds,
+    higher-or-equal versions.
+  - **The two Phase 3 netting imperfections, resolved:** (1) `workoutNetting` now skips the same
+    sub-minute sessions `ActivityRollup.credit` never credits — the credit-eligibility arithmetic
+    is ported verbatim (`creditedActiveMinutes` = `minutesFor`: full active minutes after
+    pauses, `minutes <= 0` → skip); (2) `applyActivityBucketAtomic`'s past-day distance
+    overwrite is **self-healing, no code change**: it stamps `updatedAt`, so the day is
+    re-selected and re-exported with the ring-only leftover while the workout's distance sibling
+    restores the credited metres — the consumer sum becomes the ring's own day total, the correct
+    reading for a past day (the only residual is the accepted ≤ 0 window).
+  - 1.1.0 API facts confirmed by `javap` on the AAR (and by the research subagent):
+    `ExerciseSessionRecord(Instant, ZoneOffset, Instant, ZoneOffset, Metadata, int exerciseType,
+    String? title, String? notes, List<ExerciseSegment>, List<ExerciseLap>, ExerciseRoute?,
+    String? plannedExerciseSessionId)` with defaults from `title` on; the constructor (and
+    `ExerciseRoute(List<Location>)`) **client-side reject** a route whose points leave the
+    parent's [startTime, endTime] or repeat a timestamp (`IllegalArgumentException`) — which is
+    exactly what the sanitiser guarantees before construction; `Record` is a bare interface (no
+    child-sample types in 1.1.0 — siblings are the right Android pattern);
+    `deleteRecords(KClass, recordIdsList, clientRecordIdsList)` with **both lists non-null and no
+    defaults**, and **no client-side permission check** (the granted-set diff in the deletion hook
+    is the only guard).
+  - Verified: `testDebugUnitTest` — 31 new tests (the full ten-way exercise-type map + fallback;
+    title pinning against `ActivityMeta.label`; id scheme; the INVALID/FUTURE guard boundaries
+    incl. `endedAt == now` not-future; route sanitisation — window bounds inclusive, NaN/±∞,
+    latitude ±90 / longitude ±180 bounds, duplicate-timestamp keep-first, unsorted input, inverted
+    window, the 1-point "no route" boundary; `parseRecordSizeLimit` against the platform message
+    format; decimation first/last preservation, strictly-increasing indices, the target < 2 clamp,
+    and no-index-duplication for every target 2..size−1; the shrink wrapper — offender-only
+    decimation by ratio, unrelated errors pass through as null, the 2-point no-op floor that
+    prevents retry loops, immediate-retry-on-shrink, no-backoff, SecurityException aborts; the
+    credit-eligibility port and its netting skip; the netting gate now asserting the flipped
+    constant; the flip marker's tolerant decode and `resetWatermarks` semantics incl. persistence
+    across a store reload) — full suite **994 green**; `assembleDebug`, `installDebug`.
+  - **Runtime verification (API 35) DONE on `pulseloop_test`**. Deviation from the plan's
+    literal "record a real GPS walk via `adb emu geo fix`": **this emulator build's console
+    `geo fix` parser only accepts integer coordinates** (`37.8037` → "KO: invalid latitude",
+    `10 20 30` → OK) and its NMEA path (`geo nmea`) accepts sentences with valid checksums
+    (GP and GN talkers, GLL/RMC/GGA/GSA all tried) but produces no provider fix — verified via
+    `dumpsys location` (last fix unchanged after ~10 injected sentences). The walk-profile speed
+    cap (5 m/s) also rules out integer-degree jumps (one step = 111 km). So the route itself was
+    verified with a fixture session shaped exactly as `GpsRouteRecorder.ingest` persists one
+    (accepted/rejected/out-of-window/duplicate rows), while the **recording flow was real**: a
+    live UI walk (start via the type picker, GPS on) that ingested the console's integer fixes —
+    1 accepted + 3 speed-rejected points, persisted with reasons — then finished through the
+    summary's Finish button (28:44, 117.33 kcal, no distance: one accepted point).
+    1. First pass after the flip: `exported activity 9, workouts 7` + the flip reset fired
+       (`nettingFlipDone` false → true, ACTIVITY/WORKOUTS watermarks nulled and re-advanced).
+       The pre-flip staleness was repaired live: day C's stale un-netted energy record
+       (250 kcal, exported under Phase 3) was **overwritten in place at the same
+       clientRecordId** with its netted value (160 = 250 − 90), and the same-version re-upsert of
+       unchanged rows was accepted by the platform (9 activity records, zero insert errors).
+    2. Store state (`adb root` → provider DB): 3 sessions — `pl-wk-wkA` (type 33 RUNNING,
+       version = session.updatedAt, 7:00–7:30 PDT), `pl-wk-wkC` (45 STRENGTH_TRAINING, no
+       distance sibling: useGps=0), the real walk (53 WALKING, **has_route=0** — one accepted
+       point < 2, session still written, exactly the plan's rule); today's daily records netted to
+       the milli: energy 342.672 kcal = 640 − 180 − 117.328 (sibling records 180 + 117.328),
+       distance 5 900 m = 7 900 − 2 000 (sibling 2 000), steps 11 200 un-netted; consumer sums
+       342.672 + 180 + 117.328 = 640.000 and 5 900 + 2 000 = 7 900.
+    3. Route fixture (24 rows: 20 clean 30 s-interval points at walk speed, 1 duplicate
+       timestamp, 1 speed-rejected, 1 before start, 1 after end): **20 route points** landed in
+       `exercise_route_table` (accepted-only, window-inclusive, duplicate dropped, rejected and
+       out-of-window excluded), `has_route=1`, notes exported; its day (1 200 → 2 000 m stored,
+       +800 credited, −800 netted → daily 1 200 + sibling 800 = 2 000) and energy (250 → 100 =
+       250 − 90 − 60, siblings 90 + 60) both balance.
+    4. **≤ 0-leftover drop verified live:** a day holding 10 kcal with a 50 kcal finished session
+       produced **no** daily records at all (energy 10 − 50 = −40 dropped; steps/distance 0
+       dropped) while the session + its 50 kcal sibling exported — the documented accepted window.
+    5. Re-run: counts unchanged (5 sessions / 8 energy / 5 distance / 3 steps / 20 route points),
+       no duplicates; the zero-metric day re-queries once and self-retires on the next
+       empty-pass stamp (the documented bounded re-query).
+    6. **Deletion hooks verified through the real UI trash:** deleting the live walk removed
+       `pl-wk-504a…` + its energy sibling from the store (local row → `statusRaw='deleted'`,
+       no longer re-selected by the finished-only query); deleting the route session removed the
+       session, **all 20 route rows** (provider-side cascade on the parent) and both siblings
+       (3 / 6 / 4 / 3 counts after). WRITE-only deletion (no READ_* held) works on the provider.
+  - Sandbox/toolchain: same as Phase 3 — Gradle runs need the one-shot sandbox escalation
+    (`~/.gradle` + the Kotlin daemon dir are read-only under workspace-write); the emulator's
+    `adb` plumbing likewise. No stale-incremental-state incident this time.
+  - Left behind on the AVD: app connected (10/10, all toggles on, `EXPORT_ALL`,
+    `nettingFlipDone=true`), 7 sessions (3 finished + 1 recording) and 7 daily rows in the app
+    DB, 3 exercise sessions + 6 energy + 5 distance + 3 steps records and 0 route rows in the HC
+    store (the route session was the one deleted), `adb` as root.
