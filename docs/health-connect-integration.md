@@ -230,7 +230,7 @@ Ported directly from `<ios>/PulseLoop/Health/HealthKitTypeMappings.swift:100-139
 ```
 pl-hr-<hourStartEpochMs>                HeartRateRecord series bucket  version = max(createdAt) in bucket
 pl-m-<kind>-<epochMs>                   instantaneous vitals           version = 1
-pl-sleep-<dayEpochMs>                   SleepSessionRecord             version = session.updatedAt
+pl-sleep-<dayEpochMs>[-<i>]             SleepSessionRecord             version = session.updatedAt
 pl-act-<steps|energy|dist>-<dayEpochMs> daily aggregates               version = row.updatedAt
 pl-wk-<sessionId>                       ExerciseSessionRecord          version = session.updatedAt
 pl-wk-<sessionId>-<energy|dist>         workout child records          version = session.updatedAt
@@ -356,10 +356,36 @@ per day, spanning `startOfDay … min(endOfDay, now)`. Port iOS's `workoutNettin
 distance only for walk/run-type sessions, so Health Connect consumers don't double-count against
 Phase 4's records.
 
+**Two amendments made when this shipped** (see §8, 2026-08-16):
+
+- **Distance netting must NOT keep iOS's walk/run filter.** iOS needs it because HealthKit splits
+  distance across `.distanceWalkingRunning` / `.distanceCycling`. Health Connect has a single
+  `DistanceRecord` that every workout's distance lands in, and `ActivityRollup.credit` folds in
+  every `useGps` session regardless of type — so the netting set is `useGps` sessions of any type.
+  Keeping the filter would double-count a GPS ride.
+- **Netting stays switched off until Phase 4 exists.** iOS gates netting on `exportWorkouts` alone
+  because its workout exporter already ships; subtracting here before `WorkoutExporter` exists
+  would under-report every day containing a workout with nothing writing the difference back, and
+  a write-only export cannot repair it. `HealthConnectExporter.WORKOUTS_EXPORTED` is the single
+  flag Phase 4 flips, and netting also requires `WRITE_EXERCISE` to be granted (the toggle can be
+  on while the permission is denied).
+
 **Verify:** a day with a recorded workout shows daily totals *plus* the workout, without the workout's
-calories appearing twice.
+calories appearing twice. (Only fully checkable once Phase 4 lands; Phase 3 verified the netting
+arithmetic on-device with the flag forced on, then verified the shipped un-netted behavior.)
 
 ### Phase 4 — Workouts + GPS route
+
+**Inherited from Phase 3 — do these in this phase:** flip
+`HealthConnectExporter.WORKOUTS_EXPORTED` to `true` in the same commit that adds the exporter; and
+decide the stale-record question, which only becomes live once netting is on: when a day's netted
+leftover falls to ≤ 0 the record is *dropped*, so any previously exported un-netted record for that
+day stays in Health Connect un-overwritten (write-only: it cannot be deleted). Writing a floor-value
+record would overwrite it, at the cost of asserting a zero the write-data guide says to omit. Two
+known imperfections in "netted set == credited set" also want resolving here:
+`applyActivityBucketAtomic` overwrites a past day's `distanceMeters` with the ring's bucket sum
+(discarding credited GPS metres, so netting would over-subtract after a history re-sync), and
+`ActivityRollup.credit` skips sub-minute sessions that netting would still subtract.
 
 `health/exporters/WorkoutExporter.kt` — `ExerciseSessionRecord` with the type map, `title` from
 `ActivityMeta.label`, embedded `ExerciseRoute` from accepted `ActivityGpsPointEntity` rows, plus
@@ -384,6 +410,12 @@ manifest permissions in this phase, not earlier.
 
 - **"Remove PulseLoop data from Health Connect"** — `deleteRecords` by record type over our own
   records, then clear all watermarks. Mirrors iOS's `removeAllExportedData`.
+- **Newly-granted permissions need a watermark reset, not just revoked ones.** Each group has one
+  watermark but several independently grantable record types (activity covers steps, active
+  calories and distance). Grant only `WRITE_STEPS` and the activity watermark advances past every
+  historical day; granting `WRITE_ACTIVE_CALORIES_BURNED` later never backfills them, because the
+  DAO selects on `updatedAt > watermark`. Diff the granted set in both directions and reset the
+  affected group's watermark when it *grows*. (Phase 1's vitals group has the same shape.)
 - **Revocation detection** — store the last-granted permission set; on app start and on
   settings-screen open, diff against `permissionController.getGrantedPermissions()`. If everything was
   revoked, offer to reset the watermarks so a later re-grant re-exports (Gadgetbridge's
@@ -470,7 +502,7 @@ around it.
 ## 8. Session log
 
 Append a dated entry here as work progresses (persistent memory via `mcp_memory` is the parallel
-record). Status: **Phase 2 implemented** on `feat/health-connect-foundation` (pre-merge); Phases 3–6 pending.
+record). Status: **Phase 3 implemented** on `feat/health-connect-foundation` (pre-merge); Phases 4–6 pending.
 
 - **2026-08-14 — prep, no code.** Plan read and re-verified against the live official docs.
   - Official Google Health Connect guide indexed into the `mcp_docs` server as library
@@ -674,3 +706,112 @@ record). Status: **Phase 2 implemented** on `feat/health-connect-foundation` (pr
   - Left behind on the AVD: app connected (10/10 permissions, all toggles on, `EXPORT_ALL`),
     the two test nights in the app DB (grown Night A + churned Night B), 2 records in the HC
     store, `adb` running as root.
+- **2026-08-16 — Phase 3 implemented (daily activity export)** (branch
+  `feat/health-connect-foundation`).
+  - Shipped: `health/exporters/ActivityExporter.kt` (one `StepsRecord` +
+    `ActiveCaloriesBurnedRecord` + `DistanceRecord` per `ActivityDailyEntity`, spanning the local
+    day clamped to `min(endOfDay, now)`); `HealthConnectTypeMappings` gains the pure activity
+    helpers (`activityRecordId`, `activityDayEndMs`, the three range guards, `activityLeftover`,
+    `workoutNetting` + `NettableSession`/`WorkoutNetting`); `HealthConnectExporter.run()` gains the
+    activity group with its own `ACTIVITY` watermark and **per-metric** permission gating (three
+    record types, three independently grantable permissions);
+    `ActivityDailyDao.updatedSince(watermark)` and
+    `ActivitySessionDao.finishedStartedBetween(from, to)`. No manifest change — all three
+    `WRITE_*` permissions landed in Phase 0.
+  - **Identity is simpler than sleep's:** `activity_daily.date` genuinely *is* uniquely indexed
+    (`CoreEntities.kt:74`), so `pl-act-<metric>-<dayEpochMs>` needs no suffix scheme;
+    `clientRecordVersion = row.updatedAt`. `date` is re-normalized through
+    `TimeUtil.startOfDayLocal` before use (iOS does the same at `HealthSyncService.swift:270`) —
+    it is local midnight *in the zone it was written in*, and a stored off-zone midnight would
+    otherwise emit a second overlapping record for one calendar day, which Health Connect sums
+    rather than de-duplicates for an app's own records.
+  - **Workout netting — ported, but deliberately switched off until Phase 4.** The port itself
+    diverges from iOS in one way (drop the walk/run distance filter: Health Connect has a single
+    `DistanceRecord`, and `ActivityRollup.credit` folds in every `useGps` session regardless of
+    type). The gate is the bigger call: iOS nets on `exportWorkouts` alone because its workout
+    exporter already ships, whereas here `WorkoutExporter` does not exist yet, so netting on the
+    toggle would subtract energy and metres nothing writes back — silent, unrepairable
+    under-reporting on every day containing a workout. `HealthConnectExporter.WORKOUTS_EXPORTED`
+    (false) is the one flag Phase 4 flips; netting also requires `WRITE_EXERCISE` granted, which
+    still matters after Phase 4 because the toggle can be on while the permission is denied.
+  - **Observer review found 13 items; 5 were fixed as real defects**, the rest documented:
+    1. Netting active with no workout exporter → the gate above (**blocker**).
+    2. `ORDER BY date ASC` broke the chunked watermark invariant — `healthConnectInsertChunked`
+       advances to the max high water of the last successful chunk, which is only sound when
+       records arrive in high-water order, and a history re-sync restamps an *old* day's
+       `updatedAt`. Now `ORDER BY updatedAt ASC`. **The same defect was in Phase 2's
+       `SleepSessionDao.updatedSince` and is fixed in this commit too.**
+    3. Phase 3 is the first group where one source row emits several records sharing one high
+       water, so a chunk boundary falling inside a day could strand an unlanded sibling below an
+       advanced watermark. `healthConnectInsertChunked` now clamps a failed pass to the largest
+       completed high water strictly below everything still pending.
+    4. The steps guard now stops at the app's own corruption threshold (200 000,
+       `EventPersistenceSubscriber.kt:374`) rather than the platform's 1 000 000 — a write-only
+       store cannot be retracted, and the app self-heals such rows only on the next sync.
+    5. Comments that overclaimed were corrected: "netted set == credited set" is imperfect in two
+       known ways (`applyActivityBucketAtomic` overwrites a past day's distance, discarding the
+       GPS credit; `ActivityRollup.credit` skips sub-minute sessions), the raw `calories` column is
+       only the ring's device figure when `source != ring_history && calories > 0`, and the
+       empty-pass watermark stamp does not retire a zero-metric day as previously claimed.
+       Deferred with a written home: the ≤ 0-leftover stale-record window → Phase 4; newly-granted
+       permissions needing a watermark reset → Phase 6.
+  - API verified against the 1.1.0 jar (`javap`): all three records are `IntervalRecord`s with the
+    constructor `(Instant, ZoneOffset, Instant, ZoneOffset, <value>, Metadata)`; steps is a bare
+    `Long`, energy is `Energy.kilocalories`, distance is `Length.meters`. Validation is a union of
+    two validators — Jetpack's `require`s below Android 14 and the platform's `requireInRange` from
+    14 up (`StepsRecord.kt:44-52` branches on SDK level): steps `1..1_000_000` (Jetpack's floor is
+    1, the platform's 0), energy and distance `0..1_000_000`, `startTime` strictly before `endTime`
+    pre-U, and on U+ `startTime` must not be in the future. Guards drop rather than clamp
+    (Gadgetbridge's style, so one bad row cannot sink its 200-record chunk); NaN and ±∞ fall out of
+    every comparison for free. Note **Gadgetbridge is not a precedent here** — it writes per-minute
+    activity records, not day aggregates, and avoids double counting by *suppressing* the workout
+    side (`RecordedWorkoutSyncer.kt:330-334`) rather than netting.
+  - Verified: `testDebugUnitTest` — 24 new tests (id tokens and stability; the day-span clamp for a
+    past day, today, a future day and exact midnight, plus both DST directions in
+    America/Los_Angeles; all three range guards including the 200 000 step ceiling; netting sums,
+    the GPS-only distance rule, day separation, null/non-positive inputs; leftover subtraction
+    including the negative and exactly-zero cases; the chunk-boundary sibling clamp in both the
+    stranding and clean-boundary shapes; and the netting gate) — full suite **963 green**;
+    `assembleDebug`, `installDebug`.
+  - **Runtime verification (API 35) DONE on `pulseloop_test`** (fresh image this session:
+    onboarding via "Explore without ring", location/BT/notification permissions, HC sheet
+    "Allow all" → 10/10, backfill "Sync all history"). TZ America/Los_Angeles (−25200). Injected
+    five days and three workouts through `run-as … sqlite3`, chosen so each netting rule has a
+    discriminating case: day A = today (8 500 steps / 520 kcal / 6 400 m) with a **GPS run**
+    (180 kcal / 2 000 m) and a **still-recording** walk (999 kcal / 9 999 m); day B = 3 days ago,
+    no workout; day C = `ring_history` with a **non-GPS gym** session (90 kcal / 1 500 m);
+    day D = `demo`; day E = all-zero.
+    1. First trigger: `nothing new to export` — correct, and a useful confirmation: the earlier
+       empty pass had already stamped the activity watermark to *now*, so the backdated injected
+       rows fell below it. Re-stamping `updatedAt` (what a real sync does) released them.
+    2. With netting forced on: `exported activity 9 · skipped: activity: 1 day(s) with nothing to
+       export`. Records confirmed **directly in the provider store** (`adb root` →
+       `sqlite3 /data/system_ce/0/healthconnect/healthconnect.db`): day A steps 8 500 (**not**
+       netted — no per-workout step record exists to double against), energy 340 kcal
+       (520 − 180 ✓), distance 4 400 m (6 400 − 2 000 ✓), `end_time` clamped to *now* rather than
+       end-of-day; day C energy 160 kcal (250 − 90 ✓) but distance **1 200 m un-netted** — the
+       discriminating case for the `useGps` rule; day B whole; day D absent (demo excluded, and
+       not counted as skipped since the source filter drops it before the loop); day E absent and
+       counted as the one skipped day. The recording session's 999 kcal / 9 999 m never applied.
+       Zone offsets −25200, versions = each row's `updatedAt`.
+    3. Re-run: `nothing new to export`, counts unchanged.
+    4. Growth (day A → 11 200 steps / 640 kcal / 7 900 m, `updatedAt` bumped):
+       `exported activity 3` — the **same three ids** updated in place (11 200 / 460 kcal /
+       5 900 m), record counts still 3 / 3 / 3, no orphans.
+    5. Shipped configuration re-verified after the observer fixes (netting gated off):
+       `exported activity 9`, day A now 640 kcal / 7 900 m and day C 250 kcal / 1 200 m — the full
+       totals — still 3 / 3 / 3 records, ids unchanged by the `startOfDayLocal` normalization.
+    6. Final pass `nothing new to export`; activity watermark 1786885973764, above the max row
+       `updatedAt` 1786885888790 — the empty-pass stamp, monotonic.
+  - **Toolchain gotcha (cost ~20 min):** a stale untracked `.kotlin/` directory (Kotlin 2.x
+    project-level incremental state, carried over from another machine's build) made
+    `compileDebugUnitTestKotlin` fail with **63** bogus errors — `internal` members of `main`
+    unresolved from the test source set (`isConnectTransition`, `connectPurge`, `colorToHex`, …)
+    plus a phantom opt-in error. It reproduced at HEAD with every Phase 3 change stashed, which is
+    what proved it environmental. `rm -rf .kotlin app/build/kotlin` fixed it outright. Separately,
+    this session's Bash sandbox blocks the Kotlin compile daemon's writes to
+    `~/Library/Application Support/kotlin/daemon`, and the silent in-process fallback loses
+    `-Xfriend-paths` (the same internal-visibility symptom) — Gradle needs the sandbox escalation
+    here, as the emulator does for `~/.android`.
+  - Left behind on the AVD: app connected (10/10, all toggles on, `EXPORT_ALL`), five activity days
+    + three sessions in the app DB, 9 activity records in the HC store (un-netted), `adb` as root.

@@ -5,6 +5,7 @@ import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.metadata.Device
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.health.exporters.ActivityExporter
 import com.pulseloop.health.exporters.SleepExporter
 import com.pulseloop.health.exporters.VitalsExporter
 import kotlinx.coroutines.delay
@@ -61,7 +62,17 @@ internal suspend fun healthConnectInsertChunked(
                 if (attempt < HealthConnectExporter.MAX_RETRIES) delay(HealthConnectExporter.RETRY_BASE_MS shl attempt)
             }
         }
-        if (!success) return ChunkProgress(lastOk, false, attempts, inserted, lastError)
+        if (!success) {
+            // A watermark may only advance past values whose records ALL landed. One source row
+            // can produce several records sharing one high water (Phase 3 writes steps + energy +
+            // distance from one day), so if the chunk boundary splits such a row, the max of the
+            // completed chunks would strand the unlanded sibling below an advanced watermark.
+            // Clamp to the largest completed value that is strictly below everything still
+            // pending.
+            val minRemaining = highWaters.subList(i, highWaters.size).min()
+            val safe = highWaters.subList(0, i).filter { it < minRemaining }.maxOrNull() ?: 0L
+            return ChunkProgress(minOf(lastOk, safe), false, attempts, inserted, lastError)
+        }
         lastOk = maxOf(lastOk, chunkHigh)
         inserted += chunk.size
         i = end
@@ -212,6 +223,66 @@ class HealthConnectExporter(
             }
         }
 
+        // ── Activity group (Phase 3; watermarked on ActivityDailyEntity.updatedAt — a day whose
+        //    totals grow through the afternoon re-upserts the same three
+        //    pl-act-<metric>-<dayEpochMs> records in place) ──
+        if (!prefs.stepsAndActivity) {
+            skipped += "steps & activity (toggle off)"
+        } else {
+            val metricPermissions = linkedMapOf(
+                HealthConnectTypeMappings.ACT_STEPS to HealthConnectPermissions.steps.first(),
+                HealthConnectTypeMappings.ACT_ENERGY to HealthConnectPermissions.activeCalories.first(),
+                HealthConnectTypeMappings.ACT_DIST to HealthConnectPermissions.distance.first(),
+            )
+            val metricLabels = mapOf(
+                HealthConnectTypeMappings.ACT_STEPS to "steps",
+                HealthConnectTypeMappings.ACT_ENERGY to "active calories",
+                HealthConnectTypeMappings.ACT_DIST to "distance",
+            )
+            // Partial grants are first-class (plan §4): each of the three record types is gated on
+            // its own write permission, and the ones that are granted still export.
+            metricPermissions.forEach { (metric, permission) ->
+                if (permission !in granted) skipped += metricLabels.getValue(metric) + " (permission not granted)"
+            }
+            val metrics = metricPermissions.filterValues { it in granted }.keys
+            if (metrics.isNotEmpty()) {
+                val activityPending = ActivityExporter(db).build(
+                    watermark = wm0.activity,
+                    device = device,
+                    metrics = metrics,
+                    // Netting is only correct while the workout records it compensates for are
+                    // actually being written — see [shouldNetWorkouts].
+                    netWorkouts = shouldNetWorkouts(prefs, granted),
+                    nowMs = timestamp,
+                )
+                val activityProgress = insertChunked(activityPending.records, activityPending.highWaters) { chunk ->
+                    client.insertRecords(chunk)
+                }
+                if (activityPending.records.isEmpty()) {
+                    // Nothing new (or nothing writable) for activity: its "everything exported"
+                    // point is now — same rule as an empty vitals kind or sleep pass. Note this
+                    // only fires when the WHOLE pass produced nothing, so a zero-metric day whose
+                    // updatedAt sits above every record-producing day is re-read on each pass until
+                    // some pass comes back empty. Bounded and idempotent, not a leak.
+                    if (timestamp > (wm0.activity ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, timestamp)
+                    }
+                } else {
+                    inserted["activity"] = activityProgress.inserted
+                    if (activityProgress.lastCompletedHighWater > (wm0.activity ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, activityProgress.lastCompletedHighWater)
+                    }
+                    if (!activityProgress.allCompleted) {
+                        errors += "activity: stopped after ${activityProgress.inserted} record(s) " +
+                            "(attempts=${activityProgress.attempts}, last error: ${activityProgress.lastError?.message ?: "unknown"})"
+                    }
+                }
+                if (activityPending.skippedDays > 0) {
+                    skipped += "activity: ${activityPending.skippedDays} day(s) with nothing to export"
+                }
+            }
+        }
+
         return PassResult(inserted, skipped, errors)
     }
 
@@ -246,6 +317,30 @@ class HealthConnectExporter(
     ): ChunkProgress = healthConnectInsertChunked(records, highWaters, insert)
 
     companion object {
+        /**
+         * Whether workout energy/distance may be netted out of the daily aggregates.
+         *
+         * iOS gates this on its `exportWorkouts` preference alone, because on iOS the workout
+         * exporter already exists — netting and the compensating `HKWorkout` ship together. Here
+         * they do not: Phase 4 owns the workout records, so netting on the toggle alone would
+         * subtract energy and metres that **nothing writes back**, silently under-reporting every
+         * day that contains a workout, with no way to repair it (the export is write-only).
+         *
+         * So netting additionally requires that workouts are genuinely exportable: the Phase 4
+         * exporter existing at all ([WORKOUTS_EXPORTED]) and `WRITE_EXERCISE` actually granted —
+         * the second half still matters after Phase 4 lands, because the toggle can be on while
+         * the permission is denied, which the plan treats as a first-class state.
+         *
+         * **Phase 4 flips [WORKOUTS_EXPORTED] to true in the same commit that adds
+         * `WorkoutExporter`.** Until then the daily totals are written whole, which is the correct
+         * reading of the data we actually publish.
+         */
+        internal fun shouldNetWorkouts(prefs: HealthConnectPrefs, granted: Set<String>): Boolean =
+            WORKOUTS_EXPORTED && prefs.workouts && HealthConnectPermissions.exercise.first() in granted
+
+        /** Set to true by Phase 4, together with the `WorkoutExporter` it refers to. */
+        internal const val WORKOUTS_EXPORTED = false
+
         /** Gadgetbridge: records per `insertRecords` call. */
         const val CHUNK_SIZE = 200
         /** Gadgetbridge: retries after the initial attempt (backoff 1 / 2 / 4 / 8 / 16 s). */

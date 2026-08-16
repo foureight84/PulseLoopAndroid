@@ -83,6 +83,146 @@ object HealthConnectTypeMappings {
     /** Core body temperature, °C — ring sensor range with artifact margin. */
     fun isPlausibleBodyTemperature(value: Double): Boolean = value in 30.0..42.0
 
+    // ── daily activity (Phase 3) ──
+
+    /**
+     * `pl-act-<metric>-<dayEpochMs>` — one day-spanning aggregate per metric, where metric is
+     * [ACT_STEPS] / [ACT_ENERGY] / [ACT_DIST] (the same three tokens iOS uses in
+     * `HealthKitTypeMappings.activitySyncID`). `clientRecordVersion` = the row's `updatedAt`, so a
+     * day that gains steps later re-upserts the same record instead of adding a second one.
+     */
+    fun activityRecordId(metric: String, dayEpochMs: Long): String = "pl-act-$metric-$dayEpochMs"
+
+    const val ACT_STEPS = "steps"
+    const val ACT_ENERGY = "energy"
+    const val ACT_DIST = "dist"
+
+    /**
+     * End instant for a day-spanning record: the last millisecond of the local day, clamped to
+     * [nowMs] so "today" never ends in the future (iOS `HealthSyncService.swift:271-274`). Returns
+     * `null` when the clamped end is not strictly after [dayStartMs] — every Health Connect
+     * `IntervalRecord` constructor rejects `startTime >= endTime`.
+     *
+     * The next day is computed with [java.time.ZonedDateTime.plusDays], not `+ 86_400_000`, so a
+     * DST transition day is 23 or 25 hours as the calendar sees it.
+     */
+    fun activityDayEndMs(dayStartMs: Long, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): Long? {
+        val nextDay = Instant.ofEpochMilli(dayStartMs).atZone(zone).plusDays(1).toInstant().toEpochMilli()
+        val end = minOf(nextDay - 1L, nowMs)
+        return if (end > dayStartMs) end else null
+    }
+
+    // The three guards below take the UNION of the two validators a record passes through: the
+    // Jetpack constructor's own `require`s below Android 14, and the platform's `requireInRange`
+    // from 14 (U) up (androidx `StepsRecord.kt:44-52` branches on SDK level). Where they disagree
+    // — steps floor 1 in Jetpack, 0 on the platform — the stricter bound wins. Following
+    // Gadgetbridge, an out-of-range value is DROPPED, never clamped, so one bad row cannot sink
+    // its whole 200-record chunk. NaN and infinity fall out of every comparison and are dropped
+    // for free. This also honours the write-data guide's "handle zero values" rule: omit the
+    // record rather than assert a zero we cannot vouch for.
+
+    /**
+     * Steps per record. The platform's range is `1..1_000_000`, but the ceiling here is this
+     * app's own corruption threshold: `EventPersistenceSubscriber.kt:374` treats a stored day
+     * above 200 000 steps as garbage from the old little-endian live-activity decode and
+     * self-heals it on the next sync. Between the bad write and that heal, an export would push
+     * a six-figure step day into a store we can never retract it from, so the guard stops where
+     * the app's own trust in the number stops.
+     */
+    fun isPlausibleSteps(count: Long): Boolean = count in 1L..MAX_TRUSTED_DAILY_STEPS
+
+    /** `EventPersistenceSubscriber`'s stale-value threshold, reused as the export ceiling. */
+    const val MAX_TRUSTED_DAILY_STEPS = 200_000L
+
+    /**
+     * A daily total minus what Phase 4's workout records will carry for the same day. Pure so the
+     * subtraction — the part that can silently under-report — is testable without Room.
+     *
+     * Returns the leftover even when it goes negative; the caller's plausibility guard drops it.
+     * **Known gap for Phase 4:** dropping it leaves any previously exported, un-netted record for
+     * that day live in Health Connect, since a write-only export cannot delete or zero it. That
+     * cannot happen while [HealthConnectExporter.WORKOUTS_EXPORTED] is false (netting is off, so
+     * nothing is subtracted); Phase 4 must decide between writing a floor-value record to
+     * overwrite the stale one and accepting the window.
+     */
+    fun activityLeftover(total: Double, netted: Double): Double = total - netted
+
+    /** Active energy, kcal: platform range `0..1_000_000`; a zero day is not worth a record. */
+    fun isPlausibleActiveCalories(kcal: Double): Boolean = kcal > 0.0 && kcal <= 1_000_000.0
+
+    /** Distance, metres: platform range `0..1_000_000` (1 000 km per record). */
+    fun isPlausibleDistanceMeters(meters: Double): Boolean = meters > 0.0 && meters <= 1_000_000.0
+
+    /**
+     * One finished workout reduced to what daily-aggregate netting needs.
+     * [dayStartMs] is the local start-of-day of the session's **start** (iOS keys netting on
+     * `startedAt`, so a workout crossing midnight nets entirely against the day it began).
+     */
+    data class NettableSession(
+        val dayStartMs: Long,
+        val calories: Double?,
+        val distanceMeters: Double?,
+        val useGps: Boolean,
+    )
+
+    /** Per-day workout kcal / metres to subtract from the daily aggregates. */
+    data class WorkoutNetting(
+        val kcalByDay: Map<Long, Double>,
+        val metersByDay: Map<Long, Double>,
+    ) {
+        fun kcal(dayStartMs: Long): Double = kcalByDay[dayStartMs] ?: 0.0
+        fun meters(dayStartMs: Long): Double = metersByDay[dayStartMs] ?: 0.0
+
+        companion object { val EMPTY = WorkoutNetting(emptyMap(), emptyMap()) }
+    }
+
+    /**
+     * Port of iOS `HealthSyncService.workoutNetting` (`HealthSyncService.swift:315-331`): the
+     * per-day finished-workout totals that Phase 4 will write as their own records, so a Health
+     * Connect consumer summing the day aggregate + the workout does not count them twice.
+     *
+     * Two deliberate Android differences, both forced by this app's data model rather than taste:
+     *
+     *  - **Energy is netted even though `ActivityRollup.credit` never adds workout kcal to the
+     *    daily row.** What makes netting correct here is the *ring*: when `activity_daily.calories`
+     *    holds a device-reported figure it is the ring's own all-day active energy, which already
+     *    covers the minutes the workout was running. This is exactly iOS's reason, and iOS's rule
+     *    (all finished sessions) ports unchanged. Narrower than it looks: the app itself only
+     *    treats that column as device-reported when `source != "ring_history" && calories > 0`
+     *    (`DailyCalorieEstimator.deviceReportedCalories`), and the estimated figure it falls back
+     *    to for other days already has workout energy folded in — which is why the exporter writes
+     *    the raw column (iOS parity) rather than `effectiveActiveCalories`.
+     *  - **Distance netting drops iOS's walk/run type filter.** iOS needs it because HealthKit
+     *    splits distance across `.distanceWalkingRunning` / `.distanceCycling`, so netting a ride
+     *    out of the walking total would under-count. Health Connect has a single `DistanceRecord`
+     *    type that every workout's distance lands in, so restricting to walk/run here would leave
+     *    a GPS ride's metres counted twice. The netting set is therefore
+     *    [NettableSession.useGps] sessions of any type — the set `ActivityRollup.credit` folds
+     *    into the daily row (`ActivityRollup.kt:20-32`).
+     *
+     * **Two ways that "netted set == credited set" equality is known to be imperfect**, both
+     * dormant while [HealthConnectExporter.WORKOUTS_EXPORTED] is false and both for Phase 4 to
+     * resolve:
+     *  1. `EventPersistenceSubscriber.applyActivityBucketAtomic` *overwrites* a past day's
+     *     `distanceMeters` with the ring's bucket sum (the ratchet only applies to today), so a
+     *     history re-sync discards the credited GPS metres while netting would still subtract them.
+     *  2. `ActivityRollup.credit` early-returns for sessions under a minute, which are netted here
+     *     but were never credited.
+     *
+     * Callers pass only sessions that are `finished` with a non-null `endedAt`, mirroring iOS.
+     */
+    fun workoutNetting(sessions: List<NettableSession>): WorkoutNetting {
+        val kcal = HashMap<Long, Double>()
+        val meters = HashMap<Long, Double>()
+        for (s in sessions) {
+            val k = s.calories
+            if (k != null && k > 0.0) kcal[s.dayStartMs] = (kcal[s.dayStartMs] ?: 0.0) + k
+            val m = s.distanceMeters
+            if (s.useGps && m != null && m > 0.0) meters[s.dayStartMs] = (meters[s.dayStartMs] ?: 0.0) + m
+        }
+        return WorkoutNetting(kcal, meters)
+    }
+
     // ── heart-rate series segmentation ──
 
     /** One sorted sample: sample instant + whole bpm (HeartRateRecord.Sample is a Long). */

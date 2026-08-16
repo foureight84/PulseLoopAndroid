@@ -168,4 +168,60 @@ class HealthConnectExporterTest {
         assertEquals(200, p.inserted)
         assertEquals(499L, p.lastCompletedHighWater)
     }
+
+    // ── Phase 3: one source row can emit several records sharing one high water ──
+
+    @Test
+    fun activityWatermarkNeverStrandsASiblingRecordSplitAcrossAChunkBoundary() = runTest {
+        // A day writes steps + energy + distance, all stamped with the row's updatedAt. Build 201
+        // records so the chunk boundary falls INSIDE the 67th day, then fail chunk 2. Advancing to
+        // that day's updatedAt would strand its unlanded record forever, because the DAO selects
+        // on `updatedAt > watermark`.
+        val highWaters = (0 until 201).map { (it / 3).toLong() + 1L }
+        val p = healthConnectInsertChunked(records(201), highWaters) { c ->
+            if (c.size < 200) throw IllegalStateException("second chunk fails")
+        }
+        assertFalse(p.allCompleted)
+        assertEquals(200, p.inserted)
+        // Day 67 (high water 67) straddles the boundary: 200 = 3*66 + 2, so two of its three
+        // records landed and one did not. The watermark must stop at day 66.
+        assertEquals(66L, p.lastCompletedHighWater)
+    }
+
+    @Test
+    fun aFullyLandedRowStillAdvancesTheWatermark() = runTest {
+        // Same shape, but the boundary falls cleanly between rows — nothing is stranded, so the
+        // clamp must not cost us the last complete row.
+        val highWaters = (0 until 300).map { (it / 2).toLong() + 1L }
+        val p = healthConnectInsertChunked(records(300), highWaters) { c ->
+            if (c.size < 200) throw IllegalStateException("second chunk fails")
+        }
+        assertFalse(p.allCompleted)
+        assertEquals(100L, p.lastCompletedHighWater)
+    }
+
+    // ── Phase 3: netting is gated on workouts actually being written ──
+
+    private fun prefs(workouts: Boolean) = HealthConnectPrefs(workouts = workouts)
+
+    @Test
+    fun nettingStaysOffWhileNoWorkoutExporterExists() {
+        // Phase 3 ships before Phase 4: subtracting workout energy/distance that nothing writes
+        // back would silently under-report every day containing a workout.
+        assertFalse(HealthConnectExporter.WORKOUTS_EXPORTED)
+        assertFalse(
+            HealthConnectExporter.shouldNetWorkouts(prefs(workouts = true), HealthConnectPermissions.all),
+        )
+    }
+
+    @Test
+    fun nettingWouldRequireBothTheToggleAndTheExercisePermission() {
+        // Pins the intent for Phase 4, which flips WORKOUTS_EXPORTED: the toggle alone is not
+        // enough, because it can be on while WRITE_EXERCISE is denied (partial grants are
+        // first-class), and then no workout record is written to net against.
+        val granted = HealthConnectPermissions.all
+        val withoutExercise = granted - HealthConnectPermissions.exercise.first()
+        assertFalse(HealthConnectExporter.shouldNetWorkouts(prefs(workouts = false), granted))
+        assertFalse(HealthConnectExporter.shouldNetWorkouts(prefs(workouts = true), withoutExercise))
+    }
 }

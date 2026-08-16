@@ -137,6 +137,21 @@ interface ActivityDailyDao {
 
     @Query("DELETE FROM activity_daily WHERE source = 'demo'")
     suspend fun clearDemo()
+
+    // Health Connect export (Phase 3): days whose totals changed since the watermark. Demo/mock
+    // rows never leave the app — note this table names the column `source`, not the `sourceRaw`
+    // the measurement/sleep tables use.
+    // ORDER BY updatedAt, NOT date: healthConnectInsertChunked advances the watermark to the max
+    // high water of the last *successful* chunk, which is only safe if the records arrive in
+    // high-water order. A history re-sync restamps an OLD day's updatedAt, so ordering by date
+    // would put the newest watermark value in the first chunk and let a later chunk's failure
+    // strand days below an already-advanced watermark (iOS sorts on updatedAt too —
+    // HealthSyncService.swift:257). `date` only breaks ties, for deterministic output.
+    @Query(
+        "SELECT * FROM activity_daily WHERE updatedAt > :watermark " +
+            "AND source NOT IN ('demo','mock') ORDER BY updatedAt ASC, date ASC",
+    )
+    suspend fun updatedSince(watermark: Long): List<ActivityDailyEntity>
 }
 
 @Dao
@@ -198,6 +213,15 @@ interface ActivitySessionDao {
     @Query("SELECT * FROM activity_sessions WHERE statusRaw = 'finished' AND endedAt >= :cutoff")
     suspend fun finishedSince(cutoff: Long): List<ActivitySessionEntity>
 
+    // Health Connect export (Phase 3): finished workouts that STARTED in [from, to) — the netting
+    // set for the daily aggregates (iOS keys netting on startedAt, so a session crossing midnight
+    // nets entirely against the day it began).
+    @Query(
+        "SELECT * FROM activity_sessions WHERE statusRaw = 'finished' AND endedAt IS NOT NULL " +
+            "AND startedAt >= :from AND startedAt < :to ORDER BY startedAt ASC",
+    )
+    suspend fun finishedStartedBetween(from: Long, to: Long): List<ActivitySessionEntity>
+
     @Upsert
     suspend fun upsert(session: ActivitySessionEntity)
 }
@@ -250,7 +274,11 @@ interface SleepSessionDao {
      * record in place, so the watermark follows the row's last update, not its sample span.
      * Demo rows never reach Health Connect (mirrors iOS; sleep's sourceRaw is "ring" | "demo").
      */
-    @Query("SELECT * FROM sleep_sessions WHERE updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY date ASC, startAt ASC")
+    // Ordered by updatedAt for the same reason as ActivityDailyDao.updatedSince: the chunked
+    // watermark advance is only sound when records arrive in high-water order, and a re-synced
+    // old night carries a fresh updatedAt. date/startAt only break ties. (Corrected in Phase 3;
+    // Phase 2 ordered by date and could strand a night below an advanced watermark.)
+    @Query("SELECT * FROM sleep_sessions WHERE updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY updatedAt ASC, date ASC, startAt ASC")
     suspend fun updatedSince(watermark: Long): List<SleepSessionEntity>
 
     /** Earliest tracked day key (local midnight millis) — bounds how far Day navigation can page back. */
