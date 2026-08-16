@@ -101,6 +101,19 @@ class HealthConnectPrefsStoreTest {
     }
 
     @Test
+    fun sleepWatermarkNeverRewinds() {
+        // Phase 2: the sleep group's watermark (SleepSessionEntity.updatedAt) gets the same
+        // monotonic treatment as vitals — an interrupted backfill resumes, never re-exports.
+        val store = storeWith(null)
+        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, 200)
+        assertEquals(200L, store.currentWatermarks.sleep)
+        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, 150)
+        assertEquals(200L, store.currentWatermarks.sleep)
+        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, 300)
+        assertEquals(300L, store.currentWatermarks.sleep)
+    }
+
+    @Test
     fun watermarksAreIndependentPerKey() {
         val store = storeWith(null)
         store.setWatermark(HealthConnectWatermarks.Key.VITALS, 200)

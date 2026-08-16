@@ -244,6 +244,15 @@ interface SleepSessionDao {
     @Query("SELECT * FROM sleep_sessions WHERE date BETWEEN :start AND :end ORDER BY date ASC")
     suspend fun inRange(start: Long, end: Long): List<SleepSessionEntity>
 
+    /**
+     * Health Connect export selection (Phase 2): sessions committed after [watermark], by
+     * `updatedAt` — sleep is a mutable group (plan §3): a re-synced night must re-upsert the SAME
+     * record in place, so the watermark follows the row's last update, not its sample span.
+     * Demo rows never reach Health Connect (mirrors iOS; sleep's sourceRaw is "ring" | "demo").
+     */
+    @Query("SELECT * FROM sleep_sessions WHERE updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY date ASC, startAt ASC")
+    suspend fun updatedSince(watermark: Long): List<SleepSessionEntity>
+
     /** Earliest tracked day key (local midnight millis) — bounds how far Day navigation can page back. */
     @Query("SELECT MIN(date) FROM sleep_sessions WHERE totalMinutes > 0")
     suspend fun earliestDay(): Long?

@@ -5,6 +5,7 @@ import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.metadata.Device
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.health.exporters.SleepExporter
 import com.pulseloop.health.exporters.VitalsExporter
 import kotlinx.coroutines.delay
 
@@ -78,9 +79,8 @@ internal suspend fun healthConnectInsertChunked(
  * watermark advances only to a timestamp that actually reached Health Connect, and never rewinds
  * ([HealthConnectPrefsStore.setWatermark] enforces the monotonic part).
  *
- * Phase 1 wires the vitals group; Phases 2–5 append their exporters in [run] and gain a watermark
- * key each (sleep / activity / workouts / nutrition) — the group-min watermark rule below already
- * generalizes to them.
+ * Phase 1 wires the vitals group; Phase 2 adds the sleep group (its own [SleepExporter] and its
+ * own SLEEP watermark key); Phases 3–5 append the same way (activity / workouts / nutrition).
  */
 class HealthConnectExporter(
     private val client: HealthConnectClient,
@@ -173,6 +173,43 @@ class HealthConnectExporter(
         if (kindHighs.isNotEmpty()) {
             val groupHigh = kindHighs.values.minOrNull() ?: 0L
             if (groupHigh > (vitalsWm ?: 0L)) store.setWatermark(HealthConnectWatermarks.Key.VITALS, groupHigh)
+        }
+
+        // ── Sleep group (Phase 2; watermarked on SleepSessionEntity.updatedAt — a re-synced
+        //    night re-upserts the same pl-sleep-<dayEpochMs> record in place) ──
+        if (!prefs.sleep) {
+            skipped += "sleep (toggle off)"
+        } else {
+            val permission = HealthConnectPermissions.sleep.first()
+            if (permission !in granted) {
+                skipped += "sleep (permission not granted)"
+            } else {
+                val sleepPending = SleepExporter(db).build(wm0.sleep, device)
+                val sleepProgress = insertChunked(sleepPending.records, sleepPending.highWaters) { chunk ->
+                    client.insertRecords(chunk)
+                }
+                if (sleepPending.records.isEmpty()) {
+                    // Nothing new for sleep: the group's "everything exported" point is now — it
+                    // must not hold its watermark hostage at the old value (same rule as a
+                    // vitals kind with no new rows).
+                    if (timestamp > (wm0.sleep ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, timestamp)
+                    }
+                } else {
+                    inserted["sleep"] = sleepProgress.inserted
+                    // Advance only to what actually landed; setWatermark() enforces never-rewind.
+                    if (sleepProgress.lastCompletedHighWater > (wm0.sleep ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, sleepProgress.lastCompletedHighWater)
+                    }
+                    if (!sleepProgress.allCompleted) {
+                        errors += "sleep: stopped after ${sleepProgress.inserted} record(s) " +
+                            "(attempts=${sleepProgress.attempts}, last error: ${sleepProgress.lastError?.message ?: "unknown"})"
+                    }
+                }
+                if (sleepPending.skippedSessions > 0) {
+                    skipped += "sleep: ${sleepPending.skippedSessions} session(s) without valid stages"
+                }
+            }
         }
 
         return PassResult(inserted, skipped, errors)

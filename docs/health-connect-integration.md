@@ -470,7 +470,7 @@ around it.
 ## 8. Session log
 
 Append a dated entry here as work progresses (persistent memory via `mcp_memory` is the parallel
-record). Status: **Phase 1 implemented** on `feat/health-connect-foundation` (pre-merge); Phases 2–6 pending.
+record). Status: **Phase 2 implemented** on `feat/health-connect-foundation` (pre-merge); Phases 3–6 pending.
 
 - **2026-08-14 — prep, no code.** Plan read and re-verified against the live official docs.
   - Official Google Health Connect guide indexed into the `mcp_docs` server as library
@@ -590,4 +590,87 @@ record). Status: **Phase 1 implemented** on `feat/health-connect-foundation` (pr
   - Subagents still broken (`subagent run failed` on the trivial probe) — Phase 1 also ran solo with
     the self-review pass; the `read_image` capability declaration for this model still rejects image
     input, so UI verification stayed on `uiautomator dump` + coordinate taps.
-
+- **2026-08-16 — Phase 2 implemented (sleep export)** (branch `feat/health-connect-foundation`).
+  - Shipped: `health/exporters/SleepExporter.kt` (one `SleepSessionRecord` per `SleepSessionEntity`,
+    stages from that session's `SleepStageBlockEntity` rows; stage map DEEP/LIGHT/REM/AWAKE/UNKNOWN
+    → the client's `SleepSessionRecord.STAGE_TYPE_*` constants — never raw ints; normalization:
+    sort by start, clamp to session bounds, drop overlaps keeping the earlier, drop
+    zero/negative-length stages; sessions with no valid stages are skipped and counted, with a
+    later re-sync re-selecting them via `updatedAt`); `HealthConnectTypeMappings` gains the pure
+    sleep helpers (`sleepSessionRecordId`, `mainSleepIndex`/`sleepSessionSuffix`, `sleepStageType`,
+    `normalizeSleepStages`); `HealthConnectExporter.run()` gains the sleep group pass (its own
+    `SLEEP` watermark, per-kind toggle + live permission gate, same chunk/retry and
+    advance-only-to-landed watermark semantics); `SleepSessionDao.updatedSince(watermark)` —
+    `updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock')` (mirrors Phase 1's
+    `createdSince`). No manifest change: `WRITE_SLEEP` was already declared in Phase 0 and
+    `HealthConnectPermissions.sleep` already derived it via
+    `HealthPermission.getWritePermission(SleepSessionRecord::class)`.
+  - **Identity decision (deviation from the plan's letter, in its spirit):** the plan says key on
+    the session's `date` because it is "uniquely indexed and stable" — but `date` is the waking
+    day's local midnight and is **not unique**: `reconcileWakingDay`/`SleepSegmentation` can hold a
+    main night plus a daytime nap on one waking day (see `SleepSessionDao.byDay`'s "a day can now
+    hold several sessions"). Two sessions sharing one `clientRecordId` would silently replace each
+    other in Health Connect. Resolution: the day's **main** session (longest, ties to earliest
+    start — the same main sleep `byDay()` surfaces) keeps the plain `pl-sleep-<dayEpochMs>`;
+    additional sessions take deterministic suffixes `pl-sleep-<dayEpochMs>-<i>` (1-based, startAt
+    order among non-main). Single-session days — the common case — are exactly the plan's id.
+    Accepted edge (mirrors the HR hour-split edge): if a nap later joins/leaves the day, suffixed
+    ids shift and one superseded record remains in Health Connect (write-only: cannot delete it;
+    its content is re-exported under the new ids on the same pass).
+  - API verified against the 1.1.0 jar (`javap`) + decompiled source: constructor is
+    `(Instant startTime, ZoneOffset startZoneOffset, Instant endTime, ZoneOffset endZoneOffset,
+    Metadata, String title, String notes, List<Stage>)`, `Stage(Instant, Instant, int)`; the
+    constructor enforces sorted, non-overlapping (touching allowed) stages inside the session
+    bounds — `normalizeSleepStages` is written to satisfy exactly that. Stage constants pinned in
+    tests: UNKNOWN=0, AWAKE=1, LIGHT=4, DEEP=5, REM=6. `clientRecordVersion` =
+    `session.updatedAt` (plan identity table) — a re-synced, fuller night always wins the upsert.
+    The official-docs MCP index only holds the Health Connect landing page, so upsert semantics
+    rest on plan §3 + Phase 1's runtime proof; Gadgetbridge's `SleepSyncer` (frozen-id +
+    grow-in-place, `Metadata.autoRecorded`) informed the shape.
+  - Verified: `testDebugUnitTest` — 24 new tests (all five stage mappings + pinned constant
+    values + unrecognized-raw fallback; plain/suffixed id formats; id stability across re-sync and
+    block-UUID churn; main-sleep selection incl. ties and empty day; single-session / nap /
+    two-nap suffix determinism; normalization: sort, clamp, overlap-truncate, fully-covered drop,
+    reach-session-end drop, touching allowed, zero/negative drop, out-of-bounds drop,
+    non-positive session span; sleep watermark = max landed session `updatedAt`, non-monotonic
+    input, partial-failure stop; `SLEEP` watermark monotonicity) — full suite **939 green**;
+    `assembleDebug`.
+  - **Runtime verification (API 35) DONE on `pulseloop_test`** (fresh install this session —
+    onboarding completed with "Explore without ring", BT permission allowed, HC permission sheet
+    "Allow all", backfill "Sync all history"). This image has **no HC data-browser app**, so
+    records were confirmed **directly in the provider's store** (`adb root` →
+    `sqlite3 /data/system_ce/0/healthconnect/healthconnect.db` — `sleep_session_record_table` +
+    `sleep_stages_table`), a stronger check than Phase 1's acceptance-based one. Injected two
+    `sourceRaw='ring'` nights via `run-as … sqlite3`: Night A 23:40→07:10 (450 min, 10 blocks
+    covering LIGHT/DEEP/REM/AWAKE) with waking-day `date` = today's local midnight, and older
+    Night B 23:40→06:30 (410 min, 5 blocks). Emulator TZ is America/Los_Angeles (PDT, offset
+    −25200 s) — the injected `date`/`startAt`/`endAt` are true local-midnight/local instants.
+    1. Pass 1: `pass done: exported sleep 2` — store shows exactly
+       `pl-sleep-<dayA>` and `pl-sleep-<dayB>` with the correct spans, 15 stages total with the
+       right types (4/5/6/1), versions = each session's `updatedAt`, zone offsets −25200.
+    2. Pass 2 (toggle off→on re-run): `pass done: nothing new to export` — counts unchanged
+       (2 records / 15 stages).
+    3. Growth (Night A re-sync: last LIGHT block 25→55 min, session end 07:10→07:40,
+       `updatedAt` bumped): `pass done: exported sleep 1` — the SAME `pl-sleep-<dayA>` record
+       updated in place (version advanced, end extended to 07:40, last stage extended), record
+       count still 2 — no orphan second session. Sleep watermark advanced to exactly the landed
+       `updatedAt`.
+    4. Block-UUID churn (Night B: 5 blocks deleted, re-inserted with fresh ids, same times,
+       `updatedAt` bumped): `pass done: exported sleep 1` — the SAME `pl-sleep-<dayB>` record
+       re-upserted in place, stages byte-identical, record count still 2 — no duplicates from the
+       churned block UUIDs.
+    5. Bonus observation (mid-4, when Night B's blocks were deleted before the re-insert landed):
+       the pass reported `skipped: sleep: 1 session(s) without valid stages` and left the
+       watermark untouched — the empty-stages guard + re-selection path working as designed.
+    6. Final no-op pass: `nothing new to export`. Watermarks persisted monotonically
+       (`sleep`: 1786892400000 → 1786896000000 → 1786899000000, each exactly the max landed
+       session `updatedAt`); `vitals` watermark stamped to the pass time (empty-kind rule);
+       `lastSyncSummary` live on the settings card.
+  - Sandbox note (for the next phase): this agent's file sandbox is workspace-write —
+    `~/.gradle` and the SDK are read-only, so the build ran with
+    `GRADLE_USER_HOME=/tmp/dsh-gradle-home` (one-time 7.8 G copy of the warm cache) and the
+    extracted wrapper dist's `bin/gradle` directly. `adb root` works on this AVD (google_apis),
+    which is what made direct store inspection possible.
+  - Left behind on the AVD: app connected (10/10 permissions, all toggles on, `EXPORT_ALL`),
+    the two test nights in the app DB (grown Night A + churned Night B), 2 records in the HC
+    store, `adb` running as root.

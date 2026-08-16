@@ -133,4 +133,39 @@ class HealthConnectExporterTest {
             // parallel-list contract
         }
     }
+
+    // ── sleep (Phase 2): the sleep group's watermark is the max session updatedAt of what
+    //    actually landed. Sleep is a single-kind group, so its group-min rule (min of per-kind
+    //    highs) reduces to this value; independence from the vitals group is pinned in
+    //    HealthConnectPrefsStoreTest (watermarksAreIndependentPerKey / sleepWatermarkNeverRewinds).
+    //    The full pass (run()) is runtime-verified — same convention as Phase 1.
+
+    @Test
+    fun sleepWatermarkAdvancesOnlyToLandedSessions() = runTest {
+        // Three pending sessions with NON-MONOTONIC updatedAt (a re-synced old night alongside
+        // newer ones). The watermark must land at the MAX of what was inserted — not the last
+        // record's, not a source-row ordering artifact.
+        val highWaters = listOf(700L, 900L, 500L)
+        val p = healthConnectInsertChunked(records(3), highWaters) { }
+        assertTrue(p.allCompleted)
+        assertEquals(3, p.inserted)
+        assertEquals(900L, p.lastCompletedHighWater)
+    }
+
+    @Test
+    fun sleepWatermarkStopsAtMaxLandedChunkOnPartialFailure() = runTest {
+        // 450 records = three 200/200/50 chunks; chunks 2–3 die. The watermark may only advance
+        // over chunk 1's sessions — here the max of their updatedAt is 499, not 299 (the last
+        // landed in list order) and nothing past it — so the next pass re-reads exactly what
+        // was missed and re-upserts nothing that already landed.
+        val highWaters = (1..450).map { if (it <= 200) 500L - it else 1000L - it }
+        var chunk = 0
+        val p = healthConnectInsertChunked(records(450), highWaters) { c ->
+            chunk += c.size
+            if (chunk > 200) throw IllegalStateException("provider down")
+        }
+        assertFalse(p.allCompleted)
+        assertEquals(200, p.inserted)
+        assertEquals(499L, p.lastCompletedHighWater)
+    }
 }

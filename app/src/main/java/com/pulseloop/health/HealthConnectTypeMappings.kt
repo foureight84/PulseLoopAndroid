@@ -1,5 +1,7 @@
 package com.pulseloop.health
 
+import androidx.health.connect.client.records.SleepSessionRecord
+import com.pulseloop.ring.SleepStage
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -122,4 +124,112 @@ object HealthConnectTypeMappings {
      * by 1 s (Gadgetbridge does the same).
      */
     fun seriesEndMs(startMs: Long, endMs: Long): Long = if (endMs <= startMs) endMs + 1L else endMs
+
+    // ── sleep (Phase 2; plan §3 identity table + Phase 2 spec) ──
+
+    /** One session's shape for a day's clientRecordId selection — the two fields of a
+     *  [com.pulseloop.data.entity.SleepSessionEntity] that determine which session is the day's
+     *  main sleep. Primitives on purpose: this file stays Room-free and unit-testable. */
+    data class SleepDaySession(val startAtMs: Long, val totalMinutes: Long)
+
+    /**
+     * `pl-sleep-<dayEpochMs>` — the clientRecordId for a waking day's [SleepSessionRecord], keyed
+     * on the session's `date` (the waking day's local midnight, epoch ms). NEVER keyed on
+     * [com.pulseloop.data.entity.SleepStageBlockEntity.id] — a fresh random UUID on every re-sync,
+     * because upsertSleepSessionAtomic replaces the blocks — or on the session UUID (plan §3,
+     * identity trap #1). A re-synced night must upsert the SAME Health Connect record in place,
+     * and `date` is stable across re-syncs. Millisecond-epoch form of the iOS
+     * `pl-sleep-<dayEpoch>` identifier; the version (session.updatedAt) is set by the exporter.
+     *
+     * A waking day can hold more than one session (a main night plus a daytime nap, split by
+     * SleepSegmentation), and Health Connect resolves one clientRecordId to one record per app —
+     * two sessions sharing the plain id would silently replace each other. Disambiguation:
+     * the day's main session ([mainSleepIndex]) keeps the plain id; the others take a
+     * deterministic suffix, `pl-sleep-<dayEpochMs>-<i>` ([sleepSessionSuffix]).
+     *
+     * Known edge (accepted, mirrors the HR hour-split edge): if a nap later joins or leaves the
+     * day the suffixed ids shift, leaving one superseded record in Health Connect. Write-only
+     * means we cannot delete it; its content is re-exported under the new ids on the same pass,
+     * so nothing is lost or double-counted.
+     */
+    fun sleepSessionRecordId(dayEpochMs: Long, suffix: Int? = null): String =
+        if (suffix == null) "pl-sleep-$dayEpochMs" else "pl-sleep-$dayEpochMs-$suffix"
+
+    /**
+     * The index of a waking day's main session: the longest ([SleepDaySession.totalMinutes]),
+     * ties to the earliest start — the same main sleep [com.pulseloop.data.dao.SleepSessionDao.byDay]
+     * surfaces to the single-session callers. null for an empty day.
+     */
+    fun mainSleepIndex(sessions: List<SleepDaySession>): Int? {
+        if (sessions.isEmpty()) return null
+        var best = 0
+        for (i in 1 until sessions.size) {
+            val cur = sessions[i]
+            val prev = sessions[best]
+            if (cur.totalMinutes > prev.totalMinutes ||
+                (cur.totalMinutes == prev.totalMinutes && cur.startAtMs < prev.startAtMs)
+            ) best = i
+        }
+        return best
+    }
+
+    /**
+     * The deterministic suffix for session [index] of a multi-session waking day: its 1-based
+     * position in startAt order among the day's non-main sessions; null when [index] IS the day's
+     * main session (it keeps the plain id). Purely a function of the day's session set, so a
+     * re-run computes the same ids.
+     */
+    fun sleepSessionSuffix(sessions: List<SleepDaySession>, index: Int): Int? {
+        val main = mainSleepIndex(sessions) ?: return null
+        if (index == main) return null
+        val nonMain = sessions.indices.filter { it != main }.sortedBy { sessions[it].startAtMs }
+        return nonMain.indexOf(index) + 1
+    }
+
+    /** A proposed stage span (epoch millis) for [normalizeSleepStages]. [stageType] is already
+     *  mapped through [sleepStageType] — the client's constants, never a raw int. */
+    data class SleepStageSpan(val startMs: Long, val endMs: Long, val stageType: Int)
+
+    /**
+     * [com.pulseloop.data.entity.SleepStageBlockEntity.stageRaw] (a [SleepStage] name) → the
+     * client's [SleepSessionRecord] stage-type constant (plan Phase 2). Anything unrecognized
+     * degrades to [SleepSessionRecord.STAGE_TYPE_UNKNOWN] rather than being dropped — the block
+     * is real sleep time, just unclassified.
+     */
+    fun sleepStageType(stageRaw: String): Int = when (stageRaw) {
+        SleepStage.DEEP.name -> SleepSessionRecord.STAGE_TYPE_DEEP
+        SleepStage.LIGHT.name -> SleepSessionRecord.STAGE_TYPE_LIGHT
+        SleepStage.REM.name -> SleepSessionRecord.STAGE_TYPE_REM
+        SleepStage.AWAKE.name -> SleepSessionRecord.STAGE_TYPE_AWAKE
+        SleepStage.UNKNOWN.name -> SleepSessionRecord.STAGE_TYPE_UNKNOWN
+        else -> SleepSessionRecord.STAGE_TYPE_UNKNOWN
+    }
+
+    /**
+     * Normalizes raw stage blocks into a stage list the [SleepSessionRecord] constructor accepts
+     * (plan Phase 2): sort by start, clamp each span to [sessionStartMs, sessionEndMs], drop
+     * overlaps (keep the earlier, truncate the later to start where the earlier ends), and drop
+     * zero/negative-length stages. The result is sorted, non-overlapping (touching is allowed —
+     * the record's validation rejects a stage ending after the NEXT stage's start), and inside
+     * the session bounds.
+     */
+    fun normalizeSleepStages(
+        sessionStartMs: Long,
+        sessionEndMs: Long,
+        raw: List<SleepStageSpan>,
+    ): List<SleepStageSpan> {
+        if (sessionEndMs <= sessionStartMs) return emptyList()
+        val result = mutableListOf<SleepStageSpan>()
+        for (span in raw.sortedBy { it.startMs }) {
+            var start = span.startMs.coerceAtLeast(sessionStartMs)
+            val end = span.endMs.coerceAtMost(sessionEndMs)
+            if (end <= start) continue // zero/negative length after the session-bound clamp
+            if (result.isNotEmpty() && start < result.last().endMs) {
+                start = result.last().endMs // keep the earlier stage, truncate this one
+                if (end <= start) continue
+            }
+            result += SleepStageSpan(start, end, span.stageType)
+        }
+        return result
+    }
 }
