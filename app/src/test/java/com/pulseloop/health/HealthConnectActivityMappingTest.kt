@@ -119,8 +119,62 @@ class HealthConnectActivityMappingTest {
 
     // ── workout netting (iOS HealthSyncService.swift:315-331) ──
 
+    /** A 10-minute session starting at the top of its day — comfortably credit-eligible, so
+     *  the existing netting assertions test the sums, not the eligibility check. */
     private fun session(dayMs: Long, kcal: Double?, meters: Double?, gps: Boolean = true) =
-        NettableSession(dayMs, kcal, meters, gps)
+        NettableSession(
+            dayStartMs = dayMs,
+            calories = kcal,
+            distanceMeters = meters,
+            useGps = gps,
+            startedAtMs = dayMs + hour,
+            endedAtMs = dayMs + hour + 10 * 60_000L,
+            totalPauseSeconds = 0.0,
+        )
+
+    @Test
+    fun nettingSkipsSessionsActivityRollupNeverCredited() {
+        // ActivityRollup.credit early-returns when the session has no full active minute — its
+        // energy and metres never reach the daily row, so netting must not subtract them
+        // (Phase 3 imperfection #1, resolved in Phase 4).
+        val d = dayStart("2026-08-16", utc)
+        val out = HealthConnectTypeMappings.workoutNetting(
+            listOf(
+                // 59.9 s: credit() skips it → netting skips it too.
+                session2(d, 100.0, 3_000.0, started = d + hour, ended = d + hour + 59_900L, pause = 0.0),
+                // Exactly 60 s: credit() folds it in → netting subtracts it.
+                session2(d, 100.0, 3_000.0, started = d + hour, ended = d + hour + 60_000L, pause = 0.0),
+                // 90 s wall clock but 61 s of it paused: no full ACTIVE minute → skipped.
+                session2(d, 100.0, 3_000.0, started = d + hour, ended = d + hour + 90_000L, pause = 61.0),
+                // 2 minutes, 55 s paused: 65 s of active time → one full minute → credited.
+                session2(d, 100.0, 3_000.0, started = d + hour, ended = d + hour + 120_000L, pause = 55.0),
+            ),
+        )
+        assertEquals(200.0, out.kcal(d), 0.0001)
+        assertEquals(6_000.0, out.meters(d), 0.0001)
+    }
+
+    private fun session2(
+        dayMs: Long,
+        kcal: Double?,
+        meters: Double?,
+        started: Long,
+        ended: Long?,
+        pause: Double,
+        gps: Boolean = true,
+    ) = NettableSession(dayMs, kcal, meters, gps, started, ended, pause)
+
+    @Test
+    fun creditedActiveMinutesPortsActivityRollupMinutesFor() {
+        val s = 1_700_000_000_000L
+        assertEquals(1, HealthConnectTypeMappings.creditedActiveMinutes(s, s + 60_000L, 0.0))
+        assertEquals(0, HealthConnectTypeMappings.creditedActiveMinutes(s, s + 59_999L, 0.0))
+        assertEquals(1, HealthConnectTypeMappings.creditedActiveMinutes(s, s + 120_000L, 60.0))
+        assertEquals(0, HealthConnectTypeMappings.creditedActiveMinutes(s, s + 120_000L, 61.0))
+        assertEquals(1, HealthConnectTypeMappings.creditedActiveMinutes(s, s + 120_000L, 59.9))
+        assertEquals(0, HealthConnectTypeMappings.creditedActiveMinutes(s, null, 0.0))
+        assertEquals(0, HealthConnectTypeMappings.creditedActiveMinutes(s, s - 5_000L, 0.0)) // negative clamps
+    }
 
     @Test
     fun nettingSumsEnergyForEveryFinishedSessionOfTheDay() {

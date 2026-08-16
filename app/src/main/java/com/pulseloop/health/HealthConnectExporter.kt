@@ -2,12 +2,16 @@ package com.pulseloop.health
 
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
+import androidx.health.connect.client.records.ExerciseRoute
+import androidx.health.connect.client.records.ExerciseRouteResult
+import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.metadata.Device
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.health.exporters.ActivityExporter
 import com.pulseloop.health.exporters.SleepExporter
 import com.pulseloop.health.exporters.VitalsExporter
+import com.pulseloop.health.exporters.WorkoutExporter
 import kotlinx.coroutines.delay
 
 /**
@@ -81,6 +85,82 @@ internal suspend fun healthConnectInsertChunked(
 }
 
 /**
+ * Inserts [chunk], with the 1 MB single-record fallback (plan §3 robustness constants;
+ * Gadgetbridge's `insertRecords` + `shrinkOversizedRoute`): the platform rejects an oversized
+ * insert with "...single record size limit: 1000000, was: N...". That failure is deterministic,
+ * so plain backoff would just burn retries — instead the routes of the [ExerciseSessionRecord]s
+ * in the chunk (the only variable-size records we build) are decimated to ~90 % of the limit and
+ * the retry is IMMEDIATE, no backoff. Any error the shrink cannot address rethrows for the
+ * caller's normal retry loop; a [SecurityException] always rethrows first (never retry a
+ * permission failure).
+ */
+internal suspend fun insertChunkWithRouteShrink(
+    chunk: List<Record>,
+    insert: suspend (List<Record>) -> Unit,
+): Unit {
+    var current = chunk
+    // Bounded defensively: every successful shrink removes at least one route point, and once a
+    // route is at the 2-point floor [shrinkOversizedRoute] reports nothing shrank, so this can
+    // never spin — but a cap keeps a malformed platform message from making it so.
+    var shrinks = 0
+    while (true) {
+        try {
+            insert(current)
+            return
+        } catch (e: SecurityException) {
+            throw e
+        } catch (e: Exception) {
+            val shrunk = shrinkOversizedRoute(current, e) ?: throw e
+            if (++shrinks > MAX_ROUTE_SHRINKS) throw e
+            current = shrunk
+        }
+    }
+}
+
+/** Defense-in-depth cap on consecutive route shrinks (see [insertChunkWithRouteShrink]). */
+internal const val MAX_ROUTE_SHRINKS = 5
+
+/**
+ * If [e] carries the platform's single-record size-limit message and [records] contains an
+ * [ExerciseSessionRecord] whose route is long enough to decimate, returns a copy of the list
+ * with those routes cut to ~[HealthConnectTypeMappings.ROUTE_SHRINK_MARGIN] of the limit
+ * (first and last points preserved, no duplicated timestamps — HC rejects both). Returns null
+ * when the error is unrelated or nothing can shrink, so the caller falls back to normal
+ * retry/abort. Terminates: once a route is down to 2 points [shrinkOversizedRoute] reports
+ * nothing shrank and the original error rethrows.
+ */
+internal fun shrinkOversizedRoute(records: List<Record>, e: Exception): List<Record>? {
+    val (limit, was) = HealthConnectTypeMappings.parseRecordSizeLimit(e.message) ?: return null
+    var shrankAny = false
+    val result = records.map { record ->
+        val route = ((record as? ExerciseSessionRecord)?.exerciseRouteResult as? ExerciseRouteResult.Data)
+            ?.exerciseRoute
+            ?: return@map record
+        val points = route.route
+        if (points.size < 2) return@map record
+        val target = (points.size * (limit.toDouble() / was.toDouble()) * HealthConnectTypeMappings.ROUTE_SHRINK_MARGIN).toInt()
+        if (target >= points.size) return@map record
+        val decimated = HealthConnectTypeMappings.decimateToSize(points, target)
+        // A route already at the 2-point floor "shrinks" to itself — count it only when points
+        // were actually removed, or the caller would retry the same oversized chunk forever.
+        if (decimated.size == points.size) return@map record
+        shrankAny = true
+        ExerciseSessionRecord(
+            startTime = record.startTime,
+            startZoneOffset = record.startZoneOffset,
+            endTime = record.endTime,
+            endZoneOffset = record.endZoneOffset,
+            metadata = record.metadata,
+            exerciseType = record.exerciseType,
+            title = record.title,
+            notes = record.notes,
+            exerciseRoute = ExerciseRoute(decimated),
+        )
+    }
+    return if (shrankAny) result else null
+}
+
+/**
  * The export engine (docs/health-connect-integration.md §3 + Phase 1): a pure DB → Health Connect
  * pass driven by watermarks, never by events.
  *
@@ -91,7 +171,10 @@ internal suspend fun healthConnectInsertChunked(
  * ([HealthConnectPrefsStore.setWatermark] enforces the monotonic part).
  *
  * Phase 1 wires the vitals group; Phase 2 adds the sleep group (its own [SleepExporter] and its
- * own SLEEP watermark key); Phases 3–5 append the same way (activity / workouts / nutrition).
+ * own SLEEP watermark key); Phases 3–4 append the same way (activity / workouts); Phase 5
+ * (nutrition) does the rest. The workouts group is the only one that needs the
+ * 1 MB per-record fallback ([insertChunkWithRouteShrink]), because the embedded GPS route is
+ * the only variable-size record we build.
  */
 class HealthConnectExporter(
     private val client: HealthConnectClient,
@@ -107,8 +190,8 @@ class HealthConnectExporter(
      */
     suspend fun run(): PassResult {
         val prefs = store.current
-        val wm0 = store.currentWatermarks
         val timestamp = now()
+        var wm0 = store.currentWatermarks
 
         // First-enable "Only new data from now on": stamp every group's watermark to now exactly
         // once, then export nothing — the choice is made meaningful without a data pass.
@@ -126,6 +209,25 @@ class HealthConnectExporter(
         // is an interface obtained from the client (no (client) constructor).
         val granted = client.permissionController.getGrantedPermissions()
         val device = deviceForMetadata(db)
+
+        // One-time Phase 4 netting flip ([HealthConnectPrefs.nettingFlipDone]): on the first
+        // pass of a build where netting is live, reset the ACTIVITY and WORKOUTS watermarks so
+        // the daily records exported under the Phase 3 build — UN-netted, because
+        // WORKOUTS_EXPORTED was false then — are re-selected and re-upserted with their netted
+        // values, in the same pass that writes the workout siblings they compensate for.
+        // Without this, every pre-flip day containing a workout would over-count by the
+        // workout's own energy/distance for as long as the day stays un-updated (write-only:
+        // the stale un-netted record cannot be deleted). The re-export is idempotent — same
+        // clientRecordIds, higher versions — and bounded: each group's full history once.
+        if (WORKOUTS_EXPORTED && prefs.workouts && !prefs.nettingFlipDone &&
+            HealthConnectPermissions.exercise.first() in granted) {
+            store.resetWatermarks(
+                setOf(HealthConnectWatermarks.Key.ACTIVITY, HealthConnectWatermarks.Key.WORKOUTS),
+            )
+            store.update { it.copy(nettingFlipDone = true) }
+            // The reset just invalidated the snapshot above: re-read before the groups use it.
+            wm0 = store.currentWatermarks
+        }
 
         val inserted = LinkedHashMap<String, Int>()
         val skipped = mutableListOf<String>()
@@ -283,6 +385,66 @@ class HealthConnectExporter(
             }
         }
 
+        // ── Workouts group (Phase 4; watermarked on ActivitySessionEntity.updatedAt — a
+        //    post-finish edit or vitals backfill re-upserts the same pl-wk-<sessionId> records
+        //    in place) ──
+        if (!prefs.workouts) {
+            skipped += "workouts (toggle off)"
+        } else {
+            val exercisePermission = HealthConnectPermissions.exercise.first()
+            if (exercisePermission !in granted) {
+                skipped += "workouts (permission not granted)"
+            } else {
+                // The route is an embedded field with its own, independently grantable write
+                // permission: without it the session still writes, just without a route. The
+                // siblings are standalone records, each gated on its OWN permission — the same
+                // three that the activity group gates its per-metric records on (plan Phase 4 —
+                // partial grants are first-class).
+                val withRoute = HealthConnectPermissions.exerciseRoute.first() in granted
+                val withEnergy = HealthConnectPermissions.activeCalories.first() in granted
+                val withDistance = HealthConnectPermissions.distance.first() in granted
+                val workoutsPending = WorkoutExporter(db).build(
+                    wm0.workouts, device, withRoute, withEnergy, withDistance, timestamp,
+                )
+                val workoutsProgress = insertChunked(workoutsPending.records, workoutsPending.highWaters) { chunk ->
+                    insertChunkWithRouteShrink(chunk) { client.insertRecords(it) }
+                }
+                if (workoutsPending.records.isEmpty()) {
+                    // Nothing new (or nothing exportable) for workouts: its "everything exported"
+                    // point is now — same rule as an empty vitals kind, sleep or activity pass.
+                    // EXCEPT when the pass stopped at a future-dated session: that session IS new
+                    // data, just not yet exportable, and stamping to now would leapfrog it (iOS
+                    // `guard end <= now else break`).
+                    if (!workoutsPending.blockedFuture && timestamp > (wm0.workouts ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.WORKOUTS, timestamp)
+                    }
+                } else {
+                    inserted["workouts"] = workoutsProgress.inserted
+                    // Advance to what landed — or past the never-exportable rows
+                    // (invalidHighWater): a zero-duration session produces no record, so it would
+                    // otherwise be re-selected forever (iOS advances its workout watermark past
+                    // such sessions in the same step).
+                    val advanceTo = maxOf(
+                        workoutsProgress.lastCompletedHighWater,
+                        workoutsPending.invalidHighWater ?: 0L,
+                    )
+                    if (advanceTo > (wm0.workouts ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.WORKOUTS, advanceTo)
+                    }
+                    if (!workoutsProgress.allCompleted) {
+                        errors += "workouts: stopped after ${workoutsProgress.inserted} record(s) " +
+                            "(attempts=${workoutsProgress.attempts}, last error: ${workoutsProgress.lastError?.message ?: "unknown"})"
+                    }
+                }
+                if (workoutsPending.blockedFuture) {
+                    skipped += "workouts: pass stopped at a future-dated session (retries next run)"
+                }
+                if (workoutsPending.skippedSessions > 0) {
+                    skipped += "workouts: ${workoutsPending.skippedSessions} session(s) with zero or negative duration"
+                }
+            }
+        }
+
         return PassResult(inserted, skipped, errors)
     }
 
@@ -322,24 +484,28 @@ class HealthConnectExporter(
          *
          * iOS gates this on its `exportWorkouts` preference alone, because on iOS the workout
          * exporter already exists — netting and the compensating `HKWorkout` ship together. Here
-         * they do not: Phase 4 owns the workout records, so netting on the toggle alone would
-         * subtract energy and metres that **nothing writes back**, silently under-reporting every
-         * day that contains a workout, with no way to repair it (the export is write-only).
-         *
-         * So netting additionally requires that workouts are genuinely exportable: the Phase 4
-         * exporter existing at all ([WORKOUTS_EXPORTED]) and `WRITE_EXERCISE` actually granted —
-         * the second half still matters after Phase 4 lands, because the toggle can be on while
-         * the permission is denied, which the plan treats as a first-class state.
+         * the two shipped separately (Phase 3, then Phase 4), so netting additionally requires
+         * that workouts are genuinely exportable in this very build: the workout exporter
+         * existing at all ([WORKOUTS_EXPORTED]) and `WRITE_EXERCISE` actually granted — the
+         * second half still matters after Phase 4 lands, because the toggle can be on while the
+         * permission is denied, which the plan treats as a first-class state (and then no
+         * workout record is written for the daily netting to compensate against).
          *
          * **Phase 4 flips [WORKOUTS_EXPORTED] to true in the same commit that adds
-         * `WorkoutExporter`.** Until then the daily totals are written whole, which is the correct
-         * reading of the data we actually publish.
+         * [WorkoutExporter]** (plan Phase 4 "Inherited from Phase 3") — netting is live from
+         * this commit on. A day whose netted leftover falls to ≤ 0 has its record DROPPED, not
+         * floored: the stale-record decision lives on
+         * [HealthConnectTypeMappings.activityLeftover].
          */
         internal fun shouldNetWorkouts(prefs: HealthConnectPrefs, granted: Set<String>): Boolean =
             WORKOUTS_EXPORTED && prefs.workouts && HealthConnectPermissions.exercise.first() in granted
 
-        /** Set to true by Phase 4, together with the `WorkoutExporter` it refers to. */
-        internal const val WORKOUTS_EXPORTED = false
+        /**
+         * True since Phase 4, which shipped the [WorkoutExporter] this flag refers to — in the
+         * same commit, as the plan requires — so netting and the compensating workout records
+         * turn on together and no day is ever netted against records nothing writes.
+         */
+        internal const val WORKOUTS_EXPORTED = true
 
         /** Gadgetbridge: records per `insertRecords` call. */
         const val CHUNK_SIZE = 200

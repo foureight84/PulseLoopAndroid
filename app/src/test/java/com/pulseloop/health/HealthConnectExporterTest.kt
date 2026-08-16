@@ -1,5 +1,8 @@
 package com.pulseloop.health
 
+import androidx.health.connect.client.records.ExerciseRoute
+import androidx.health.connect.client.records.ExerciseRouteResult
+import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
@@ -8,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -200,28 +204,155 @@ class HealthConnectExporterTest {
         assertEquals(100L, p.lastCompletedHighWater)
     }
 
-    // ── Phase 3: netting is gated on workouts actually being written ──
+    // ── Phase 4: netting is live, gated on the workouts toggle + WRITE_EXERCISE ──
 
     private fun prefs(workouts: Boolean) = HealthConnectPrefs(workouts = workouts)
 
     @Test
-    fun nettingStaysOffWhileNoWorkoutExporterExists() {
-        // Phase 3 ships before Phase 4: subtracting workout energy/distance that nothing writes
-        // back would silently under-report every day containing a workout.
-        assertFalse(HealthConnectExporter.WORKOUTS_EXPORTED)
-        assertFalse(
+    fun nettingIsLiveTogetherWithTheWorkoutExporter() {
+        // Phase 4 flipped WORKOUTS_EXPORTED in the same commit that added WorkoutExporter (plan
+        // "Inherited from Phase 3"): netting and the compensating workout records turned on
+        // together, so no day is ever netted against records nothing writes.
+        assertTrue(HealthConnectExporter.WORKOUTS_EXPORTED)
+        assertTrue(
             HealthConnectExporter.shouldNetWorkouts(prefs(workouts = true), HealthConnectPermissions.all),
         )
     }
 
     @Test
-    fun nettingWouldRequireBothTheToggleAndTheExercisePermission() {
-        // Pins the intent for Phase 4, which flips WORKOUTS_EXPORTED: the toggle alone is not
-        // enough, because it can be on while WRITE_EXERCISE is denied (partial grants are
-        // first-class), and then no workout record is written to net against.
+    fun nettingStillRequiresBothTheToggleAndTheExercisePermission() {
+        // The toggle alone is not enough: it can be on while WRITE_EXERCISE is denied (partial
+        // grants are first-class), and then no workout record is written to net against.
         val granted = HealthConnectPermissions.all
         val withoutExercise = granted - HealthConnectPermissions.exercise.first()
         assertFalse(HealthConnectExporter.shouldNetWorkouts(prefs(workouts = false), granted))
         assertFalse(HealthConnectExporter.shouldNetWorkouts(prefs(workouts = true), withoutExercise))
+    }
+
+    // ── Phase 4: the 1 MB single-record route fallback ──
+
+    /** [n] points at 60 ms spacing — fits inside the 60 s test record span. The
+     *  `ExerciseSessionRecord` constructor rejects a route whose points leave the parent's
+     *  [startTime, endTime], which is exactly what the exporter's sanitisation guarantees. */
+    private fun routePoints(n: Int) = List(n) {
+        ExerciseRoute.Location(
+            time = java.time.Instant.ofEpochMilli(1_700_000_000_000L + it * 60L),
+            latitude = 37.0 + it * 0.0001,
+            longitude = -122.0 + it * 0.0001,
+        )
+    }
+
+    private fun exerciseRecord(points: List<ExerciseRoute.Location>) = ExerciseSessionRecord(
+        startTime = java.time.Instant.ofEpochMilli(1_700_000_000_000L),
+        startZoneOffset = java.time.ZoneOffset.UTC,
+        endTime = java.time.Instant.ofEpochMilli(1_700_000_060_000L),
+        endZoneOffset = java.time.ZoneOffset.UTC,
+        metadata = Metadata.autoRecorded(
+            Device(type = Device.TYPE_PHONE, manufacturer = "test", model = "test"),
+            "pl-wk-test", 1L,
+        ),
+        exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_WALKING,
+        title = "Test walk",
+        exerciseRoute = ExerciseRoute(points),
+    )
+
+    private val oversizeError = RuntimeException("single record size limit: 1000000, was: 2000000")
+
+    @Test
+    fun shrinkOversizedRouteDecimatesOnlyTheOffender() {
+        val small = FakeRecord()
+        val big = exerciseRecord(routePoints(1000))
+        val out = shrinkOversizedRoute(listOf(small, big, small), oversizeError)
+        assertNotNull("should shrink", out)
+        val shrunk = out!!
+        assertEquals(3, shrunk.size)
+        assertTrue(shrunk[0] === small) // untouched records pass through by identity
+        assertTrue(shrunk[2] === small)
+        val shrunkRoute = (shrunk[1] as ExerciseSessionRecord).exerciseRouteResult
+        val points = (shrunkRoute as ExerciseRouteResult.Data).exerciseRoute.route
+        // 1000 * (1_000_000 / 2_000_000) * 0.9 = 450
+        assertEquals(450, points.size)
+        val original = big.exerciseRouteResult as ExerciseRouteResult.Data
+        assertEquals(original.exerciseRoute.route.first(), points.first())
+        assertEquals(original.exerciseRoute.route.last(), points.last())
+        // first/last preserved, strictly increasing timestamps (HC rejects duplicates)
+        assertTrue(points.zipWithNext { a, b -> a.time.isBefore(b.time) }.all { it })
+    }
+
+    @Test
+    fun shrinkOversizedRouteIgnoresUnrelatedErrors() {
+        assertNull(shrinkOversizedRoute(listOf(exerciseRecord(routePoints(1000))), RuntimeException("something else")))
+    }
+
+    @Test
+    fun shrinkOversizedRouteIgnoresChunksWithoutShrinkableRoutes() {
+        val noRoute = ExerciseSessionRecord(
+            startTime = java.time.Instant.ofEpochMilli(1_700_000_000_000L),
+            startZoneOffset = java.time.ZoneOffset.UTC,
+            endTime = java.time.Instant.ofEpochMilli(1_700_000_060_000L),
+            endZoneOffset = java.time.ZoneOffset.UTC,
+            metadata = Metadata.autoRecorded(
+                Device(type = Device.TYPE_PHONE, manufacturer = "test", model = "test"),
+                "pl-wk-test", 1L,
+            ),
+            exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_WALKING,
+        )
+        assertNull(shrinkOversizedRoute(listOf(noRoute, FakeRecord()), oversizeError))
+        // A route at the 2-point floor "shrinks" to itself — not counted, so the caller falls
+        // back to its normal retry instead of spinning.
+        assertNull(shrinkOversizedRoute(listOf(exerciseRecord(routePoints(2))), oversizeError))
+    }
+
+    @Test
+    fun chunkInsertShrinksOnceThenSucceeds() = runTest {
+        val calls = mutableListOf<List<Record>>()
+        insertChunkWithRouteShrink(listOf(exerciseRecord(routePoints(1000)))) { chunk ->
+            calls += chunk
+            if (calls.size == 1) throw oversizeError
+        }
+        assertEquals(2, calls.size)
+        val second = (calls[1][0] as ExerciseSessionRecord).exerciseRouteResult as ExerciseRouteResult.Data
+        assertEquals(450, second.exerciseRoute.route.size)
+    }
+
+    @Test
+    fun chunkInsertRethrowsWhenNothingCanShrink() = runTest {
+        val noRoute = ExerciseSessionRecord(
+            startTime = java.time.Instant.ofEpochMilli(1_700_000_000_000L),
+            startZoneOffset = java.time.ZoneOffset.UTC,
+            endTime = java.time.Instant.ofEpochMilli(1_700_000_060_000L),
+            endZoneOffset = java.time.ZoneOffset.UTC,
+            metadata = Metadata.autoRecorded(
+                Device(type = Device.TYPE_PHONE, manufacturer = "test", model = "test"),
+                "pl-wk-test", 1L,
+            ),
+            exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_WALKING,
+        )
+        var attempts = 0
+        try {
+            insertChunkWithRouteShrink(listOf(noRoute)) { chunk ->
+                attempts++
+                throw oversizeError
+            }
+            fail("should rethrow")
+        } catch (e: RuntimeException) {
+            assertEquals("single record size limit: 1000000, was: 2000000", e.message)
+        }
+        assertEquals(1, attempts) // no point burning retries on a deterministic failure
+    }
+
+    @Test
+    fun chunkInsertAbortsOnSecurityExceptionWithoutShrinking() = runTest {
+        var attempts = 0
+        try {
+            insertChunkWithRouteShrink(listOf(exerciseRecord(routePoints(1000)))) { _ ->
+                attempts++
+                throw SecurityException("not granted")
+            }
+            fail("should rethrow")
+        } catch (e: SecurityException) {
+            // permission failures are never retried or shrunk
+        }
+        assertEquals(1, attempts)
     }
 }

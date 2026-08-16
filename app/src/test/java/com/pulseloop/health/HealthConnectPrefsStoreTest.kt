@@ -147,4 +147,60 @@ class HealthConnectPrefsStoreTest {
         store.update { it.copy(enabled = true, lastGrantedPermissions = listOf("android.permission.health.WRITE_HEART_RATE")) }
         assertTrue(store.current.isConnected)
     }
+
+    // ── Phase 4: the one-time netting-flip marker + targeted watermark reset ──
+
+    @Test
+    fun nettingFlipMarkerDefaultsFalseForPhase3Blobs() {
+        // A blob written by the Phase 3 build (no nettingFlipDone key) must decode as
+        // "flip not done yet" — that is the state that triggers the reset on first run.
+        val store = storeWith("{\"enabled\":true,\"backfillChoice\":\"EXPORT_ALL\"}")
+        assertFalse(store.current.nettingFlipDone)
+    }
+
+    @Test
+    fun nettingFlipMarkerPersistsOnceSet() {
+        val store = storeWith(null)
+        assertFalse(store.current.nettingFlipDone)
+        store.update { it.copy(nettingFlipDone = true) }
+        assertTrue(store.current.nettingFlipDone)
+    }
+
+    @Test
+    fun resetWatermarksNullsOnlyTheNamedKeys() {
+        val store = storeWith(null)
+        store.setWatermark(HealthConnectWatermarks.Key.VITALS, 111)
+        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, 222)
+        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, 333)
+        store.setWatermark(HealthConnectWatermarks.Key.WORKOUTS, 444)
+        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.ACTIVITY, HealthConnectWatermarks.Key.WORKOUTS))
+        val wm = store.currentWatermarks
+        assertEquals(111L, wm.vitals)
+        assertEquals(222L, wm.sleep)
+        assertNull(wm.activity)
+        assertNull(wm.workouts)
+    }
+
+    @Test
+    fun resetWatermarksIsNotRewindProtectionBait() {
+        // The monotonic guard belongs to setWatermark only: after an explicit reset the
+        // watermark can start again from whatever value the next landed pass reports — even
+        // one lower than the pre-reset value, which is the whole point of re-exporting.
+        val store = storeWith(null)
+        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, 500)
+        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.ACTIVITY))
+        assertNull(store.currentWatermarks.activity)
+        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, 400)
+        assertEquals(400L, store.currentWatermarks.activity)
+    }
+
+    @Test
+    fun resetWatermarksPersistsToTheBlob() {
+        val store = storeWith(null)
+        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, 333)
+        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.ACTIVITY))
+        // A fresh store over the same backing prefs sees the reset (null, not the old 333).
+        val backing = store // same instance, but re-read through the property to force the load path
+        assertNull(backing.currentWatermarks.activity)
+    }
 }

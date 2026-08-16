@@ -1,5 +1,6 @@
 package com.pulseloop.health
 
+import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import com.pulseloop.ring.SleepStage
 import java.time.Instant
@@ -135,15 +136,30 @@ object HealthConnectTypeMappings {
     const val MAX_TRUSTED_DAILY_STEPS = 200_000L
 
     /**
-     * A daily total minus what Phase 4's workout records will carry for the same day. Pure so the
-     * subtraction — the part that can silently under-report — is testable without Room.
+     * A daily total minus what the workout records carry for the same day. Pure so the subtraction
+     * — the part that can silently under-report — is testable without Room.
      *
      * Returns the leftover even when it goes negative; the caller's plausibility guard drops it.
-     * **Known gap for Phase 4:** dropping it leaves any previously exported, un-netted record for
-     * that day live in Health Connect, since a write-only export cannot delete or zero it. That
-     * cannot happen while [HealthConnectExporter.WORKOUTS_EXPORTED] is false (netting is off, so
-     * nothing is subtracted); Phase 4 must decide between writing a floor-value record to
-     * overwrite the stale one and accepting the window.
+     *
+     * **Stale-record decision (Phase 4): a ≤ 0 leftover is dropped, and the resulting stale
+     * window is ACCEPTED — no floor-value record is written.** The alternative — overwriting the
+     * stale un-netted record with a floor value — cannot be a reliable repair: the overwrite only
+     * happens when the day is re-selected (`updatedAt` above the activity watermark), and the
+     * stale scenario is precisely a day that stops updating around the netting flip, so the floor
+     * would mostly just fabricate a 1 kcal / 1 m value in a store we can never retract, against
+     * the write-data guide's own rule to omit zero values. What is left is bounded and one-time:
+     * at most the workout's own energy or distance, on a day whose stored daily total a single
+     * finished session's figure exceeds, dropped while its pre-netting record is still live. A
+     * consumer summing the daily record plus the workout siblings over-counts by exactly that
+     * amount for that day, and it cannot grow — the workout record that causes it is versioned
+     * (`session.updatedAt`) and upserts in place.
+     *
+     * Pre-flip staleness (daily records written by a Phase 3 build, before any workout sibling
+     * existed) is NOT this window and is repaired properly: the one-time netting-flip reset in
+     * [HealthConnectExporter.run] re-exports every day on the first netting-live pass, so each
+     * stale un-netted record is overwritten with its netted value under the same clientRecordId.
+     * (What that reset cannot repair is exactly the ≤ 0 case: a day that nets to nothing has no
+     * record to overwrite the stale one with — write-only, so it stays. Accepted.)
      */
     fun activityLeftover(total: Double, netted: Double): Double = total - netted
 
@@ -157,12 +173,18 @@ object HealthConnectTypeMappings {
      * One finished workout reduced to what daily-aggregate netting needs.
      * [dayStartMs] is the local start-of-day of the session's **start** (iOS keys netting on
      * `startedAt`, so a workout crossing midnight nets entirely against the day it began).
+     * [startedAtMs] / [endedAtMs] / [totalPauseSeconds] feed [creditedActiveMinutes] — the
+     * credit-eligibility check must see exactly the numbers [com.pulseloop.service.ActivityRollup.credit]
+     * sees, or netting subtracts what was never credited.
      */
     data class NettableSession(
         val dayStartMs: Long,
         val calories: Double?,
         val distanceMeters: Double?,
         val useGps: Boolean,
+        val startedAtMs: Long,
+        val endedAtMs: Long?,
+        val totalPauseSeconds: Double,
     )
 
     /** Per-day workout kcal / metres to subtract from the daily aggregates. */
@@ -200,14 +222,19 @@ object HealthConnectTypeMappings {
      *    [NettableSession.useGps] sessions of any type — the set `ActivityRollup.credit` folds
      *    into the daily row (`ActivityRollup.kt:20-32`).
      *
-     * **Two ways that "netted set == credited set" equality is known to be imperfect**, both
-     * dormant while [HealthConnectExporter.WORKOUTS_EXPORTED] is false and both for Phase 4 to
-     * resolve:
-     *  1. `EventPersistenceSubscriber.applyActivityBucketAtomic` *overwrites* a past day's
-     *     `distanceMeters` with the ring's bucket sum (the ratchet only applies to today), so a
-     *     history re-sync discards the credited GPS metres while netting would still subtract them.
-     *  2. `ActivityRollup.credit` early-returns for sessions under a minute, which are netted here
-     *     but were never credited.
+     * **Keeping "netted set == credited set" exact (the Phase 3 imperfections, resolved):**
+     *  1. `ActivityRollup.credit` early-returns for a session with no full active minute — its
+     *     exact condition is [creditedActiveMinutes] — and a session `credit` never folded into
+     *     the daily row must not be subtracted either. [workoutNetting] therefore skips the same
+     *     sessions.
+     *  2. `EventPersistenceSubscriber.applyActivityBucketAtomic` *overwrites* a past day's
+     *     `distanceMeters` with the ring's bucket sum (the ratchet only applies to today),
+     *     discarding the credited GPS metres. On the export side that is self-healing: the
+     *     overwrite stamps `updatedAt`, so the day is re-selected and re-exported with the
+     *     ring-only leftover, and the workout's distance sibling restores the credited metres —
+     *     a consumer summing daily + workout lands on the ring's own day total, the correct
+     *     reading for a past day. The only residual is a leftover that nets to ≤ 0, which is the
+     *     accepted stale window documented on [activityLeftover].
      *
      * Callers pass only sessions that are `finished` with a non-null `endedAt`, mirroring iOS.
      */
@@ -215,12 +242,163 @@ object HealthConnectTypeMappings {
         val kcal = HashMap<Long, Double>()
         val meters = HashMap<Long, Double>()
         for (s in sessions) {
+            // ActivityRollup.credit skips this session (no full active minute) → its energy and
+            // metres were never credited into the daily row → netting must not subtract them.
+            if (creditedActiveMinutes(s.startedAtMs, s.endedAtMs, s.totalPauseSeconds) <= 0) continue
             val k = s.calories
             if (k != null && k > 0.0) kcal[s.dayStartMs] = (kcal[s.dayStartMs] ?: 0.0) + k
             val m = s.distanceMeters
             if (s.useGps && m != null && m > 0.0) meters[s.dayStartMs] = (meters[s.dayStartMs] ?: 0.0) + m
         }
         return WorkoutNetting(kcal, meters)
+    }
+
+    /**
+     * Port of `ActivityRollup.minutesFor` — the same arithmetic and the same `minutes <= 0`
+     * early-return that decide whether [com.pulseloop.service.ActivityRollup.credit] folds a
+     * session into the daily row. Netting subtracts exactly what `credit` added, so the two must
+     * agree on credit eligibility (Phase 3 imperfection #1, resolved).
+     */
+    fun creditedActiveMinutes(startedAtMs: Long, endedAtMs: Long?, totalPauseSeconds: Double): Int {
+        val ended = endedAtMs ?: return 0
+        return maxOf(0, (((ended - startedAtMs) / 1000.0) - totalPauseSeconds).toInt()) / 60
+    }
+
+    // ── workouts (Phase 4; plan §3 identity table + Phase 4 spec) ──
+
+    /** Sibling-record tokens for [workoutChildRecordId] (plan §3 identity table). */
+    const val WK_ENERGY = "energy"
+    const val WK_DIST = "dist"
+
+    /**
+     * `pl-wk-<sessionId>` — the session's [ExerciseSessionRecord]. The session id is the stable
+     * Room primary key: unlike sleep blocks, a workout row is never replaced wholesale (an edit
+     * or a post-finish vitals backfill bumps `updatedAt` in place), so it is a safe upsert key
+     * with no suffix scheme. Version = `session.updatedAt`, set by the exporter.
+     */
+    fun workoutRecordId(sessionId: String): String = "pl-wk-$sessionId"
+
+    /**
+     * `pl-wk-<sessionId>-<kind>` — a sibling energy/distance record over the session window, for
+     * [WK_ENERGY] / [WK_DIST] (plan §3 identity table). Same version as the session record.
+     */
+    fun workoutChildRecordId(sessionId: String, kind: String): String = "pl-wk-$sessionId-$kind"
+
+    /**
+     * PulseLoop activity type → [ExerciseSessionRecord] constant (plan Phase 4 exercise-type map,
+     * the shape of `strava/StravaSportMapping`). Unknown types degrade to OTHER_WORKOUT — the
+     * session is real effort, just unclassified (same fallback rule as [sleepStageType]).
+     */
+    fun exerciseType(type: String): Int = when (type) {
+        "walk" -> ExerciseSessionRecord.EXERCISE_TYPE_WALKING
+        "run" -> ExerciseSessionRecord.EXERCISE_TYPE_RUNNING
+        "cycle" -> ExerciseSessionRecord.EXERCISE_TYPE_BIKING
+        "gym" -> ExerciseSessionRecord.EXERCISE_TYPE_STRENGTH_TRAINING
+        "squash" -> ExerciseSessionRecord.EXERCISE_TYPE_SQUASH
+        "yoga" -> ExerciseSessionRecord.EXERCISE_TYPE_YOGA
+        "dance" -> ExerciseSessionRecord.EXERCISE_TYPE_DANCING
+        "hike" -> ExerciseSessionRecord.EXERCISE_TYPE_HIKING
+        "sport" -> ExerciseSessionRecord.EXERCISE_TYPE_OTHER_WORKOUT
+        else -> ExerciseSessionRecord.EXERCISE_TYPE_OTHER_WORKOUT
+    }
+
+    /** What one finished session may export to (Phase 4 guards; the DAO already filters to
+     *  `statusRaw = 'finished' AND endedAt IS NOT NULL`). */
+    enum class WorkoutSelection { EXPORT, /** zero/negative duration — can never become exportable. */ INVALID,
+        /** `endedAt` in the future (clock skew) — retry next run, never leapfrog. */ FUTURE }
+
+    /**
+     * Per-session export decision (plan Phase 4 guards: `endedAt > startedAt`, not future),
+     * mirroring iOS `exportWorkouts`: a zero/negative duration can never become exportable, while
+     * a future-dated end is transient clock skew — the pass must stop at it and retry later
+     * instead of skipping it (the watermark may not leapfrog a session whose end has not happened).
+     */
+    fun selectWorkoutSession(startedAtMs: Long, endedAtMs: Long?, nowMs: Long): WorkoutSelection = when {
+        endedAtMs == null || endedAtMs <= startedAtMs -> WorkoutSelection.INVALID
+        endedAtMs > nowMs -> WorkoutSelection.FUTURE
+        else -> WorkoutSelection.EXPORT
+    }
+
+    /**
+     * One GPS fix reduced to what an `ExerciseRoute.Location` needs. Primitives on purpose: this
+     * file stays Room-free and unit-testable — the caller maps
+     * [com.pulseloop.data.entity.ActivityGpsPointEntity] → this, already filtered to `accepted`.
+     */
+    data class GpsRoutePoint(
+        val timeMs: Long,
+        val latitude: Double,
+        val longitude: Double,
+        val horizontalAccuracyMeters: Double? = null,
+        val altitudeMeters: Double? = null,
+    )
+
+    /**
+     * Route sanitisation (plan Phase 4; Gadgetbridge `buildSanitisedRoute`): drop points outside
+     * the session window [sessionStartMs, sessionEndMs] (inclusive), points with non-finite or
+     * out-of-range coordinates, and duplicate timestamps — Health Connect rejects a route whose
+     * points repeat a timestamp, and the first point of a duplicate keeps its place. The result
+     * is sorted by time. A route needs ≥ 2 points to exist; the caller treats a shorter result
+     * as "no route" (the session still writes).
+     */
+    fun sanitizeRoutePoints(
+        sessionStartMs: Long,
+        sessionEndMs: Long,
+        raw: List<GpsRoutePoint>,
+    ): List<GpsRoutePoint> {
+        if (sessionEndMs < sessionStartMs) return emptyList()
+        val seen = HashSet<Long>()
+        val kept = mutableListOf<GpsRoutePoint>()
+        for (p in raw.sortedBy { it.timeMs }) {
+            if (p.timeMs < sessionStartMs || p.timeMs > sessionEndMs) continue
+            if (!p.latitude.isFinite() || !p.longitude.isFinite()) continue
+            if (p.latitude !in -90.0..90.0 || p.longitude !in -180.0..180.0) continue
+            if (!seen.add(p.timeMs)) continue // duplicate timestamp — HC rejects it
+            kept += p
+        }
+        return kept
+    }
+
+    /** Matches "...single record size limit: 1000000, was: 1700644" from the HC platform
+     *  (Gadgetbridge's production format for the 1 MB single-record limit). */
+    private val RECORD_SIZE_REGEX =
+        Regex("single record size limit:\\s*(\\d+),\\s*was:\\s*(\\d+)")
+
+    /**
+     * The 1 MB per-record platform limit, parsed out of the insert exception message (plan §3
+     * robustness constants; no API exposes it). Returns the `(limit, was)` pair, or null when the
+     * message doesn't carry it — the caller then falls back to its normal retry.
+     */
+    fun parseRecordSizeLimit(message: String?): Pair<Long, Long>? {
+        val m = RECORD_SIZE_REGEX.find(message ?: "") ?: return null
+        val limit = m.groupValues[1].toLongOrNull() ?: return null
+        val was = m.groupValues[2].toLongOrNull() ?: return null
+        if (limit <= 0L || was <= limit) return null
+        return limit to was
+    }
+
+    /** Gadgetbridge: aim for 90 % of the limit to leave room for per-point overhead the size
+     *  model doesn't capture. */
+    const val ROUTE_SHRINK_MARGIN = 0.9
+
+    /**
+     * Uniformly decimates [points] down to [target] points (clamped to ≥ 2), preserving first and
+     * last — Gadgetbridge's `decimateRoute`. The uniform stride keeps the shape of the route;
+     * `step` is always ≥ 1 here (target < size), so the integer indices are strictly increasing
+     * and no timestamp is ever duplicated (which HC would reject).
+     */
+    fun <T> decimateToSize(points: List<T>, target: Int): List<T> {
+        val t = target.coerceAtLeast(2)
+        if (points.size <= t) return points
+        val lastIndex = points.size - 1
+        val step = lastIndex.toDouble() / (t - 1).toDouble()
+        val kept = ArrayList<T>(t)
+        var idx = 0.0
+        repeat(t - 1) {
+            kept += points[idx.toInt().coerceAtMost(lastIndex - 1)]
+            idx += step
+        }
+        kept += points.last()
+        return kept
     }
 
     // ── heart-rate series segmentation ──

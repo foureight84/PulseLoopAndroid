@@ -222,6 +222,20 @@ interface ActivitySessionDao {
     )
     suspend fun finishedStartedBetween(from: Long, to: Long): List<ActivitySessionEntity>
 
+    // Health Connect export selection (Phase 4): finished sessions committed after [watermark],
+    // by updatedAt — a workout is a mutable group (a post-finish edit or vitals backfill bumps it),
+    // so the watermark follows the row's last update and a changed session re-upserts the SAME
+    // pl-wk-<id> records in place. ORDER BY updatedAt, not startedAt: healthConnectInsertChunked
+    // advances the watermark to the max high water of the last successful chunk, which is only
+    // safe when records arrive in high-water order (the Phase 2/3 fix).
+    // No source filter: this table has no source column, and the demo seeder never creates
+    // sessions — rows here are recorded or archive-restored workouts.
+    @Query(
+        "SELECT * FROM activity_sessions WHERE statusRaw = 'finished' AND endedAt IS NOT NULL " +
+            "AND updatedAt > :watermark ORDER BY updatedAt ASC",
+    )
+    suspend fun finishedUpdatedSince(watermark: Long): List<ActivitySessionEntity>
+
     @Upsert
     suspend fun upsert(session: ActivitySessionEntity)
 }
@@ -230,6 +244,14 @@ interface ActivitySessionDao {
 interface ActivityGpsPointDao {
     @Query("SELECT * FROM activity_gps_points WHERE sessionId = :sessionId ORDER BY timestamp ASC")
     suspend fun forSession(sessionId: String): List<ActivityGpsPointEntity>
+
+    /** All fixes for the given sessions in one query — the Phase 4 export backfill can span
+     *  years of rows, so one query over the whole pending set rather than one per session. */
+    @Query(
+        "SELECT * FROM activity_gps_points WHERE sessionId IN (:sessionIds) " +
+            "ORDER BY sessionId ASC, timestamp ASC",
+    )
+    suspend fun forSessions(sessionIds: List<String>): List<ActivityGpsPointEntity>
 
     @Insert
     suspend fun insert(point: ActivityGpsPointEntity)

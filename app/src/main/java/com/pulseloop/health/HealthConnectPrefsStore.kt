@@ -39,6 +39,15 @@ data class HealthConnectPrefs(
     val lastSyncSummary: String? = null,
     /** Write permissions granted at the last permission-sheet result; Phase 6 diffs this to detect revocation. */
     val lastGrantedPermissions: List<String> = emptyList(),
+    /**
+     * One-time Phase 4 marker: true after the first pass on a build where netting is live reset
+     * the ACTIVITY + WORKOUTS watermarks (see [HealthConnectExporter.run]) so daily records
+     * exported under the Phase 3 build — un-netted, because [com.pulseloop.health.HealthConnectExporter.WORKOUTS_EXPORTED]
+     * was false — get re-upserted with their netted values now that the workout siblings they
+     * compensate for are being written. Old blobs without this key decode to false (tolerant
+     * decode), which is exactly the "still needs the flip" state for upgrading users.
+     */
+    val nettingFlipDone: Boolean = false,
 ) {
     @Serializable
     enum class BackfillChoice { NOT_ASKED, EXPORT_ALL, EXPORT_NEW_ONLY }
@@ -144,6 +153,27 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
         _watermarks.value = next
         prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
     }
+
+    /**
+     * Reset specific groups' watermarks to null ("never exported"). The monotonic
+     * [setWatermark] can never rewind, so a deliberate re-export — the Phase 4 netting-flip
+     * reset and Phase 6's permission/revocation resets — goes through here. Records re-exported
+     * after a reset upsert under the same clientRecordIds, so the pass stays idempotent.
+     */
+    fun resetWatermarks(keys: Set<HealthConnectWatermarks.Key>) {
+        if (keys.isEmpty()) return
+        // copyWith can't null a key; rebuild the blob with the reset keys nulled.
+        val next = HealthConnectWatermarks(
+            vitals = if (HealthConnectWatermarks.Key.VITALS in keys) null else currentWatermarks.vitals,
+            sleep = if (HealthConnectWatermarks.Key.SLEEP in keys) null else currentWatermarks.sleep,
+            activity = if (HealthConnectWatermarks.Key.ACTIVITY in keys) null else currentWatermarks.activity,
+            workouts = if (HealthConnectWatermarks.Key.WORKOUTS in keys) null else currentWatermarks.workouts,
+            nutrition = if (HealthConnectWatermarks.Key.NUTRITION in keys) null else currentWatermarks.nutrition,
+        )
+        _watermarks.value = next
+        prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
+    }
+
 
     /** Clear every watermark (iOS `removeAllExportedData`; Phase 6 revocation reset). */
     fun clearWatermarks() {

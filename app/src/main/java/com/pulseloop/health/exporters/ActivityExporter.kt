@@ -182,6 +182,11 @@ class ActivityExporter(private val db: PulseLoopDatabase) {
                     calories = it.calories,
                     distanceMeters = it.distanceMeters,
                     useGps = it.useGps,
+                    // Duration inputs for the credit-eligibility check (workoutNetting skips the
+                    // same sub-minute sessions ActivityRollup.credit never credited).
+                    startedAtMs = it.startedAt,
+                    endedAtMs = it.endedAt,
+                    totalPauseSeconds = it.totalPauseSeconds,
                 )
             },
         )

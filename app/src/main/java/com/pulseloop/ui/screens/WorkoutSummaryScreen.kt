@@ -153,6 +153,9 @@ fun WorkoutSummaryScreen(
                     scope.launch {
                         com.pulseloop.service.ActivityRollup.reverse(db, s)
                         db.activitySessionDao().upsert(s.copy(statusRaw = "deleted", updatedAt = System.currentTimeMillis()))
+                        // Health Connect: remove this workout's exported records (best-effort,
+                        // never fails the local delete — plan Phase 4 deletion hook, iOS parity).
+                        com.pulseloop.health.HealthConnectWorkoutDeletion.removeSessionRecords(context, s.id)
                         onBack()
                     }
                 }) { Text("Delete", color = PulseColors.danger) }
