@@ -2,10 +2,11 @@
 
 Status: **Phases 0–4 complete** (2026-08-16) — vitals, sleep, daily activity, and workouts
 + GPS route all export; `WORKOUTS_EXPORTED` is live and the one-time netting-flip reset has
-run on existing installs. Remaining: Phase 5 (nutrition), Phase 6 (reads, planned-exercise,
-"remove PulseLoop data"), the API 30 no-Health-Connect-image check, and the release-build
-R8 smoke test. This document's §8 session log is the running record — read the newest entry
-first when resuming.
+run on existing installs. Remaining: Phase 5 (beyond iOS — blood pressure, glucose,
+respiratory rate, VO₂max, resting HR, nutrition), Phase 6 (lifecycle, removal, docs —
+"remove PulseLoop data", grant/revocation watermark resets, archive restore, ios-sync.md
+update), the API 30 no-Health-Connect-image check, and the release-build R8 smoke test.
+This document's §8 session log is the running record — read the newest entry first when resuming.
 
 ## Context
 
@@ -906,10 +907,12 @@ record). Status: **Phase 3 implemented** on `feat/health-connect-foundation` (pr
        (250 kcal, exported under Phase 3) was **overwritten in place at the same
        clientRecordId** with its netted value (160 = 250 − 90), and the same-version re-upsert of
        unchanged rows was accepted by the platform (9 activity records, zero insert errors).
-    2. Store state (`adb root` → provider DB): 3 sessions — `pl-wk-wkA` (type 33 RUNNING,
-       version = session.updatedAt, 7:00–7:30 PDT), `pl-wk-wkC` (45 STRENGTH_TRAINING, no
-       distance sibling: useGps=0), the real walk (53 WALKING, **has_route=0** — one accepted
-       point < 2, session still written, exactly the plan's rule); today's daily records netted to
+    2. Store state (`adb root` → provider DB): 3 sessions — `pl-wk-wkA` (store code 33 =
+       EXERCISE_TYPE_RUNNING (library constant 56) normalized provider-side; version =
+       session.updatedAt; 7:00–7:30 PDT), `pl-wk-wkC` (store code 45 = EXERCISE_TYPE_STRENGTH_TRAINING
+       (70), no distance sibling: useGps=0), the real walk (store code 53 = EXERCISE_TYPE_WALKING
+       (79), **has_route=0** — one accepted point < 2, session still written, exactly the plan's
+       rule; titles — "Running"/"Gym"/"Walking" — confirm the map landed); today's daily records netted to
        the milli: energy 342.672 kcal = 640 − 180 − 117.328 (sibling records 180 + 117.328),
        distance 5 900 m = 7 900 − 2 000 (sibling 2 000), steps 11 200 un-netted; consumer sums
        342.672 + 180 + 117.328 = 640.000 and 5 900 + 2 000 = 7 900.
@@ -924,7 +927,12 @@ record). Status: **Phase 3 implemented** on `feat/health-connect-foundation` (pr
        dropped) while the session + its 50 kcal sibling exported — the documented accepted window.
     5. Re-run: counts unchanged (5 sessions / 8 energy / 5 distance / 3 steps / 20 route points),
        no duplicates; the zero-metric day re-queries once and self-retires on the next
-       empty-pass stamp (the documented bounded re-query).
+       empty-pass stamp (the documented bounded re-query). Count reconciliation: 5 sessions =
+       wkA + wkC + the live walk + wkRoute + wkTiny; 8 energy = those 5's siblings (all have
+       plausible kcal) + the 3 daily ActiveCalories records (days 08-13, 08-14, 08-16); 5
+       distance = the 2 useGps siblings (wkA 2 000 m, wkRoute 800 m) + the 3 daily Distance
+       records (9 000 / 1 200 / 5 900); 3 steps = the 3 daily Steps records; 20 route points
+       all under wkRoute.
     6. **Deletion hooks verified through the real UI trash:** deleting the live walk removed
        `pl-wk-504a…` + its energy sibling from the store (local row → `statusRaw='deleted'`,
        no longer re-selected by the finished-only query); deleting the route session removed the
@@ -937,3 +945,24 @@ record). Status: **Phase 3 implemented** on `feat/health-connect-foundation` (pr
     `nettingFlipDone=true`), 7 sessions (3 finished + 1 recording) and 7 daily rows in the app
     DB, 3 exercise sessions + 6 energy + 5 distance + 3 steps records and 0 route rows in the HC
     store (the route session was the one deleted), `adb` as root.
+  - Accepted residuals left on the record (observer stage B, both match iOS semantics, neither
+    a code change): (a) a FUTURE-dated session blocks the workouts pass while its energy and
+    distance are still netted out of its day (`finishedStartedBetween` has no now-check) —
+    bounded under-report on that day until the day row restamps; future-dated sessions are
+    clock-skew pathology only. (b) a corrupt INVALID row carrying calories > 0 is
+    watermark-leapfrogged yet still netted — same under-report shape, same low exposure (the
+    coach update path recomputes kcal to null/0 for zero-duration sessions).
+  - **Observer stage-B review (49-item checklist): 1 BLOCKER + 2 SHOULD-FIX, all fixed in the
+    same-day follow-up.** (1) BLOCKER — on a partial chunk failure, the workouts watermark could
+    leapfrog unlanded valid sessions via the record-less INVALID rows' `invalidHighWater` (same
+    defect class as the Phase 3 chunk-stranding bug, reached through the record-less path):
+    the advance decision is now the pure `workoutsWatermarkAdvance`, and `invalidHighWater`
+    applies only when the pass fully completed. (2) The deletion hook gated on the master export
+    toggle, so a delete made with the export off would have left ghost records — it now gates on
+    availability + the per-class permission only (iOS parity: availability only). (3) The
+    netting-flip reset now additionally requires `backfillChoice == EXPORT_ALL` — a "Only new
+    data from now on" user's consent boundary is not re-opened by a full-history re-export (their
+    narrower pre-flip residual is accepted and documented at the flip condition). Also adopted
+    from the research report: workout records are `Metadata.activelyRecorded` (user-initiated —
+    Gadgetbridge marks its ACTIVITY-type records actively recorded; the Phase 1–3 ring-data
+    groups stay `autoRecorded`).

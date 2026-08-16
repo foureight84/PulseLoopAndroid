@@ -196,11 +196,17 @@ class HealthConnectPrefsStoreTest {
 
     @Test
     fun resetWatermarksPersistsToTheBlob() {
-        val store = storeWith(null)
+        // The process can die between the flip reset and the re-export, so the reset nulls have
+        // to be on disk: assert against the backing blob AND a fresh store over the same prefs.
+        val fake = FakeSharedPreferences()
+        val store = HealthConnectPrefsStore(fake)
         store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, 333)
         store.resetWatermarks(setOf(HealthConnectWatermarks.Key.ACTIVITY))
-        // A fresh store over the same backing prefs sees the reset (null, not the old 333).
-        val backing = store // same instance, but re-read through the property to force the load path
-        assertNull(backing.currentWatermarks.activity)
+        val reloaded = HealthConnectPrefsStore(fake)
+        assertNull(reloaded.currentWatermarks.activity)
+        assertEquals(
+            "{\"vitals\":null,\"sleep\":null,\"activity\":null,\"workouts\":null,\"nutrition\":null}",
+            fake.map["pulseloop.healthconnect.watermarks.v1"] as String,
+        )
     }
 }

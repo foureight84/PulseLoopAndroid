@@ -341,6 +341,29 @@ class HealthConnectExporterTest {
         assertEquals(1, attempts) // no point burning retries on a deterministic failure
     }
 
+    // ── Phase 4 observer stage B: the invalidHighWater leapfrog blocker ──
+
+    @Test
+    fun invalidHighWaterAppliesOnlyOnACompletedPass() {
+        // Completed pass: every valid session landed, so the watermark may jump past the
+        // record-less invalid rows (they can never become exportable).
+        assertEquals(200L, workoutsWatermarkAdvance(true, 150L, 200L))
+        assertEquals(300L, workoutsWatermarkAdvance(true, 300L, 200L))
+        assertEquals(150L, workoutsWatermarkAdvance(true, 150L, null))
+        assertEquals(0L, workoutsWatermarkAdvance(true, 0L, null))
+    }
+
+    @Test
+    fun invalidHighWaterNeverLeapfrogsUnlandedSessionsOnAPartialFailure() {
+        // The blocker: chunk failure after record-less INVALID rows must NOT advance the
+        // watermark past valid sessions whose records never landed — they stay pending.
+        assertEquals(150L, workoutsWatermarkAdvance(false, 150L, 200L))
+        assertEquals(0L, workoutsWatermarkAdvance(false, 0L, 200L))
+        // ...and when the invalid rows sit below what landed, nothing changes either way.
+        assertEquals(150L, workoutsWatermarkAdvance(false, 150L, 100L))
+        assertEquals(150L, workoutsWatermarkAdvance(true, 150L, 100L))
+    }
+
     @Test
     fun chunkInsertAbortsOnSecurityExceptionWithoutShrinking() = runTest {
         var attempts = 0

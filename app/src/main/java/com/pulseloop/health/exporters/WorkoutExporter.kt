@@ -43,7 +43,12 @@ import java.time.ZoneId
  * [HealthConnectTypeMappings.sanitizeRoutePoints] (session window, finite/in-range coordinates,
  * duplicate timestamps); ≥ 2 clean points, else no route — the session still writes. [withRoute]
  * is false when `WRITE_EXERCISE_ROUTE` was not granted: the session then writes without a route
- * (partial grants are first-class). The 1 MB per-record limit cannot be known up front —
+ * (partial grants are first-class). Platform update semantics (exercise-routes guide): re-upserting
+ * a session record while the route permission is granted but the new build carries no route
+ * DELETES the previously exported route — acceptable here for both no-route cases: the session was
+ * just edited such that its fixes no longer support a route (removing the stale route is correct),
+ * or the route permission was revoked (a revocation implies the user no longer wants routes
+ * exported). The 1 MB per-record limit cannot be known up front —
  * [com.pulseloop.health.HealthConnectExporter] wraps the insert with the shrink-retry fallback
  * ([HealthConnectTypeMappings.parseRecordSizeLimit] + [HealthConnectTypeMappings.decimateToSize]).
  *
@@ -58,7 +63,8 @@ import java.time.ZoneId
  *
  * No demo/mock filter exists for this table: `ActivitySessionEntity` has no source column and
  * the demo seeder never creates sessions (it seeds `activity_daily`, measurements and sleep
- * only) — rows here are recorded or archive-restored workouts.
+ * only) — rows here are all real data: live-recorded, manually logged (Log Past Activity),
+ * coach-created, or archive-restored workouts.
  *
  * Pure DB → records: no client, no inserts — [com.pulseloop.health.HealthConnectExporter] owns
  * the write path and decides which record types are both toggled on and permission-granted.
@@ -151,7 +157,11 @@ class WorkoutExporter(private val db: PulseLoopDatabase) {
                 startZoneOffset = startOffset,
                 endTime = endInstant,
                 endZoneOffset = endOffset,
-                metadata = Metadata.autoRecorded(
+                // ACTIVELY recorded: a PulseLoop workout is user-initiated (the user pressed
+                // start) — Gadgetbridge marks its ACTIVITY-type records activelyRecorded for the
+                // same reason; the Phase 1-3 groups stay autoRecorded because ring data is
+                // collected automatically.
+                metadata = Metadata.activelyRecorded(
                     device, HealthConnectTypeMappings.workoutRecordId(session.id), version,
                 ),
                 exerciseType = HealthConnectTypeMappings.exerciseType(session.type),
@@ -171,7 +181,7 @@ class WorkoutExporter(private val db: PulseLoopDatabase) {
                     endInstant,
                     endOffset,
                     Energy.kilocalories(kcal),
-                    Metadata.autoRecorded(
+                    Metadata.activelyRecorded(
                         device, HealthConnectTypeMappings.workoutChildRecordId(session.id, WK_ENERGY), version,
                     ),
                 )
@@ -188,7 +198,7 @@ class WorkoutExporter(private val db: PulseLoopDatabase) {
                     endInstant,
                     endOffset,
                     Length.meters(meters),
-                    Metadata.autoRecorded(
+                    Metadata.activelyRecorded(
                         device, HealthConnectTypeMappings.workoutChildRecordId(session.id, WK_DIST), version,
                     ),
                 )

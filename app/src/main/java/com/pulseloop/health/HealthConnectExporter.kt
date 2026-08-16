@@ -121,6 +121,22 @@ internal suspend fun insertChunkWithRouteShrink(
 internal const val MAX_ROUTE_SHRINKS = 5
 
 /**
+ * The workouts watermark advance decision (observer review, Phase 4 stage B — BLOCKER fix):
+ * [invalidHighWater] — the max `updatedAt` of the record-less INVALID (zero/negative duration)
+ * sessions — may be applied **only when the pass fully completed**. On a partial chunk failure,
+ * [healthConnectInsertChunked]'s clamp covers only RECORD high waters; an INVALID row's
+ * `updatedAt` sitting above the failed point would otherwise leapfrog the unlanded valid sessions
+ * below it (they would never be re-selected, and netting would still subtract their energy from
+ * re-exported day records — loss that compounds). On a completed pass every valid session has
+ * landed, so advancing past the invalid rows is safe — they can never become exportable.
+ */
+internal fun workoutsWatermarkAdvance(
+    allCompleted: Boolean,
+    lastCompletedHighWater: Long,
+    invalidHighWater: Long?,
+): Long = if (allCompleted) maxOf(lastCompletedHighWater, invalidHighWater ?: 0L) else lastCompletedHighWater
+
+/**
  * If [e] carries the platform's single-record size-limit message and [records] contains an
  * [ExerciseSessionRecord] whose route is long enough to decimate, returns a copy of the list
  * with those routes cut to ~[HealthConnectTypeMappings.ROUTE_SHRINK_MARGIN] of the limit
@@ -218,8 +234,19 @@ class HealthConnectExporter(
         // Without this, every pre-flip day containing a workout would over-count by the
         // workout's own energy/distance for as long as the day stays un-updated (write-only:
         // the stale un-netted record cannot be deleted). The re-export is idempotent — same
-        // clientRecordIds, higher versions — and bounded: each group's full history once.
+        // clientRecordIds, higher-or-equal versions (an unchanged row re-upserts at the SAME
+        // version — the platform accepts equal-version upserts, verified live in the Phase 4
+        // flip pass) — and bounded: each group's full history once.
+        //
+        // Gated on EXPORT_ALL (observer review, Phase 4 stage B): a user who chose "Only new
+        // data from now on" consented to no history — a full-watermark reset would re-export
+        // pre-consent days, violating the Phase 1 backfill boundary. Their narrower residual
+        // (pre-flip un-netted daily records for days that were already inside the consented
+        // window) is accepted: it is bounded by the days touched between Phase 3 enable and the
+        // Phase 4 update, and the accepted-stale-window rule on
+        // [HealthConnectTypeMappings.activityLeftover] covers it.
         if (WORKOUTS_EXPORTED && prefs.workouts && !prefs.nettingFlipDone &&
+            prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.EXPORT_ALL &&
             HealthConnectPermissions.exercise.first() in granted) {
             store.resetWatermarks(
                 setOf(HealthConnectWatermarks.Key.ACTIVITY, HealthConnectWatermarks.Key.WORKOUTS),
@@ -420,13 +447,15 @@ class HealthConnectExporter(
                     }
                 } else {
                     inserted["workouts"] = workoutsProgress.inserted
-                    // Advance to what landed — or past the never-exportable rows
-                    // (invalidHighWater): a zero-duration session produces no record, so it would
-                    // otherwise be re-selected forever (iOS advances its workout watermark past
-                    // such sessions in the same step).
-                    val advanceTo = maxOf(
+                    // Advance to what landed — or past the never-exportable rows (invalidHighWater)
+                    // ONLY when the pass completed: a zero-duration session produces no record, so
+                    // it would otherwise be re-selected forever (iOS advances its workout watermark
+                    // past such sessions in the same step) — but on a partial failure that value
+                    // could leapfrog unlanded valid sessions (see [workoutsWatermarkAdvance]).
+                    val advanceTo = workoutsWatermarkAdvance(
+                        workoutsProgress.allCompleted,
                         workoutsProgress.lastCompletedHighWater,
-                        workoutsPending.invalidHighWater ?: 0L,
+                        workoutsPending.invalidHighWater,
                     )
                     if (advanceTo > (wm0.workouts ?: 0L)) {
                         store.setWatermark(HealthConnectWatermarks.Key.WORKOUTS, advanceTo)

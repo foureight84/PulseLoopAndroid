@@ -19,22 +19,26 @@ import com.pulseloop.health.HealthConnectTypeMappings.WK_ENERGY
  * energy/distance SIBLINGS are standalone records and are deleted by their own clientRecordIds.
  *
  * Best-effort on purpose: a local delete must never fail because of Health Connect. Every gate
- * (export enabled, provider available, permission granted) and every error degrades to a log
- * line — [HealthConnectClient.deleteRecords] has no client-side permission check of its own, so
- * the granted-set diff here is the only guard against a denied-permission call.
+ * (provider available, permission granted) and every error degrades to a log line —
+ * [HealthConnectClient.deleteRecords] has no client-side permission check of its own, so the
+ * granted-set diff here is the only guard against a denied-permission call.
+ *
+ * Deliberately NOT gated on the master export toggle (observer review, Phase 4 stage B): a user
+ * who exported workouts and later switched the export off still owns those Health Connect
+ * records — deleting the local session must remove them, or they become unmanageable ghosts
+ * (iOS guards on availability only, not on its export preference).
  */
 object HealthConnectWorkoutDeletion {
     private const val TAG = "HealthConnectExport"
 
     /**
      * Deletes [sessionId]'s `pl-wk-<id>` session record plus its `-energy` / `-dist` siblings
-     * (each only when its write permission is granted). Returns the number of record classes
-     * actually deleted; 0 when the export is off, the provider is unavailable, the client cannot
-     * be created, or every permission is denied.
+     * (each only when its write permission is granted — a record we never had permission to
+     * write is a no-op: its clientRecordId simply isn't in the store). Returns the number of
+     * record classes actually deleted; 0 when the provider is unavailable, the client cannot be
+     * created, or every permission is denied.
      */
     suspend fun removeSessionRecords(context: Context, sessionId: String): Int {
-        val store = HealthConnectPrefsStore.get(context.applicationContext)
-        if (!store.current.enabled) return 0
         if (HealthConnectSdk.availability(context.applicationContext) != HealthConnectAvailability.AVAILABLE) {
             return 0
         }
