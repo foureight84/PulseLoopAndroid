@@ -1,7 +1,11 @@
 # Health Connect integration — design and implementation plan
 
-Status: **not started.** This document exists so a future session can pick the work up cold.
-Implementation begins at Phase 0.
+Status: **Phases 0–4 complete** (2026-08-16) — vitals, sleep, daily activity, and workouts
++ GPS route all export; `WORKOUTS_EXPORTED` is live and the one-time netting-flip reset has
+run on existing installs. Remaining: Phase 5 (nutrition), Phase 6 (reads, planned-exercise,
+"remove PulseLoop data"), the API 30 no-Health-Connect-image check, and the release-build
+R8 smoke test. This document's §8 session log is the running record — read the newest entry
+first when resuming.
 
 ## Context
 
