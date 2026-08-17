@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.pulseloop.health.HealthConnectPermissionReconcile
 import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.strava.StravaAuth
 import com.pulseloop.strava.StravaTokenStore
@@ -70,6 +71,10 @@ class MainActivity : ComponentActivity() {
         if (hasAllBlePermissions() && hasNotificationPermission()) {
             CoachNotifications.schedule(this)
         }
+        // Health Connect Phase 6: detect out-of-band grant/revocation on every foreground return
+        // and reset the affected export watermarks (auto on grow; a full revocation is surfaced on
+        // the settings screen). No-op unless the export is enabled with a stored grant.
+        HealthConnectPermissionReconcile.onAppStart(this, lifecycleScope)
     }
 
     override fun onNewIntent(intent: Intent) {

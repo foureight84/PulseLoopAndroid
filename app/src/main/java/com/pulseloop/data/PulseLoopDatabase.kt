@@ -43,7 +43,7 @@ import com.pulseloop.data.entity.*
         MealEntryEntity::class,
         CachedFoodProductEntity::class,
     ],
-    version = 20,
+    version = 21,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -391,6 +391,23 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v20 -> v21: `meal_entries.updatedAt` (Phase 6). The Health Connect nutrition export
+         * watermarks on and versions by [com.pulseloop.data.entity.MealEntryEntity.updatedAt] so
+         * a future in-place meal edit re-exports under the same `pl-meal-<id>` clientRecordId.
+         * Rows are insert-once today, so backfilling `updatedAt = createdAt` is exactly
+         * lossless — every existing row's two stamps are already equal. Added with a temporary
+         * `DEFAULT 0` (SQLite requires one for a NOT NULL ADD COLUMN) then backfilled in a
+         * single statement; both run inside Room's onUpgrade transaction, so an interrupted
+         * upgrade rolls back to v20 and re-runs.
+         */
+        private val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `meal_entries` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE `meal_entries` SET `updatedAt` = `createdAt`")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -477,6 +494,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_17_18,
                         MIGRATION_18_19,
                         MIGRATION_19_20,
+                        MIGRATION_20_21,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

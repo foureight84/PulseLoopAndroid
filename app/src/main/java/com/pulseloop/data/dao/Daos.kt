@@ -491,10 +491,12 @@ interface MealEntryDao {
     """)
     suspend fun dayTotals(day: Long): List<MealTotals>
 
-    /** Phase 5: meals newer than the nutrition watermark (a logged meal is insert-once, so
-     *  `createdAt` is the stable high water). Same demo/mock exclusion as the other groups. */
-    @Query("SELECT * FROM meal_entries WHERE createdAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY createdAt ASC")
-    suspend fun createdSince(watermark: Long): List<MealEntryEntity>
+    /** Meals newer than the nutrition watermark, on `updatedAt` (Phase 6): a logged meal is
+     *  insert-once so `updatedAt == createdAt` today, but an in-place edit bumps `updatedAt`
+     *  and the row re-selects — the same watermark semantics the other groups use. Same
+     *  demo/mock exclusion as the other groups. */
+    @Query("SELECT * FROM meal_entries WHERE updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY updatedAt ASC")
+    suspend fun updatedSince(watermark: Long): List<MealEntryEntity>
 
     @Upsert
     suspend fun upsert(entry: MealEntryEntity)

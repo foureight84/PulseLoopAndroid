@@ -7,6 +7,7 @@ import android.os.Build
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -47,7 +48,10 @@ import com.pulseloop.health.HealthConnectAvailability
 import com.pulseloop.health.HealthConnectPermissions
 import com.pulseloop.health.HealthConnectPrefs
 import com.pulseloop.health.HealthConnectExportWorker
+import com.pulseloop.health.HealthConnectPermissionReconcile
 import com.pulseloop.health.HealthConnectPrefsStore
+import com.pulseloop.health.HealthConnectRemoval
+import com.pulseloop.health.HealthConnectWatermarks
 import com.pulseloop.health.HealthConnectSdk
 import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
@@ -2426,14 +2430,25 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
     val granted = prefs.lastGrantedPermissions.toSet()
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var showBackfillDialog by remember { mutableStateOf(false) }
+    // Phase 6: full-revocation offer + "remove PulseLoop data" confirmation.
+    var showRevokeResetDialog by remember { mutableStateOf(false) }
+    var showRemoveDialog by remember { mutableStateOf(false) }
+    val removeScope = rememberCoroutineScope()
 
     // Master toggle → Health Connect permission sheet. Partial grants are first-class:
     // any granted permission counts as connected.
     val permissionLauncher = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { grantedPermissions ->
-        val got = grantedPermissions.filter { it in HealthConnectPermissions.all }
-        store.update { it.copy(enabled = got.isNotEmpty(), lastGrantedPermissions = got.sorted()) }
+        val got = grantedPermissions.filter { it in HealthConnectPermissions.all }.toSet()
+        // Phase 6: diff against the previously stored grant. A grow resets the watermarks of the
+        // groups the new permissions belong to, so the newly grantable types backfill their history
+        // (their shared group watermark is already ahead of their rows). A full revoke offers a
+        // watermark reset below.
+        val outcome = HealthConnectPermissionReconcile.reconcile(
+            store.current.lastGrantedPermissions.toSet(), got, store,
+        )
+        store.update { it.copy(enabled = got.isNotEmpty(), lastGrantedPermissions = got.sorted(), revocationOfferDismissed = if (got.isEmpty()) it.revocationOfferDismissed else false) }
         statusMessage = if (got.isEmpty()) {
             "No Health Connect permissions granted — nothing to export."
         } else {
@@ -2444,10 +2459,40 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
         if (got.isNotEmpty() && store.current.backfillChoice == HealthConnectPrefs.BackfillChoice.NOT_ASKED) {
             showBackfillDialog = true
         }
-        // First-enable trigger (Phase 1): a grant is the moment an export should attempt to run —
-        // e.g. the user enables the export with history already in the DB and no further ring
-        // sync pending. Debounced 15 s + REPLACE, so this is cheap even on re-grants.
+        // Grant trigger (Phase 1, extended in Phase 6): a grant — including a grow-reset — is the
+        // moment an export should attempt to run. Debounced 15 s + REPLACE, so cheap on re-grants.
         if (got.isNotEmpty()) HealthConnectExportWorker.enqueue(context)
+        if (outcome.allRevoked && !store.current.revocationOfferDismissed) showRevokeResetDialog = true
+    }
+
+    // Phase 6: on open, diff the live granted set against the stored one to catch out-of-band
+    // changes (a revocation in system Settings, a grant made elsewhere). A grow resets the affected
+    // watermarks and enqueues a pass. (onAppStart does the same on activity resume; this is the
+    // safety net for a change that landed after resume, and the home of the revocation offer.)
+    LaunchedEffect(availability) {
+        if (availability != HealthConnectAvailability.AVAILABLE) return@LaunchedEffect
+        val last = store.current.lastGrantedPermissions.toSet()
+        val client = runCatching { HealthConnectClient.getOrCreate(context) }.getOrNull() ?: return@LaunchedEffect
+        val granted = runCatching { client.permissionController.getGrantedPermissions() }.getOrNull() ?: return@LaunchedEffect
+        val outcome = HealthConnectPermissionReconcile.reconcile(last, granted, store)
+        if (granted != last) store.update { it.copy(lastGrantedPermissions = granted.toList().sorted()) }
+        if (outcome.grewGroups.isNotEmpty()) {
+            HealthConnectExportWorker.enqueue(context)
+            // A re-grant (grow) clears the one-shot revocation-offer flag so a future full
+            // revocation offers again.
+            if (store.current.revocationOfferDismissed) store.update { it.copy(revocationOfferDismissed = false) }
+        }
+        // Full-revocation offer (Gadgetbridge pattern) — state-based, not diff-based: onAppStart
+        // may already have reconciled and stored the (now empty) live set before this screen
+        // opened, making the diff above empty-to-empty so allRevoked never fires. Offer when the
+        // master is on, nothing is granted now, a prior sync exists (something to reset), and the
+        // user has not already dismissed the offer.
+        val cur = store.current
+        val hadSync = cur.lastSyncAt != null ||
+            HealthConnectWatermarks.Key.values().any { store.currentWatermarks.get(it) != null }
+        if (cur.enabled && granted.isEmpty() && hadSync && !cur.revocationOfferDismissed) {
+            showRevokeResetDialog = true
+        }
     }
 
     SettingsSubScreen(title = "Health Connect", onBack = onBack) {
@@ -2584,6 +2629,27 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+
+            // Phase 6: "Remove PulseLoop data from Health Connect" (iOS removeAllExportedData parity).
+            // Deletes only the records this app wrote, then clears every watermark + the last-sync
+            // stamp so the export state matches an empty Health store.
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Remove exported data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Delete every record PulseLoop wrote to Health Connect and reset the export to start fresh. Your ring data in PulseLoop is untouched.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { showRemoveDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Remove PulseLoop data") }
+                }
+            }
         }
 
         statusMessage?.let { msg ->
@@ -2611,6 +2677,61 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                     showBackfillDialog = false
                     HealthConnectExportWorker.enqueue(context) // stamps watermarks, exports nothing
                 }) { Text("Only new data from now on") }
+            },
+        )
+    }
+
+    // Phase 6: full-revocation offer (Gadgetbridge HealthConnectResetDialogFragment pattern). A
+    // later re-grant is a "grow" from empty, so the automatic grow-reset re-exports regardless;
+    // this lets the user reset immediately and clears the last-sync stamp too.
+    if (showRevokeResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showRevokeResetDialog = false; store.update { it.copy(revocationOfferDismissed = true) } },
+            title = { Text("Health Connect permissions revoked") },
+            text = { Text("PulseLoop no longer has any Health Connect permissions. Reset the export so a later re-grant re-exports your history?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    store.clearWatermarks()
+                    store.update { it.copy(lastSyncAt = null, lastSyncSummary = null, revocationOfferDismissed = true) }
+                    showRevokeResetDialog = false
+                    statusMessage = "Export reset — re-grant permissions to sync again."
+                }) { Text("Reset export") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRevokeResetDialog = false; store.update { it.copy(revocationOfferDismissed = true) } }) { Text("Not now") }
+            },
+        )
+    }
+
+    // Phase 6: "Remove PulseLoop data" confirmation. Deletion is per record type over the full
+    // time range (only types still granted), then all watermarks + the last-sync stamp clear.
+    if (showRemoveDialog) {
+        AlertDialog(
+            onDismissRequest = { showRemoveDialog = false },
+            title = { Text("Remove PulseLoop data?") },
+            text = { Text("This deletes every record PulseLoop wrote to Health Connect and resets the export. It cannot be undone, and your ring data in PulseLoop is not affected.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRemoveDialog = false
+                    removeScope.launch {
+                        // Guarded: a client-creation or provider failure must surface as a
+                        // status message, not a crash (other getOrCreate call sites do the same).
+                        runCatching {
+                            val client = HealthConnectClient.getOrCreate(context)
+                            val result = HealthConnectRemoval.removeAll(context, client, store)
+                            statusMessage = if (result.failedTypes == 0) {
+                                "Removed PulseLoop data from Health Connect."
+                            } else {
+                                "Removed PulseLoop data, but ${result.failedTypes} type(s) could not be deleted — try again."
+                            }
+                        }.onFailure {
+                            statusMessage = "Could not remove PulseLoop data. Try again."
+                        }
+                    }
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveDialog = false }) { Text("Cancel") }
             },
         )
     }

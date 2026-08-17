@@ -521,8 +521,9 @@ class HealthConnectExporter(
             }
         }
 
-        // ── Nutrition group (Phase 5; watermarked on MealEntryEntity.createdAt - a logged meal
-        //    is insert-once, so createdAt is the stable high water; version = createdAt) ──
+        // ── Nutrition group (Phase 5; Phase 6 watermarks on MealEntryEntity.updatedAt - a logged
+        //    meal is insert-once so updatedAt == createdAt today, but an in-place edit bumps it and
+        //    the row re-selects; version = updatedAt) ──
         // iOS gates nutrition export on the nutrition FEATURE's master toggle as well as the
         // Health Connect per-type toggle (+Nutrition.swift:19) - off-feature meals must not leak to
         // Health Connect, so both must be on.

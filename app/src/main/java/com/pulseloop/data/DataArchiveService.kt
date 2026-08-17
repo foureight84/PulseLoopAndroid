@@ -10,6 +10,8 @@ import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
 import com.pulseloop.BuildConfig
 import com.pulseloop.data.entity.*
+import com.pulseloop.health.HealthConnectPrefsStore
+import com.pulseloop.health.HealthConnectWatermarks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -291,7 +293,7 @@ object DataArchiveService {
                     servingGrams = c.dblOrNull("servingGrams"), quantity = c.dbl("quantity"),
                     confidenceRaw = c.str("confidenceRaw"), userEdited = c.bool("userEdited"),
                     notes = c.strOrNull("notes"), loggedByCoach = c.bool("loggedByCoach"),
-                    createdAt = c.long("createdAt"),
+                    createdAt = c.long("createdAt"), updatedAt = c.long("updatedAt"),
                 )
             },
             foodProducts = collect("food_products") { c ->
@@ -568,6 +570,7 @@ object DataArchiveService {
                     servingDescription = m.servingDescription, servingGrams = m.servingGrams,
                     quantity = m.quantity, confidenceRaw = m.confidenceRaw, userEdited = m.userEdited,
                     notes = m.notes, loggedByCoach = m.loggedByCoach, createdAt = m.createdAt,
+                    updatedAt = if (m.updatedAt > 0) m.updatedAt else m.createdAt,
                 ))
             }
             for (fp in archive.foodProducts) {
@@ -581,6 +584,17 @@ object DataArchiveService {
                     useCount = fp.useCount,
                 ))
             }
+        }
+
+        // Phase 6 (iOS DataArchiveService.refreshSharedStores parity): importing history must not
+        // trigger a surprise full re-export into Health Connect. If the export is enabled, stamp
+        // every group's watermark to now so only data logged AFTER the restore is exported. The
+        // Health Connect prefs themselves are not in the archive (they live in SharedPreferences,
+        // not Room), so the enabled flag / grants are this device's own.
+        val hcStore = HealthConnectPrefsStore.get(context)
+        if (hcStore.current.enabled) {
+            val now = System.currentTimeMillis()
+            HealthConnectWatermarks.Key.values().forEach { hcStore.setWatermark(it, now) }
         }
 
         archive

@@ -53,9 +53,19 @@ class HealthConnectExportWorker(
             Log.i(TAG, "pass done: ${result.summary()}")
             Result.success()
         } catch (e: SecurityException) {
-            // Permission revoked mid-pass: never retry in a loop; the Phase 6 revocation check
-            // (settings open / app start) detects it and offers a watermark reset.
+            // Permission revoked mid-pass: never retry in a loop. Re-check the live granted set
+            // now (plan: "a SecurityException from insertRecords should also trigger a re-check")
+            // and correct the stored lastGrantedPermissions; the settings screen / next app start
+            // then surface a full revocation, and the automatic grow-reset makes any later re-grant
+            // re-export regardless.
             Log.w(TAG, "SecurityException — permission revoked mid-pass", e)
+            runCatching {
+                val granted = client.permissionController.getGrantedPermissions()
+                HealthConnectPermissionReconcile.reconcile(
+                    store.current.lastGrantedPermissions.toSet(), granted, store,
+                )
+                store.update { it.copy(lastGrantedPermissions = granted.toList().sorted()) }
+            }
             Result.success()
         }
     }
@@ -72,6 +82,15 @@ class HealthConnectExportWorker(
                 .build()
             WorkManager.getInstance(context.applicationContext)
                 .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+        }
+
+        /**
+         * Cancel a pending/in-flight export pass. Called before a removal so the two cannot race
+         * (iOS guards removeAllExportedData with an isSyncing latch; Android has no equivalent
+         * latch, so we cancel the unique work instead).
+         */
+        fun cancel(context: Context) {
+            WorkManager.getInstance(context.applicationContext).cancelUniqueWork(WORK_NAME)
         }
     }
 }

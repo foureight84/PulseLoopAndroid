@@ -21,14 +21,15 @@ import java.time.ZoneId
  *
  * Identity: `clientRecordId = pl-meal-<MealEntryEntity.id>` - the meal's Room primary key is a
  * stable UUID (a logged meal is insert-once, never churned on re-sync like a sleep block), so it
- * is a safe upsert key; `clientRecordVersion = meal.createdAt`. The interval is the meal's log
+ * is a safe upsert key; `clientRecordVersion = meal.updatedAt`. The interval is the meal's log
  * instant with a +60 s end (a meal spans some eating time; Health Connect requires end > start).
  *
- * Watermarked on `createdAt` by [HealthConnectExporter]. Documented divergence from iOS: iOS's
- * meal model has an `updatedAt` driving its export watermark because iOS edits meals in place;
- * Android has no in-place meal-edit path today (log / delete / archive-restore only), so
- * `createdAt` is stable per row and sufficient. If in-place editing is ever added, this needs an
- * `updatedAt` column (Room migration) or a watermark reset - see the plan Phase 5 session entry.
+ * Watermarked on `updatedAt` by [HealthConnectExporter] (Phase 6) - iOS parity: iOS's meal model
+ * carries an `updatedAt` driving its export watermark because iOS edits meals in place. Android
+ * is insert-once today, so `updatedAt == createdAt` for every row and the switch is
+ * behavior-preserving; when an in-place meal-edit path lands it only needs to bump `updatedAt`
+ * and the edited meal re-exports under the same clientRecordId at a higher version (write-only
+ * means no repair, so the watermark must see the edit).
  */
 class NutritionExporter(private val db: PulseLoopDatabase) {
 
@@ -46,7 +47,7 @@ class NutritionExporter(private val db: PulseLoopDatabase) {
     suspend fun build(watermark: Long?, device: Device): PendingNutrition {
         val wm = watermark ?: 0L
         val zone = ZoneId.systemDefault()
-        val meals = db.mealEntryDao().createdSince(wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val meals = db.mealEntryDao().updatedSince(wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
         val records = mutableListOf<Record>()
         val highWaters = mutableListOf<Long>()
         var skipped = 0
@@ -57,7 +58,7 @@ class NutritionExporter(private val db: PulseLoopDatabase) {
                 continue
             }
             records += record
-            highWaters += meal.createdAt
+            highWaters += meal.updatedAt
         }
         return PendingNutrition(records, highWaters, skipped)
     }
@@ -96,7 +97,7 @@ class NutritionExporter(private val db: PulseLoopDatabase) {
             endZoneOffset = offset,
             // Meals are user-initiated (logged in the nutrition screen) - activelyRecorded, the
             // same choice Phase 4 made for user-initiated workout records.
-            metadata = Metadata.activelyRecorded(device, HealthConnectTypeMappings.nutritionRecordId(meal.id), meal.createdAt),
+            metadata = Metadata.activelyRecorded(device, HealthConnectTypeMappings.nutritionRecordId(meal.id), meal.updatedAt),
             energy = energy,
             protein = protein,
             totalCarbohydrate = carbs,

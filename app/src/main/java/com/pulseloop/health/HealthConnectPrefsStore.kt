@@ -54,6 +54,13 @@ data class HealthConnectPrefs(
      * decode), which is exactly the "still needs the flip" state for upgrading users.
      */
     val nettingFlipDone: Boolean = false,
+    /**
+     * Phase 6: one-shot flag for the full-revocation reset offer (Gadgetbridge pattern). Set when
+     * the user declines ("Not now") or confirms the reset; cleared on a later re-grant (a grow) so
+     * a future full revocation offers again. Prevents re-offering on every settings open while the
+     * revoked state persists.
+     */
+    val revocationOfferDismissed: Boolean = false,
 ) {
     @Serializable
     enum class BackfillChoice { NOT_ASKED, EXPORT_ALL, EXPORT_NEW_ONLY }
