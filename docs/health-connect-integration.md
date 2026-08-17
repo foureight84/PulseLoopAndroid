@@ -512,7 +512,7 @@ around it.
 ## 8. Session log
 
 Append a dated entry here as work progresses (persistent memory via `mcp_memory` is the parallel
-record). Status: **Phases 0–5 implemented** on `feat/health-connect-foundation` (pre-merge); Phase 6 pending.
+record). Status: **Phases 0–6 complete** on `feat/health-connect-foundation` (pre-merge) — see the newest entry below and the top STATUS line.
 
 - **2026-08-14 — prep, no code.** Plan read and re-verified against the live official docs.
   - Official Google Health Connect guide indexed into the `mcp_docs` server as library
