@@ -9,6 +9,8 @@ import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.metadata.Device
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.health.exporters.ActivityExporter
+import com.pulseloop.health.exporters.NutritionExporter
+import com.pulseloop.health.exporters.RestingHeartRateExporter
 import com.pulseloop.health.exporters.SleepExporter
 import com.pulseloop.health.exporters.VitalsExporter
 import com.pulseloop.health.exporters.WorkoutExporter
@@ -266,12 +268,21 @@ class HealthConnectExporter(
             "spo2" to prefs.oxygenSaturation,
             "hrv" to prefs.heartRateVariability,
             "temp" to prefs.bodyTemperature,
+            // Phase 5 measurement-based kinds.
+            "glucose" to prefs.bloodGlucose,
+            "resp_rate" to prefs.respiratoryRate,
+            "vo2max" to prefs.vo2Max,
+            "bp" to prefs.bloodPressure,
         )
         val kindLabels = mapOf(
             "hr" to "heart rate",
             "spo2" to "SpO2",
             "hrv" to "HRV",
             "temp" to "body temperature",
+            "glucose" to "blood glucose",
+            "resp_rate" to "respiratory rate",
+            "vo2max" to "VO2max",
+            "bp" to "blood pressure",
         )
         val vitalsWm = wm0.vitals
         val kindHighs = LinkedHashMap<String, Long>()
@@ -303,6 +314,9 @@ class HealthConnectExporter(
                     errors += "$label: stopped after ${progress.inserted} records " +
                         "(attempts=${progress.attempts}, last error: ${progress.lastError?.message ?: "unknown"})"
                 }
+            }
+            if (pending.skipped > 0) {
+                skipped += "$label: ${pending.skipped} reading(s) dropped (unpaired or out of range)"
             }
         }
 
@@ -470,6 +484,80 @@ class HealthConnectExporter(
                 }
                 if (workoutsPending.skippedSessions > 0) {
                     skipped += "workouts: ${workoutsPending.skippedSessions} session(s) with zero or negative duration"
+                }
+            }
+        }
+
+        // ── Resting HR group (Phase 5; a single mutable baseline, watermarked on
+        //    UserProfileEntity.hrRestingBaselineUpdatedAt - a re-learn re-upserts the same
+        //    pl-resting-hr record in place at a higher version) ──
+        if (!prefs.restingHeartRate) {
+            skipped += "resting heart rate (toggle off)"
+        } else {
+            val restingPermission = HealthConnectPermissions.restingHeartRate.first()
+            if (restingPermission !in granted) {
+                skipped += "resting heart rate (permission not granted)"
+            } else {
+                val restingPending = RestingHeartRateExporter(db).build(wm0.restingHr, device)
+                if (restingPending.records.isEmpty()) {
+                    // Nothing to export (no baseline yet, already current, or implausible): the
+                    // group's "everything exported" point is now - same rule as the other groups.
+                    if (timestamp > (wm0.restingHr ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.RESTING_HR, timestamp)
+                    }
+                } else {
+                    val restingProgress = insertChunked(restingPending.records, restingPending.highWaters) { chunk ->
+                        client.insertRecords(chunk)
+                    }
+                    inserted["resting_hr"] = restingProgress.inserted
+                    if (restingProgress.lastCompletedHighWater > (wm0.restingHr ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.RESTING_HR, restingProgress.lastCompletedHighWater)
+                    }
+                    if (!restingProgress.allCompleted) {
+                        errors += "resting heart rate: stopped after ${restingProgress.inserted} record(s) " +
+                            "(attempts=${restingProgress.attempts}, last error: ${restingProgress.lastError?.message ?: "unknown"})"
+                    }
+                }
+            }
+        }
+
+        // ── Nutrition group (Phase 5; watermarked on MealEntryEntity.createdAt - a logged meal
+        //    is insert-once, so createdAt is the stable high water; version = createdAt) ──
+        // iOS gates nutrition export on the nutrition FEATURE's master toggle as well as the
+        // Health Connect per-type toggle (+Nutrition.swift:19) - off-feature meals must not leak to
+        // Health Connect, so both must be on.
+        val nutritionFeatureOn = db.userGoalDao().get()?.nutritionEnabled ?: false
+        if (!prefs.nutrition) {
+            skipped += "nutrition (toggle off)"
+        } else if (!nutritionFeatureOn) {
+            skipped += "nutrition (nutrition feature off)"
+        } else {
+            val nutritionPermission = HealthConnectPermissions.nutrition.first()
+            if (nutritionPermission !in granted) {
+                skipped += "nutrition (permission not granted)"
+            } else {
+                val nutritionPending = NutritionExporter(db).build(wm0.nutrition, device)
+                if (nutritionPending.records.isEmpty()) {
+                    // Nothing new (or nothing exportable) for nutrition: its "everything exported"
+                    // point is now - same rule as the other groups.
+                    if (timestamp > (wm0.nutrition ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.NUTRITION, timestamp)
+                    }
+                } else {
+                    val nutritionProgress = insertChunked(nutritionPending.records, nutritionPending.highWaters) { chunk ->
+                        client.insertRecords(chunk)
+                    }
+                    inserted["nutrition"] = nutritionProgress.inserted
+                    if (nutritionProgress.lastCompletedHighWater > (wm0.nutrition ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.NUTRITION, nutritionProgress.lastCompletedHighWater)
+                    }
+                    if (!nutritionProgress.allCompleted) {
+                        errors += "nutrition: stopped after ${nutritionProgress.inserted} record(s) " +
+                            "(attempts=${nutritionProgress.attempts}, last error: ${nutritionProgress.lastError?.message ?: "unknown"})"
+                    }
+                }
+                if (nutritionPending.skippedMeals > 0) {
+                    skipped += "nutrition: ${nutritionPending.skippedMeals} meal(s) outside the platform's range"
                 }
             }
         }

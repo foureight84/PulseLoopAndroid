@@ -491,6 +491,11 @@ interface MealEntryDao {
     """)
     suspend fun dayTotals(day: Long): List<MealTotals>
 
+    /** Phase 5: meals newer than the nutrition watermark (a logged meal is insert-once, so
+     *  `createdAt` is the stable high water). Same demo/mock exclusion as the other groups. */
+    @Query("SELECT * FROM meal_entries WHERE createdAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY createdAt ASC")
+    suspend fun createdSince(watermark: Long): List<MealEntryEntity>
+
     @Upsert
     suspend fun upsert(entry: MealEntryEntity)
 

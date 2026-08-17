@@ -65,6 +65,36 @@ class HealthConnectPrefsStoreTest {
     }
 
     @Test
+    fun phase5TogglesDefaultTrueAndRoundTrip() {
+        // the five Phase 5 per-type toggles default ON under the master toggle (iOS parity)
+        val store = storeWith(null)
+        assertTrue(store.current.bloodPressure)
+        assertTrue(store.current.bloodGlucose)
+        assertTrue(store.current.respiratoryRate)
+        assertTrue(store.current.vo2Max)
+        assertTrue(store.current.restingHeartRate)
+        // a pre-Phase-5 blob decodes the new toggles to their default (true), not wiped
+        val legacy = storeWith("{\"enabled\":true,\"heartRate\":true,\"backfillChoice\":\"EXPORT_ALL\"}")
+        assertTrue(legacy.current.bloodPressure)
+        assertTrue(legacy.current.restingHeartRate)
+        // toggleFor / withToggleFor route the new rows
+        assertTrue(store.current.toggleFor(HealthConnectPermissions.DataTypeRow.BLOOD_PRESSURE))
+        assertFalse(store.current.withToggleFor(HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE, false).restingHeartRate)
+    }
+
+    @Test
+    fun restingHrWatermarkIsMonotonic() {
+        val store = storeWith(null)
+        assertNull(store.currentWatermarks.restingHr)
+        store.setWatermark(HealthConnectWatermarks.Key.RESTING_HR, 1000L)
+        assertEquals(1000L, store.currentWatermarks.restingHr)
+        store.setWatermark(HealthConnectWatermarks.Key.RESTING_HR, 500L) // a rewind is a no-op
+        assertEquals(1000L, store.currentWatermarks.restingHr)
+        store.setWatermark(HealthConnectWatermarks.Key.RESTING_HR, 2000L)
+        assertEquals(2000L, store.currentWatermarks.restingHr)
+    }
+
+    @Test
     fun unknownFutureKeyDoesNotWipeTheBlob() {
         val store = storeWith("{\"enabled\":true,\"futureField\":123}")
         assertTrue(store.current.enabled)
@@ -205,7 +235,7 @@ class HealthConnectPrefsStoreTest {
         val reloaded = HealthConnectPrefsStore(fake)
         assertNull(reloaded.currentWatermarks.activity)
         assertEquals(
-            "{\"vitals\":null,\"sleep\":null,\"activity\":null,\"workouts\":null,\"nutrition\":null}",
+            "{\"vitals\":null,\"sleep\":null,\"activity\":null,\"workouts\":null,\"nutrition\":null,\"restingHr\":null}",
             fake.map["pulseloop.healthconnect.watermarks.v1"] as String,
         )
     }

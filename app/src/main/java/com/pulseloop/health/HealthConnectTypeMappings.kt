@@ -1,6 +1,7 @@
 package com.pulseloop.health
 
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.MealType
 import androidx.health.connect.client.records.SleepSessionRecord
 import com.pulseloop.ring.SleepStage
 import java.time.Instant
@@ -549,5 +550,168 @@ object HealthConnectTypeMappings {
             result += SleepStageSpan(start, end, span.stageType)
         }
         return result
+    }
+
+    // ── Phase 5: beyond-iOS vitals + nutrition (plan §3 Phase-5 table, §4 Phase 5) ──
+
+    /**
+     * `pl-m-bp-<epochMs>` — one `BloodPressureRecord` paired from a systolic + a diastolic
+     * [com.pulseloop.data.entity.MeasurementEntity] row that share the same sample instant. The
+     * pair is immutable (a taken reading is never re-written), so `clientRecordVersion` = 1.
+     * Millisecond precision, same as [vitalsRecordId]. Both source rows collapse onto ONE record,
+     * so the id is keyed on the shared timestamp — never on either row's random live UUID, so a
+     * reading that arrives once live and once via history still lands on the same record.
+     */
+    fun bloodPressureRecordId(timestampMs: Long): String = "pl-m-bp-$timestampMs"
+
+    /**
+     * `pl-resting-hr` — the single `RestingHeartRateRecord` for the user's learned resting-HR
+     * baseline ([com.pulseloop.data.entity.UserProfileEntity.hrRestingBaseline]). A constant id:
+     * there is exactly one baseline, so a re-learned value re-upserts the SAME record in place
+     * rather than accumulating one per re-learn. `clientRecordVersion` = the baseline's
+     * `hrRestingBaselineUpdatedAt` — a re-learn always advances it, so the newer value wins the
+     * upsert (and it is never the metric value itself).
+     */
+    const val RESTING_HR_RECORD_ID = "pl-resting-hr"
+
+    /**
+     * `pl-meal-<mealId>` — one `NutritionRecord` per [com.pulseloop.data.entity.MealEntryEntity].
+     * The meal's Room primary key is a stable UUID: a logged meal is insert-once (never churned on
+     * re-sync the way sleep blocks are), so it is a safe upsert key. `clientRecordVersion` = the
+     * meal's `createdAt`.
+     */
+    fun nutritionRecordId(mealId: String): String = "pl-meal-$mealId"
+
+    // ── Phase 5 plausibility guards ──
+    //
+    // Each guard is the intersection of (a) the platform bound Health Connect enforces on insert
+    // (a violation throws and would sink the whole 200-record chunk) and (b) the app's own
+    // data-quality range (RingEventBridge's plausibility windows), so a 0 sentinel or a
+    // misdecoded live value never reaches a write-only store. Following Gadgetbridge and the Phase
+    // 1 style, an out-of-range value is DROPPED, never clamped; NaN / ±∞ fall out of every
+    // comparison and are dropped for free.
+
+    /**
+     * Systolic mmHg — the app's own floor (RingEventBridge.systolicRange 60) intersected with the
+     * platform ceiling (⚠️ 200, from the BloodPressureRecord clinit; 201+ would throw and sink the
+     * whole chunk). The app's decode range is 60..250 but the platform only accepts 20..200.
+     */
+    fun isPlausibleSystolic(mmHg: Double): Boolean = mmHg.isFinite() && mmHg in 60.0..MAX_SYSTOLIC_MMHG
+
+    /**
+     * Diastolic mmHg — the app's own range (RingEventBridge.diastolicRange 30..150). Unlike the
+     * systolic ceiling, the app's diastolic ceiling (150) is TIGHTER than the platform's (180), so
+     * the app range is the binding constraint; a 151..180 reading is within the platform but
+     * implausible by the app's own bar and is dropped for consistency.
+     */
+    fun isPlausibleDiastolic(mmHg: Double): Boolean = mmHg.isFinite() && mmHg in 30.0..150.0
+
+    /** Health Connect's systolic ceiling, mmHg (BloodPressureRecord clinit; binds over the app's 250). */
+    const val MAX_SYSTOLIC_MMHG = 200.0
+
+    /** One side of a blood-pressure reading, reduced to what [pairBloodPressure] needs. */
+    data class BpSide(val timestampMs: Long, val value: Double, val createdAt: Long)
+
+    /** A matched, plausible blood-pressure pair ready to become one [BloodPressureRecord]. */
+    data class BpPair(val timestampMs: Long, val systolic: Double, val diastolic: Double, val highWater: Long)
+
+    /**
+     * The outcome of [pairBloodPressure]: the exportable [pairs] plus the drop counts, so the
+     * exporter can report dropped readings as skipped (consistent with the other groups' skipped
+     * counters). [unpaired] = a timestamp present on only one side (a decode/storage anomaly);
+     * [outOfRange] = a matched pair with an implausible systolic or diastolic.
+     */
+    data class BpPairingResult(val pairs: List<BpPair>, val unpaired: Int, val outOfRange: Int) {
+        val dropped: Int get() = unpaired + outOfRange
+    }
+
+    /**
+     * Pairs systolic + diastolic rows by EXACT timestamp equality into [BpPair]s (plan Phase 5).
+     * The app always writes the pair with one `event.timestamp`, so exact equality is correct - a
+     * tolerance would risk cross-pairing two nearby readings. A timestamp present on only one side
+     * (an unpaired reading - a decode/storage anomaly) and a pair with an out-of-range value are
+     * dropped, never clamped. [highWater] is the max of the pair's two `createdAt`s, so the
+     * exporter can advance the group watermark only past a value whose rows BOTH reached Health
+     * Connect. Pure (no DB) so the pairing rules - the part that decides what a BP reading exports
+     * as - are unit-testable.
+     */
+    fun pairBloodPressure(sys: List<BpSide>, dia: List<BpSide>): BpPairingResult {
+        val sysByTs = HashMap<Long, BpSide>()
+        for (s in sys) sysByTs[s.timestampMs] = s
+        val diaByTs = HashMap<Long, BpSide>()
+        for (d in dia) diaByTs[d.timestampMs] = d
+        val out = mutableListOf<BpPair>()
+        var unpaired = 0
+        var outOfRange = 0
+        for (ts in (sysByTs.keys + diaByTs.keys).toSet().sorted()) {
+            val s = sysByTs[ts]
+            val d = diaByTs[ts]
+            if (s == null || d == null) { unpaired++; continue } // a reading on only one side
+            if (!isPlausibleSystolic(s.value) || !isPlausibleDiastolic(d.value)) { outOfRange++; continue }
+            out += BpPair(ts, s.value, d.value, maxOf(s.createdAt, d.createdAt))
+        }
+        return BpPairingResult(out, unpaired, outOfRange)
+    }
+
+    /**
+     * Blood glucose, mg/dL. The floor is the app's own range (20, RingEventBridge.bloodSugarRange)
+     * so a 0 sentinel / artifact is dropped; the ceiling is the platform's hard cap — ⚠️ 900.0
+     * mg/dL, NOT the plan's 900.91. Verified against the 1.1.0 bytecode: MAX_BLOOD_GLUCOSE_LEVEL
+     * is 50 mmol/L and the client's mg/dL→mmol/L factor is exactly 1/18, so 50 mmol/L = 900.0
+     * mg/dL (900.0 maps to 50.0, accepted; 900.01 maps to 50.0006 and THROWS). Gadgetbridge's
+     * 900.91 guard is looser than the platform and would let (900.0, 900.91] through to a throwing
+     * constructor - the whole chunk would sink. The app's own bridge range is 20..600
+     * (RingEventBridge), so (600, 900] is unreachable from a ring; the guard still uses the
+     * platform ceiling (900.0) rather than 600 so a legitimately high value (if ever stored) would
+     * still export instead of being silently dropped.
+     */
+    fun isPlausibleBloodGlucose(mgDl: Double): Boolean = mgDl.isFinite() && mgDl in 20.0..MAX_BLOOD_GLUCOSE_MGDL
+
+    /** Health Connect's hard glucose ceiling, mg/dL (= 50 mmol/L at the client's 1/18 factor). */
+    const val MAX_BLOOD_GLUCOSE_MGDL = 900.0
+
+    /** Respiratory rate, breaths/min — the app's own range (RingEventBridge 5..60), inside the platform 0..1000. */
+    fun isPlausibleRespRate(breathsPerMin: Double): Boolean = breathsPerMin.isFinite() && breathsPerMin in 5.0..60.0
+
+    /** VO2max, mL/kg/min — the app's own range (RingEventBridge 1..100); the platform bound is 0..100. */
+    fun isPlausibleVo2Max(mlPerKgMin: Double): Boolean = mlPerKgMin.isFinite() && mlPerKgMin in 1.0..100.0
+
+    /** Resting HR, bpm — the platform bound (⚠️ 1..300; the platform rejects 0, unlike the client). */
+    fun isPlausibleRestingHr(bpm: Double): Boolean = bpm.isFinite() && bpm in 1.0..300.0
+
+    // ── Phase 5 nutrition (NutritionRecord) ──
+    //
+    // NutritionRecord's clinit bounds (verified from the 1.1.0 AAR): energy 0..1e8 cal; the macro
+    // masses (protein/carbs/fat/fiber/sugar) 0..100,000 g; sodium is a micronutrient capped at
+    // 100 g = 100,000 mg (and is built with Mass.milligrams, not grams). A meal comes only from the
+    // manual "Log Meal" dialog and is normally tiny, but a typo must not sink the whole 200-record
+    // chunk, so an out-of-range meal is DROPPED (never clamped), like every other guard here.
+
+    /**
+     * Meal energy, kcal. The platform cap is `Energy.calories(100_000_000)` (verified from the
+     * 1.1.0 clinit) and [androidx.health.connect.client.units.Energy.calories] is SMALL calories,
+     * so that is 100,000,000 cal = **100,000 kcal** - NOT 1e8 kcal. A 0-calorie meal carries no
+     * energy field; a value above 100,000 kcal would throw from the ctor (sink the chunk), so the
+     * guard drops it. (An earlier 1e8 *kcal* cap was 1000x too loose - caught in review.)
+     */
+    fun isPlausibleNutritionEnergyKcal(kcal: Double): Boolean = kcal.isFinite() && kcal > 0.0 && kcal <= MAX_NUTRITION_ENERGY_KCAL
+
+    /** A macro mass in grams (or sodium in mg — same numeric cap), 0..100,000. */
+    fun isPlausibleNutritionMass(value: Double): Boolean = value.isFinite() && value > 0.0 && value <= MAX_NUTRITION_MASS_G
+
+    const val MAX_NUTRITION_ENERGY_KCAL = 100_000.0
+    const val MAX_NUTRITION_MASS_G = 100_000.0
+
+    /**
+     * [com.pulseloop.data.entity.MealEntryEntity.mealTypeRaw] (one of breakfast/lunch/dinner/snack,
+     * the app's own four) → the client's [MealType] int. Anything unrecognized degrades to
+     * MEAL_TYPE_UNKNOWN (the meal is real, just unclassified).
+     */
+    fun nutritionMealType(mealTypeRaw: String): Int = when (mealTypeRaw) {
+        "breakfast" -> MealType.MEAL_TYPE_BREAKFAST
+        "lunch" -> MealType.MEAL_TYPE_LUNCH
+        "dinner" -> MealType.MEAL_TYPE_DINNER
+        "snack" -> MealType.MEAL_TYPE_SNACK
+        else -> MealType.MEAL_TYPE_UNKNOWN
     }
 }

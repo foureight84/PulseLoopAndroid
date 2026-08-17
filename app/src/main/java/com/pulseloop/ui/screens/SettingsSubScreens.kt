@@ -2533,6 +2533,12 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                         HealthConnectPermissions.DataTypeRow.STEPS_AND_ACTIVITY to "Steps & activity",
                         HealthConnectPermissions.DataTypeRow.WORKOUTS to "Workouts",
                         HealthConnectPermissions.DataTypeRow.NUTRITION to "Nutrition",
+                        // Phase 5 (beyond iOS).
+                        HealthConnectPermissions.DataTypeRow.BLOOD_PRESSURE to "Blood pressure",
+                        HealthConnectPermissions.DataTypeRow.BLOOD_GLUCOSE to "Blood glucose",
+                        HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE to "Respiratory rate",
+                        HealthConnectPermissions.DataTypeRow.VO2_MAX to "VO\u2082 max",
+                        HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE to "Resting heart rate",
                     )
                     for ((row, label) in rows) {
                         val rowPerms = HealthConnectPermissions.permissionsForRow(row)

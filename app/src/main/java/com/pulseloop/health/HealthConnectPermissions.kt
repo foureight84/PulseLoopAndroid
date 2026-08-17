@@ -3,13 +3,19 @@ package com.pulseloop.health
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
 import androidx.health.connect.client.records.BodyTemperatureRecord
+import androidx.health.connect.client.records.BloodGlucoseRecord
+import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.NutritionRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.RespiratoryRateRecord
+import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.Vo2MaxRecord
 
 /**
  * Health Connect write permissions grouped by logical data type, derived from the record
@@ -39,6 +45,11 @@ object HealthConnectPermissions {
         STEPS_AND_ACTIVITY,
         WORKOUTS,
         NUTRITION,
+        BLOOD_PRESSURE,
+        BLOOD_GLUCOSE,
+        RESPIRATORY_RATE,
+        VO2_MAX,
+        RESTING_HEART_RATE,
     }
 
     val heartRate: Set<String> = setOf(HealthPermission.getWritePermission(HeartRateRecord::class))
@@ -52,6 +63,14 @@ object HealthConnectPermissions {
     val exercise: Set<String> = setOf(HealthPermission.getWritePermission(ExerciseSessionRecord::class))
     val exerciseRoute: Set<String> = setOf(HealthPermission.PERMISSION_WRITE_EXERCISE_ROUTE)
 
+    // Phase 5 (beyond iOS) — declared and requested from this phase on.
+    val nutrition: Set<String> = setOf(HealthPermission.getWritePermission(NutritionRecord::class))
+    val bloodPressure: Set<String> = setOf(HealthPermission.getWritePermission(BloodPressureRecord::class))
+    val bloodGlucose: Set<String> = setOf(HealthPermission.getWritePermission(BloodGlucoseRecord::class))
+    val respiratoryRate: Set<String> = setOf(HealthPermission.getWritePermission(RespiratoryRateRecord::class))
+    val vo2Max: Set<String> = setOf(HealthPermission.getWritePermission(Vo2MaxRecord::class))
+    val restingHeartRate: Set<String> = setOf(HealthPermission.getWritePermission(RestingHeartRateRecord::class))
+
     /** Every write permission the app requests via the master toggle. */
     val all: Set<String> = buildSet {
         addAll(heartRate)
@@ -64,12 +83,15 @@ object HealthConnectPermissions {
         addAll(distance)
         addAll(exercise)
         addAll(exerciseRoute)
+        addAll(nutrition)
+        addAll(bloodPressure)
+        addAll(bloodGlucose)
+        addAll(respiratoryRate)
+        addAll(vo2Max)
+        addAll(restingHeartRate)
     }
 
-    /**
-     * The permissions backing one settings-screen row. NUTRITION is empty in Phase 0: its
-     * permission is not declared until Phase 5, and the toggle is stored now, enforced then.
-     */
+    /** The permissions backing one settings-screen row. */
     fun permissionsForRow(row: DataTypeRow): Set<String> = when (row) {
         DataTypeRow.HEART_RATE -> heartRate
         DataTypeRow.OXYGEN_SATURATION -> oxygenSaturation
@@ -78,18 +100,31 @@ object HealthConnectPermissions {
         DataTypeRow.SLEEP -> sleep
         DataTypeRow.STEPS_AND_ACTIVITY -> steps + activeCalories + distance
         DataTypeRow.WORKOUTS -> exercise + exerciseRoute
-        DataTypeRow.NUTRITION -> emptySet()
+        DataTypeRow.NUTRITION -> nutrition
+        DataTypeRow.BLOOD_PRESSURE -> bloodPressure
+        DataTypeRow.BLOOD_GLUCOSE -> bloodGlucose
+        DataTypeRow.RESPIRATORY_RATE -> respiratoryRate
+        DataTypeRow.VO2_MAX -> vo2Max
+        DataTypeRow.RESTING_HEART_RATE -> restingHeartRate
     }
 
     /**
      * The single write permission per measurement kind, for the exporter's per-kind check
-     * (plan: "each pass re-checks its own record class against the granted set"). Keys are
-     * `MeasurementEntity.kindRaw` values.
+     * (plan: "each pass re-checks its own record class against the granted set"). Keys are the
+     * exporter's `kindKey` tokens (the short id tokens, e.g. "hr", "bp") - NOT the
+     * `MeasurementEntity.kindRaw` column values (those are the `.name` strings like "HEART_RATE";
+     * VitalsExporter's kindKey → kindRaw map bridges the two). The orchestrator looks this up by
+     * kindKey, so one entry covers a paired record's both source rows ("bp" → both sys + dia).
      */
     val WRITE_PERMISSION_BY_KIND: Map<String, String> = mapOf(
         "hr" to heartRate.first(),
         "spo2" to oxygenSaturation.first(),
         "hrv" to heartRateVariability.first(),
         "temp" to bodyTemperature.first(),
+        // Phase 5 measurement-based kinds (see VitalsExporter's kindKey → kindRaw mapping).
+        "glucose" to bloodGlucose.first(),
+        "resp_rate" to respiratoryRate.first(),
+        "vo2max" to vo2Max.first(),
+        "bp" to bloodPressure.first(),
     )
 }

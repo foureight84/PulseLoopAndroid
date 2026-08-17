@@ -35,8 +35,8 @@
 
     <!-- Phase 8: Health Connect export (write-only). Exactly the Phase 1–4 data types from
          docs/health-connect-integration.md — Phase 5 types (blood pressure, glucose, respiratory
-         rate, VO2max, resting HR, nutrition) join the manifest when that phase lands, so the
-         first permission sheet stays narrow. No READ_* permissions anywhere. -->
+         rate, VO2max, resting HR, nutrition) - the Phase 5 "beyond iOS" types, added in Phase 5 so the
+         first permission sheet stayed narrow. No READ_* permissions anywhere. -->
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
     <uses-permission android:name="android.permission.health.WRITE_OXYGEN_SATURATION" />
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE_VARIABILITY" />
@@ -49,6 +49,13 @@
     <!-- Singular on purpose: the official docs note WRITE_EXERCISE_ROUTE is singular while
          READ_EXERCISE_ROUTES is plural. -->
     <uses-permission android:name="android.permission.health.WRITE_EXERCISE_ROUTE" />
+    <!-- Phase 5 (beyond iOS). Verbatim values of HealthPermission.WRITE_* (1.1.0 AAR). -->
+    <uses-permission android:name="android.permission.health.WRITE_BLOOD_PRESSURE" />
+    <uses-permission android:name="android.permission.health.WRITE_BLOOD_GLUCOSE" />
+    <uses-permission android:name="android.permission.health.WRITE_RESPIRATORY_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_VO2_MAX" />
+    <uses-permission android:name="android.permission.health.WRITE_RESTING_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_NUTRITION" />
 
     <application
         android:name=".PulseLoopApplication"

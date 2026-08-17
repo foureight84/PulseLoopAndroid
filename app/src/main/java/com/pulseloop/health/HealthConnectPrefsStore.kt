@@ -30,6 +30,12 @@ data class HealthConnectPrefs(
     val stepsAndActivity: Boolean = true,
     val workouts: Boolean = true,
     val nutrition: Boolean = true,
+    // Phase 5 data types (beyond iOS); all default ON under the master toggle (iOS parity).
+    val bloodPressure: Boolean = true,
+    val bloodGlucose: Boolean = true,
+    val respiratoryRate: Boolean = true,
+    val vo2Max: Boolean = true,
+    val restingHeartRate: Boolean = true,
     /**
      * First-enable backfill choice. Exports are hard-gated on this in Phase 1: nothing runs
      * while it is [BackfillChoice.NOT_ASKED].
@@ -64,6 +70,11 @@ data class HealthConnectPrefs(
         HealthConnectPermissions.DataTypeRow.STEPS_AND_ACTIVITY -> stepsAndActivity
         HealthConnectPermissions.DataTypeRow.WORKOUTS -> workouts
         HealthConnectPermissions.DataTypeRow.NUTRITION -> nutrition
+        HealthConnectPermissions.DataTypeRow.BLOOD_PRESSURE -> bloodPressure
+        HealthConnectPermissions.DataTypeRow.BLOOD_GLUCOSE -> bloodGlucose
+        HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE -> respiratoryRate
+        HealthConnectPermissions.DataTypeRow.VO2_MAX -> vo2Max
+        HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE -> restingHeartRate
     }
 
     fun withToggleFor(row: HealthConnectPermissions.DataTypeRow, value: Boolean): HealthConnectPrefs =
@@ -76,6 +87,11 @@ data class HealthConnectPrefs(
             HealthConnectPermissions.DataTypeRow.STEPS_AND_ACTIVITY -> copy(stepsAndActivity = value)
             HealthConnectPermissions.DataTypeRow.WORKOUTS -> copy(workouts = value)
             HealthConnectPermissions.DataTypeRow.NUTRITION -> copy(nutrition = value)
+            HealthConnectPermissions.DataTypeRow.BLOOD_PRESSURE -> copy(bloodPressure = value)
+            HealthConnectPermissions.DataTypeRow.BLOOD_GLUCOSE -> copy(bloodGlucose = value)
+            HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE -> copy(respiratoryRate = value)
+            HealthConnectPermissions.DataTypeRow.VO2_MAX -> copy(vo2Max = value)
+            HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE -> copy(restingHeartRate = value)
         }
 
     companion object {
@@ -96,8 +112,9 @@ data class HealthConnectWatermarks(
     val activity: Long? = null,
     val workouts: Long? = null,
     val nutrition: Long? = null,
+    val restingHr: Long? = null,
 ) {
-    enum class Key { VITALS, SLEEP, ACTIVITY, WORKOUTS, NUTRITION }
+    enum class Key { VITALS, SLEEP, ACTIVITY, WORKOUTS, NUTRITION, RESTING_HR }
 
     fun get(key: Key): Long? = when (key) {
         Key.VITALS -> vitals
@@ -105,6 +122,7 @@ data class HealthConnectWatermarks(
         Key.ACTIVITY -> activity
         Key.WORKOUTS -> workouts
         Key.NUTRITION -> nutrition
+        Key.RESTING_HR -> restingHr
     }
 
     fun copyWith(key: Key, value: Long): HealthConnectWatermarks = when (key) {
@@ -113,6 +131,7 @@ data class HealthConnectWatermarks(
         Key.ACTIVITY -> copy(activity = value)
         Key.WORKOUTS -> copy(workouts = value)
         Key.NUTRITION -> copy(nutrition = value)
+        Key.RESTING_HR -> copy(restingHr = value)
     }
 
     companion object {
@@ -169,6 +188,7 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
             activity = if (HealthConnectWatermarks.Key.ACTIVITY in keys) null else currentWatermarks.activity,
             workouts = if (HealthConnectWatermarks.Key.WORKOUTS in keys) null else currentWatermarks.workouts,
             nutrition = if (HealthConnectWatermarks.Key.NUTRITION in keys) null else currentWatermarks.nutrition,
+            restingHr = if (HealthConnectWatermarks.Key.RESTING_HR in keys) null else currentWatermarks.restingHr,
         )
         _watermarks.value = next
         prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
