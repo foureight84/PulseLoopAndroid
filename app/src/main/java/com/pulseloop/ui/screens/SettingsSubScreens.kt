@@ -2462,7 +2462,16 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
         // Grant trigger (Phase 1, extended in Phase 6): a grant — including a grow-reset — is the
         // moment an export should attempt to run. Debounced 15 s + REPLACE, so cheap on re-grants.
         if (got.isNotEmpty()) HealthConnectExportWorker.enqueue(context)
-        if (outcome.allRevoked && !store.current.revocationOfferDismissed) showRevokeResetDialog = true
+        // hadSync guard (mirrors the state-based offer below): only offer a reset when there is
+        // prior export state to actually reset. A grant-then-immediate-revoke with no export yet
+        // has empty watermarks + null lastSyncAt, so the offer would be a no-op with misleading
+        // "re-exports your history" wording.
+        if (outcome.allRevoked && !store.current.revocationOfferDismissed) {
+            val cur = store.current
+            val hadSync = cur.lastSyncAt != null ||
+                HealthConnectWatermarks.Key.values().any { store.currentWatermarks.get(it) != null }
+            if (hadSync) showRevokeResetDialog = true
+        }
     }
 
     // Phase 6: on open, diff the live granted set against the stored one to catch out-of-band
