@@ -120,7 +120,16 @@ object HealthConnectPermissionReconcile {
             val granted = runCatching { client.permissionController.getGrantedPermissions() }
                 .getOrNull() ?: return@launch
             val outcome = reconcile(prefs.lastGrantedPermissions.toSet(), granted.toSet(), store)
-            store.update { it.copy(lastGrantedPermissions = granted.toList().sorted()) }
+            store.update {
+                it.copy(
+                    lastGrantedPermissions = granted.toList().sorted(),
+                    // A grow re-opens the one-shot revocation offer (matching the settings/launcher
+                    // paths), so a later full revocation can still surface it even when this grow
+                    // was detected out-of-band here.
+                    revocationOfferDismissed =
+                        if (outcome.grewGroups.isEmpty()) it.revocationOfferDismissed else false,
+                )
+            }
             if (outcome.grewGroups.isNotEmpty()) HealthConnectExportWorker.enqueue(appContext)
         }
     }
