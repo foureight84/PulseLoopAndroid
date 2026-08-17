@@ -36,6 +36,20 @@ import java.time.ZoneId
 class VitalsExporter(private val db: PulseLoopDatabase) {
 
     /**
+     * kindKey (the id token, e.g. "hr") -> the `measurements.kindRaw` column value to query.
+     * Every write path persists kindRaw = MeasurementKind.<X>.name (EventPersistenceSubscriber,
+     * DemoDataSeeder, MetricsService, MeasurementModal) - so the DAO query MUST use the .name,
+     * not the id token. (The Phase 1 bug: this queried by the .key, which matched no real or demo
+     * data and silently exported nothing for live ring history.)
+     */
+    private val kindRaw: Map<String, String> = mapOf(
+        "hr" to "HEART_RATE",
+        "spo2" to "SPO2",
+        "hrv" to "HRV",
+        "temp" to "TEMPERATURE",
+    )
+
+    /**
      * Records to insert for one vitals kind, with the parallel [highWaters] list: entry i is the
      * max source-row `createdAt` that record i represents, so the exporter can advance the
      * watermark only to a value whose rows all reached Health Connect.
@@ -64,7 +78,7 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
     private suspend fun buildHr(wm: Long, device: Device): PendingKind {
         val dao = db.measurementDao()
         // Watermark selection on createdAt — tells us WHICH local hours are touched…
-        val newRows = dao.createdSince("hr", wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val newRows = dao.createdSince(kindRaw.getValue("hr"), wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
         if (newRows.isEmpty()) return PendingKind("hr", emptyList(), emptyList())
         val zone = ZoneId.systemDefault()
 
@@ -81,7 +95,7 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
             // records from scratch: an hour that gains a sample must re-upsert the whole hour
             // (plan §3). The end bound is exclusive-of-next-hour by one millisecond (BETWEEN is
             // inclusive).
-            val hourRows = dao.rangeReal("hr", hourStart, hourStart + HealthConnectTypeMappings.HOUR_MS - 1)
+            val hourRows = dao.rangeReal(kindRaw.getValue("hr"), hourStart, hourStart + HealthConnectTypeMappings.HOUR_MS - 1)
             val samples = hourRows
                 .filter { it.sourceRaw !in EXCLUDED_SOURCES }
                 .filter { HealthConnectTypeMappings.isPlausibleHr(it.value) }
@@ -116,7 +130,7 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
     // ── instantaneous kinds: one record per row ──
 
     private suspend fun buildInstantaneous(kindKey: String, wm: Long, device: Device): PendingKind {
-        val rows = db.measurementDao().createdSince(kindKey, wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val rows = db.measurementDao().createdSince(kindRaw.getValue(kindKey), wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
         val zone = ZoneId.systemDefault()
         val records = mutableListOf<Record>()
         val highWaters = mutableListOf<Long>()
