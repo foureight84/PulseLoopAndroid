@@ -111,6 +111,7 @@ object HealthConnectRemoval {
                 enabled = false,
                 backfillChoice = HealthConnectPrefs.BackfillChoice.NOT_ASKED,
                 newOnlyStamped = false,
+                newOnlyConsentAt = null,
                 lastSyncAt = null,
                 lastSyncSummary = null,
             )

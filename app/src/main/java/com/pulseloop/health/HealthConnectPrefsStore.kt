@@ -71,6 +71,17 @@ data class HealthConnectPrefs(
      * data" resets this to false so a fresh re-enable re-stamps.
      */
     val newOnlyStamped: Boolean = false,
+    /**
+     * The instant an [BackfillChoice.EXPORT_NEW_ONLY] user's "only new data from now on" consent
+     * took effect — the pass that first stamped every group's watermark to now for that choice
+     * records its timestamp here (see [HealthConnectExporter.run]). [resetWatermarks] clamps a
+     * NEW_ONLY group reset to this instant instead of null: a null group watermark means "export
+     * from epoch", which would re-export the pre-consent history the user explicitly declined.
+     * "Remove PulseLoop data" clears it so a fresh re-enable re-stamps. Old blobs (written before
+     * this field existed) decode to null; [HealthConnectPrefsStore.load] then recovers it from the
+     * earliest watermark for installs that already ran a pre-fix build with EXPORT_NEW_ONLY.
+     */
+    val newOnlyConsentAt: Long? = null,
 ) {
     @Serializable
     enum class BackfillChoice { NOT_ASKED, EXPORT_ALL, EXPORT_NEW_ONLY }
@@ -195,17 +206,33 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
      * [setWatermark] can never rewind, so a deliberate re-export — the Phase 4 netting-flip
      * reset and Phase 6's permission/revocation resets — goes through here. Records re-exported
      * after a reset upsert under the same clientRecordIds, so the pass stays idempotent.
+     *
+     * **EXPORT_NEW_ONLY consent clamp (review MAJOR):** a null group watermark means "export from
+     * epoch" (the exporters select on `createdSince(kind, watermark ?: 0)`). For a user who
+     * chose "only new data from now on", a grow-reset that nulled their watermark would re-export
+     * the pre-consent history they explicitly declined — the Phase 4 netting flip is deliberately
+     * gated on `EXPORT_ALL` for exactly this reason. So when the backfill choice is
+     * [HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY], the named groups are reset to the
+     * consent instant ([HealthConnectPrefs.newOnlyConsentAt], the pass that first stamped them)
+     * instead of null: the re-granted / re-enabled types backfill their post-consent rows and
+     * nothing older. `consent` is null for an `EXPORT_ALL`/`NOT_ASKED` choice — and for a
+     * NEW_ONLY user whose sentinel has not stamped yet (all watermarks null, nothing to clamp) —
+     * preserving the original null-and-backfill-from-epoch behaviour there.
      */
     fun resetWatermarks(keys: Set<HealthConnectWatermarks.Key>) {
         if (keys.isEmpty()) return
-        // copyWith can't null a key; rebuild the blob with the reset keys nulled.
+        val prefs = current
+        val consent: Long? =
+            if (prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) prefs.newOnlyConsentAt else null
+        // copyWith can't null a key; rebuild the blob with the reset keys nulled (or clamped to the
+        // consent instant for EXPORT_NEW_ONLY).
         val next = HealthConnectWatermarks(
-            vitals = if (HealthConnectWatermarks.Key.VITALS in keys) null else currentWatermarks.vitals,
-            sleep = if (HealthConnectWatermarks.Key.SLEEP in keys) null else currentWatermarks.sleep,
-            activity = if (HealthConnectWatermarks.Key.ACTIVITY in keys) null else currentWatermarks.activity,
-            workouts = if (HealthConnectWatermarks.Key.WORKOUTS in keys) null else currentWatermarks.workouts,
-            nutrition = if (HealthConnectWatermarks.Key.NUTRITION in keys) null else currentWatermarks.nutrition,
-            restingHr = if (HealthConnectWatermarks.Key.RESTING_HR in keys) null else currentWatermarks.restingHr,
+            vitals = if (HealthConnectWatermarks.Key.VITALS in keys) consent else currentWatermarks.vitals,
+            sleep = if (HealthConnectWatermarks.Key.SLEEP in keys) consent else currentWatermarks.sleep,
+            activity = if (HealthConnectWatermarks.Key.ACTIVITY in keys) consent else currentWatermarks.activity,
+            workouts = if (HealthConnectWatermarks.Key.WORKOUTS in keys) consent else currentWatermarks.workouts,
+            nutrition = if (HealthConnectWatermarks.Key.NUTRITION in keys) consent else currentWatermarks.nutrition,
+            restingHr = if (HealthConnectWatermarks.Key.RESTING_HR in keys) consent else currentWatermarks.restingHr,
         )
         _watermarks.value = next
         prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
@@ -226,7 +253,29 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
         // the known fields (ignoreUnknownKeys) — a new field must never reset the user's
         // existing choices.
         return try {
-            json.decodeFromString(HealthConnectPrefs.serializer(), raw)
+            val decoded = json.decodeFromString(HealthConnectPrefs.serializer(), raw)
+            // Upgrade-boundary seed (review MINOR): a blob written before [newOnlyStamped] existed
+            // decodes it to false. An install that already ran a pre-fix build with
+            // EXPORT_NEW_ONLY took the old `wm0.vitals == null` first-enable branch, which stamped
+            // the watermarks to the consent instant — so re-running the sentinel after the update
+            // would re-stamp every group to now and silently drop the rows pending since the last
+            // pass (the failure mode the flag was added to prevent, relocated to the update).
+            // When the key is absent AND any watermark is non-null, that stamp has already
+            // happened: seed the flag true and recover the consent instant from the earliest
+            // watermark. Every watermark was stamped to the consent instant and only ever advanced
+            // forward, so the min is >= the true consent — safe, never a pre-consent leak. A
+            // fresh NEW_ONLY choice has all-null watermarks, so this never suppresses the
+            // legitimate first stamp.
+            if (!raw.contains("\"newOnlyStamped\"")) {
+                val wms = loadWatermarks()
+                val stamped = listOfNotNull(
+                    wms.vitals, wms.sleep, wms.activity, wms.workouts, wms.nutrition, wms.restingHr,
+                )
+                if (stamped.isNotEmpty()) {
+                    return decoded.copy(newOnlyStamped = true, newOnlyConsentAt = stamped.min())
+                }
+            }
+            decoded
         } catch (_: Exception) {
             HealthConnectPrefs.DEFAULT
         }

@@ -239,4 +239,118 @@ class HealthConnectPrefsStoreTest {
             fake.map["pulseloop.healthconnect.watermarks.v1"] as String,
         )
     }
+
+    // ── Review pass 2 (PR #50): EXPORT_NEW_ONLY consent clamp + upgrade-boundary seed ──
+
+    @Test
+    fun resetWatermarksClampsToConsentInstantForNewOnly() {
+        // A NEW_ONLY user's grow-reset must NOT null the watermark (null = export-from-epoch =
+        // the pre-consent history the user declined leaks). It clamps to the consent instant.
+        val store = storeWith(null)
+        store.update {
+            it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY, newOnlyConsentAt = 1000L)
+        }
+        store.setWatermark(HealthConnectWatermarks.Key.VITALS, 5000) // advanced well past consent
+        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, 2000)
+        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.VITALS))
+        assertEquals(1000L, store.currentWatermarks.vitals) // clamped, not null
+        assertEquals(2000L, store.currentWatermarks.sleep) // not named -> untouched
+    }
+
+    @Test
+    fun resetWatermarksStillNullsForNonNewOnly() {
+        // EXPORT_ALL / NOT_ASKED users keep the original null-and-backfill-from-epoch behaviour —
+        // the consent clamp applies only to EXPORT_NEW_ONLY.
+        val store = storeWith("{\"enabled\":true,\"backfillChoice\":\"EXPORT_ALL\"}")
+        store.setWatermark(HealthConnectWatermarks.Key.VITALS, 5000)
+        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.VITALS))
+        assertNull(store.currentWatermarks.vitals)
+    }
+
+    @Test
+    fun resetWatermarksClampsEveryNamedKeyToConsent() {
+        val store = storeWith(null)
+        store.update {
+            it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY, newOnlyConsentAt = 700L)
+        }
+        store.setWatermark(HealthConnectWatermarks.Key.VITALS, 9000)
+        store.setWatermark(HealthConnectWatermarks.Key.NUTRITION, 8000)
+        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, 9500)
+        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.VITALS, HealthConnectWatermarks.Key.NUTRITION))
+        assertEquals(700L, store.currentWatermarks.vitals)
+        assertEquals(700L, store.currentWatermarks.nutrition)
+        assertEquals(9500L, store.currentWatermarks.activity) // not named -> untouched
+    }
+
+    @Test
+    fun resetWatermarksClampIsIdempotentAndPersists() {
+        // The clamp value is on disk (the process can die between reset and re-export) and a
+        // fresh store over the same prefs sees it.
+        val fake = FakeSharedPreferences()
+        val store = HealthConnectPrefsStore(fake)
+        store.update {
+            it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY, newOnlyConsentAt = 1200L)
+        }
+        store.setWatermark(HealthConnectWatermarks.Key.VITALS, 4000)
+        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.VITALS))
+        val reloaded = HealthConnectPrefsStore(fake)
+        assertEquals(1200L, reloaded.currentWatermarks.vitals)
+    }
+
+    @Test
+    fun loadSeedsNewOnlyFlagsFromNonNullWatermarkWhenKeyAbsent() {
+        // Upgrade boundary: a pre-fix blob has no newOnlyStamped/newOnlyConsentAt keys but its
+        // watermarks were already stamped to the consent instant by the old null-inference
+        // sentinel. Re-running the new sentinel would re-stamp to now and drop pending rows, so
+        // load() seeds both flags from the earliest watermark (every watermark >= consent, so the
+        // min is a safe, never-leaking consent instant).
+        val fake = FakeSharedPreferences()
+        fake.edit().putString(
+            "pulseloop.healthconnect.v1",
+            "{\"enabled\":true,\"backfillChoice\":\"EXPORT_NEW_ONLY\"}",
+        ).apply()
+        fake.edit().putString(
+            "pulseloop.healthconnect.watermarks.v1",
+            "{\"vitals\":4000,\"sleep\":2000,\"activity\":3000,\"workouts\":1500,\"nutrition\":null,\"restingHr\":null}",
+        ).apply()
+        val store = HealthConnectPrefsStore(fake)
+        assertTrue(store.current.newOnlyStamped) // seeded from the non-null watermarks
+        assertEquals(1500L, store.current.newOnlyConsentAt) // earliest watermark
+    }
+
+    @Test
+    fun loadDoesNotSeedNewOnlyWhenAllWatermarksNull() {
+        // A fresh NEW_ONLY choice with no pass yet has all-null watermarks: load() must NOT seed
+        // newOnlyStamped, or the legitimate first stamp (the sentinel) would be suppressed.
+        val fake = FakeSharedPreferences()
+        fake.edit().putString(
+            "pulseloop.healthconnect.v1",
+            "{\"enabled\":true,\"backfillChoice\":\"EXPORT_NEW_ONLY\"}",
+        ).apply()
+        fake.edit().putString(
+            "pulseloop.healthconnect.watermarks.v1",
+            "{\"vitals\":null,\"sleep\":null,\"activity\":null,\"workouts\":null,\"nutrition\":null,\"restingHr\":null}",
+        ).apply()
+        val store = HealthConnectPrefsStore(fake)
+        assertFalse(store.current.newOnlyStamped)
+        assertNull(store.current.newOnlyConsentAt)
+    }
+
+    @Test
+    fun loadDoesNotSeedWhenNewOnlyStampedKeyPresent() {
+        // The seed fires only when the key is ABSENT (a pre-fix blob). When it is present (written
+        // by the current code) the stored value is authoritative, even if it is false alongside a
+        // non-null watermark — the grow-reset case the flag was added for.
+        val fake = FakeSharedPreferences()
+        fake.edit().putString(
+            "pulseloop.healthconnect.v1",
+            "{\"enabled\":true,\"backfillChoice\":\"EXPORT_NEW_ONLY\",\"newOnlyStamped\":false}",
+        ).apply()
+        fake.edit().putString(
+            "pulseloop.healthconnect.watermarks.v1",
+            "{\"vitals\":4000,\"sleep\":null,\"activity\":null,\"workouts\":null,\"nutrition\":null,\"restingHr\":null}",
+        ).apply()
+        val store = HealthConnectPrefsStore(fake)
+        assertFalse(store.current.newOnlyStamped) // key present -> stored value wins, not seeded
+    }
 }

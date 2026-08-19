@@ -217,9 +217,15 @@ class HealthConnectExporter(
         // Phase 6 grow-reset also nulls the VITALS watermark when a permission is granted out of
         // band, and inferring "first enable" from that would re-stamp every group to now and
         // silently drop the rows pending between the reset and this pass.
+        //
+        // [HealthConnectPrefs.newOnlyConsentAt] records this stamp's instant as the consent
+        // boundary: a later grow-reset (permission re-grant or a re-enabled vitals toggle) resets
+        // the affected group's watermark, and [HealthConnectPrefsStore.resetWatermarks] clamps it
+        // back to this instant rather than null for a NEW_ONLY user — otherwise a null watermark
+        // means "export from epoch" and the pre-consent history the user declined would re-export.
         if (prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY && !prefs.newOnlyStamped) {
             HealthConnectWatermarks.Key.values().forEach { store.setWatermark(it, timestamp) }
-            store.update { it.copy(newOnlyStamped = true) }
+            store.update { it.copy(newOnlyStamped = true, newOnlyConsentAt = timestamp) }
             return PassResult(
                 inserted = emptyMap(),
                 skipped = listOf("all (backfill choice: export new data only — watermarks stamped)"),

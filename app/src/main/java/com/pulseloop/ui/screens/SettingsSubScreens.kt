@@ -2429,7 +2429,13 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
     val availability = remember { HealthConnectSdk.availability(context) }
     val granted = prefs.lastGrantedPermissions.toSet()
     var statusMessage by remember { mutableStateOf<String?>(null) }
-    var showBackfillDialog by remember { mutableStateOf(false) }
+    // Backfill dialog derived from persisted state (review MINOR): a rotation or process death
+    // while it is up would otherwise destroy a `remember`ed flag WITHOUT running
+    // onDismissRequest, stranding enabled=true + backfillChoice=NOT_ASKED — the hard-gated
+    // "Connected but nothing exports" state with no re-offer. Deriving it the way the revocation
+    // offer does makes recreation re-show it and makes the explicit dismiss redundant.
+    val showBackfillDialog = prefs.enabled && prefs.isConnected &&
+        prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.NOT_ASKED
     // Phase 6: full-revocation offer + "remove PulseLoop data" confirmation.
     var showRevokeResetDialog by remember { mutableStateOf(false) }
     var showRemoveDialog by remember { mutableStateOf(false) }
@@ -2454,11 +2460,10 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
         } else {
             "Connected. ${got.size} of ${HealthConnectPermissions.all.size} permission types granted."
         }
-        // First-enable backfill dialog; while NOT_ASKED the Phase 1 worker's hard gate keeps the
+        // First-enable backfill dialog: the derived showBackfillDialog above now turns true from
+        // the persisted state (enabled + connected + NOT_ASKED) this callback just set, so there
+        // is nothing to set imperatively. While NOT_ASKED the Phase 1 worker's hard gate keeps the
         // export from running, so the enqueue below is a no-op until the choice is made.
-        if (got.isNotEmpty() && store.current.backfillChoice == HealthConnectPrefs.BackfillChoice.NOT_ASKED) {
-            showBackfillDialog = true
-        }
         // Grant trigger (Phase 1, extended in Phase 6): a grant — including a grow-reset — is the
         // moment an export should attempt to run. Debounced 15 s + REPLACE, so cheap on re-grants.
         if (got.isNotEmpty()) HealthConnectExportWorker.enqueue(context)
@@ -2683,25 +2688,24 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
 
     if (showBackfillDialog) {
         AlertDialog(
-            // Dismissing (back / outside tap) is a Cancel: iOS's equivalent sets
-            // masterEnabled = false. Without this the export stays enabled but hard-gated on
-            // backfillChoice=NOT_ASKED, so nothing ever exports and the dialog is never
-            // re-offered until the master switch is cycled. Turning the master off keeps the
-            // on-screen state honest (and re-enabling re-offers the dialog).
-            onDismissRequest = { showBackfillDialog = false; store.update { it.copy(enabled = false) } },
+            // Dismissing (back / outside tap) is a Cancel: iOS's equivalent sets masterEnabled =
+            // false. Turning the master off flips the derived showBackfillDialog above back to
+            // false (it no longer holds enabled + connected + NOT_ASKED), which also keeps the
+            // on-screen state honest — re-enabling re-offers the dialog.
+            onDismissRequest = { store.update { it.copy(enabled = false) } },
             title = { Text("How much history should we export?") },
-            text = { Text("Exporting all history can take a while on the first run. You can change this later.") },
+            // No "change this later" promise: there is no UI to change backfillChoice short of
+            // "Remove PulseLoop data", which resets it to NOT_ASKED and re-offers this dialog.
+            text = { Text("Exporting all history can take a while on the first run.") },
             confirmButton = {
                 TextButton(onClick = {
                     store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_ALL) }
-                    showBackfillDialog = false
                     HealthConnectExportWorker.enqueue(context) // answer the gate → run the pass
                 }) { Text("Sync all history") }
             },
             dismissButton = {
                 TextButton(onClick = {
                     store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) }
-                    showBackfillDialog = false
                     HealthConnectExportWorker.enqueue(context) // stamps watermarks, exports nothing
                 }) { Text("Only new data from now on") }
             },
