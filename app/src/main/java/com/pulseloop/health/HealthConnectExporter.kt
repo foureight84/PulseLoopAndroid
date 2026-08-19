@@ -139,6 +139,22 @@ internal fun workoutsWatermarkAdvance(
 ): Long = if (allCompleted) maxOf(lastCompletedHighWater, invalidHighWater ?: 0L) else lastCompletedHighWater
 
 /**
+ * Read-site consent clamp (review pass 3): the single place the EXPORT_NEW_ONLY boundary is
+ * enforced, instead of at every watermark-nulling write site. A null group watermark is
+ * overloaded — it means both "never exported" and "export from epoch"
+ * (`createdSince(kind, 0)`) — so any path that nulls one (resetWatermarks, clearWatermarks
+ * from removal or the revocation dialog) would otherwise silently re-export a NEW_ONLY user's
+ * pre-consent history. Clamping the SELECT watermark to the consent instant here makes every
+ * nulling path safe by construction: the exporter reads `max(stored ?: 0, newOnlyConsentAt ?: 0)`
+ * rather than `stored ?: 0`. `newOnlyConsentAt` is only non-null for an EXPORT_NEW_ONLY user
+ * (the sentinel records it), so this is a no-op for EXPORT_ALL / NOT_ASKED. The STORED watermark
+ * still drives the monotonic advance — the caller compares against `stored`, not this value —
+ * so only the SELECT is clamped.
+ */
+internal fun effectiveWatermark(storedWatermark: Long?, newOnlyConsentAt: Long?): Long =
+    maxOf(storedWatermark ?: 0L, newOnlyConsentAt ?: 0L)
+
+/**
  * If [e] carries the platform's single-record size-limit message and [records] contains an
  * [ExerciseSessionRecord] whose route is long enough to decimate, returns a copy of the list
  * with those routes cut to ~[HealthConnectTypeMappings.ROUTE_SHRINK_MARGIN] of the limit
@@ -309,7 +325,7 @@ class HealthConnectExporter(
                 skipped += kindLabels.getValue(kindKey) + " (permission not granted)"
                 continue
             }
-            val pending = exporter.build(kindKey, vitalsWm, device)
+            val pending = exporter.build(kindKey, effectiveWatermark(vitalsWm, prefs.newOnlyConsentAt), device)
             val progress = insertChunked(pending.records, pending.highWaters) { chunk ->
                 client.insertRecords(chunk)
             }
@@ -349,7 +365,7 @@ class HealthConnectExporter(
             if (permission !in granted) {
                 skipped += "sleep (permission not granted)"
             } else {
-                val sleepPending = SleepExporter(db).build(wm0.sleep, device)
+                val sleepPending = SleepExporter(db).build(effectiveWatermark(wm0.sleep, prefs.newOnlyConsentAt), device)
                 val sleepProgress = insertChunked(sleepPending.records, sleepPending.highWaters) { chunk ->
                     client.insertRecords(chunk)
                 }
@@ -401,7 +417,7 @@ class HealthConnectExporter(
             val metrics = metricPermissions.filterValues { it in granted }.keys
             if (metrics.isNotEmpty()) {
                 val activityPending = ActivityExporter(db).build(
-                    watermark = wm0.activity,
+                    watermark = effectiveWatermark(wm0.activity, prefs.newOnlyConsentAt),
                     device = device,
                     metrics = metrics,
                     // Netting is only correct while the workout records it compensates for are
@@ -456,7 +472,7 @@ class HealthConnectExporter(
                 val withEnergy = HealthConnectPermissions.activeCalories.first() in granted
                 val withDistance = HealthConnectPermissions.distance.first() in granted
                 val workoutsPending = WorkoutExporter(db).build(
-                    wm0.workouts, device, withRoute, withEnergy, withDistance, timestamp,
+                    effectiveWatermark(wm0.workouts, prefs.newOnlyConsentAt), device, withRoute, withEnergy, withDistance, timestamp,
                 )
                 val workoutsProgress = insertChunked(workoutsPending.records, workoutsPending.highWaters) { chunk ->
                     insertChunkWithRouteShrink(chunk) { client.insertRecords(it) }
@@ -509,7 +525,7 @@ class HealthConnectExporter(
             if (restingPermission !in granted) {
                 skipped += "resting heart rate (permission not granted)"
             } else {
-                val restingPending = RestingHeartRateExporter(db).build(wm0.restingHr, device)
+                val restingPending = RestingHeartRateExporter(db).build(effectiveWatermark(wm0.restingHr, prefs.newOnlyConsentAt), device)
                 if (restingPending.records.isEmpty()) {
                     // Nothing to export (no baseline yet, already current, or implausible): the
                     // group's "everything exported" point is now - same rule as the other groups.
@@ -548,7 +564,7 @@ class HealthConnectExporter(
             if (nutritionPermission !in granted) {
                 skipped += "nutrition (permission not granted)"
             } else {
-                val nutritionPending = NutritionExporter(db).build(wm0.nutrition, device)
+                val nutritionPending = NutritionExporter(db).build(effectiveWatermark(wm0.nutrition, prefs.newOnlyConsentAt), device)
                 if (nutritionPending.records.isEmpty()) {
                     // Nothing new (or nothing exportable) for nutrition: its "everything exported"
                     // point is now - same rule as the other groups.

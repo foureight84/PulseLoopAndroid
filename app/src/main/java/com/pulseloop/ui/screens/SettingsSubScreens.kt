@@ -2433,8 +2433,13 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
     // while it is up would otherwise destroy a `remember`ed flag WITHOUT running
     // onDismissRequest, stranding enabled=true + backfillChoice=NOT_ASKED — the hard-gated
     // "Connected but nothing exports" state with no re-offer. Deriving it the way the revocation
-    // offer does makes recreation re-show it and makes the explicit dismiss redundant.
-    val showBackfillDialog = prefs.enabled && prefs.isConnected &&
+    // offer does makes recreation re-show it and makes the explicit dismiss redundant. Also gated
+    // on Health Connect being AVAILABLE (review pass 3): the old imperative flag could only be set
+    // from the permission-launcher callback, reachable only in the AVAILABLE branch, so a
+    // device whose provider is uninstalled / needs an update never saw this dialog on top of the
+    // "needs an update" card.
+    val showBackfillDialog = availability == HealthConnectAvailability.AVAILABLE &&
+        prefs.enabled && prefs.isConnected &&
         prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.NOT_ASKED
     // Phase 6: full-revocation offer + "remove PulseLoop data" confirmation.
     var showRevokeResetDialog by remember { mutableStateOf(false) }

@@ -378,4 +378,36 @@ class HealthConnectExporterTest {
         }
         assertEquals(1, attempts)
     }
+
+    // ── Review pass 3: the read-site consent clamp (effectiveWatermark) ──
+
+    @Test
+    fun effectiveWatermarkIsNoOpWithoutConsent() {
+        // EXPORT_ALL / NOT_ASKED: newOnlyConsentAt is null, so the clamp is a no-op — a null
+        // stored watermark still means export-from-epoch (the pre-NEW_ONLY behaviour).
+        assertEquals(0L, effectiveWatermark(null, null))
+        assertEquals(5000L, effectiveWatermark(5000L, null))
+    }
+
+    @Test
+    fun effectiveWatermarkClampsNullStoredToConsent() {
+        // The core leak (finding 1 + 3): a null group watermark nulled by clearWatermarks
+        // (removal / revocation dialog) or by a racing reset would otherwise read as epoch. The
+        // clamp floors it at the consent instant, so pre-consent history is never selected.
+        assertEquals(1000L, effectiveWatermark(null, 1000L))
+    }
+
+    @Test
+    fun effectiveWatermarkFloorsAValueBelowConsent() {
+        // A stored watermark below the consent (e.g. a rewind) is floored back up to consent.
+        assertEquals(1000L, effectiveWatermark(500L, 1000L))
+    }
+
+    @Test
+    fun effectiveWatermarkKeepsStoredWhenAtOrAboveConsent() {
+        // A stored watermark that has advanced past the consent is kept — the monotonic advance
+        // is not perturbed by the clamp (only the SELECT floor is raised).
+        assertEquals(1000L, effectiveWatermark(1000L, 1000L))
+        assertEquals(5000L, effectiveWatermark(5000L, 1000L))
+    }
 }

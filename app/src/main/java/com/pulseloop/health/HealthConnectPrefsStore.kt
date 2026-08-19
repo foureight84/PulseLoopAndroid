@@ -77,9 +77,9 @@ data class HealthConnectPrefs(
      * records its timestamp here (see [HealthConnectExporter.run]). [resetWatermarks] clamps a
      * NEW_ONLY group reset to this instant instead of null: a null group watermark means "export
      * from epoch", which would re-export the pre-consent history the user explicitly declined.
-     * "Remove PulseLoop data" clears it so a fresh re-enable re-stamps. Old blobs (written before
-     * this field existed) decode to null; [HealthConnectPrefsStore.load] then recovers it from the
-     * earliest watermark for installs that already ran a pre-fix build with EXPORT_NEW_ONLY.
+     * The exporter also clamps every SELECT watermark to this instant at the read site
+     * ([HealthConnectExporter.effectiveWatermark]), which makes every watermark-nulling path safe
+     * by construction. "Remove PulseLoop data" clears it so a fresh re-enable re-stamps.
      */
     val newOnlyConsentAt: Long? = null,
 ) {
@@ -253,29 +253,7 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
         // the known fields (ignoreUnknownKeys) — a new field must never reset the user's
         // existing choices.
         return try {
-            val decoded = json.decodeFromString(HealthConnectPrefs.serializer(), raw)
-            // Upgrade-boundary seed (review MINOR): a blob written before [newOnlyStamped] existed
-            // decodes it to false. An install that already ran a pre-fix build with
-            // EXPORT_NEW_ONLY took the old `wm0.vitals == null` first-enable branch, which stamped
-            // the watermarks to the consent instant — so re-running the sentinel after the update
-            // would re-stamp every group to now and silently drop the rows pending since the last
-            // pass (the failure mode the flag was added to prevent, relocated to the update).
-            // When the key is absent AND any watermark is non-null, that stamp has already
-            // happened: seed the flag true and recover the consent instant from the earliest
-            // watermark. Every watermark was stamped to the consent instant and only ever advanced
-            // forward, so the min is >= the true consent — safe, never a pre-consent leak. A
-            // fresh NEW_ONLY choice has all-null watermarks, so this never suppresses the
-            // legitimate first stamp.
-            if (!raw.contains("\"newOnlyStamped\"")) {
-                val wms = loadWatermarks()
-                val stamped = listOfNotNull(
-                    wms.vitals, wms.sleep, wms.activity, wms.workouts, wms.nutrition, wms.restingHr,
-                )
-                if (stamped.isNotEmpty()) {
-                    return decoded.copy(newOnlyStamped = true, newOnlyConsentAt = stamped.min())
-                }
-            }
-            decoded
+            json.decodeFromString(HealthConnectPrefs.serializer(), raw)
         } catch (_: Exception) {
             HealthConnectPrefs.DEFAULT
         }
