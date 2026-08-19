@@ -170,8 +170,13 @@ class ActivityExporter(private val db: PulseLoopDatabase) {
      * years of rows.
      */
     private suspend fun loadNetting(rows: List<ActivityDailyEntity>, zone: ZoneId): WorkoutNetting {
-        val from = rows.minOf { it.date }
-        val to = Instant.ofEpochMilli(rows.maxOf { it.date })
+        // Bound the query on the NORMALIZED day starts (startOfDayLocal), not the raw stored date:
+        // after a timezone change startOfDayLocal(date) can be up to a day earlier than date, and a
+        // session starting in that [normalizedDayStart, date) window maps to the same netting day
+        // key as the daily row — so a raw `from` would exclude it and its energy/distance would not
+        // net out, letting a consumer double-count the workout against the daily aggregate.
+        val from = rows.minOf { TimeUtil.startOfDayLocal(it.date, zone) }
+        val to = Instant.ofEpochMilli(rows.maxOf { TimeUtil.startOfDayLocal(it.date, zone) })
             .atZone(zone).plusDays(1).toInstant().toEpochMilli()
         val sessions = db.activitySessionDao().finishedStartedBetween(from, to)
         if (sessions.isEmpty()) return WorkoutNetting.EMPTY

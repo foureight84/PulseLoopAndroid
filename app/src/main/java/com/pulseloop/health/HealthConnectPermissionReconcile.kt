@@ -71,6 +71,16 @@ object HealthConnectPermissionReconcile {
     fun groupsFor(permissions: Collection<String>): Set<HealthConnectWatermarks.Key> =
         permissions.mapNotNull { PERMISSION_GROUP[it] }.toSet()
 
+    /**
+     * The single export group a settings-screen row belongs to (each row's permissions map to one
+     * group by construction; null on the impossible 0-or-many case). Used to reset the VITALS
+     * watermark when a vitals kind is re-enabled — the toggle-side equivalent of the permission
+     * grow-reset — so the readings recorded while it was off backfill (its shared group watermark
+     * had advanced past them).
+     */
+    fun groupFor(row: HealthConnectPermissions.DataTypeRow): HealthConnectWatermarks.Key? =
+        HealthConnectPermissions.permissionsForRow(row).mapNotNull { PERMISSION_GROUP[it] }.toSet().singleOrNull()
+
     /** What changed between two granted sets, after the automatic grow-reset has been applied. */
     data class Outcome(
         /** Newly granted permissions. */
@@ -104,16 +114,19 @@ object HealthConnectPermissionReconcile {
 
     /**
      * App-start hook (plan: "on app start … diff against getGrantedPermissions()"). Guarded so the
-     * common not-applicable path never touches the client: only runs when the export is enabled,
-     * a grant was previously stored, and the provider is available. On a grow it resets the
-     * affected watermarks and enqueues a pass; a full revocation is left for the settings screen to
-     * surface (no UI here). [scope] is the caller's lifecycle scope so the work cancels with it.
+     * common not-applicable path never touches the client: only runs when the export is enabled and
+     * the provider is available. On a grow it resets the affected watermarks and enqueues a pass —
+     * including a re-grant made after a full revocation: the stored set is then empty, so this must
+     * NOT early-return on an empty stored set, or that grow (and its backfilling watermark reset)
+     * is never seen unless the user happens to open Settings. A full revocation itself is left for
+     * the settings screen to surface (no UI here). [scope] is the caller's lifecycle scope so the
+     * work cancels with it.
      */
     fun onAppStart(context: Context, scope: CoroutineScope) {
         val appContext = context.applicationContext
         val store = HealthConnectPrefsStore.get(appContext)
         val prefs = store.current
-        if (!prefs.enabled || prefs.lastGrantedPermissions.isEmpty()) return
+        if (!prefs.enabled) return
         if (HealthConnectSdk.availability(appContext) != HealthConnectAvailability.AVAILABLE) return
         scope.launch {
             val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull() ?: return@launch

@@ -98,11 +98,23 @@ object HealthConnectRemoval {
                 Log.w(TAG, "deleteRecords(${type.simpleName}) failed", e)
             }
         }
-        // The export state must match the now-empty store: no watermarks, no last-sync stamp.
-        // (backfillChoice is deliberately left untouched, matching iOS — the user's all-history/
-        // new-only choice is theirs to keep.)
+        // The export state must match the now-empty store: no watermarks, no last-sync stamp. The
+        // export is also turned OFF and the backfill choice + first-enable stamp marker reset
+        // ("reset the export to start fresh"): leaving it enabled with backfillChoice=EXPORT_ALL
+        // would let the very next background trigger (ring sync, app-start grow, settings open)
+        // re-export the whole history within ~15 s, silently undoing the destructive removal.
+        // Re-enabling re-offers the backfill dialog (the choice is back to NOT_ASKED) so the user
+        // picks fresh.
         store.clearWatermarks()
-        store.update { it.copy(lastSyncAt = null, lastSyncSummary = null) }
+        store.update {
+            it.copy(
+                enabled = false,
+                backfillChoice = HealthConnectPrefs.BackfillChoice.NOT_ASKED,
+                newOnlyStamped = false,
+                lastSyncAt = null,
+                lastSyncSummary = null,
+            )
+        }
         return RemovalResult(deleted, skipped, failed)
     }
 }

@@ -61,6 +61,16 @@ data class HealthConnectPrefs(
      * revoked state persists.
      */
     val revocationOfferDismissed: Boolean = false,
+    /**
+     * One-time marker for the first-enable "Only new data from now on" watermark stamp (see
+     * [HealthConnectExporter.run]). true after the first pass stamps every group's watermark to
+     * now for an EXPORT_NEW_ONLY choice. Deliberately NOT inferred from a null watermark: a
+     * Phase 6 grow-reset also nulls the VITALS watermark when a permission is granted out of
+     * band, and inferring "first enable" from that would re-stamp every group to now and
+     * silently drop the rows pending between the reset and the next pass. "Remove PulseLoop
+     * data" resets this to false so a fresh re-enable re-stamps.
+     */
+    val newOnlyStamped: Boolean = false,
 ) {
     @Serializable
     enum class BackfillChoice { NOT_ASKED, EXPORT_ALL, EXPORT_NEW_ONLY }

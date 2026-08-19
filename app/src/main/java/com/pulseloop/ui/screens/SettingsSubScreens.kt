@@ -2614,7 +2614,20 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                             Switch(
                                 checked = prefs.toggleFor(row),
                                 enabled = rowGranted,
-                                onCheckedChange = { on -> store.update { p -> p.withToggleFor(row, on) } },
+                                onCheckedChange = { on ->
+                                    store.update { p -> p.withToggleFor(row, on) }
+                                    // Re-enabling a VITALS kind must backfill the readings recorded while it
+                                    // was off: the VITALS group watermark is driven by the *enabled* kinds
+                                    // and advances past a disabled kind's rows, so without this reset the
+                                    // off-period data sits below the watermark and never re-selects. This is
+                                    // the toggle-side equivalent of the permission grow-reset. The single-
+                                    // type groups (sleep/activity/workouts/nutrition/resting HR) freeze their
+                                    // watermark while off and backfill on re-enable, so they need no reset.
+                                    if (on && HealthConnectPermissionReconcile.groupFor(row) == HealthConnectWatermarks.Key.VITALS) {
+                                        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.VITALS))
+                                        HealthConnectExportWorker.enqueue(context)
+                                    }
+                                },
                             )
                         }
                         if (row == HealthConnectPermissions.DataTypeRow.HEART_RATE_VARIABILITY) {
@@ -2633,7 +2646,7 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = PulseColors.cardSoft)) {
                 Text(
                     if (prefs.lastSyncAt != null) "Last sync: ${prefs.lastSyncSummary ?: "unknown"}"
-                    else "No export has run yet — the export engine lands in the next phase.",
+                    else "No export has run yet. With the master switch on and a backfill choice made, PulseLoop exports automatically.",
                     modifier = Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -2670,7 +2683,12 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
 
     if (showBackfillDialog) {
         AlertDialog(
-            onDismissRequest = { showBackfillDialog = false },
+            // Dismissing (back / outside tap) is a Cancel: iOS's equivalent sets
+            // masterEnabled = false. Without this the export stays enabled but hard-gated on
+            // backfillChoice=NOT_ASKED, so nothing ever exports and the dialog is never
+            // re-offered until the master switch is cycled. Turning the master off keeps the
+            // on-screen state honest (and re-enabling re-offers the dialog).
+            onDismissRequest = { showBackfillDialog = false; store.update { it.copy(enabled = false) } },
             title = { Text("How much history should we export?") },
             text = { Text("Exporting all history can take a while on the first run. You can change this later.") },
             confirmButton = {

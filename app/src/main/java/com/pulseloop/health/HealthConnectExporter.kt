@@ -212,9 +212,14 @@ class HealthConnectExporter(
         var wm0 = store.currentWatermarks
 
         // First-enable "Only new data from now on": stamp every group's watermark to now exactly
-        // once, then export nothing — the choice is made meaningful without a data pass.
-        if (prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY && wm0.vitals == null) {
+        // once, then export nothing — the choice is made meaningful without a data pass. Gated
+        // on the dedicated [HealthConnectPrefs.newOnlyStamped] flag, NOT on a null watermark: a
+        // Phase 6 grow-reset also nulls the VITALS watermark when a permission is granted out of
+        // band, and inferring "first enable" from that would re-stamp every group to now and
+        // silently drop the rows pending between the reset and this pass.
+        if (prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY && !prefs.newOnlyStamped) {
             HealthConnectWatermarks.Key.values().forEach { store.setWatermark(it, timestamp) }
+            store.update { it.copy(newOnlyStamped = true) }
             return PassResult(
                 inserted = emptyMap(),
                 skipped = listOf("all (backfill choice: export new data only — watermarks stamped)"),

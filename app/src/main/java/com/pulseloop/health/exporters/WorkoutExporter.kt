@@ -133,8 +133,15 @@ class WorkoutExporter(private val db: PulseLoopDatabase) {
             when (HealthConnectTypeMappings.selectWorkoutSession(start, end, nowMs)) {
                 WorkoutSelection.INVALID -> {
                     skipped++
-                    // Can never become exportable: let the watermark move past it.
+                    // Can never become exportable: let the watermark move past it. The
+                    // continue below is load-bearing, not cosmetic: without it this INVALID
+                    // session (end <= start) falls through to the record-building code and
+                    // ExerciseSessionRecord throws (startTime must be before endTime). That
+                    // escapes build -> run -> doWork, which only catches SecurityException,
+                    // failing the whole pass silently: workouts, resting HR and nutrition
+                    // never export again.
                     invalidHigh = maxOf(invalidHigh ?: 0L, session.updatedAt)
+                    continue
                 }
                 WorkoutSelection.FUTURE -> {
                     // Clock skew: stop the pass — retry on the next run once its end passes.

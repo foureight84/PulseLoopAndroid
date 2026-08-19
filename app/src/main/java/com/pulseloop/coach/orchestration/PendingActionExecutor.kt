@@ -1,6 +1,5 @@
 package com.pulseloop.coach.orchestration
 
-import android.content.Context
 import com.pulseloop.coach.tools.CoachDataAccess
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.ActivitySessionEntity
@@ -18,12 +17,7 @@ object PendingActionExecutor {
         "outdoor_run" to "Running", "outdoor_walk" to "Walking",
     )
 
-    /**
-     * [context] is needed only for the Health Connect deletion hook (best-effort removal of the
-     * session's exported records — plan Phase 4); pass null when none is available and the local
-     * delete proceeds without it.
-     */
-    suspend fun execute(action: PendingAction, db: PulseLoopDatabase, context: Context? = null): String {
+    suspend fun execute(action: PendingAction, db: PulseLoopDatabase): String {
         val sessions = db.activitySessionDao().recent(200)
         val session = sessions.firstOrNull { it.id == action.activityId }
             ?: return "That workout no longer exists."
@@ -40,9 +34,6 @@ object PendingActionExecutor {
                         updatedAt = System.currentTimeMillis(),
                     )
                 )
-                context?.let {
-                    com.pulseloop.health.HealthConnectWorkoutDeletion.removeSessionRecords(it, session.id)
-                }
                 "Deleted the $typeLabel session."
             }
             PendingActionKind.UPDATE_ACTIVITY_SESSION -> {
