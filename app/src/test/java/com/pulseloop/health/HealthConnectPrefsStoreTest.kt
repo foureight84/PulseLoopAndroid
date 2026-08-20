@@ -55,6 +55,14 @@ class HealthConnectPrefsStoreTest {
         return HealthConnectPrefsStore(fake)
     }
 
+    /** Seeds both blobs, so an on-disk state from an older build can be reconstructed exactly. */
+    private fun prefsWith(prefsBlob: String?, watermarksBlob: String?): FakeSharedPreferences {
+        val fake = FakeSharedPreferences()
+        if (prefsBlob != null) fake.edit().putString("pulseloop.healthconnect.v1", prefsBlob).apply()
+        if (watermarksBlob != null) fake.edit().putString("pulseloop.healthconnect.watermarks.v1", watermarksBlob).apply()
+        return fake
+    }
+
     @Test
     fun defaultsWhenNoBlob() {
         val store = storeWith(null)
@@ -297,4 +305,101 @@ class HealthConnectPrefsStoreTest {
         assertEquals(1200L, reloaded.currentWatermarks.vitals)
     }
 
+    // ── Review pass 4 (PR #50): atomic read-modify-write + legacy consent-instant recovery ──
+
+    @Test
+    fun concurrentUpdatesDoNotDropEachOthersFields() {
+        // update() is a read-modify-write and there are genuinely concurrent writers (export
+        // worker / removal scope / settings on the main thread). Without a lock, two writers that
+        // read the same snapshot silently drop each other's field — the settings toggle flipped
+        // mid-backfill snaps back on. The transforms below both read, then sleep, so the
+        // interleaving is forced rather than hoped for.
+        val store = storeWith(null)
+        val start = java.util.concurrent.CountDownLatch(1)
+        fun writer(body: (HealthConnectPrefs) -> HealthConnectPrefs) = Thread {
+            start.await()
+            store.update { cur -> Thread.sleep(50); body(cur) }
+        }
+        val a = writer { it.copy(enabled = true) }
+        val b = writer { it.copy(heartRate = false) }
+        a.start(); b.start()
+        start.countDown()
+        a.join(5_000); b.join(5_000)
+        assertTrue(store.current.enabled)
+        assertFalse(store.current.heartRate)
+    }
+
+    @Test
+    fun concurrentWatermarkAdvancesAllSurvive() {
+        // Same defect class on the watermark blob: two groups advancing at once must not drop
+        // each other (a lost advance re-exports; a lost reset leaks pre-consent history).
+        val store = storeWith(null)
+        val start = java.util.concurrent.CountDownLatch(1)
+        val threads = HealthConnectWatermarks.Key.values().mapIndexed { i, key ->
+            Thread {
+                start.await()
+                repeat(50) { n -> store.setWatermark(key, (i + 1) * 1000L + n) }
+            }
+        }
+        threads.forEach { it.start() }
+        start.countDown()
+        threads.forEach { it.join(5_000) }
+        HealthConnectWatermarks.Key.values().forEachIndexed { i, key ->
+            assertEquals((i + 1) * 1000L + 49, store.currentWatermarks.get(key))
+        }
+    }
+
+    @Test
+    fun legacyStampedBlobWithoutConsentInstantRecoversFromOldestWatermark() {
+        // A dogfood install that ran the build with newOnlyStamped but not newOnlyConsentAt
+        // decodes to stamped = true, consentAt = null with every watermark already stamped: the
+        // sentinel never re-fires, so nothing would ever populate the consent instant and the
+        // read clamp would be a permanent no-op. Recover it from the oldest surviving watermark —
+        // the sentinel wrote one instant to all six groups, so the minimum is that instant.
+        val fake = prefsWith(
+            "{\"enabled\":true,\"backfillChoice\":\"EXPORT_NEW_ONLY\",\"newOnlyStamped\":true}",
+            "{\"vitals\":5000,\"sleep\":1000,\"activity\":3000,\"workouts\":null,\"nutrition\":2000,\"restingHr\":null}",
+        )
+        val store = HealthConnectPrefsStore(fake)
+        assertEquals(1000L, store.current.newOnlyConsentAt)
+        // and it is on disk, so the recovery runs once rather than on every process start
+        assertEquals(1000L, HealthConnectPrefsStore(fake).current.newOnlyConsentAt)
+        // the clamp is live again: a revocation-dialog clearWatermarks() no longer means epoch
+        store.clearWatermarks()
+        assertEquals(1000L, effectiveWatermark(store.currentWatermarks.vitals, store.current.newOnlyConsentAt))
+    }
+
+    @Test
+    fun consentRecoveryLeavesEveryOtherBlobAlone() {
+        // EXPORT_ALL, not-yet-stamped and already-recorded blobs are untouched — the recovery is
+        // for exactly one on-disk shape.
+        val exportAll = HealthConnectPrefsStore(
+            prefsWith("{\"backfillChoice\":\"EXPORT_ALL\",\"newOnlyStamped\":true}", "{\"vitals\":1000}")
+        )
+        assertNull(exportAll.current.newOnlyConsentAt)
+
+        val notStamped = HealthConnectPrefsStore(
+            prefsWith("{\"backfillChoice\":\"EXPORT_NEW_ONLY\"}", "{\"vitals\":1000}")
+        )
+        assertNull(notStamped.current.newOnlyConsentAt)
+
+        val alreadyRecorded = HealthConnectPrefsStore(
+            prefsWith(
+                "{\"backfillChoice\":\"EXPORT_NEW_ONLY\",\"newOnlyStamped\":true,\"newOnlyConsentAt\":7000}",
+                "{\"vitals\":1000}",
+            )
+        )
+        assertEquals(7000L, alreadyRecorded.current.newOnlyConsentAt) // NOT lowered to the watermark
+    }
+
+    @Test
+    fun consentRecoveryNoOpsWhenThereIsNothingToRecoverFrom() {
+        // All watermarks cleared (post-removal shape): nothing to reconstruct from, so the flag is
+        // left alone and the next sentinel pass re-stamps normally.
+        val store = HealthConnectPrefsStore(
+            prefsWith("{\"backfillChoice\":\"EXPORT_NEW_ONLY\",\"newOnlyStamped\":true}", null)
+        )
+        assertNull(store.current.newOnlyConsentAt)
+        assertTrue(store.current.newOnlyStamped)
+    }
 }

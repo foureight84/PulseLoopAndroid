@@ -179,11 +179,61 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
     val watermarks: StateFlow<HealthConnectWatermarks> = _watermarks.asStateFlow()
     val currentWatermarks: HealthConnectWatermarks get() = _watermarks.value
 
+    /**
+     * Serializes every read-modify-write below (review pass 4 MINOR). All the mutators are
+     * read-modify-write over a single JSON blob, and there are genuinely concurrent writers:
+     * [HealthConnectExportWorker] stamps `lastSyncAt`/`lastSyncSummary` and advances watermarks
+     * on the worker dispatcher, [HealthConnectRemoval] writes from its own scope, and the
+     * settings screen writes toggles / `enabled` / `backfillChoice` from the main thread. A plain
+     * `_prefs.value = transform(current)` has no compare-and-set, so two writers that read the
+     * same snapshot silently drop each other's fields — e.g. a data-type Switch flipped off just
+     * as a long `EXPORT_ALL` backfill pass finishes snaps back on and re-exports that type.
+     *
+     * The lock spans the persist as well as the in-memory assignment, so the on-disk blob can
+     * never end up ordered differently from the StateFlow (a lost disk write would resurrect the
+     * dropped field on the next process start).
+     */
+    private val writeLock = Any()
+
+    init {
+        repairMissingConsentInstant()
+    }
+
     fun update(transform: (HealthConnectPrefs) -> HealthConnectPrefs) {
-        val next = transform(current)
-        if (next == current) return
-        _prefs.value = next
-        prefsStore.edit().putString(KEY_PREFS, json.encodeToString(HealthConnectPrefs.serializer(), next)).apply()
+        synchronized(writeLock) {
+            val prev = _prefs.value
+            val next = transform(prev)
+            if (next == prev) return
+            _prefs.value = next
+            prefsStore.edit().putString(KEY_PREFS, json.encodeToString(HealthConnectPrefs.serializer(), next)).apply()
+        }
+    }
+
+    /**
+     * Back-fills [HealthConnectPrefs.newOnlyConsentAt] for an install that stamped its NEW_ONLY
+     * watermarks under a build that had [HealthConnectPrefs.newOnlyStamped] but not yet
+     * `newOnlyConsentAt` (review pass 4 NIT; branch/dogfood installs only — `origin/main` has no
+     * Health Connect code). Such a blob tolerantly decodes to `stamped = true, consentAt = null`
+     * with every watermark already stamped, so the sentinel never re-fires and nothing would ever
+     * populate the consent instant: [HealthConnectExporter.effectiveWatermark] would degrade to
+     * the unclamped `stored ?: 0` permanently, and the first watermark-nulling path (the
+     * revocation dialog's "Reset export", or a grow-reset) would export the full pre-consent
+     * history the user declined.
+     *
+     * The recovery is the inverse of the stamp: the sentinel wrote the same instant to all six
+     * groups, so the oldest surviving watermark is that instant (or later, if a group has since
+     * advanced) — taking the minimum reconstructs the consent boundary without ever placing it
+     * earlier than the real one, which is the direction that would leak history. Runs only when
+     * there is something to reconstruct from; a fully-cleared blob leaves the flag alone, and the
+     * next sentinel pass re-stamps normally.
+     */
+    private fun repairMissingConsentInstant() {
+        val p = _prefs.value
+        if (p.backfillChoice != HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) return
+        if (!p.newOnlyStamped || p.newOnlyConsentAt != null) return
+        val marks = _watermarks.value
+        val oldest = HealthConnectWatermarks.Key.values().mapNotNull { marks.get(it) }.minOrNull() ?: return
+        update { it.copy(newOnlyConsentAt = oldest) }
     }
 
     /**
@@ -193,12 +243,14 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
      * never rewind").
      */
     fun setWatermark(key: HealthConnectWatermarks.Key, value: Long) {
-        val cur = currentWatermarks
-        val existing = cur.get(key)
-        if (existing != null && value <= existing) return
-        val next = cur.copyWith(key, value)
-        _watermarks.value = next
-        prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
+        synchronized(writeLock) {
+            val cur = _watermarks.value
+            val existing = cur.get(key)
+            if (existing != null && value <= existing) return
+            val next = cur.copyWith(key, value)
+            _watermarks.value = next
+            prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
+        }
     }
 
     /**
@@ -221,29 +273,34 @@ class HealthConnectPrefsStore internal constructor(private val prefsStore: Share
      */
     fun resetWatermarks(keys: Set<HealthConnectWatermarks.Key>) {
         if (keys.isEmpty()) return
-        val prefs = current
-        val consent: Long? =
-            if (prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) prefs.newOnlyConsentAt else null
-        // copyWith can't null a key; rebuild the blob with the reset keys nulled (or clamped to the
-        // consent instant for EXPORT_NEW_ONLY).
-        val next = HealthConnectWatermarks(
-            vitals = if (HealthConnectWatermarks.Key.VITALS in keys) consent else currentWatermarks.vitals,
-            sleep = if (HealthConnectWatermarks.Key.SLEEP in keys) consent else currentWatermarks.sleep,
-            activity = if (HealthConnectWatermarks.Key.ACTIVITY in keys) consent else currentWatermarks.activity,
-            workouts = if (HealthConnectWatermarks.Key.WORKOUTS in keys) consent else currentWatermarks.workouts,
-            nutrition = if (HealthConnectWatermarks.Key.NUTRITION in keys) consent else currentWatermarks.nutrition,
-            restingHr = if (HealthConnectWatermarks.Key.RESTING_HR in keys) consent else currentWatermarks.restingHr,
-        )
-        _watermarks.value = next
-        prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
+        synchronized(writeLock) {
+            val prefs = _prefs.value
+            val consent: Long? =
+                if (prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) prefs.newOnlyConsentAt else null
+            val cur = _watermarks.value
+            // copyWith can't null a key; rebuild the blob with the reset keys nulled (or clamped to the
+            // consent instant for EXPORT_NEW_ONLY).
+            val next = HealthConnectWatermarks(
+                vitals = if (HealthConnectWatermarks.Key.VITALS in keys) consent else cur.vitals,
+                sleep = if (HealthConnectWatermarks.Key.SLEEP in keys) consent else cur.sleep,
+                activity = if (HealthConnectWatermarks.Key.ACTIVITY in keys) consent else cur.activity,
+                workouts = if (HealthConnectWatermarks.Key.WORKOUTS in keys) consent else cur.workouts,
+                nutrition = if (HealthConnectWatermarks.Key.NUTRITION in keys) consent else cur.nutrition,
+                restingHr = if (HealthConnectWatermarks.Key.RESTING_HR in keys) consent else cur.restingHr,
+            )
+            _watermarks.value = next
+            prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
+        }
     }
 
 
     /** Clear every watermark (iOS `removeAllExportedData`; Phase 6 revocation reset). */
     fun clearWatermarks() {
-        val next = HealthConnectWatermarks.DEFAULT
-        _watermarks.value = next
-        prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
+        synchronized(writeLock) {
+            val next = HealthConnectWatermarks.DEFAULT
+            _watermarks.value = next
+            prefsStore.edit().putString(KEY_WATERMARKS, json.encodeToString(HealthConnectWatermarks.serializer(), next)).apply()
+        }
     }
 
     private fun load(): HealthConnectPrefs {
