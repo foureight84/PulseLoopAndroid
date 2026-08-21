@@ -155,4 +155,33 @@ class HealthConnectPermissionReconcileTest {
         assertTrue(S in outcome.grewGroups)
         assertNull(store.currentWatermarks.get(S))
     }
+
+    // ── review pass 5: one definition of the stored granted set ──
+
+    @Test
+    fun storedSetOfKeepsOnlyRequestedPermissionsSorted() {
+        val live = listOf(
+            HealthConnectPermissions.sleep.first(),
+            "android.permission.health.READ_HEART_RATE",       // never requested (write-only app)
+            "android.permission.health.WRITE_BODY_FAT",        // a health perm we don't declare
+            HealthConnectPermissions.heartRate.first(),
+        )
+        val stored = HealthConnectPermissionReconcile.storedSetOf(live)
+        assertEquals(
+            listOf(HealthConnectPermissions.heartRate.first(), HealthConnectPermissions.sleep.first()).sorted(),
+            stored,
+        )
+    }
+
+    @Test
+    fun storedSetOfIsStableSoAnUnrequestedGrantIsNotSeenAsAGrowOrShrink() {
+        // The bug this closes: the permission-sheet callback filtered its result while the
+        // app-start / settings reconcile stored the live set verbatim, so a health permission
+        // granted outside `all` made the two disagree on every pass.
+        val live = HealthConnectPermissions.all + "android.permission.health.WRITE_BODY_FAT"
+        val first = HealthConnectPermissionReconcile.storedSetOf(live)
+        val second = HealthConnectPermissionReconcile.storedSetOf(first)
+        assertEquals(first, second)
+        assertEquals(HealthConnectPermissions.all.size, first.size)
+    }
 }

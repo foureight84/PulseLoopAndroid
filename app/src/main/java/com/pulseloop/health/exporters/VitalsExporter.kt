@@ -76,6 +76,17 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
         val highWaters: List<Long>,
         /** Readings dropped by this kind's guard (unpaired / out-of-range BP), reported as skipped. */
         val skipped: Int = 0,
+        /**
+         * Max `createdAt` among selected rows that can NEVER become exportable — a demo/mock row
+         * (a row's source never changes) or a value outside the platform's range (a stored
+         * measurement's value never changes). Without it such a row above every exportable one
+         * pins the shared VITALS watermark, and every later pass re-reads and re-upserts all eight
+         * kinds' tails behind it. UNPAIRED blood-pressure rows are excluded on purpose: the
+         * missing side may still arrive, and it can only pair while the present side stays above
+         * the watermark. Applied only on a fully completed pass — see
+         * [com.pulseloop.health.watermarkAdvance].
+         */
+        val droppedHighWater: Long? = null,
     )
 
     /**
@@ -98,8 +109,11 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
     private suspend fun buildHr(wm: Long, device: Device): PendingKind {
         val dao = db.measurementDao()
         // Watermark selection on createdAt — tells us WHICH local hours are touched…
-        val newRows = dao.createdSince(kindRaw.getValue("hr"), wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
-        if (newRows.isEmpty()) return PendingKind("hr", emptyList(), emptyList())
+        val selected = dao.createdSince(kindRaw.getValue("hr"), wm)
+        val newRows = selected.filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        var droppedHigh: Long? = selected.filter { it.sourceRaw in EXCLUDED_SOURCES }
+            .maxOfOrNull { it.createdAt }
+        if (newRows.isEmpty()) return PendingKind("hr", emptyList(), emptyList(), droppedHighWater = droppedHigh)
         val zone = ZoneId.systemDefault()
 
         val touchedHours = newRows
@@ -120,7 +134,14 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
                 .filter { it.sourceRaw !in EXCLUDED_SOURCES }
                 .filter { HealthConnectTypeMappings.isPlausibleHr(it.value) }
                 .map { HrSample(it.timestamp, it.value.toLong()) }
-            if (samples.isEmpty()) continue
+            if (samples.isEmpty()) {
+                // Every reading in this hour is implausible — permanently unexportable, so the
+                // hour's rows must not hold the group watermark down.
+                newRows.filter { HealthConnectTypeMappings.hourStartOf(it.timestamp, zone) == hourStart }
+                    .maxOfOrNull { it.createdAt }
+                    ?.let { droppedHigh = maxOf(droppedHigh ?: Long.MIN_VALUE, it) }
+                continue
+            }
 
             val segments = HealthConnectTypeMappings.splitHrSegments(samples, zone)
             // clientRecordVersion = max createdAt in the bucket — a later, fuller version always
@@ -144,7 +165,7 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
                 highWaters += version
             }
         }
-        return PendingKind("hr", records, highWaters)
+        return PendingKind("hr", records, highWaters, droppedHighWater = droppedHigh)
     }
 
     // ── blood pressure: pair systolic + diastolic by timestamp into one record ──
@@ -162,8 +183,12 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
      */
     private suspend fun buildBloodPressure(wm: Long, device: Device): PendingKind {
         val dao = db.measurementDao()
-        val sysRows = dao.createdSince(kindRaw.getValue("bp_sys"), wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
-        val diaRows = dao.createdSince(kindRaw.getValue("bp_dia"), wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val sysSelected = dao.createdSince(kindRaw.getValue("bp_sys"), wm)
+        val diaSelected = dao.createdSince(kindRaw.getValue("bp_dia"), wm)
+        val sysRows = sysSelected.filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val diaRows = diaSelected.filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val excludedHigh = (sysSelected + diaSelected).filter { it.sourceRaw in EXCLUDED_SOURCES }
+            .maxOfOrNull { it.createdAt }
 
         val zone = ZoneId.systemDefault()
         // Pure pairing + plausibility (see HealthConnectTypeMappings.pairBloodPressure): unpaired
@@ -186,16 +211,22 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
             records += record
             highWaters += pair.highWater
         }
-        return PendingKind("bp", records, highWaters, skipped = pairing.dropped)
+        // Out-of-range pairs and demo rows can never export; unpaired rows still can (see
+        // BpPairingResult.outOfRangeHighWater), so they keep holding the watermark.
+        val droppedHigh = listOfNotNull(excludedHigh, pairing.outOfRangeHighWater).maxOrNull()
+        return PendingKind("bp", records, highWaters, skipped = pairing.dropped, droppedHighWater = droppedHigh)
     }
 
     // ── instantaneous kinds: one record per row ──
 
     private suspend fun buildInstantaneous(kindKey: String, wm: Long, device: Device): PendingKind {
-        val rows = db.measurementDao().createdSince(kindRaw.getValue(kindKey), wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val selected = db.measurementDao().createdSince(kindRaw.getValue(kindKey), wm)
+        val rows = selected.filter { it.sourceRaw !in EXCLUDED_SOURCES }
         val zone = ZoneId.systemDefault()
         val records = mutableListOf<Record>()
         val highWaters = mutableListOf<Long>()
+        var droppedHigh: Long? = selected.filter { it.sourceRaw in EXCLUDED_SOURCES }
+            .maxOfOrNull { it.createdAt }
         for (row in rows) {
             val instant = Instant.ofEpochMilli(row.timestamp)
             val offset = HealthConnectTypeMappings.zoneOffsetAt(instant, zone)
@@ -245,9 +276,12 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
             if (record != null) {
                 records += record
                 highWaters += row.createdAt
+            } else {
+                // Guard failure on an immutable stored value — permanently unexportable.
+                droppedHigh = maxOf(droppedHigh ?: Long.MIN_VALUE, row.createdAt)
             }
         }
-        return PendingKind(kindKey, records, highWaters)
+        return PendingKind(kindKey, records, highWaters, droppedHighWater = droppedHigh)
     }
 
     private fun metadata(row: MeasurementEntity, kindKey: String, device: Device): Metadata =

@@ -67,6 +67,17 @@ object HealthConnectPermissionReconcile {
         HealthConnectPermissions.restingHeartRate.first() to R,
     )
 
+    /**
+     * The live granted set, reduced to the permissions this app actually requests and stored in
+     * [HealthConnectPrefs.lastGrantedPermissions]. Every reconcile path funnels through this so
+     * the stored set has one definition (review pass 5): the permission-sheet callback filtered
+     * its result to [HealthConnectPermissions.all] while `onAppStart` and the settings screen
+     * stored `getGrantedPermissions()` verbatim, so a health permission granted outside `all`
+     * would have made the two disagree and looked like a grow/shrink on every reconcile.
+     */
+    fun storedSetOf(granted: Collection<String>): List<String> =
+        granted.filter { it in HealthConnectPermissions.all }.sorted()
+
     /** The distinct watermark groups a set of permissions belongs to. */
     fun groupsFor(permissions: Collection<String>): Set<HealthConnectWatermarks.Key> =
         permissions.mapNotNull { PERMISSION_GROUP[it] }.toSet()
@@ -132,10 +143,11 @@ object HealthConnectPermissionReconcile {
             val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull() ?: return@launch
             val granted = runCatching { client.permissionController.getGrantedPermissions() }
                 .getOrNull() ?: return@launch
-            val outcome = reconcile(prefs.lastGrantedPermissions.toSet(), granted.toSet(), store)
+            val live = storedSetOf(granted)
+            val outcome = reconcile(prefs.lastGrantedPermissions.toSet(), live.toSet(), store)
             store.update {
                 it.copy(
-                    lastGrantedPermissions = granted.toList().sorted(),
+                    lastGrantedPermissions = live,
                     // A grow re-opens the one-shot revocation offer (matching the settings/launcher
                     // paths), so a later full revocation can still surface it even when this grow
                     // was detected out-of-band here.

@@ -154,6 +154,37 @@ class HealthConnectPhase5MappingTest {
         assertEquals(3, result.dropped)
     }
 
+    // ── review pass 5: out-of-range pairs must release the shared VITALS watermark ──
+
+    @Test
+    fun bloodPressureReportsOutOfRangeHighWaterButNotUnpaired() {
+        val sys = listOf(
+            HealthConnectTypeMappings.BpSide(1000L, 120.0, 100L), // exports
+            HealthConnectTypeMappings.BpSide(2000L, 210.0, 900L), // out of range: permanently dead
+            HealthConnectTypeMappings.BpSide(3000L, 120.0, 5000L), // unpaired: its diastolic may still arrive
+        )
+        val dia = listOf(
+            HealthConnectTypeMappings.BpSide(1000L, 80.0, 100L),
+            HealthConnectTypeMappings.BpSide(2000L, 80.0, 800L),
+        )
+        val result = HealthConnectTypeMappings.pairBloodPressure(sys, dia)
+        assertEquals(1, result.pairs.size)
+        assertEquals(1, result.outOfRange)
+        assertEquals(1, result.unpaired)
+        // max createdAt of the OUT-OF-RANGE pair only (900 vs 800) — never the unpaired row's
+        // 5000, which must keep holding the watermark down so the pair can still form.
+        assertEquals(900L, result.outOfRangeHighWater)
+    }
+
+    @Test
+    fun bloodPressureOutOfRangeHighWaterIsNullWhenNothingIsOutOfRange() {
+        val sys = listOf(HealthConnectTypeMappings.BpSide(1000L, 120.0, 100L))
+        val dia = listOf(HealthConnectTypeMappings.BpSide(1000L, 80.0, 100L))
+        assertEquals(null, HealthConnectTypeMappings.pairBloodPressure(sys, dia).outOfRangeHighWater)
+        // …and an unpaired-only selection reports none either.
+        assertEquals(null, HealthConnectTypeMappings.pairBloodPressure(sys, emptyList()).outOfRangeHighWater)
+    }
+
     @Test
     fun bloodPressureEmptyOrOneSidedInputsProduceNoPairs() {
         assertTrue(HealthConnectTypeMappings.pairBloodPressure(emptyList(), emptyList()).pairs.isEmpty())

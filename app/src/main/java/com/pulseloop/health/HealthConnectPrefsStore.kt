@@ -82,6 +82,14 @@ data class HealthConnectPrefs(
      * by construction. "Remove PulseLoop data" clears it so a fresh re-enable re-stamps.
      */
     val newOnlyConsentAt: Long? = null,
+    /**
+     * Progress/outcome of the last "Remove PulseLoop data" run, surfaced on the settings screen.
+     * Persisted rather than held in composable state because the removal now runs in
+     * [HealthConnectRemovalWorker] — it outlives the screen, so its result has to survive
+     * navigation, rotation and process death to be reportable at all.
+     * [REMOVAL_IN_PROGRESS] is the sentinel for "running"; anything else is a finished message.
+     */
+    val removalStatus: String? = null,
 ) {
     @Serializable
     enum class BackfillChoice { NOT_ASKED, EXPORT_ALL, EXPORT_NEW_ONLY }
@@ -124,6 +132,9 @@ data class HealthConnectPrefs(
 
     companion object {
         val DEFAULT = HealthConnectPrefs()
+
+        /** [removalStatus] sentinel: a removal is enqueued or running. */
+        const val REMOVAL_IN_PROGRESS = "in_progress"
     }
 }
 

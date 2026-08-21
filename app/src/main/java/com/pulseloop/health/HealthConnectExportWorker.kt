@@ -9,6 +9,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.pulseloop.data.PulseLoopDatabase
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
 
 /**
@@ -48,9 +50,17 @@ class HealthConnectExportWorker(
                 db = PulseLoopDatabase.getInstance(applicationContext),
                 store = store,
             )
-            val result = exporter.run()
-            store.update { it.copy(lastSyncAt = System.currentTimeMillis(), lastSyncSummary = result.summary()) }
-            Log.i(TAG, "pass done: ${result.summary()}")
+            // The pass and "Remove PulseLoop data" must never interleave (review pass 5): a pass
+            // still inserting while the removal deletes would re-write records the user asked to
+            // delete, and its non-suspending setWatermark could land AFTER clearWatermarks(),
+            // leaving watermarks that claim deleted records were exported. Cancelling the work is
+            // not enough on its own — cancellation is only observed at a suspension point — so
+            // both sides take this process-wide lock (the iOS `isSyncing` latch analogue).
+            passMutex.withLock {
+                val result = exporter.run()
+                store.update { it.copy(lastSyncAt = System.currentTimeMillis(), lastSyncSummary = result.summary()) }
+                Log.i(TAG, "pass done: ${result.summary()}")
+            }
             Result.success()
         } catch (e: SecurityException) {
             // Permission revoked mid-pass: never retry in a loop. Re-check the live granted set
@@ -60,11 +70,13 @@ class HealthConnectExportWorker(
             // re-export regardless.
             Log.w(TAG, "SecurityException — permission revoked mid-pass", e)
             runCatching {
-                val granted = client.permissionController.getGrantedPermissions()
-                HealthConnectPermissionReconcile.reconcile(
-                    store.current.lastGrantedPermissions.toSet(), granted, store,
+                val live = HealthConnectPermissionReconcile.storedSetOf(
+                    client.permissionController.getGrantedPermissions(),
                 )
-                store.update { it.copy(lastGrantedPermissions = granted.toList().sorted()) }
+                HealthConnectPermissionReconcile.reconcile(
+                    store.current.lastGrantedPermissions.toSet(), live.toSet(), store,
+                )
+                store.update { it.copy(lastGrantedPermissions = live) }
             }
             Result.success()
         }
@@ -73,6 +85,12 @@ class HealthConnectExportWorker(
     companion object {
         private const val TAG = "HealthConnectExport"
         private const val WORK_NAME = "health_connect_export"
+
+        /**
+         * Serializes an export pass against [HealthConnectRemoval.removeAll]. Process-wide: both
+         * run as WorkManager workers in the app process. See the use site in [doWork].
+         */
+        internal val passMutex = Mutex()
         private const val DEBOUNCE_SECONDS = 15L
 
         /** Debounced enqueue — safe to call from every trigger; a burst coalesces into one pass. */

@@ -56,6 +56,18 @@ class ActivityExporter(private val db: PulseLoopDatabase) {
         val records: List<Record>,
         val highWaters: List<Long>,
         val skippedDays: Int,
+        /**
+         * Max `updatedAt` among days that were selected but produced no record *and can never
+         * produce one from their current contents* — every metric zero, netted away, or
+         * implausible. Without it such a day sitting above every exportable one pins the ACTIVITY
+         * watermark and each later pass re-selects and re-upserts the whole tail behind it. Safe
+         * to advance past: any change to the day bumps `updatedAt`, which re-selects it wherever
+         * the watermark stands. A FUTURE-dated day is deliberately excluded — it is not yet
+         * exportable rather than never exportable, and advancing past it would lose it once the
+         * clock catches up. Applied only on a fully completed pass — see
+         * [com.pulseloop.health.watermarkAdvance].
+         */
+        val droppedHighWater: Long? = null,
     )
 
     /**
@@ -74,14 +86,21 @@ class ActivityExporter(private val db: PulseLoopDatabase) {
     ): PendingActivity {
         if (metrics.isEmpty()) return PendingActivity(emptyList(), emptyList(), 0)
         val wm = watermark ?: 0L
-        val rows = db.activityDailyDao().updatedSince(wm).filter { it.source !in EXCLUDED_SOURCES }
-        if (rows.isEmpty()) return PendingActivity(emptyList(), emptyList(), 0)
+        val selected = db.activityDailyDao().updatedSince(wm)
+        val rows = selected.filter { it.source !in EXCLUDED_SOURCES }
+        // Demo/mock rows are permanently unexportable (a row's source never changes), so they
+        // count as drops — otherwise a seeded demo day newer than every real one pins the
+        // watermark forever.
+        val excludedHigh: Long? = selected.filter { it.source in EXCLUDED_SOURCES }
+            .maxOfOrNull { it.updatedAt }
+        if (rows.isEmpty()) return PendingActivity(emptyList(), emptyList(), 0, excludedHigh)
 
         val netting = if (netWorkouts) loadNetting(rows, zone) else WorkoutNetting.EMPTY
 
         val records = mutableListOf<Record>()
         val highWaters = mutableListOf<Long>()
         var skipped = 0
+        var droppedHigh: Long? = excludedHigh
 
         for (row in rows) {
             // Re-normalize rather than trusting the stored value (iOS does the same:
@@ -96,6 +115,7 @@ class ActivityExporter(private val db: PulseLoopDatabase) {
             val endMs = HealthConnectTypeMappings.activityDayEndMs(dayStart, nowMs, zone)
             if (endMs == null) {
                 skipped++
+                // NOT a drop: a future-dated day becomes exportable once now catches up.
                 continue
             }
             val start = Instant.ofEpochMilli(dayStart)
@@ -152,9 +172,12 @@ class ActivityExporter(private val db: PulseLoopDatabase) {
                 }
             }
 
-            if (records.size == before) skipped++
+            if (records.size == before) {
+                skipped++
+                droppedHigh = maxOf(droppedHigh ?: Long.MIN_VALUE, row.updatedAt)
+            }
         }
-        return PendingActivity(records, highWaters, skipped)
+        return PendingActivity(records, highWaters, skipped, droppedHigh)
     }
 
     private fun metadata(device: Device, metric: String, dayStart: Long, updatedAt: Long): Metadata =

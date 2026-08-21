@@ -37,6 +37,15 @@ class NutritionExporter(private val db: PulseLoopDatabase) {
         val records: List<Record>,
         val highWaters: List<Long>,
         val skippedMeals: Int,
+        /**
+         * Max `updatedAt` among meals that were selected but produced no record (out of the
+         * platform's range, or empty). Without it a dropped meal above every exportable one pins
+         * the NUTRITION watermark and every later pass re-selects the tail behind it. Safe to
+         * advance past: correcting a meal bumps `updatedAt`, which re-selects it wherever the
+         * watermark stands. Applied only on a fully completed pass — see
+         * [com.pulseloop.health.watermarkAdvance].
+         */
+        val droppedHighWater: Long? = null,
     )
 
     /**
@@ -47,20 +56,27 @@ class NutritionExporter(private val db: PulseLoopDatabase) {
     suspend fun build(watermark: Long?, device: Device): PendingNutrition {
         val wm = watermark ?: 0L
         val zone = ZoneId.systemDefault()
-        val meals = db.mealEntryDao().updatedSince(wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        val selected = db.mealEntryDao().updatedSince(wm)
+        val meals = selected.filter { it.sourceRaw !in EXCLUDED_SOURCES }
         val records = mutableListOf<Record>()
         val highWaters = mutableListOf<Long>()
         var skipped = 0
+        // Demo/mock rows are permanently unexportable (a row's source never changes), so they
+        // count as drops too — otherwise a seeded demo meal newer than every real one pins the
+        // watermark forever.
+        var droppedHigh: Long? = selected.filter { it.sourceRaw in EXCLUDED_SOURCES }
+            .maxOfOrNull { it.updatedAt }
         for (meal in meals) {
             val record = buildRecord(meal, device, zone)
             if (record == null) {
                 skipped++
+                droppedHigh = maxOf(droppedHigh ?: Long.MIN_VALUE, meal.updatedAt)
                 continue
             }
             records += record
             highWaters += meal.updatedAt
         }
-        return PendingNutrition(records, highWaters, skipped)
+        return PendingNutrition(records, highWaters, skipped, droppedHigh)
     }
 
     private fun buildRecord(meal: MealEntryEntity, device: Device, zone: ZoneId): NutritionRecord? {

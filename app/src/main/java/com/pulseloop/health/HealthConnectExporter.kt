@@ -123,20 +123,31 @@ internal suspend fun insertChunkWithRouteShrink(
 internal const val MAX_ROUTE_SHRINKS = 5
 
 /**
- * The workouts watermark advance decision (observer review, Phase 4 stage B — BLOCKER fix):
- * [invalidHighWater] — the max `updatedAt` of the record-less INVALID (zero/negative duration)
- * sessions — may be applied **only when the pass fully completed**. On a partial chunk failure,
- * [healthConnectInsertChunked]'s clamp covers only RECORD high waters; an INVALID row's
- * `updatedAt` sitting above the failed point would otherwise leapfrog the unlanded valid sessions
- * below it (they would never be re-selected, and netting would still subtract their energy from
- * re-exported day records — loss that compounds). On a completed pass every valid session has
- * landed, so advancing past the invalid rows is safe — they can never become exportable.
+ * The watermark advance decision for a group whose selection contains rows that produce no record
+ * (observer review, Phase 4 stage B — BLOCKER fix; generalized to every group in review pass 5).
+ *
+ * [droppedHighWater] is the max source high water among selected rows that can NEVER become
+ * exportable — a zero-duration workout, a demo-sourced row, a measurement outside the platform's
+ * range, a sleep session with no stages. Such a row is invisible to
+ * [healthConnectInsertChunked]'s clamp (which only sees RECORD high waters), so without this the
+ * group watermark stops just below it and every later pass re-selects and re-upserts the whole
+ * tail behind it, forever — until some newer exportable row happens to leapfrog it.
+ *
+ * It may be applied **only when the pass fully completed**. On a partial chunk failure a dropped
+ * row's high water sitting above the failed point would leapfrog the unlanded valid rows below it
+ * (they would never be re-selected, and for workouts netting would still subtract their energy
+ * from re-exported day records — loss that compounds). On a completed pass everything exportable
+ * has landed, so advancing past the never-exportable rows is safe.
+ *
+ * Rows that are merely *not yet* exportable — a future-dated activity day, an unpaired
+ * blood-pressure reading whose other side may still arrive — are deliberately NOT counted as
+ * dropped by the exporters, because advancing past them would lose them for good.
  */
-internal fun workoutsWatermarkAdvance(
+internal fun watermarkAdvance(
     allCompleted: Boolean,
     lastCompletedHighWater: Long,
-    invalidHighWater: Long?,
-): Long = if (allCompleted) maxOf(lastCompletedHighWater, invalidHighWater ?: 0L) else lastCompletedHighWater
+    droppedHighWater: Long?,
+): Long = if (allCompleted) maxOf(lastCompletedHighWater, droppedHighWater ?: 0L) else lastCompletedHighWater
 
 /**
  * Read-site consent clamp (review pass 3): the single place the EXPORT_NEW_ONLY boundary is
@@ -335,7 +346,9 @@ class HealthConnectExporter(
                 // hold the group watermark hostage at the old value.
                 kindHighs[kindKey] = timestamp
             } else {
-                kindHighs[kindKey] = progress.lastCompletedHighWater
+                kindHighs[kindKey] = watermarkAdvance(
+                    progress.allCompleted, progress.lastCompletedHighWater, pending.droppedHighWater,
+                )
                 inserted[kindKey] = progress.inserted
                 if (!progress.allCompleted) {
                     errors += "$label: stopped after ${progress.inserted} records " +
@@ -378,9 +391,14 @@ class HealthConnectExporter(
                     }
                 } else {
                     inserted["sleep"] = sleepProgress.inserted
-                    // Advance only to what actually landed; setWatermark() enforces never-rewind.
-                    if (sleepProgress.lastCompletedHighWater > (wm0.sleep ?: 0L)) {
-                        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, sleepProgress.lastCompletedHighWater)
+                    // Advance only to what actually landed — or past the never-exportable rows
+                    // when the pass completed (see [watermarkAdvance]); setWatermark() enforces
+                    // never-rewind.
+                    val sleepAdvance = watermarkAdvance(
+                        sleepProgress.allCompleted, sleepProgress.lastCompletedHighWater, sleepPending.droppedHighWater,
+                    )
+                    if (sleepAdvance > (wm0.sleep ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.SLEEP, sleepAdvance)
                     }
                     if (!sleepProgress.allCompleted) {
                         errors += "sleep: stopped after ${sleepProgress.inserted} record(s) " +
@@ -439,8 +457,11 @@ class HealthConnectExporter(
                     }
                 } else {
                     inserted["activity"] = activityProgress.inserted
-                    if (activityProgress.lastCompletedHighWater > (wm0.activity ?: 0L)) {
-                        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, activityProgress.lastCompletedHighWater)
+                    val activityAdvance = watermarkAdvance(
+                        activityProgress.allCompleted, activityProgress.lastCompletedHighWater, activityPending.droppedHighWater,
+                    )
+                    if (activityAdvance > (wm0.activity ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.ACTIVITY, activityAdvance)
                     }
                     if (!activityProgress.allCompleted) {
                         errors += "activity: stopped after ${activityProgress.inserted} record(s) " +
@@ -492,8 +513,8 @@ class HealthConnectExporter(
                     // ONLY when the pass completed: a zero-duration session produces no record, so
                     // it would otherwise be re-selected forever (iOS advances its workout watermark
                     // past such sessions in the same step) — but on a partial failure that value
-                    // could leapfrog unlanded valid sessions (see [workoutsWatermarkAdvance]).
-                    val advanceTo = workoutsWatermarkAdvance(
+                    // could leapfrog unlanded valid sessions (see [watermarkAdvance]).
+                    val advanceTo = watermarkAdvance(
                         workoutsProgress.allCompleted,
                         workoutsProgress.lastCompletedHighWater,
                         workoutsPending.invalidHighWater,
@@ -576,8 +597,11 @@ class HealthConnectExporter(
                         client.insertRecords(chunk)
                     }
                     inserted["nutrition"] = nutritionProgress.inserted
-                    if (nutritionProgress.lastCompletedHighWater > (wm0.nutrition ?: 0L)) {
-                        store.setWatermark(HealthConnectWatermarks.Key.NUTRITION, nutritionProgress.lastCompletedHighWater)
+                    val nutritionAdvance = watermarkAdvance(
+                        nutritionProgress.allCompleted, nutritionProgress.lastCompletedHighWater, nutritionPending.droppedHighWater,
+                    )
+                    if (nutritionAdvance > (wm0.nutrition ?: 0L)) {
+                        store.setWatermark(HealthConnectWatermarks.Key.NUTRITION, nutritionAdvance)
                     }
                     if (!nutritionProgress.allCompleted) {
                         errors += "nutrition: stopped after ${nutritionProgress.inserted} record(s) " +

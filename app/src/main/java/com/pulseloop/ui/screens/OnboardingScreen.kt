@@ -148,10 +148,12 @@ fun OnboardingScreen(
     }
 
     Column(
+        // No statusBars padding here: the route wrapper (PulseLoopApp's paddedComposable) has
+        // already inset this subtree by the outer Scaffold's system bars. Applying it again is
+        // what left a tall dead band above "Step 1 of 5".
         Modifier
             .fillMaxSize()
-            .background(PulseColors.background)
-            .windowInsetsPadding(WindowInsets.statusBars),
+            .background(PulseColors.background),
     ) {
         OnboardingTopBar(
             step = step,

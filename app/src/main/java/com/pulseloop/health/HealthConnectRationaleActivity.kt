@@ -27,7 +27,9 @@ class HealthConnectRationaleActivity : ComponentActivity() {
         }
         val body = TextView(this).apply {
             text = """
-                PulseLoop can export your ring's health data — heart rate, oxygen saturation, heart rate variability, body temperature, sleep, steps, activity calories and distance, and finished workouts with GPS routes — to Health Connect, so other apps and dashboards you choose can show it.
+                PulseLoop can export your health data to Health Connect, so other apps and dashboards you choose can show it. The data types it writes are: heart rate, resting heart rate, oxygen saturation, heart rate variability, body temperature, respiratory rate, blood pressure, blood glucose, VO₂ max, sleep, steps, activity calories and distance, finished workouts with GPS routes, and logged meals (nutrition).
+
+                Most of these come from your ring; blood pressure, blood glucose and meals are values you log yourself in PulseLoop.
 
                 · The export is write-only: PulseLoop never reads data back from Health Connect.
                 · Records carry a stable PulseLoop identifier, so re-exporting the same reading replaces it instead of duplicating it.

@@ -60,6 +60,8 @@ fun DebugScreen(
     }
 
     Scaffold(
+        // Insets are already applied by the route wrapper (see SettingsSubScreen).
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Debug") },
@@ -68,6 +70,7 @@ fun DebugScreen(
                         Icon(Icons.Filled.ArrowBack, "Back")
                     }
                 },
+                windowInsets = WindowInsets(0, 0, 0, 0),
             )
         },
     ) { padding ->

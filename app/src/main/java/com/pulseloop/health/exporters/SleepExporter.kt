@@ -42,6 +42,15 @@ class SleepExporter(private val db: PulseLoopDatabase) {
         val records: List<Record>,
         val highWaters: List<Long>,
         val skippedSessions: Int,
+        /**
+         * Max `updatedAt` among sessions that were selected but produced no record. Without it a
+         * dropped session sitting above every exportable one pins the SLEEP watermark, and every
+         * later pass re-selects and re-upserts the whole tail behind it. Safe to advance past:
+         * every repair (a re-sync that adds stages, or fixes the span) bumps `updatedAt`, which
+         * re-selects the row regardless of where the watermark stands. Applied only on a fully
+         * completed pass — see [com.pulseloop.health.watermarkAdvance].
+         */
+        val droppedHighWater: Long? = null,
     )
 
     /**
@@ -52,8 +61,15 @@ class SleepExporter(private val db: PulseLoopDatabase) {
         val wm = watermark ?: 0L
         val zone = ZoneId.systemDefault()
         val dao = db.sleepSessionDao()
-        val sessions = dao.updatedSince(wm).filter { it.sourceRaw !in EXCLUDED_SOURCES }
-        if (sessions.isEmpty()) return PendingSleep(emptyList(), emptyList(), 0)
+        val selected = dao.updatedSince(wm)
+        val sessions = selected.filter { it.sourceRaw !in EXCLUDED_SOURCES }
+        // Demo/mock rows are permanently unexportable (a row's source never changes), so they
+        // count as drops — otherwise a seeded demo night newer than every real one pins the
+        // watermark forever.
+        var droppedHigh: Long? = selected.filter { it.sourceRaw in EXCLUDED_SOURCES }
+            .maxOfOrNull { it.updatedAt }
+        if (sessions.isEmpty()) return PendingSleep(emptyList(), emptyList(), 0, droppedHigh)
+        fun drop(updatedAt: Long) { droppedHigh = maxOf(droppedHigh ?: Long.MIN_VALUE, updatedAt) }
 
         // All blocks for the pending sessions in one query, grouped by session.
         val blocksBySession = db.sleepStageBlockDao()
@@ -72,12 +88,14 @@ class SleepExporter(private val db: PulseLoopDatabase) {
         for (session in sessions) {
             if (session.endAt <= session.startAt) {
                 skipped++
+                drop(session.updatedAt)
                 continue // the record constructor would reject it
             }
             val day = dayCache.getOrPut(session.date) { dao.ringAllByDay(session.date) }
             val index = day.indexOfFirst { it.id == session.id }
             if (index < 0) {
                 skipped++
+                drop(session.updatedAt)
                 continue // cannot happen: the query filters to the same sourceRaw set
             }
             val recordId = HealthConnectTypeMappings.sleepSessionRecordId(
@@ -98,6 +116,7 @@ class SleepExporter(private val db: PulseLoopDatabase) {
             val stages = HealthConnectTypeMappings.normalizeSleepStages(session.startAt, session.endAt, spans)
             if (stages.isEmpty()) {
                 skipped++
+                drop(session.updatedAt)
                 continue // Gadgetbridge parity: a session with no valid stages is not written;
                 // a later re-sync that adds stages bumps updatedAt and re-selects it
             }
@@ -122,6 +141,6 @@ class SleepExporter(private val db: PulseLoopDatabase) {
             )
             highWaters += session.updatedAt
         }
-        return PendingSleep(records, highWaters, skipped)
+        return PendingSleep(records, highWaters, skipped, droppedHigh)
     }
 }

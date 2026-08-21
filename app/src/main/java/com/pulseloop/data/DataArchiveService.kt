@@ -10,6 +10,7 @@ import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
 import com.pulseloop.BuildConfig
 import com.pulseloop.data.entity.*
+import com.pulseloop.health.HealthConnectPrefs
 import com.pulseloop.health.HealthConnectPrefsStore
 import com.pulseloop.health.HealthConnectWatermarks
 import kotlinx.coroutines.Dispatchers
@@ -591,8 +592,13 @@ object DataArchiveService {
         // every group's watermark to now so only data logged AFTER the restore is exported. The
         // Health Connect prefs themselves are not in the archive (they live in SharedPreferences,
         // not Room), so the enabled flag / grants are this device's own.
+        // Gated on the backfill choice having been made as well (review pass 5): with
+        // enabled = true but NOT_ASKED the first-enable dialog is still up, and EXPORT_ALL means
+        // "backfill from epoch" purely by way of null watermarks — nothing resets them. Stamping
+        // here would silently turn a subsequent "Sync all history" into a no-op.
         val hcStore = HealthConnectPrefsStore.get(context)
-        if (hcStore.current.enabled) {
+        val hcPrefs = hcStore.current
+        if (hcPrefs.enabled && hcPrefs.backfillChoice != HealthConnectPrefs.BackfillChoice.NOT_ASKED) {
             val now = System.currentTimeMillis()
             HealthConnectWatermarks.Key.values().forEach { hcStore.setWatermark(it, now) }
         }

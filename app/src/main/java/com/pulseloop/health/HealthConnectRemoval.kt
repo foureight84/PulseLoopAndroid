@@ -20,6 +20,9 @@ import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import kotlin.reflect.KClass
 
@@ -39,8 +42,18 @@ import kotlin.reflect.KClass
  * WRITE permission is still granted — both to avoid a SecurityException mid-removal and because
  * we could only ever have written types we were granted.
  *
- * Concurrency: a pending/in-flight export pass is cancelled first (iOS guards the same operation
- * with an isSyncing latch; Android has no such latch, so we cancel the unique work instead).
+ * Concurrency: a pending export pass is cancelled, and then the process-wide
+ * [HealthConnectExportWorker.passMutex] is taken so an already-RUNNING pass is waited out rather
+ * than raced (review pass 5 — `cancelUniqueWork` only records the cancellation; the worker keeps
+ * going until its next suspension point, so on its own it let a pass re-write records that had
+ * just been deleted and let a `setWatermark` land after `clearWatermarks()`). Together they are
+ * the iOS isSyncing-latch analogue.
+ *
+ * Atomicity: the delete loop and the state reset run under [NonCancellable]. A half-finished
+ * removal — some record types deleted, watermarks still claiming they were exported — is the one
+ * outcome that cannot be repaired from a write-only client, so once deletion starts it finishes.
+ * Callers should run this from [HealthConnectRemovalWorker], not a UI scope.
+ *
  * Per-type failures are logged and skipped so one bad type cannot sink the rest (the same
  * "one bad record must not sink the chunk" rule the exporters apply).
  */
@@ -75,8 +88,14 @@ object HealthConnectRemoval {
     data class RemovalResult(val deletedTypes: Int, val skippedUngranted: Int, val failedTypes: Int)
 
     suspend fun removeAll(context: Context, client: HealthConnectClient, store: HealthConnectPrefsStore): RemovalResult {
-        // Never race a running export pass (iOS isSyncing-latch analogue).
+        // Drop anything queued, then wait out a pass that is already running (see the KDoc).
         HealthConnectExportWorker.cancel(context)
+        return HealthConnectExportWorker.passMutex.withLock {
+            withContext(NonCancellable) { removeAllLocked(client, store) }
+        }
+    }
+
+    private suspend fun removeAllLocked(client: HealthConnectClient, store: HealthConnectPrefsStore): RemovalResult {
         val granted = client.permissionController.getGrantedPermissions()
         // Everything we ever wrote: from the epoch to now (Health Connect requires a range).
         val range = TimeRangeFilter.after(Instant.EPOCH)

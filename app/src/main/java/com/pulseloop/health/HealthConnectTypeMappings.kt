@@ -621,7 +621,19 @@ object HealthConnectTypeMappings {
      * counters). [unpaired] = a timestamp present on only one side (a decode/storage anomaly);
      * [outOfRange] = a matched pair with an implausible systolic or diastolic.
      */
-    data class BpPairingResult(val pairs: List<BpPair>, val unpaired: Int, val outOfRange: Int) {
+    data class BpPairingResult(
+        val pairs: List<BpPair>,
+        val unpaired: Int,
+        val outOfRange: Int,
+        /**
+         * Max `createdAt` among the OUT-OF-RANGE pairs only. A stored measurement's value never
+         * changes, so such a pair can never become exportable and the exporter may advance past
+         * it (otherwise it pins the VITALS watermark and every later pass re-reads the tail
+         * behind it). UNPAIRED rows are deliberately excluded: the missing side may still arrive,
+         * and it can only pair while the present side stays above the watermark.
+         */
+        val outOfRangeHighWater: Long? = null,
+    ) {
         val dropped: Int get() = unpaired + outOfRange
     }
 
@@ -643,14 +655,19 @@ object HealthConnectTypeMappings {
         val out = mutableListOf<BpPair>()
         var unpaired = 0
         var outOfRange = 0
+        var outOfRangeHigh: Long? = null
         for (ts in (sysByTs.keys + diaByTs.keys).toSet().sorted()) {
             val s = sysByTs[ts]
             val d = diaByTs[ts]
             if (s == null || d == null) { unpaired++; continue } // a reading on only one side
-            if (!isPlausibleSystolic(s.value) || !isPlausibleDiastolic(d.value)) { outOfRange++; continue }
+            if (!isPlausibleSystolic(s.value) || !isPlausibleDiastolic(d.value)) {
+                outOfRange++
+                outOfRangeHigh = maxOf(outOfRangeHigh ?: Long.MIN_VALUE, maxOf(s.createdAt, d.createdAt))
+                continue
+            }
             out += BpPair(ts, s.value, d.value, maxOf(s.createdAt, d.createdAt))
         }
-        return BpPairingResult(out, unpaired, outOfRange)
+        return BpPairingResult(out, unpaired, outOfRange, outOfRangeHigh)
     }
 
     /**
