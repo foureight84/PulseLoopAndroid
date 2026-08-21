@@ -22,7 +22,7 @@ android {
         // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
         // Local builds fall back to the literals below.
         versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 37
-        versionName = (project.findProperty("appVersionName") as String?) ?: "2.5.0"
+        versionName = (project.findProperty("appVersionName") as String?) ?: "2.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Repo the self-updater polls for new releases.
