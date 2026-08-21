@@ -1,8 +1,10 @@
 package com.pulseloop.service
 
+import android.content.Context
 import androidx.room.withTransaction
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.*
+import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.ring.*
 import kotlinx.coroutines.*
 
@@ -11,6 +13,7 @@ import kotlinx.coroutines.*
  * Subscribes to PulseEventBus and persists ring data to Room.
  */
 class EventPersistenceSubscriber(
+    private val context: Context,
     private val db: PulseLoopDatabase,
     /**
      * Fired after a data-bearing event lands in Room (measurements, activity, sleep) — the
@@ -286,6 +289,10 @@ class EventPersistenceSubscriber(
                     // mode. Self-throttled to every 6h, so calling it on every completed sync is
                     // cheap.
                     RestingHRBaselineService.refreshIfStale(db)
+                    // Health Connect export trigger (Phase 1): a completed history sync is the
+                    // moment new measurements can have landed. Debounced 15 s + REPLACE in the
+                    // worker, so this is cheap to fire on every done.
+                    HealthConnectExportWorker.enqueue(context)
                 }
             }
             is PulseEvent.HeartRateComplete -> {}

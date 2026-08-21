@@ -113,7 +113,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#98](https://github.com/saksham2001/PulseLoopiOS/pull/98) `ac01555` | ~07-27 | On-device daily calorie estimation (Mifflin-St Jeor BMR + Keytel/MET active energy, HR-gated) for rings that don't report calories | **PORT** | M | `0ca53a1` |
 | ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | Backed out of PR #45, then **rebuilt from `decompiled-rwfit-official/`** on `feat/rwfit-vendor-rebuild`. Legacy `0x7E` path complete; JieLi `0xAB` framing complete but its history bodies are not decoded yet. **No hardware validation.** See below. |
 | ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
-| ☐ | [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | 07-11 | **Apple Health sync → Health Connect** (per-type toggles, vitals/sleep/activity/workout export, backfill choice, remove-all). Re-triaged 2026-08-09 from SKIP: the *behaviour* ports even though HealthKit doesn't. Write-only; profile import can't port (Health Connect has no DOB/sex type). Design + 7-phase plan in [`health-connect-integration.md`](health-connect-integration.md); reference implementation is `Gadgetbridge/` at the parent repo root, not iOS. Not blocked by the Play Store — the declaration form is a publishing gate, and Gadgetbridge ships this sideload-only. | **ADAPT** | XL | |
+| ☑ | [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | 07-11 | **Apple Health sync → Health Connect** (per-type toggles, vitals/sleep/activity/workout export, backfill choice, remove-all). Re-triaged 2026-08-09 from SKIP: the *behaviour* ports even though HealthKit doesn't. Write-only; profile import can't port (Health Connect has no DOB/sex type). Design + 7-phase plan in [`health-connect-integration.md`](health-connect-integration.md); reference implementation is `Gadgetbridge/` at the parent repo root, not iOS. Not blocked by the Play Store — the declaration form is a publishing gate, and Gadgetbridge ships this sideload-only. | **ADAPT** | XL | **Phases 0–6 complete** on `feat/health-connect-foundation` (write-only, 16 `WRITE_*` / 0 `READ_*`; lifecycle, removal, grant/revocation resets, archive-restore stamp, docs). Runtime-verified API 35. See `health-connect-integration.md` §8 |
 
 ## Port priority — open items (as of 2026-08-08)
 
@@ -135,7 +135,8 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 >
 > **Newly queued, independent of the two above:** **#80 → Health Connect** (re-triaged
 > 2026-08-09 from SKIP to ADAPT/XL). Design and a 7-phase implementation plan are written up in
-> [`health-connect-integration.md`](health-connect-integration.md); no code yet. Start at Phase 0.
+> [`health-connect-integration.md`](health-connect-integration.md). **Phases 0–6 are complete** on
+> `feat/health-connect-foundation` (see the port-queue row and §8 of that doc).
 > Unlike every other row in this ledger, the reference implementation is **not** iOS — it's
 > `Gadgetbridge/` at the parent repo root, which ships this sideload-only and solves the Android
 > -specific problems (record identity, series bucketing, rate limits, the 1 MB record cap) that
@@ -963,10 +964,11 @@ Nine first-parent items: 7 PR merges + 2 direct doc commits. Two are substantial
 **Skip (iOS-only / docs / CI):**
 
 - **#80 Apple Health sync** (`c1275ad`, +1,887) — HealthKit read/write with per-type toggles,
-  workout export, and profile import. **Intentional iOS-only divergence** (HealthKit-adjacent).
-  The Android analogue would be **Health Connect** — not queued, but if Android ever wants
-  wearable→platform sync, this PR is the reference design (per-type prefs store, workout
-  exporter, profile importer, sync publisher). SKIP for now.
+  workout export, and profile import. Originally triaged **SKIP** (HealthKit-adjacent, iOS-only),
+  then re-triaged 2026-08-09 to **ADAPT** → Health Connect (the *behaviour* ports even though
+  HealthKit doesn't). **Now complete** on `feat/health-connect-foundation` — see the port-queue
+  row and the Skipped table below; only profile *import* stays iOS-only (Health Connect has no
+  DOB/sex type).
 - **#81 contributors automation** (`32dfbe3`) — GitHub Action + `update_contributors.py` +
   README/docs. Repo governance; the Android repo has its own. SKIP.
 - **`b3697c0`** (move YCBT spec out of docs site, add Discord to About) and **`0f500fc`**
@@ -1270,7 +1272,7 @@ main-thread access from a background worker, and Room calls on the right dispatc
 | [#47](https://github.com/saksham2001/PulseLoopiOS/pull/47) [#46](https://github.com/saksham2001/PulseLoopiOS/pull/46) [#39](https://github.com/saksham2001/PulseLoopiOS/pull/39) | Release-IPA CI workflow + fixes | iOS CI |
 | [#45](https://github.com/saksham2001/PulseLoopiOS/pull/45) [#37](https://github.com/saksham2001/PulseLoopiOS/pull/37) [#28](https://github.com/saksham2001/PulseLoopiOS/pull/28) [#23](https://github.com/saksham2001/PulseLoopiOS/pull/23) | Sideloading guide, iOS-vs-Android refresh, MkDocs site, README updates | Docs |
 | [#7](https://github.com/saksham2001/PulseLoopiOS/pull/7) `c9897c9` | OSS setup (templates, SwiftLint, CI) | Repo governance; Android repo has its own |
-| [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | Apple Health sync (per-type toggles, workout export, profile import) | HealthKit itself is iOS-only, but the **behaviour now has an Android home**: re-triaged 2026-08-09 as **ADAPT** → Health Connect. Design + phase plan in [`health-connect-integration.md`](health-connect-integration.md); tracked in the port queue above. This row stays here only for the HealthKit-specific parts (profile import can't fully port — Health Connect has no date-of-birth or biological-sex data type) |
+| [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | Apple Health sync (per-type toggles, workout export, profile import) | HealthKit itself is iOS-only, but the **behaviour now has an Android home**: re-triaged 2026-08-09 as **ADAPT** → Health Connect and **complete** on `feat/health-connect-foundation` (Phases 0–6). Design + phase plan in [`health-connect-integration.md`](health-connect-integration.md); tracked in the port queue above. This row stays here only for the HealthKit-specific parts (profile import can't fully port — Health Connect has no date-of-birth or biological-sex data type) |
 | [#81](https://github.com/saksham2001/PulseLoopiOS/pull/81) `32dfbe3` | Automated contributor recognition (Action + script + README) | Repo governance; Android repo has its own |
 | [#89](https://github.com/saksham2001/PulseLoopiOS/pull/89) `0a8ab4e` | iOS-26 Liquid Glass rendering correctness + Dynamic Type a11y | Glass is an iOS visual language (standing SKIP); portable reactivity bit folds into #88 |
 | `25e49fd` `577c5f3` `35d1aa7` `ee42b10` `b3697c0` `0f500fc` | Direct commits: docs/screenshots/tagline/YCBT-spec/Discord/jring-URLs | Docs |
@@ -1603,4 +1605,7 @@ upstream — each entry says what changed here and whether iOS should look at it
 **iOS-only — not expected on Android:**
 - Live Activities (lock-screen workout UI)
 - Apple on-device coach (Apple Intelligence)
-- HealthKit-adjacent integrations
+
+> HealthKit-adjacent export is **no longer** an iOS-only divergence: its behaviour is ported to
+> Android via Health Connect (the #80 port-queue row; `health-connect-integration.md`). HealthKit
+> itself (and profile *import* — Health Connect has no DOB/sex type) remains iOS-only.

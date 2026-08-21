@@ -26,6 +26,13 @@ data class MealEntryEntity(
     val notes: String? = null,
     val loggedByCoach: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
+    /**
+     * Last-modified stamp driving the Health Connect nutrition export watermark + record
+     * version (Phase 6). Equals [createdAt] for the insert-once rows logged today; a future
+     * in-place meal-edit path bumps it so the edited meal re-exports under the same
+     * `pl-meal-<id>` clientRecordId. iOS's twin meal model carries this for the same reason.
+     */
+    val updatedAt: Long = System.currentTimeMillis(),
 )
 
 @Entity(tableName = "food_products", indices = [Index("lastUsedAt")])

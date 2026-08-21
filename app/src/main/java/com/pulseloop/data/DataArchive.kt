@@ -231,6 +231,9 @@ data class PulseArchive(
     val quantity: Double = 1.0, val confidenceRaw: String = "medium",
     val userEdited: Boolean = false, val notes: String? = null,
     val loggedByCoach: Boolean = false, val createdAt: Long,
+    // Phase 6: exported so an in-place-edited meal's updatedAt survives an archive round-trip.
+    // Old archives lack it (deserializes to 0) -> restore backfills from createdAt.
+    val updatedAt: Long = 0L,
 )
 
 @Serializable data class CachedFoodProductDTO(

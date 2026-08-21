@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Phase 2: BLE permissions -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
@@ -31,6 +32,30 @@
     <!-- Self-update: fetch the GitHub release manifest/APK and install it -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Phase 8: Health Connect export (write-only). Exactly the Phase 1–4 data types from
+         docs/health-connect-integration.md — Phase 5 types (blood pressure, glucose, respiratory
+         rate, VO2max, resting HR, nutrition) - the Phase 5 "beyond iOS" types, added in Phase 5 so the
+         first permission sheet stayed narrow. No READ_* permissions anywhere. -->
+    <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_OXYGEN_SATURATION" />
+    <uses-permission android:name="android.permission.health.WRITE_HEART_RATE_VARIABILITY" />
+    <uses-permission android:name="android.permission.health.WRITE_BODY_TEMPERATURE" />
+    <uses-permission android:name="android.permission.health.WRITE_SLEEP" />
+    <uses-permission android:name="android.permission.health.WRITE_STEPS" />
+    <uses-permission android:name="android.permission.health.WRITE_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.WRITE_DISTANCE" />
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
+    <!-- Singular on purpose: the official docs note WRITE_EXERCISE_ROUTE is singular while
+         READ_EXERCISE_ROUTES is plural. -->
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE_ROUTE" />
+    <!-- Phase 5 (beyond iOS). Verbatim values of HealthPermission.WRITE_* (1.1.0 AAR). -->
+    <uses-permission android:name="android.permission.health.WRITE_BLOOD_PRESSURE" />
+    <uses-permission android:name="android.permission.health.WRITE_BLOOD_GLUCOSE" />
+    <uses-permission android:name="android.permission.health.WRITE_RESPIRATORY_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_VO2_MAX" />
+    <uses-permission android:name="android.permission.health.WRITE_RESTING_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_NUTRITION" />
 
     <application
         android:name=".PulseLoopApplication"
@@ -119,5 +144,39 @@
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
         </activity>
+
+        <!-- Phase 8: Health Connect rationale — target of the "privacy policy" link in the
+             permission sheet, mandatory for apps requesting health data types (official
+             get-started guide). Pre-34 fires ACTION_SHOW_PERMISSIONS_RATIONALE at the activity;
+             API 34+ reaches the alias via VIEW_PERMISSION_USAGE + HEALTH_PERMISSIONS, guarded
+             by START_VIEW_PERMISSION_USAGE. In-app rationale only, no hosted URL (Gadgetbridge
+             precedent). -->
+        <activity
+            android:name=".health.HealthConnectRationaleActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name=".health.ViewPermissionUsageActivity"
+            android:exported="true"
+            android:targetActivity=".health.HealthConnectRationaleActivity"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            tools:targetApi="34">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
     </application>
+
+    <!-- Health Connect: provider app (the separate APK on API < 34) plus the rationale action,
+         so the permission sheet's privacy-policy link resolves to our activity. -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+        <intent>
+            <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+        </intent>
+    </queries>
 </manifest>

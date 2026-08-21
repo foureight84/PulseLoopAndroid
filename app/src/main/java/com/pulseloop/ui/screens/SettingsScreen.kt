@@ -155,6 +155,9 @@ fun SettingsScreen(
                 add(SettingsRowItem(Icons.Filled.TrendingUp, PulseColors.calories, "Strava") {
                     navigate("settings/strava")
                 })
+                add(SettingsRowItem(Icons.Filled.Sync, PulseColors.success, "Health Connect") {
+                    navigate("settings/health-connect")
+                })
                 add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, "About PulseLoop") {
                     navigate("settings/about")
                 })

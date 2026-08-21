@@ -63,6 +63,8 @@ fun NutritionScreen(onBack: () -> Unit) {
 
     Scaffold(
         containerColor = PulseColors.background,
+        // Insets are already applied by the route wrapper (see SettingsSubScreen).
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Nutrition") },
@@ -71,6 +73,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = PulseColors.background),
             )
         },

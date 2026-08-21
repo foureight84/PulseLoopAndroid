@@ -1,11 +1,17 @@
 package com.pulseloop.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,6 +47,15 @@ import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.UserGoalEntity
+import com.pulseloop.health.HealthConnectAvailability
+import com.pulseloop.health.HealthConnectPermissions
+import com.pulseloop.health.HealthConnectPrefs
+import com.pulseloop.health.HealthConnectExportWorker
+import com.pulseloop.health.HealthConnectPermissionReconcile
+import com.pulseloop.health.HealthConnectPrefsStore
+import com.pulseloop.health.HealthConnectRemovalWorker
+import com.pulseloop.health.HealthConnectWatermarks
+import com.pulseloop.health.HealthConnectSdk
 import com.pulseloop.notifications.CoachNotifications
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
@@ -83,6 +98,11 @@ private fun SettingsSubScreen(
 ) {
     Scaffold(
         containerColor = PulseColors.background,
+        // The NavHost route wrapper (PulseLoopApp's paddedComposable) has ALREADY applied the
+        // outer Scaffold's system-bar padding to this whole subtree. Consuming the insets a
+        // second time here — once via contentWindowInsets, once via TopAppBar's own default —
+        // is what produced the tall dead band above every settings title.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text(title) },
@@ -91,6 +111,7 @@ private fun SettingsSubScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = PulseColors.background),
             )
         },
@@ -2394,9 +2415,495 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
         }
 
         statusMessage?.let { msg ->
-            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = PulseColors.cardSoft)) {
+            Card(
+                Modifier.fillMaxWidth(),
+                // containerColor alone leaves contentColor Unspecified, so the Text falls back to
+                // LocalContentColor (dark) and renders near-invisible on this dark card.
+                colors = CardDefaults.cardColors(
+                    containerColor = PulseColors.cardSoft,
+                    contentColor = PulseColors.textPrimary,
+                ),
+            ) {
                 Text(msg, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
 }
+
+// MARK: - Health Connect
+
+/**
+ * Health Connect export settings — the Android analogue of iOS' Apple Health settings
+ * (docs/health-connect-integration.md, Phase 0/1). Availability, permissions, and preferences;
+ * the Phase 1 worker owns the actual export. Granting permissions and answering the backfill
+ * dialog both enqueue the (debounced, hard-gated) export worker.
+ */
+@Composable
+fun HealthConnectSettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val store = remember { HealthConnectPrefsStore.get(context) }
+    val prefs by store.prefs.collectAsState()
+    // Re-read on every ON_RESUME (review pass 5): "Install / Update Health Connect" sends the
+    // user to Play and back, and a `remember {}` snapshot kept rendering the unavailable card —
+    // with LaunchedEffect(availability) never re-firing — until they left the screen and
+    // returned. Keying on it makes the whole screen recover by itself.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var availability by remember { mutableStateOf(HealthConnectSdk.availability(context)) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) availability = HealthConnectSdk.availability(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val granted = prefs.lastGrantedPermissions.toSet()
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    // Any leftover export state is what "Remove PulseLoop data" would actually clear.
+    val hasExportState = prefs.lastSyncAt != null ||
+        HealthConnectWatermarks.Key.values().any { store.currentWatermarks.get(it) != null }
+    // Backfill dialog derived from persisted state (review MINOR): a rotation or process death
+    // while it is up would otherwise destroy a `remember`ed flag WITHOUT running
+    // onDismissRequest, stranding enabled=true + backfillChoice=NOT_ASKED — the hard-gated
+    // "Connected but nothing exports" state with no re-offer. Deriving it the way the revocation
+    // offer does makes recreation re-show it and makes the explicit dismiss redundant. Also gated
+    // on Health Connect being AVAILABLE (review pass 3): the old imperative flag could only be set
+    // from the permission-launcher callback, reachable only in the AVAILABLE branch, so a
+    // device whose provider is uninstalled / needs an update never saw this dialog on top of the
+    // "needs an update" card.
+    val showBackfillDialog = availability == HealthConnectAvailability.AVAILABLE &&
+        prefs.enabled && prefs.isConnected &&
+        prefs.backfillChoice == HealthConnectPrefs.BackfillChoice.NOT_ASKED
+    // Phase 6: full-revocation offer + "remove PulseLoop data" confirmation.
+    var showRevokeResetDialog by remember { mutableStateOf(false) }
+    var showRemoveDialog by remember { mutableStateOf(false) }
+
+    // Master toggle → Health Connect permission sheet. Partial grants are first-class:
+    // any granted permission counts as connected.
+    val permissionLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract()
+    ) { grantedPermissions ->
+        val got = HealthConnectPermissionReconcile.storedSetOf(grantedPermissions).toSet()
+        // Phase 6: diff against the previously stored grant. A grow resets the watermarks of the
+        // groups the new permissions belong to, so the newly grantable types backfill their history
+        // (their shared group watermark is already ahead of their rows). A full revoke offers a
+        // watermark reset below.
+        val outcome = HealthConnectPermissionReconcile.reconcile(
+            store.current.lastGrantedPermissions.toSet(), got, store,
+        )
+        store.update {
+            it.copy(
+                enabled = got.isNotEmpty(),
+                lastGrantedPermissions = got.sorted(),
+                revocationOfferDismissed = if (got.isEmpty()) it.revocationOfferDismissed else false,
+            )
+        }
+        statusMessage = if (got.isEmpty()) {
+            "No Health Connect permissions granted — nothing to export."
+        } else {
+            "Connected. ${got.size} of ${HealthConnectPermissions.all.size} permission types granted."
+        }
+        // First-enable backfill dialog: the derived showBackfillDialog above now turns true from
+        // the persisted state (enabled + connected + NOT_ASKED) this callback just set, so there
+        // is nothing to set imperatively. While NOT_ASKED the Phase 1 worker's hard gate keeps the
+        // export from running, so the enqueue below is a no-op until the choice is made.
+        // Grant trigger (Phase 1, extended in Phase 6): a grant — including a grow-reset — is the
+        // moment an export should attempt to run. Debounced 15 s + REPLACE, so cheap on re-grants.
+        if (got.isNotEmpty()) HealthConnectExportWorker.enqueue(context)
+        // hadSync guard (mirrors the state-based offer below): only offer a reset when there is
+        // prior export state to actually reset. A grant-then-immediate-revoke with no export yet
+        // has empty watermarks + null lastSyncAt, so the offer would be a no-op with misleading
+        // "re-exports your history" wording.
+        if (outcome.allRevoked && !store.current.revocationOfferDismissed) {
+            val cur = store.current
+            val hadSync = cur.lastSyncAt != null ||
+                HealthConnectWatermarks.Key.values().any { store.currentWatermarks.get(it) != null }
+            if (hadSync) showRevokeResetDialog = true
+        }
+    }
+
+    // Phase 6: on open, diff the live granted set against the stored one to catch out-of-band
+    // changes (a revocation in system Settings, a grant made elsewhere). A grow resets the affected
+    // watermarks and enqueues a pass. (onAppStart does the same on activity resume; this is the
+    // safety net for a change that landed after resume, and the home of the revocation offer.)
+    LaunchedEffect(availability) {
+        if (availability != HealthConnectAvailability.AVAILABLE) return@LaunchedEffect
+        val last = store.current.lastGrantedPermissions.toSet()
+        val client = runCatching { HealthConnectClient.getOrCreate(context) }.getOrNull() ?: return@LaunchedEffect
+        val live = runCatching { client.permissionController.getGrantedPermissions() }.getOrNull() ?: return@LaunchedEffect
+        val granted = HealthConnectPermissionReconcile.storedSetOf(live).toSet()
+        val outcome = HealthConnectPermissionReconcile.reconcile(last, granted, store)
+        if (granted != last) store.update { it.copy(lastGrantedPermissions = granted.sorted()) }
+        if (outcome.grewGroups.isNotEmpty()) {
+            HealthConnectExportWorker.enqueue(context)
+            // A re-grant (grow) clears the one-shot revocation-offer flag so a future full
+            // revocation offers again.
+            if (store.current.revocationOfferDismissed) store.update { it.copy(revocationOfferDismissed = false) }
+        }
+        // Full-revocation offer (Gadgetbridge pattern) — state-based, not diff-based: onAppStart
+        // may already have reconciled and stored the (now empty) live set before this screen
+        // opened, making the diff above empty-to-empty so allRevoked never fires. Offer when the
+        // master is on, nothing is granted now, a prior sync exists (something to reset), and the
+        // user has not already dismissed the offer.
+        val cur = store.current
+        val hadSync = cur.lastSyncAt != null ||
+            HealthConnectWatermarks.Key.values().any { store.currentWatermarks.get(it) != null }
+        if (cur.enabled && granted.isEmpty() && hadSync && !cur.revocationOfferDismissed) {
+            showRevokeResetDialog = true
+        }
+    }
+
+    SettingsSubScreen(title = "Health Connect", onBack = onBack) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Health Connect", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Export ring data to Health Connect so other apps and dashboards can show it. Write-only: PulseLoop never reads data back.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                when (availability) {
+                    HealthConnectAvailability.UNAVAILABLE -> {
+                        Text(
+                            "Health Connect isn't available on this device. Install the Health Connect app to use this feature.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { openHealthConnectPlayStore(context) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Install Health Connect")
+                        }
+                    }
+
+                    HealthConnectAvailability.PROVIDER_UPDATE_REQUIRED -> {
+                        Text(
+                            "The Health Connect app on this device needs an update before it can be used.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { openHealthConnectPlayStore(context) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Update Health Connect")
+                        }
+                    }
+
+                    HealthConnectAvailability.AVAILABLE -> {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Export PulseLoop data", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    if (prefs.isConnected) "Connected" else "Not connected",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = prefs.enabled,
+                                onCheckedChange = { on ->
+                                    if (on) {
+                                        permissionLauncher.launch(HealthConnectPermissions.all)
+                                    } else {
+                                        store.update { it.copy(enabled = false) }
+                                    }
+                                },
+                            )
+                        }
+                        // Always reachable (review pass 5). Two states have no other way out:
+                        // once every permission is revoked the app can no longer delete what it
+                        // wrote (deletion needs WRITE), and after two denials the platform stops
+                        // showing the permission sheet at all, so the master switch silently does
+                        // nothing. Both are resolved in the Health Connect app.
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(
+                            onClick = { openHealthConnectApp(context) },
+                            modifier = Modifier.align(Alignment.Start),
+                        ) { Text("Open Health Connect") }
+                        if (!prefs.isConnected) {
+                            Text(
+                                "Manage or re-grant permissions, and review or delete PulseLoop's data, in the Health Connect app.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (availability == HealthConnectAvailability.AVAILABLE && prefs.isConnected) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Data Types", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Exported only when switched on. A row stays dim until its permission is granted.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val rows = listOf(
+                        HealthConnectPermissions.DataTypeRow.HEART_RATE to "Heart rate",
+                        HealthConnectPermissions.DataTypeRow.OXYGEN_SATURATION to "Oxygen saturation (SpO₂)",
+                        HealthConnectPermissions.DataTypeRow.HEART_RATE_VARIABILITY to "Heart rate variability (HRV)",
+                        HealthConnectPermissions.DataTypeRow.BODY_TEMPERATURE to "Body temperature",
+                        HealthConnectPermissions.DataTypeRow.SLEEP to "Sleep",
+                        HealthConnectPermissions.DataTypeRow.STEPS_AND_ACTIVITY to "Steps & activity",
+                        HealthConnectPermissions.DataTypeRow.WORKOUTS to "Workouts",
+                        HealthConnectPermissions.DataTypeRow.NUTRITION to "Nutrition",
+                        // Phase 5 (beyond iOS).
+                        HealthConnectPermissions.DataTypeRow.BLOOD_PRESSURE to "Blood pressure",
+                        HealthConnectPermissions.DataTypeRow.BLOOD_GLUCOSE to "Blood glucose",
+                        HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE to "Respiratory rate",
+                        HealthConnectPermissions.DataTypeRow.VO2_MAX to "VO\u2082 max",
+                        HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE to "Resting heart rate",
+                    )
+                    for ((row, label) in rows) {
+                        val rowPerms = HealthConnectPermissions.permissionsForRow(row)
+                        val rowGranted = rowPerms.isEmpty() || rowPerms.any { it in granted }
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(label, style = MaterialTheme.typography.bodyMedium)
+                                if (!rowGranted) {
+                                    Text(
+                                        "Awaiting permission",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = prefs.toggleFor(row),
+                                enabled = rowGranted,
+                                onCheckedChange = { on ->
+                                    store.update { p -> p.withToggleFor(row, on) }
+                                    // Re-enabling a VITALS kind must backfill the readings recorded while it
+                                    // was off: the VITALS group watermark is driven by the *enabled* kinds
+                                    // and advances past a disabled kind's rows, so without this reset the
+                                    // off-period data sits below the watermark and never re-selects. This is
+                                    // the toggle-side equivalent of the permission grow-reset. The single-
+                                    // type groups (sleep/activity/workouts/nutrition/resting HR) freeze their
+                                    // watermark while off and backfill on re-enable, so they need no reset.
+                                    if (on && HealthConnectPermissionReconcile.groupFor(row) == HealthConnectWatermarks.Key.VITALS) {
+                                        store.resetWatermarks(setOf(HealthConnectWatermarks.Key.VITALS))
+                                        HealthConnectExportWorker.enqueue(context)
+                                    }
+                                },
+                            )
+                        }
+                        if (row == HealthConnectPermissions.DataTypeRow.HEART_RATE_VARIABILITY) {
+                            // Plan §7 open item: the rings' HRV metric is vendor-undocumented, and
+                            // Health Connect has no SDNN type — we export it as RMSSD.
+                            Text(
+                                "HRV is exported as RMSSD — Health Connect has no SDNN type, and the rings' metric is vendor-undocumented.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
+        }
+
+        // Shown while there is anything to report or remove — deliberately NOT gated on
+        // isConnected (review pass 5). Revoking every permission in system Settings used to hide
+        // this whole section, which is exactly when a user wants to clear what was already
+        // exported; the card now stays, and says plainly what it can and cannot do without
+        // permissions.
+        if (availability == HealthConnectAvailability.AVAILABLE && (prefs.isConnected || hasExportState)) {
+            Card(
+                Modifier.fillMaxWidth(),
+                // containerColor alone leaves contentColor Unspecified, so the Text falls back to
+                // LocalContentColor (dark) and renders near-invisible on this dark card.
+                colors = CardDefaults.cardColors(
+                    containerColor = PulseColors.cardSoft,
+                    contentColor = PulseColors.textPrimary,
+                ),
+            ) {
+                val syncedAt = prefs.lastSyncAt
+                Text(
+                    if (syncedAt != null) {
+                        // The label promises a time, so show one (review pass 5): the summary
+                        // alone read as "Last sync: skipped: …" with no indication of when.
+                        "Last sync ${DeviceHeroStatus.relativeShort(syncedAt, System.currentTimeMillis())} — " +
+                            (prefs.lastSyncSummary ?: "unknown")
+                    } else {
+                        "No export has run yet. With the master switch on and a backfill choice made, PulseLoop exports automatically."
+                    },
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+
+            // Phase 6: "Remove PulseLoop data from Health Connect" (iOS removeAllExportedData parity).
+            // Deletes only the records this app wrote, then clears every watermark + the last-sync
+            // stamp so the export state matches an empty Health store.
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Remove exported data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Delete every record PulseLoop wrote to Health Connect and reset the export to start fresh. Your ring data in PulseLoop is untouched.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (!prefs.isConnected) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Deleting needs write permission, and PulseLoop has none right now — re-grant above, or delete the data in the Health Connect app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    val removing = prefs.removalStatus == HealthConnectPrefs.REMOVAL_IN_PROGRESS
+                    Button(
+                        onClick = { showRemoveDialog = true },
+                        enabled = !removing,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(if (removing) "Removing…" else "Remove PulseLoop data") }
+                }
+            }
+        }
+
+        // Removal runs in a worker, so its outcome arrives here through the store rather than
+        // through this screen's own state — it survives navigating away and process death.
+        prefs.removalStatus?.takeIf { it != HealthConnectPrefs.REMOVAL_IN_PROGRESS }?.let { msg ->
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = PulseColors.cardSoft,
+                    contentColor = PulseColors.textPrimary,
+                ),
+            ) {
+                Row(
+                    Modifier.padding(16.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(msg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { store.update { it.copy(removalStatus = null) } }) { Text("Dismiss") }
+                }
+            }
+        }
+
+        statusMessage?.let { msg ->
+            Card(
+                Modifier.fillMaxWidth(),
+                // containerColor alone leaves contentColor Unspecified, so the Text falls back to
+                // LocalContentColor (dark) and renders near-invisible on this dark card.
+                colors = CardDefaults.cardColors(
+                    containerColor = PulseColors.cardSoft,
+                    contentColor = PulseColors.textPrimary,
+                ),
+            ) {
+                Text(msg, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+
+    if (showBackfillDialog) {
+        AlertDialog(
+            // Dismissing (back / outside tap) is a Cancel: iOS's equivalent sets masterEnabled =
+            // false. Turning the master off flips the derived showBackfillDialog above back to
+            // false (it no longer holds enabled + connected + NOT_ASKED), which also keeps the
+            // on-screen state honest — re-enabling re-offers the dialog.
+            onDismissRequest = { store.update { it.copy(enabled = false) } },
+            title = { Text("How much history should we export?") },
+            // No "change this later" promise: there is no UI to change backfillChoice short of
+            // "Remove PulseLoop data", which resets it to NOT_ASKED and re-offers this dialog.
+            text = { Text("Exporting all history can take a while on the first run.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_ALL) }
+                    HealthConnectExportWorker.enqueue(context) // answer the gate → run the pass
+                }) { Text("Sync all history") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) }
+                    HealthConnectExportWorker.enqueue(context) // stamps watermarks, exports nothing
+                }) { Text("Only new data from now on") }
+            },
+        )
+    }
+
+    // Phase 6: full-revocation offer (Gadgetbridge HealthConnectResetDialogFragment pattern). A
+    // later re-grant is a "grow" from empty, so the automatic grow-reset re-exports regardless;
+    // this lets the user reset immediately and clears the last-sync stamp too.
+    if (showRevokeResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showRevokeResetDialog = false; store.update { it.copy(revocationOfferDismissed = true) } },
+            title = { Text("Health Connect permissions revoked") },
+            text = { Text("PulseLoop no longer has any Health Connect permissions. Reset the export so a later re-grant re-exports your history?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    store.clearWatermarks()
+                    store.update { it.copy(lastSyncAt = null, lastSyncSummary = null, revocationOfferDismissed = true) }
+                    showRevokeResetDialog = false
+                    statusMessage = "Export reset — re-grant permissions to sync again."
+                }) { Text("Reset export") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRevokeResetDialog = false; store.update { it.copy(revocationOfferDismissed = true) } }) { Text("Not now") }
+            },
+        )
+    }
+
+    // Phase 6: "Remove PulseLoop data" confirmation. Deletion is per record type over the full
+    // time range (only types still granted), then all watermarks + the last-sync stamp clear.
+    if (showRemoveDialog) {
+        AlertDialog(
+            onDismissRequest = { showRemoveDialog = false },
+            title = { Text("Remove PulseLoop data?") },
+            text = { Text("This deletes every record PulseLoop wrote to Health Connect and resets the export. It cannot be undone, and your ring data in PulseLoop is not affected.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRemoveDialog = false
+                    // Enqueued, not launched in this screen's scope (review pass 5): a back-press
+                    // mid-delete used to cancel the removal between record types, leaving some
+                    // deleted, the rest alive, and the watermarks never cleared — unrepairable
+                    // from a write-only client. The worker reports back via prefs.removalStatus.
+                    HealthConnectRemovalWorker.enqueue(context)
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/**
+ * Opens PulseLoop's own page inside the Health Connect app — permissions plus Health Connect's
+ * own "delete app data". This is the way out of the two states PulseLoop cannot fix itself: after
+ * the platform stops showing the permission sheet (two denials) the master switch silently does
+ * nothing, and once every permission is revoked the app can no longer delete what it wrote
+ * (deletion needs WRITE). The client builds the right intent for both the API 34+ platform module
+ * and the pre-34 APK; if it cannot be resolved at all, fall back to the store listing.
+ */
+private fun openHealthConnectApp(context: Context) {
+    try {
+        context.startActivity(HealthConnectClient.getHealthConnectManageDataIntent(context))
+    } catch (_: Exception) {
+        openHealthConnectPlayStore(context)
+    }
+}
+
+private fun openHealthConnectPlayStore(context: Context) {
+    // API < 34: Health Connect is a separate APK from Play (plan §2, caveat 1).
+    val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata"))
+    val web = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.apps.healthdata"))
+    try {
+        context.startActivity(market)
+    } catch (_: Exception) {
+        // Devices without Play (e.g. F-Droid) at least get the web listing.
+        runCatching { context.startActivity(web) }
+    }
+}
+
