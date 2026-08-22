@@ -103,6 +103,12 @@ fun PulseLoopApp() {
         // without rebuilding the orchestrator — a frozen flags snapshot would
         // keep coachEnabled=false after a key is pasted, or send a stale model
         // slug to a newly selected provider, until process restart.
+        // One Open Food Facts client for the lifetime of composition: the nutrition tools
+        // (iOS #96 `search_food_database`) reach it through the per-turn ToolExecutionContext.
+        // toolContextFactory is called once per turn, so remembering the client keeps the
+        // OkHttp stack off the per-turn rebuild path.
+        val foodClient = remember { com.pulseloop.nutrition.OpenFoodFactsClient() }
+
         val coachOrchestrator = remember {
             CoachOrchestrator(
                 com.pulseloop.coach.config.CoachClientResolver.clientFactory(providerStore, apiKeyStore),
@@ -126,6 +132,7 @@ fun PulseLoopApp() {
                         db = db,
                         flags = flags,
                         coordinator = coordinator,
+                        foodClient = foodClient,
                     )
                 },
             )

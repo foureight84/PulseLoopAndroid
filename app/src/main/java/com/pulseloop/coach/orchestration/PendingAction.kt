@@ -16,6 +16,7 @@ data class PendingAction(
     val summary: String,           // human-readable description for the card
     val confirmLabel: String,
     val updates: ActivityUpdates? = null,  // only for updateActivitySession
+    val mealUpdates: MealUpdates? = null,  // only for updateMealEntry (iOS #96)
 ) {
     fun toJson(): String = Json.encodeToString(serializer(), this)
 
@@ -32,6 +33,11 @@ data class PendingAction(
 enum class PendingActionKind {
     DELETE_ACTIVITY_SESSION,
     UPDATE_ACTIVITY_SESSION,
+    // Meal actions (iOS #96). The target meal id rides [PendingAction.activityId] — the field
+    // is named for the original activity actions and meal actions reuse it so older persisted
+    // cards keep decoding.
+    DELETE_MEAL_ENTRY,
+    UPDATE_MEAL_ENTRY,
 }
 
 /**
@@ -45,4 +51,19 @@ data class ActivityUpdates(
     val durationMin: Double? = null,
     val perceivedEffort: String? = null,
     val startTime: String? = null,
+)
+
+/**
+ * Field updates for updateMealEntry (null = leave unchanged).
+ * Ported from MealUpdates in PendingAction.swift (iOS PR #96).
+ */
+@Serializable
+data class MealUpdates(
+    val name: String? = null,
+    val mealType: String? = null,
+    val calories: Double? = null,
+    val proteinG: Double? = null,
+    val carbsG: Double? = null,
+    val fatG: Double? = null,
+    val notes: String? = null,
 )

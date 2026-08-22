@@ -545,6 +545,11 @@ interface MealEntryDao {
     @Query("SELECT * FROM meal_entries WHERE updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY updatedAt ASC")
     suspend fun updatedSince(watermark: Long): List<MealEntryEntity>
 
+    /** Coach update/delete meal tools (iOS #96): single-entry lookup by primary key.
+     *  Query-only — no schema change. (Deletion already exists as [deleteById].) */
+    @Query("SELECT * FROM meal_entries WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): MealEntryEntity?
+
     @Upsert
     suspend fun upsert(entry: MealEntryEntity)
 

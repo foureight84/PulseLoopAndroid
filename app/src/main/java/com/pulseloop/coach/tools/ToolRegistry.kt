@@ -10,8 +10,11 @@ class ToolRegistry(private val flags: CoachFeatureFlags) {
     private val tools: Map<String, CoachToolDef>
 
     init {
-        val all = RetrievalTools.all + AnalysisTools.all + ChartTools.all
-        val writable = if (flags.writeToolsEnabled) MemoryTools.all + ActionTools.writeTools else emptyList()
+        // Nutrition read tools are grounding (always available, like the other read tools);
+        // the write tools are gated on flags.writeToolsEnabled, mirroring iOS's
+        // enableWriteTools split in NutritionTools.swift (iOS PR #96).
+        val all = RetrievalTools.all + AnalysisTools.all + ChartTools.all + NutritionTools.all
+        val writable = if (flags.writeToolsEnabled) MemoryTools.all + ActionTools.writeTools + NutritionTools.writeTools else emptyList()
         val live = if (flags.liveMeasurementsEnabled) ActionTools.measurementTools else emptyList()
         tools = (all + writable + live).associateBy { it.name }
     }

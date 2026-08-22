@@ -35,6 +35,13 @@ data class ToolExecutionContext(
     val flags: CoachFeatureFlags = CoachFeatureFlags(),
     val coordinator: com.pulseloop.service.RingSyncCoordinator? = null,  // for live measurements
     val pendingActions: MutableList<com.pulseloop.coach.orchestration.PendingAction> = mutableListOf(),
+    /**
+     * Open Food Facts lookup for the nutrition tools (iOS #96 `search_food_database`).
+     * Null = the search tool reports `database_unavailable` and the model must fall back to a
+     * labeled estimate; defaults to null so test harnesses and pre-existing construction sites
+     * compile unchanged (iOS's ToolExecutionContext has the same optional foodClient).
+     */
+    val foodClient: com.pulseloop.nutrition.FoodDatabaseClient? = null,
 )
 
 data class CoachFeatureFlags(
