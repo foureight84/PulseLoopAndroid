@@ -58,8 +58,9 @@ blocked on something outside the code.
 
 ### Not on this list, and why
 
-- **#80 Health Connect** — done. All seven phases (0–6) are complete and **merged to `main`**; the
-  ledger's "on `feat/health-connect-foundation`" is stale.
+- **#80 Health Connect** — done. Phases 0–6 (all of them) are complete and **merged to `main`** at
+  `11abb92`. The `feat/health-connect-foundation` branch the port-queue row names still exists on
+  `origin`, but it is fully contained in `main` — read `main`, not the branch.
 - **PR #45 review remediation** — done. The 2026-08-09 review's parity bugs in #95/#98/#99/#100 and
   the #94 regression were all fixed in `8df67b1` + `8f81c40`. Only rows 2–4 above survive from it.
 - **#130 RWfit rebuild** — the *rebuild* is done and on `main` (the ledger's
@@ -68,9 +69,17 @@ blocked on something outside the code.
 
 ### Branch note
 
-The ledger's older entries name branches that no longer exist — `feat/rwfit-vendor-rebuild`,
-`iOS_sync_2026-07-16`, `ios_sync_2026-08-08` were all merged and deleted. **Check `main` before
-believing a branch reference in a session note below.**
+Two different kinds of stale branch reference appear below, and both resolve the same way — the
+work is on `main`:
+
+- **Merged and deleted** — `feat/rwfit-vendor-rebuild` (`8d16513`), `iOS_sync_2026-07-16`
+  (`0b971ac`), `ios_sync_2026-08-08` (`4434841`). All three are ancestors of `main`; neither the
+  local nor the `origin` ref still exists.
+- **Merged but still present** — `feat/health-connect-foundation` (`11abb92`),
+  `feat/rwfit-ring-family` (`b073dad`). The refs exist on `origin` and are fully contained in
+  `main`, so checking one out gains nothing.
+
+**Check `main` before believing a branch reference in a session note below** (verified 2026-08-22).
 
 ---
 
