@@ -242,6 +242,19 @@ class LocalOpenAICompatClientTest {
     }
 
     @Test
+    fun `a reasoning model truncated mid-thought reports the token limit, not empty output`() {
+        // vLLM 0.27 with a reasoning parser: content null, reasoning present, finish_reason length.
+        val e = assertThrows(ResponsesError.Decoding::class.java) {
+            client().ingestResponse(parse("""
+                {"id":"e","choices":[{"finish_reason":"length","message":{
+                  "role":"assistant","content":null,"reasoning":"The user asks"}}]}
+            """.trimIndent()))
+        }
+        assertTrue(e.msg, e.msg.contains("token limit"))
+        assertTrue(e.msg, e.msg.contains("reasoning"))
+    }
+
+    @Test
     fun `usage is null rather than zero when the server omits the block`() {
         val r = client().ingestResponse(parse(
             """{"id":"d","choices":[{"message":{"role":"assistant","content":"hi"}}]}"""))

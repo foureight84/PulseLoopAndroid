@@ -306,9 +306,9 @@ class LocalOpenAICompatClient(
         val assistantMessage = mutableMapOf<String, JsonElement>("role" to JsonPrimitive("assistant"))
 
         // Open reasoning models emit their chain of thought either as an inline `<think>…</think>`
-        // block (llama.cpp/Ollama without a reasoning parser) or split into a separate
-        // `reasoning_content` field (vLLM/SGLang with one). Neither belongs in the coach_response
-        // JSON: the first is stripped, the second is simply not read.
+        // block (llama.cpp/Ollama without a reasoning parser) or split into a separate field —
+        // `reasoning` on vLLM 0.27+, `reasoning_content` on older builds and SGLang. Neither
+        // belongs in the coach_response JSON: the first is stripped, the others aren't read.
         val content = (message["content"] as? JsonPrimitive)?.contentOrNull?.let { stripThinking(it) }
         if (!content.isNullOrEmpty()) {
             outputItems.add(MessageOutput(role = "assistant", content = listOf(TextContent(content))))
@@ -346,7 +346,18 @@ class LocalOpenAICompatClient(
             if (storedCalls.isNotEmpty()) assistantMessage["tool_calls"] = JsonArray(storedCalls)
         }
 
-        if (outputItems.isEmpty()) throw ResponsesError.EmptyOutput
+        if (outputItems.isEmpty()) {
+            // A reasoning model that ran out of budget mid-thought returns null content, no tool
+            // calls, and finish_reason "length". Bare "the model returned no output" sends the
+            // user looking for the wrong problem — the fix is the Max tokens field.
+            val finishReason = (first["finish_reason"] as? JsonPrimitive)?.contentOrNull
+            if (finishReason == "length") throw ResponsesError.Decoding(
+                "The model hit its token limit before producing an answer" +
+                (if (message["reasoning"] != null || message["reasoning_content"] != null)
+                    " (it spent the budget reasoning)" else "") +
+                ". Raise Max tokens in Settings → AI Coach, or leave it blank.")
+            throw ResponsesError.EmptyOutput
+        }
 
         storedAssistantMessage[responseId] = JsonObject(assistantMessage)
         return OpenAIResponse(id = responseId, output = outputItems, usage = usage(root))

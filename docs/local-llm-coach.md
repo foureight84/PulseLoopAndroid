@@ -33,14 +33,17 @@ OpenAI's Responses API (what `CoachOrchestrator` builds) puts the per-turn conte
   `_GenericMessageRole = Literal["system","assistant","tool","function","developer","latest_reminder"]`
   with a `_normalize_role` validator that **raises** (→ HTTP 400) for anything else. `developer`
   was added later; released versions in the wild reject it outright.
-- **vLLM** accepts it (`extra="allow"`, openai-python message types) and hands the role straight to
-  the model's Jinja chat template — where a template with no `developer` branch silently folds it
-  into the user/other bucket.
+- **vLLM** *rejects* it. Verified against a live vLLM **0.27.1** server:
+  `{"role":"developer"}` returns **HTTP 422** — `Failed to deserialize the JSON body into the
+  target type: messages[0]: unknown role: developer`. (Older vLLM parsed requests with pydantic
+  models set to `extra="allow"` and did accept the role, passing it to the Jinja chat template,
+  which usually has no `developer` branch either. Don't rely on the old behaviour.)
 - **Ollama / llama.cpp / LM Studio** document only `system` / `user` / `assistant` / `tool`.
 
 Even where the server accepts the role, the *chat template* usually can't render it. So the adapter
 **always folds `developer` → `system`**, unconditionally, for every local backend. This is lossless
-(the content is instructions either way) and is already what `MiniMaxClient.chatRole` does.
+(the content is instructions either way) and is already what `MiniMaxClient.chatRole` does. Two of
+the five engines are confirmed to hard-fail without it, so this is load-bearing, not defensive.
 
 Second, related hazard: many local chat templates require the system message to be **first and
 singular** and raise on a system turn after a user turn. `MiniMaxClient` appends
@@ -90,6 +93,56 @@ another:
 `reasoning` / `reasoning_effort` are **not** sent: only Ollama documents them, and vLLM/SGLang
 would warn or 400. Anthropic `cache_control` and OpenRouter's `provider` block are likewise absent.
 
+## 5a. Self-discovery — why the toggles are probed, not looked up
+
+Asking the user to know whether their vLLM was started with `--enable-auto-tool-choice` is a bad
+deal, and no metadata endpoint answers it: `/v1/models` describes the *model*, while the two
+fields most likely to fail a turn (`tools`, `response_format`) are gated by *launch flags*. So
+`LocalCapabilityProbe` sends the fields and reads the answer.
+
+One press of **Detect server & configure** runs:
+
+1. `GET /v1/models` — reachability, the model list, and the sole-model shortcut. This is the only
+   step whose failure is fatal; nothing after it can be trusted if the server isn't there.
+2. Engine identity, best-effort, from each engine's own info route (first hit wins):
+   `GET /version` (vLLM), `/api/version` (Ollama), `/props` (llama.cpp), `/get_server_info`
+   (SGLang), `/api/v0/models` (LM Studio). Deliberately *not* `owned_by` from `/v1/models` —
+   vLLM says `vllm`, but Ollama says `library` and LM Studio says `organization_owner`, and any
+   proxy rewrites all three. Cosmetic only: it drives the summary line, never the request body.
+3. A chat request carrying one throwaway tool.
+4. A chat request carrying a minimal `response_format: json_schema`; only if that's refused is
+   `json_object` tried.
+
+Classification rule: **4xx means the server refused the field** (vLLM answers `400` for a disabled
+tool parser and `422` for a field its deserializer doesn't know, so the status itself carries no
+extra meaning) → `NO`. A 5xx or a transport failure says nothing about the capability → `UNKNOWN`,
+and the setting is **left at its default rather than switched off**, with a note explaining why.
+Tool calling in particular only ever turns off on an explicit refusal — an inconclusive probe must
+not silently strip the coach of its ability to read the user's data.
+
+Probes 3 and 4 use `max_tokens: 8` and a two-character prompt, and a minimal schema rather than the
+coach's own (a large schema risks a rejection *about the schema* being read as "unsupported"). The
+timeout is 120 s because on Ollama/LM Studio the first probe also pays for paging the model in.
+
+The probe never picks a model when several are served and none matches the current setting —
+guessing would silently move a working setup onto a different model.
+
+### Measured on a real server (vLLM 0.27.1, Qwen3.8-27B-INT8)
+
+| Probe | Result |
+|---|---|
+| `GET /v1/models` | `qwen3.8-27b-int8-w8a16-mtp`, `max_model_len` 262144 |
+| `GET /version` | `{"version":"0.27.1"}` → engine identified |
+| `tools` | HTTP 200 → supported |
+| `response_format: json_schema` | HTTP 200 → supported |
+| `role: developer` | **HTTP 422, `unknown role: developer`** |
+
+Also observed: with a reasoning parser enabled, vLLM returns the chain of thought in
+`message.reasoning` (older builds: `reasoning_content`) and leaves `content` null until reasoning
+finishes. The adapter reads neither field, so this is inert — but it means a `max_tokens` low
+enough to truncate mid-reasoning yields no content at all, which the client reports as an
+out-of-tokens error rather than a bare "no output".
+
 ## 6. Changes in this repo
 
 | File | Change |
@@ -99,6 +152,7 @@ would warn or 400. Anthropic `cache_control` and OpenRouter's `provider` block a
 | `coach/local/LocalEndpoint.kt` | **new** — URL normalise/validate, private-host rule |
 | `coach/local/LocalOpenAICompatClient.kt` | **new** — the Chat Completions adapter |
 | `coach/local/LocalModelCatalog.kt` | **new** — `GET /v1/models` for the model dropdown |
+| `coach/local/LocalCapabilityProbe.kt` | **new** — engine identity + probed capabilities (§5a) |
 | `coach/openai/OpenAIResponsesClient.kt` | `ResponsesHttp`: per-call read timeout + `get` |
 | `coach/config/CoachClientResolver.kt` | local branch; readiness sentinel is the **base URL**, not a key |
 | `coach/usage/CoachModelPricing.kt` | local models cost $0 |

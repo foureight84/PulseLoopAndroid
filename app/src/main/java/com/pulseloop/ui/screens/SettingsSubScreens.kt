@@ -43,8 +43,8 @@ import com.pulseloop.coach.config.CoachProviderMode
 import com.pulseloop.coach.config.CoachProviderSettingsStore
 import com.pulseloop.coach.config.GeminiModel
 import com.pulseloop.coach.config.LocalStructuredOutput
+import com.pulseloop.coach.local.LocalCapabilityProbe
 import com.pulseloop.coach.local.LocalEndpoint
-import com.pulseloop.coach.local.LocalModelCatalog
 import com.pulseloop.coach.config.MiniMaxModel
 import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
@@ -276,6 +276,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     var localDiscovered by remember { mutableStateOf<List<String>>(emptyList()) }
                     var localProbeBusy by remember { mutableStateOf(false) }
                     var localProbeResult by remember { mutableStateOf<String?>(null) }
+                    var localProbeNotes by remember { mutableStateOf<List<String>>(emptyList()) }
                     var localProbeOk by remember { mutableStateOf(false) }
 
                     val providerOptions = listOf(
@@ -450,6 +451,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 onValueChange = {
                                     localBaseUrl = it; providerStore.localBaseUrl = it
                                     localProbeResult = null; localProbeOk = false
+                                    localProbeNotes = emptyList(); localDiscovered = emptyList()
                                 },
                                 label = { Text("Server address") },
                                 placeholder = { Text("http://192.168.1.50:11434") },
@@ -469,42 +471,70 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             )
 
                             Spacer(Modifier.height(8.dp))
-                            // Probes GET /v1/models: confirms the server is reachable and speaks
-                            // the OpenAI API, and fills the model picker in one press.
+                            // One press does the whole setup: identifies the engine, lists models,
+                            // and probes whether the server actually accepts `tools` and
+                            // `response_format` — which depend on launch flags that no metadata
+                            // endpoint exposes. The detected values are applied straight to the
+                            // controls below, which stay editable.
                             Button(
                                 onClick = {
-                                    localProbeBusy = true; localProbeResult = null
+                                    localProbeBusy = true; localProbeResult = null; localProbeNotes = emptyList()
                                     scope.launch {
-                                        when (val r = LocalModelCatalog.fetch(localBaseUrl, localKey)) {
-                                            is LocalModelCatalog.Result.Success -> {
-                                                localDiscovered = r.models
-                                                localProbeOk = true
-                                                localProbeResult = if (r.models.isEmpty())
-                                                    "Connected, but the server lists no models."
-                                                else "Connected — found ${r.models.size} model(s)."
-                                                // Save a round trip for the single-model servers
-                                                // (vLLM/SGLang/llama.cpp serve exactly one).
-                                                if (localModel.isBlank() && r.models.size == 1) {
-                                                    localModel = r.models.first()
-                                                    providerStore.localModel = localModel
-                                                }
+                                        try {
+                                            val report = LocalCapabilityProbe.run(
+                                                baseUrl = localBaseUrl,
+                                                apiKey = localKey,
+                                                currentModel = localModel,
+                                            )
+                                            localDiscovered = report.models
+                                            if (report.suggestedModel.isNotBlank()) {
+                                                localModel = report.suggestedModel
+                                                providerStore.localModel = localModel
                                             }
-                                            is LocalModelCatalog.Result.Failure -> {
-                                                localProbeOk = false; localProbeResult = r.message
-                                            }
+                                            localToolCalling = report.suggestedToolCalling
+                                            providerStore.localToolCalling = localToolCalling
+                                            localStructured = report.suggestedStructuredOutput
+                                            providerStore.localStructuredOutput = localStructured
+                                            localProbeOk = true
+                                            localProbeResult = report.summary
+                                            localProbeNotes = report.notes
+                                        } catch (e: LocalCapabilityProbe.Unreachable) {
+                                            localProbeOk = false; localProbeResult = e.reason
+                                        } catch (e: Exception) {
+                                            localProbeOk = false
+                                            localProbeResult = e.message ?: "Couldn't reach the server."
                                         }
                                         localProbeBusy = false
                                     }
                                 },
                                 enabled = localBaseUrl.isNotBlank() && urlProblem == null && !localProbeBusy,
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text(if (localProbeBusy) "Connecting…" else "Test connection & load models") }
+                            ) { Text(if (localProbeBusy) "Detecting…" else "Detect server & configure") }
+                            if (localProbeBusy) {
+                                Text(
+                                    "Sending two tiny test messages. This can take a minute if the model " +
+                                    "still has to load.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
                             localProbeResult?.let {
                                 Text(
                                     it,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (localProbeOk) PulseColors.success else MaterialTheme.colorScheme.error,
                                     modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            // Only non-empty when a probe was inconclusive or refused — the
+                            // difference between "off because your server said no" and "off
+                            // because we couldn't tell" is the whole point of showing it.
+                            localProbeNotes.forEach { note ->
+                                Text(
+                                    "• $note",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
 
@@ -545,8 +575,8 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 Column(Modifier.weight(1f)) {
                                     Text("Tool calling")
                                     Text(
-                                        "Lets the coach read your data. Turn off if the server rejects tools " +
-                                        "(vLLM needs --enable-auto-tool-choice).",
+                                        "Lets the coach read your data. Detect sets this for you; turn it off " +
+                                        "if your server rejects tools (vLLM needs --enable-auto-tool-choice).",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
