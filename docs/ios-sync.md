@@ -31,7 +31,7 @@ the work list, and assembling one from all three is how items get missed.
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
 | **Last triaged iOS commit** | `439ca81` — Merge PR #93 (Colmi R11 CRP driver), 2026-08-09 |
 | **Last triage date** | 2026-08-22 |
-| **Last port date** | 2026-08-22 — PR #94 `CoachNotificationDataTrigger` (`9d43227`) + PR #93 hardening (`c95b6e8`) |
+| **Last port date** | 2026-08-22 — Workout pause intervals (`71f251e`) + PR #94 `CoachNotificationDataTrigger` (`9d43227`) + PR #93 hardening (`c95b6e8`) |
 | **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **11 ported, #130 backed out** (#94's data-trigger feature and #93's 5 hardening fixes both landed this session) |
 
 ---
@@ -47,12 +47,11 @@ blocked on something outside the code.
 
 | # | Item | What is actually left | Size | Ready? |
 |---|------|----------------------|------|--------|
-| 1 | **Workout pause intervals** | `activity_events` is never written on Android, so Strava TCX can't drop paused trackpoints. `totalPauseSeconds` is already honoured — this is the per-interval detail only. | S–M | ✅ start now |
-| 2 | **#96 nutrition subset** | `food_products`/`FoodProductDao`/`CachedFoodProductEntity` exist but **nothing can populate them**: no Open Food Facts client, no barcode scanner, no AI photo analysis, no coach `log_meal` tool. The ledger row is corrected to ADAPT (subset); this is the rest of it. | L | ✅ start now |
-| 3 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
-| 4 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
-| 5 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
-| 6 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
+| 1 | **#96 nutrition subset** | `food_products`/`FoodProductDao`/`CachedFoodProductEntity` exist but **nothing can populate them**: no Open Food Facts client, no barcode scanner, no AI photo analysis, no coach `log_meal` tool. The ledger row is corrected to ADAPT (subset); this is the rest of it. | L | ✅ start now |
+| 2 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
+| 3 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
+| 4 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
+| 5 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
 
 ### Not on this list, and why
 
@@ -1518,8 +1517,10 @@ the pre-fix builder. Suite: 794 → 812.
   bus subscriber + (dateKey,slotRaw) dedupe + stale-skip). It was an event-bus subscriber, not the
   window constant that had been mistaken for it.
 - **#96 subset**: no OFF search, no barcode scan, no AI photo analysis, no coach `log_meal` tool.
-- **Pause intervals**: `activity_events` is never written on Android, so TCX can't drop paused
-  trackpoints yet. `totalPauseSeconds` is honoured.
+- ~~**Pause intervals**~~ **now ported in `71f251e`**: `LiveWorkoutManager.pause/resume`
+  write the `paused`/`resumed` (+ `gps_stopped`/`gps_started`) `activity_events` and
+  `StravaUploader` reads them into `StravaTCXBuilder.pauseIntervals()`, so paused trackpoints drop.
+  `totalPauseSeconds` was already honoured.
 
 ---
 
