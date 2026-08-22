@@ -215,13 +215,25 @@ data class CoachSummaryEntity(
 /**
  * Ported from [CoachNotificationRecord] in CoachNotificationModels.swift (iOS
  * #65's `recentNotificationTexts()` reader — the record itself predates #65).
- * A delivered daily check-in, kept purely so the generator can avoid repeating
- * its own recent phrasing/openings (iOS #65 anti-repeat hint).
+ * A delivered daily check-in, kept so the generator can avoid repeating its own
+ * recent phrasing/openings (iOS #65 anti-repeat hint) — and (iOS #94) to enforce
+ * the once-per-slot-per-day cap: [dateKey] + [slotRaw] is the dedupe key the
+ * periodic worker and the sync-completion data trigger both check before sending.
  */
-@Entity(tableName = "coach_notification_records", indices = [Index("createdAt")])
+@Entity(
+    tableName = "coach_notification_records",
+    indices = [Index("createdAt"), Index("dateKey", "slotRaw")],
+)
 data class CoachNotificationRecordEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val title: String,
     val body: String,
     val createdAt: Long = System.currentTimeMillis(),
+    /** Local-timezone epoch day the check-in was delivered — the per-day dedupe key
+     *  (iOS #94; the INTEGER analog of iOS's "yyyy-MM-dd" string dateKey). 0 = unknown:
+     *  pre-#94 rows and archive restores, which can never match a real dedupe lookup. */
+    val dateKey: Long = 0,
+    /** Lowercase slot name ("morning"/"evening") — iOS's `slot.rawValue`. "" = unknown
+     *  (pre-#94 rows). */
+    val slotRaw: String = "",
 )

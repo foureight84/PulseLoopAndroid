@@ -8,34 +8,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.*
 import com.pulseloop.MainActivity
-import com.pulseloop.coach.config.CoachSleepSyncGate
-import com.pulseloop.coach.config.CoachVarietyHints
-import com.pulseloop.coach.openai.OpenAIResponsesClient
-import com.pulseloop.data.PulseLoopDatabase
-import com.pulseloop.data.entity.CoachNotificationRecordEntity
-import com.pulseloop.ring.PulseEvent
-import com.pulseloop.ring.PulseEventBus
-import com.pulseloop.ring.RingBLEClient
-import com.pulseloop.ring.RingConnectionState
-import com.pulseloop.service.loadPersistedMeasurementSettings
-import com.pulseloop.service.loadPersistedUserProfile
 import com.pulseloop.settings.ApiKeyStore
-import kotlinx.coroutines.async
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.filterIsInstance
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.*
-import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
 
 /**
@@ -103,7 +82,7 @@ object CoachNotifications {
 
     /**
      * One +45min one-off wake to retry a morning check-in that was skipped because
-     * last night's sleep hadn't synced yet (iOS #65 `submitSleepRetry`). Best-effort;
+     * last night's sleep hadn't synced yet (iOS #65 submitSleepRetry). Best-effort;
      * the next periodic run also covers the case where this doesn't land.
      */
     fun scheduleSleepRetry(context: Context) {
@@ -142,9 +121,13 @@ object CoachNotifications {
 }
 
 /**
- * WorkManager worker for generating daily coach check-in notifications.
- * Ported from CoachNotificationGenerator.swift — generates AI-powered
- * personalized notifications via OpenAI, with a deterministic fallback.
+ * WorkManager worker for the daily coach check-in notification — the Android
+ * analog of the iOS BGTask (CoachNotificationScheduler). The entire due-slot
+ * body (gates, freshness, generation, record, delivery) lives in
+ * [CoachNotificationSlotRunner] — the SAME code the sync-completion data
+ * trigger (iOS #94) calls, so the two entry points can never double-send.
+ * This worker only re-checks the opt-in at fire time and maps the outcome to
+ * a WorkManager result.
  */
 class CoachNotificationWorker(
     context: Context,
@@ -152,24 +135,7 @@ class CoachNotificationWorker(
 ) : CoroutineWorker(context, params) {
 
     companion object {
-        /** iOS #61c `syncWaitTimeout` — caps ensureFreshData so a stale BLE link can't hang the worker. */
-        private const val SYNC_WAIT_TIMEOUT_MS = 15_000L
-        /** iOS #61c `hasFreshFullSync` — a completed sync within this window skips a new one. */
-        private const val FRESH_SYNC_WINDOW_MS = 10 * 60_000L
-        /** iOS `freshnessWindow` (3h) — a live measurement this recent counts as fresh data even
-         *  without a completed full sync (covers rings that stream continuously). */
-        private const val RECENT_DATA_WINDOW_MS = 3 * 60 * 60_000L
-        // There was a STALE_DATA_WINDOW_MS (1h) here, added for iOS #94. It could never be false:
-        // it was evaluated only *after* the 3h RECENT_DATA_WINDOW_MS early-return above, so
-        // `now - latestMeasurementAt` was already ≥ 3h by the time it ran. Wiring it into the
-        // foreground check therefore deleted that guard outright, letting this worker open a
-        // second transient GATT client while the foreground app held the link — the exact thing
-        // the comment in ensureFreshData says iOS never does.
-        //
-        // iOS #94's real contribution is CoachNotificationDataTrigger: it runs the due slot when a
-        // sync *completes*, so a slot skipped for stale data is delivered a few minutes later
-        // instead of being lost. That is an event-bus subscriber, not a window constant, and it is
-        // not ported yet — see docs/ios-sync.md.
+        private const val TAG = "CoachNotificationWorker"
     }
 
     override suspend fun doWork(): Result {
@@ -182,263 +148,16 @@ class CoachNotificationWorker(
             return Result.success()
         }
 
-        return try {
-            val db = PulseLoopDatabase.getInstance(applicationContext)
-
-            // Coach is on but no API key: the user still opted into check-ins, so
-            // fall back to the generic scripted text.
-            if (keyStore.apiKey.isBlank()) {
-                CoachNotifications.showNow(
-                    applicationContext,
-                    "PulseLoop Coach",
-                    "Good morning! Sync your ring and check your vitals to start the day.",
-                )
-                return Result.success()
-            }
-
-            // Determine current slot
-            val now = LocalDateTime.now()
-            val nowMillis = System.currentTimeMillis()
-            val hour = now.hour
-            val slot = CoachNotificationSlot.current(hour, keyStore.morningHour, keyStore.eveningHour)
-                ?: CoachNotificationSlot.forcedSlot(hour)
-
-            // Morning-only (iOS #65): don't fire until last night's sleep has fully synced —
-            // otherwise the check-in leads with partial/absent sleep. Skip WITHOUT showing a
-            // notification so the +45min retry (or the next periodic run) can fire it once synced.
-            if (slot == CoachNotificationSlot.MORNING && !sleepDataSynced(db, nowMillis)) {
-                CoachNotifications.scheduleSleepRetry(applicationContext)
-                return Result.success()
-            }
-
-            // Sync-before-notify (iOS #61c): a bounded, best-effort connect so the check-in
-            // reflects today's data instead of whatever happened to be in Room when the ring
-            // was last opened. Always proceeds to build+send afterward with whatever's now
-            // there — a stale check-in beats a missed one.
-            ensureFreshData(db)
-
-            // Build context. The weather service degrades to a cached (or null) reading on
-            // its own when the app isn't foregrounded — see WeatherContextService — so it's
-            // always safe to call from this background worker.
-            val environment = com.pulseloop.coach.context.WeatherContextService(applicationContext).snapshot()
-            val packet = NotificationContextBuilder.build(slot, db, environment = environment)
-
-            // Variety + anti-repeat (iOS #65): a deterministic per-day/slot coaching angle,
-            // plus the last few delivered check-ins so the model doesn't repeat itself.
-            val angle = CoachVarietyHints.angle(now.toLocalDate().toString() + slot.name.lowercase())
-            val recentTexts = db.coachNotificationRecordDao().recent(6).map { "${it.title} — ${it.body}" }
-
-            // Generate via AI or fallback
-            val notification = try {
-                generateWithAI(slot, packet, keyStore.apiKey, keyStore.model, angle, recentTexts)
-            } catch (e: Exception) {
-                scripted(slot, packet)
-            }
-
-            db.coachNotificationRecordDao().insert(
-                CoachNotificationRecordEntity(title = notification.title, body = notification.body)
-            )
-            CoachNotifications.showNow(applicationContext, notification.title, notification.body)
-            Result.success()
-        } catch (e: Exception) {
-            // Ultimate fallback
-            CoachNotifications.showNow(
-                applicationContext,
-                "PulseLoop Coach",
-                "Good morning! Sync your ring and check your vitals to start the day.",
-            )
-            Result.success()
-        }
-    }
-
-    /**
-     * Ported from CoachNotificationService.ensureFreshData (iOS #61c). This worker always owns a
-     * private [RingBLEClient] (unlike the foreground [com.pulseloop.service.RingSyncCoordinator]),
-     * so there's no "sync already in flight" to await — only connect-and-sync, bounded by
-     * [SYNC_WAIT_TIMEOUT_MS] so a stale link can never hang the worker past its own budget.
-     * Skips outright when no real ring is paired, or the last completed sync is still fresh.
-     */
-    private suspend fun ensureFreshData(db: PulseLoopDatabase) {
-        val device = db.deviceDao().currentReal() ?: return
-        val now = System.currentTimeMillis()
-        val fresh = device.lastFullSyncAt?.let { now - it < FRESH_SYNC_WINDOW_MS } ?: false
-        if (fresh) return
-
-        // iOS `hasRecentData`: a fresh *live* measurement is as good as a completed sync (covers
-        // jring, which streams samples continuously rather than running a paged history sync) —
-        // skip the forced connect + full runStartup iOS deliberately avoids paying at every
-        // check-in.
-        val latestMeasurementAt = db.measurementDao().latestTimestamp()
-        if (latestMeasurementAt != null && now - latestMeasurementAt < RECENT_DATA_WINDOW_MS) return
-
-        // iOS branches on the app's *shared* coordinator and never opens a second client: when
-        // the ring is already connected (the foreground app holding the link — its CONNECTED
-        // event is what stamps this state), just give any in-flight sync a bounded chance to
-        // land. Opening our own GATT here would wipe the sleep tables under the user (the
-        // CONNECTED event rebuilds them), duplicate every decode into the shared bus, and
-        // interleave two sync engines' history commands on one link.
-        if (device.stateRaw == "CONNECTED") {
-            awaitSyncDone()
-            return
-        }
-        if (isAppForeground()) return
-
-        val bleClient = RingBLEClient(applicationContext, transientOwner = true)
-        if (!bleClient.hasPermissions()) {
-            // destroy(), not just drop the reference: the client's init-started connection
-            // watchdog would otherwise keep firing into permission-less connect attempts.
-            bleClient.destroy()
-            return
-        }
-
-        val measurementSettings = loadPersistedMeasurementSettings(db)
-        val profileValues = loadPersistedUserProfile(db, ApiKeyStore(applicationContext))
-
-        try {
-            withTimeoutOrNull(SYNC_WAIT_TIMEOUT_MS) {
-                val doneSignal = async {
-                    PulseEventBus.events.filterIsInstance<PulseEvent.SyncProgress>().first { it.stage == "done" }
-                }
-                bleClient.onConnected = {
-                    val engine = bleClient.syncEngine
-                    engine?.setMeasurementSettings(measurementSettings)
-                    profileValues?.let { engine?.setUserProfile(it) }
-                    engine?.runStartup()
-                }
-                bleClient.connectLastKnown()
-                while (!doneSignal.isCompleted && !isAppForeground()) delay(500)
-                if (isAppForeground()) {
-                    doneSignal.cancel()
-                    return@withTimeoutOrNull
-                }
-                doneSignal.await()
-            }
-        } finally {
-            // destroy(), not disconnect(): the client's connection watchdog (started in init)
-            // survives disconnect() and re-attaches the ring ~15s after the worker exits —
-            // re-firing onConnected → a full runStartup, then holding the ring with no UI.
-            val releasedConnection = bleClient.destroy()
-            if (releasedConnection && !isAppForeground()) {
-                PulseEventBus.publishBlocking(
-                    PulseEvent.DeviceStateChanged(
-                        RingConnectionState.DISCONNECTED,
-                        null,
-                    )
-                )
-            }
-        }
-    }
-
-    private suspend fun isAppForeground(): Boolean = withContext(Dispatchers.Main.immediate) {
-        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
-    }
-
-    /** Give an in-flight sync (driven by whoever owns the live link) a bounded chance to finish. */
-    private suspend fun awaitSyncDone() {
-        withTimeoutOrNull(SYNC_WAIT_TIMEOUT_MS) {
-            PulseEventBus.events.filterIsInstance<PulseEvent.SyncProgress>().first { it.stage == "done" }
-        }
-    }
-
-    /**
-     * Ported from CoachNotificationService.sleepDataSynced (iOS #65). Whether last
-     * night's sleep is safe to summarize in the morning check-in. See
-     * [CoachSleepSyncGate.sleepDataSynced] for the exact rule.
-     */
-    private suspend fun sleepDataSynced(db: PulseLoopDatabase, now: Long): Boolean {
-        val session = db.sleepSessionDao().recent(1).firstOrNull()
-        val device = db.deviceDao().current()
-        return CoachSleepSyncGate.sleepDataSynced(session?.endAt, device?.lastFullSyncAt, now)
-    }
-
-    private suspend fun generateWithAI(
-        slot: CoachNotificationSlot,
-        packet: NotificationContextPacket,
-        apiKey: String,
-        model: String,
-        angle: String = "",
-        recentTexts: List<String> = emptyList(),
-    ): CoachNotificationContent {
-        val client = OpenAIResponsesClient(apiKey)
-
-        val input = JsonArray(listOf(
-            JsonObject(mapOf(
-                "role" to JsonPrimitive("system"),
-                "content" to JsonPrimitive(NotificationPromptBuilder.systemPrompt(slot)),
-            )),
-            JsonObject(mapOf(
-                "role" to JsonPrimitive("developer"),
-                "content" to JsonPrimitive(NotificationPromptBuilder.developerMessage(packet, angle, recentTexts)),
-            )),
-        ))
-
-        val schemaProps = JsonObject(mapOf(
-            "title" to JsonObject(mapOf("type" to JsonPrimitive("string"), "maxLength" to JsonPrimitive(50))),
-            "body" to JsonObject(mapOf("type" to JsonPrimitive("string"), "maxLength" to JsonPrimitive(160))),
-        ))
-        val schema = JsonObject(mapOf(
-            "type" to JsonPrimitive("object"),
-            "properties" to schemaProps,
-            "required" to JsonArray(listOf(JsonPrimitive("title"), JsonPrimitive("body"))),
-            "additionalProperties" to JsonPrimitive(false),
-        ))
-        val format = JsonObject(mapOf(
-            "type" to JsonPrimitive("json_schema"),
-            "name" to JsonPrimitive("coach_notification"),
-            "schema" to schema,
-            "strict" to JsonPrimitive(true),
-        ))
-        val text = JsonObject(mapOf("format" to format))
-
-        val requestBody = JsonObject(mapOf(
-            "model" to JsonPrimitive(model),
-            "input" to input,
-            "tools" to JsonArray(emptyList()),
-            "text" to text,
-        ))
-
-        val response = client.send(requestBody.toString().toByteArray())
-        val output = response.outputText
-        return CoachNotificationContent.decodeFromJson(output)
-            ?: scripted(slot, packet)
-    }
-
-    /** Deterministic fallback — ported from CoachNotificationGenerator.scripted(). */
-    private fun scripted(slot: CoachNotificationSlot, packet: NotificationContextPacket): CoachNotificationContent {
-        val name = packet.profileName?.let { ", $it" } ?: ""
-        return when (slot) {
-            CoachNotificationSlot.MORNING -> {
-                val sleep = packet.latestSleep
-                if (sleep != null) {
-                    val h = sleep.totalMin / 60
-                    val m = sleep.totalMin % 60
-                    CoachNotificationContent(
-                        title = "Good morning$name",
-                        body = "You logged ${h}h ${m}m of sleep. Here's to a strong day — get moving when you can.",
-                    )
-                } else {
-                    CoachNotificationContent(
-                        title = "Good morning$name",
-                        body = "Ready to start the day? Take a measurement and I'll help you plan it.",
-                    )
-                }
-            }
-            CoachNotificationSlot.EVENING -> {
-                val steps = packet.today.steps
-                if (steps != null) {
-                    val goal = packet.goals.stepsDaily
-                    val hit = if (steps >= goal) "You hit your $goal step goal — nice work." else "${goal - steps} steps to your goal."
-                    CoachNotificationContent(
-                        title = "Evening check-in",
-                        body = "$steps steps today. $hit Time to start winding down.",
-                    )
-                } else {
-                    CoachNotificationContent(
-                        title = "Evening check-in",
-                        body = "How did today feel? Sync your ring and I'll recap your day.",
-                    )
-                }
-            }
-        }
+        // fallbackToForcedSlot: this is the 24h periodic, which fires wherever the cycle lands
+        // (not inside a slot window, unlike iOS's scheduler). Fall back to a forced slot so it
+        // still delivers the day's check-in; the data trigger (strict, in-window) covers the
+        // other slot and the shared (dateKey, slotRaw) dedupe stops either from double-sending.
+        val outcome = CoachNotificationSlotRunner.forContext(applicationContext)
+            .runDueSlot(fallbackToForcedSlot = true)
+        Log.i(TAG, "due slot -> $outcome")
+        // Every outcome is a normal completion: the skipped ones are a gate deciding
+        // "not now" (the data trigger, a +45min sleep retry, or the next periodic
+        // run picks the slot up), not a failure worth retrying.
+        return Result.success()
     }
 }

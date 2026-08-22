@@ -500,6 +500,12 @@ interface CoachNotificationRecordDao {
     @Query("SELECT * FROM coach_notification_records ORDER BY createdAt DESC LIMIT :limit")
     suspend fun recent(limit: Int = 6): List<CoachNotificationRecordEntity>
 
+    /** Whether a check-in was already recorded for (day, slot) — the iOS #94 dedupe
+     *  that makes the periodic worker and the sync-completion data trigger safe to
+     *  both run the due slot without double-sending. */
+    @Query("SELECT EXISTS(SELECT 1 FROM coach_notification_records WHERE dateKey = :dateKey AND slotRaw = :slotRaw)")
+    suspend fun existsForDateKeyAndSlot(dateKey: Long, slotRaw: String): Boolean
+
     @Query("DELETE FROM coach_notification_records")
     suspend fun clear()
 }
