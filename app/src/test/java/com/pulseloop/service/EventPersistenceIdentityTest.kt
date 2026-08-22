@@ -26,19 +26,36 @@ class EventPersistenceIdentityTest {
      * (`makeHistoryQueryCommand()`'s 1-day default at `JringDriver.kt:105`).
      *
      * The `when` below is exhaustive on purpose: it is the actual guard. Adding a [ConnectPurge]
-     * member that deletes real rows stops this file compiling, which is the tripwire the old
+     * member that deletes anything stops this file compiling, which is the tripwire the old
      * per-family `preservesSleepOnConnect` boolean never provided.
      */
     @Test
-    fun `no connect event may purge anything but demo rows, for any family`() {
+    fun `no connect event may purge anything, for any family`() {
         val everyOrigin: List<RingDeviceType?> = RingDeviceType.entries + null
         for (origin in everyOrigin) {
-            val purge = connectPurge(origin)
-            val deletesRealRows = when (purge) {
+            val deletesAnything = when (connectPurge(origin)) {
                 ConnectPurge.NOTHING -> false
-                ConnectPurge.DEMO_ROWS -> false
             }
-            assertFalse("connect purge $purge (origin $origin) must not delete real rows", deletesRealRows)
+            assertFalse("connect (origin $origin) must not delete anything", deletesAnything)
+        }
+    }
+
+    /**
+     * iOS parity. iOS has no connect-time demo purge anywhere in its source — its only deletion of
+     * seeded rows is user-initiated, inside `SeedData` — and it handles the demo/real mix by
+     * *detecting* it (`isDemo`, `source == "mock"`, `DataFreshness.demo`) rather than cleaning it
+     * up. Android used to clear demo rows on every CONNECTED, which on a paired ring meant every
+     * reconnect: measured at roughly one per five minutes on a COLMI R10, and captured live at
+     * 09:00:54 taking 772 measurements / 84 activity days / 36 sleep sessions to zero with the
+     * phone untouched.
+     */
+    @Test
+    fun `connecting never retires demo rows, first connect or reconnect`() {
+        for (family in RingDeviceType.entries) {
+            assertEquals(
+                "$family must not purge on its first connect",
+                ConnectPurge.NOTHING, connectPurge(family),
+            )
         }
         // The decoder-Status case — the one that used to fire all session long — purges nothing.
         assertEquals(ConnectPurge.NOTHING, connectPurge(null))
