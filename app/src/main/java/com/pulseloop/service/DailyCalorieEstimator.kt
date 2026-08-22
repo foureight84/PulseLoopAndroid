@@ -129,7 +129,11 @@ object DailyCalorieEstimator {
         val row = db.activityDailyDao().byDay(dayStart) ?: return
         val dayEnd = dayStart + DAY_MS
 
-        val hrSamples = db.measurementDao().range(MeasurementKind.HEART_RATE.name, dayStart, dayEnd)
+        // `rangeReal`: the estimate is written back onto the day's REAL `activity_daily` row
+        // below, where it drives the calorie goal ring and is eligible for Health Connect export
+        // (that export filters on the row's own source, which is not demo). Seeded HR for today
+        // would inflate a number that outlives the demo data behind it (`DemoDataPolicy`).
+        val hrSamples = db.measurementDao().rangeReal(MeasurementKind.HEART_RATE.name, dayStart, dayEnd)
         val buckets = db.activityBucketDao().byDay(dayStart)
         val workouts = db.activitySessionDao().recent(WORKOUT_SCAN_LIMIT).filter {
             it.statusRaw == "finished" && it.endedAt != null &&

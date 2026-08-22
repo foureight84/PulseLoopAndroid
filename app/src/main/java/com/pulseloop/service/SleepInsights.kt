@@ -1,5 +1,6 @@
 package com.pulseloop.service
 
+import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.ring.SleepStage
@@ -173,7 +174,13 @@ object SleepInsights {
         sessions: List<SleepSessionEntity>,
         blocksBySession: (String) -> List<SleepStageBlockEntity>,
     ): List<DaySleep> =
-        sessions.groupBy { it.date }.map { (day, daySessions) ->
+        sessions.groupBy { it.date }.map { (day, all) ->
+            // A ring night and a seeded demo night can share a date now that a connect deletes
+            // nothing (`DemoDataPolicy`) — the seeder's "skip days that already have ring data"
+            // guard only covers seed-after-sync, not sync-after-seed. Summing the two would
+            // report ~13h asleep and inflate every average built on top. Real wins per day.
+            val ring = all.filterNot { DemoDataPolicy.isDemo(it.sourceRaw) }
+            val daySessions = if (ring.isNotEmpty()) ring else all
             if (daySessions.size == 1) {
                 val only = daySessions.first()
                 return@map DaySleep(only, blocksBySession(only.id))

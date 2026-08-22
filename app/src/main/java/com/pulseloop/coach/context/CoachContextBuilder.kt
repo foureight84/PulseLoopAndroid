@@ -32,21 +32,29 @@ object CoachContextBuilder {
         val latestHr = db.measurementDao().latest(MeasurementKind.HEART_RATE.name, now)
         val latestSpo2 = db.measurementDao().latest(MeasurementKind.SPO2.name, now)
 
-        // 7-day trends
+        // 7-day trends. Real wins over seeded rows once the ring has synced (`DemoDataPolicy`):
+        // a connect no longer purges demo data, so without this the coach LLM is handed a
+        // demo/real blend — and, via `isDemo` below, told it is live.
+        val activityHasReal = db.activityDailyDao().hasReal()
         val sevenDaysAgo = todayStart - 7 * 24 * 3600_000L
-        val activityWeek = db.activityDailyDao().recent(7).filter { it.date >= sevenDaysAgo }
+        val activityWeek = (if (activityHasReal) db.activityDailyDao().recentReal(7)
+            else db.activityDailyDao().recent(7)).filter { it.date >= sevenDaysAgo }
         val stepsWeek = activityWeek.map { it.steps.toDouble() }
         val daysAvailable = activityWeek.count { it.steps > 0 }
 
         // Resting HR: average of HR values in the last 24h while at rest (approximated as lowest 25th percentile)
-        val hr24h = db.measurementDao().range(MeasurementKind.HEART_RATE.name, now - 24 * 3600_000L, now)
+        val hr24h = if (db.measurementDao().hasReal(MeasurementKind.HEART_RATE.name))
+            db.measurementDao().rangeReal(MeasurementKind.HEART_RATE.name, now - 24 * 3600_000L, now)
+        else db.measurementDao().range(MeasurementKind.HEART_RATE.name, now - 24 * 3600_000L, now)
         val restingHr = if (hr24h.isNotEmpty()) {
             val sorted = hr24h.map { it.value }.sorted()
             sorted[(sorted.size * 0.25).toInt().coerceAtMost(sorted.size - 1)]
         } else null
 
         // Sleep
-        val latestSleep = db.sleepSessionDao().recent(1).firstOrNull()
+        val sleepHasReal = db.sleepSessionDao().hasReal()
+        val latestSleep = (if (sleepHasReal) db.sleepSessionDao().recentReal(1)
+            else db.sleepSessionDao().recent(1)).firstOrNull()
 
         val completeness = profileCompleteness(profile)
         val warnings = DataQualityAnalyzer.warnings(
@@ -55,7 +63,12 @@ object CoachContextBuilder {
                 daysAvailable = daysAvailable,
                 hasSleep = latestSleep != null,
                 lastSyncAt = device?.lastSyncAt,
-                isDemo = false,
+                // Hardcoded false meant the "This is demo/sample data, not live readings from the
+                // ring." warning could never be emitted. Everything above falls back to seeded
+                // rows exactly when the ring has synced nothing — which is what demo mode IS.
+                isDemo = !activityHasReal && !sleepHasReal &&
+                    !db.measurementDao().hasReal(MeasurementKind.HEART_RATE.name) &&
+                    (activityWeek.isNotEmpty() || latestSleep != null || hr24h.isNotEmpty()),
             ),
             now = now,
         )

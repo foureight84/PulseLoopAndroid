@@ -55,8 +55,9 @@ See `docs/qring-ble-adoption.md` §5a for the full history and the decompiled so
 **Read this before touching `EventPersistenceSubscriber`'s `DeviceStateChanged` branch.**
 
 **No ring re-supplies more history than its own buffer holds, so the app's copy is the only durable
-one.** A connect may retire *demo* rows and nothing else. This is not a style preference — it was a
-data-loss bug twice, in two different shapes (issue #43, and the sync-pass variant before it).
+one.** A connect may delete **nothing at all** — not stored history, and (since the iOS-parity fix)
+not demo rows either. This is not a style preference — it was a data-loss bug three times, in three
+different shapes (issue #43, the sync-pass variant before it, and the demo-row purge below).
 
 The original design deleted all sleep on connect and re-pulled it, carving YCBT out via
 `preservesSleepOnConnect` because YCBT re-asserts CONNECTED mid-history. That premise was false for
@@ -100,12 +101,46 @@ transition:
   status packets. `runStartup` re-sends them, and `runStartup` is also the ~30-minute background
   sync — so they recur for the whole life of a connection.
 
-`isConnectTransition(event.deviceType)` is that gate, and `connectPurge` is what it feeds. Be precise
-about its scope, because it is narrower than it looks: it decides only what a CONNECTED event may
-*delete*. The row write below it — `stateRaw = "CONNECTED"`, `lastConnectedAt`, `lastSyncAt` — is
+`isConnectTransition(event.deviceType)` is that gate. It used to feed `connectPurge`; now that a
+connect deletes nothing, `connectPurge` ignores its argument and returns `ConnectPurge.NOTHING`
+unconditionally, so `isConnectTransition` has **no production caller left** — only
+`EventPersistenceIdentityTest`. It is kept because the distinction is real and gets re-derived
+wrongly each time someone needs it, and any future connect-time action wants exactly it. Be precise
+about the gate's scope, because it is narrower than it looks: it decides only what a CONNECTED
+event may *delete*. The row write below it — `stateRaw = "CONNECTED"`, `lastConnectedAt`, `lastSyncAt` — is
 **outside** the gate and still runs for every decoder `Status`, so a jring `0x0C` reply does still
 restamp the device row as freshly connected on each sync pass. That is harmless today; it is not
 something the gate prevents, so don't cite it as if it were.
+
+**Demo rows are not purged on connect either — match iOS, don't "clean up" for it.** The demo
+purge was the last surviving fragment of the original "connect = clear everything and rebuild"
+design, and it was gated only on "this is the BLE client's own connect". A paired ring
+re-establishes its link constantly — measured at roughly one reconnect per five minutes on a COLMI
+R10 — so every one of those re-ran `clearDemo()` and seeded demo data could never survive alongside
+a paired ring. Captured live at 09:00:54 with the phone untouched: 772 measurements / 84 activity
+days / 36 sleep sessions to zero. **iOS has no connect-time demo purge anywhere** — its only
+deletion of seeded rows is user-initiated inside `SeedData`, and it handles the demo/real mix by
+*detecting* it (`isDemo`, `source == "mock"`, `DataFreshness.demo`) and adapting the UI. Demo data
+coexisting with a real ring is an expected state. Demo rows are retired only from
+Settings → Privacy & Data → Clear Demo Data.
+
+`ConnectPurge` now has exactly **one** member, `NOTHING`, and the single-branch `when`s that switch
+on it in `EventPersistenceSubscriber` and `EventPersistenceIdentityTest` read as dead code but are
+not: they are what makes *widening* what a connect deletes a compile error instead of a one-line
+edit. Don't "simplify" them away. Know the limit, though — it only catches an author who routes the
+new deletion through the enum; a bare `clearDemo()` dropped into the CONNECTED arm still compiles.
+The two tests named below are the actual enforcement.
+
+**Readers must choose between demo and real rows, because nothing separates them any more.** The
+purge was also, accidentally, the thing keeping seeded rows out of every unfiltered query. With it
+gone the two coexist indefinitely, so `DemoDataPolicy` (`data/DemoDataPolicy.kt`) states the rule:
+**real wins** — a reader surfaces demo rows only while the corresponding real series is empty, and
+switches to the `*Real` DAO queries the moment the ring has synced anything. Derived values that
+are *persisted or exported* — `hrRestingBaseline`, `estimatedActiveCalories`, Health Connect
+records — read `*Real` unconditionally, since a demo-derived number outlives the demo data behind
+it. When you add a query over `measurements`, `activity_daily`, or `sleep_sessions`, decide which
+of those two it is; "it's just a read" was how a seeded 56 bpm night became a real user's auto HR
+zone floor.
 
 Two related things worth knowing before changing this area:
 

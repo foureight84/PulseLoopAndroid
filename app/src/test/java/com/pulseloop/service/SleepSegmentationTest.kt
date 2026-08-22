@@ -80,10 +80,13 @@ class SleepSegmentationTest {
 
     // ── collapseByDay ────────────────────────────────────────────────────
 
-    private fun session(id: String, day: Long, startMin: Int, durMin: Int, score: Int?) =
+    private fun session(
+        id: String, day: Long, startMin: Int, durMin: Int, score: Int?, source: String = "ring",
+    ) =
         SleepSessionEntity(
             id = id, date = day, startAt = day + startMin * minute,
             endAt = day + (startMin + durMin) * minute, totalMinutes = durMin, score = score,
+            sourceRaw = source,
         )
 
     @Test
@@ -125,6 +128,44 @@ class SleepSegmentationTest {
         val b = session("b", day, 900, 30, null)
         val collapsed = SleepInsights.collapseByDay(listOf(a, b)) { emptyList() }
         assertNull(collapsed[0].session.score)
+    }
+
+    // A connect no longer purges demo rows (PR #52), so a seeded night and a synced night can
+    // share a date — the seeder's guard only skips days that ALREADY have ring data. Summing the
+    // two reported ~13h asleep and inflated every average built on the collapse.
+    @Test
+    fun `a ring night outranks a demo night on the same day`() {
+        val day = 1_000_000L
+        val demo = session("demo-sleep-$day", day, 0, 420, 90, source = "demo")
+        val ring = session("ring", day, 30, 360, 70)
+        val collapsed = SleepInsights.collapseByDay(listOf(demo, ring)) { emptyList() }
+        assertEquals(1, collapsed.size)
+        val c = collapsed[0].session
+        assertEquals("ring", c.id)                  // passes through as a single-session day
+        assertEquals(360, c.totalMinutes)           // NOT 420 + 360
+        assertEquals(70, c.score)
+    }
+
+    @Test
+    fun `demo nights still collapse normally when no ring night shares the day`() {
+        val day = 1_000_000L
+        val night = session("demo-sleep-$day", day, 0, 420, 80, source = "demo")
+        val nap = session("demo-nap", day, 900, 30, 60, source = "demo")
+        val collapsed = SleepInsights.collapseByDay(listOf(night, nap)) { emptyList() }
+        assertEquals(1, collapsed.size)
+        assertEquals(450, collapsed[0].session.totalMinutes)
+        assertEquals("demo", collapsed[0].session.sourceRaw)
+    }
+
+    @Test
+    fun `demo and ring nights on different days both survive`() {
+        val d1 = 1_000_000L
+        val d2 = d1 + 86_400_000L
+        val collapsed = SleepInsights.collapseByDay(
+            listOf(session("demo-sleep-$d1", d1, 0, 420, 80, source = "demo"),
+                   session("ring", d2, 0, 400, 70)),
+        ) { emptyList() }
+        assertEquals(2, collapsed.size)
     }
 
     @Test

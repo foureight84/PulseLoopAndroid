@@ -37,7 +37,12 @@ object RestingHRBaselineService {
         val now = System.currentTimeMillis()
         val start = now - BASELINE_DAYS * 86_400_000L
         // Room suspend queries already run off the main thread on their own dispatcher.
-        val samples = db.measurementDao().range(MeasurementKind.HEART_RATE.name, start, now)
+        // `rangeReal`, not `range`: the seeder plants ~30 days of HR — overnight ~56 bpm, workout
+        // spikes at 142/152 — squarely inside this window, and since PR #52 a connect no longer
+        // clears it. A demo-derived p10 is then PERSISTED to `hrRestingBaseline` and drives the
+        // `"auto"` HR zones applied to real readings, surviving a Clear Demo Data by up to the
+        // 6-hour refresh interval (`DemoDataPolicy`).
+        val samples = db.measurementDao().rangeReal(MeasurementKind.HEART_RATE.name, start, now)
         if (samples.size < MIN_SAMPLES) return
 
         val values = samples.map { it.value }.sorted()

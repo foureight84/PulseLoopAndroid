@@ -83,31 +83,32 @@ class EventPersistenceSubscriber(
                 val device = existing ?: DeviceEntity()
                 val state = when (event.state) {
                     RingConnectionState.CONNECTED -> {
-                        // Connecting retires demo rows so a real ring's data replaces the seeded
-                        // preview. It destroys nothing else. Gated to the client's own connect (see
-                        // [isConnectTransition]) because decoders re-assert CONNECTED mid-session
-                        // from ordinary device-info replies — jring `0x0C`, LuckRing dev-info, YCBT
-                        // status packets — which `runStartup` re-sends on every sync pass.
+                        // Connecting deletes NOTHING — not stored history, not demo rows. Demo
+                        // data is retired only from Settings → Privacy & Data, matching iOS, which
+                        // has no connect-time purge at all and instead *detects* seeded rows
+                        // (`isDemo`, `source == "mock"`, `DataFreshness.demo`) and adapts the UI.
+                        // Demo data coexisting with a paired ring is an expected state, not a mess
+                        // to clean up.
                         //
-                        // This used to clear *all* sleep for every family except YCBT and rebuild it
-                        // from the ring. No ring re-supplies more than its own buffer, and the two
-                        // smallest re-supply a single day — CRP sends `queryHistorySleep(daysAgo=0)`,
-                        // jring `makeHistoryQueryCommand()` with its 1-day default (JringDriver.kt:105,
-                        // NOT `syncWindowDays`, which only sizes the progress bar) — so every connect
-                        // destroyed each night older
-                        // than that, and a new night replaced the last one instead of joining it
-                        // (issue #43, zaggash's R11). The rebuild was never load-bearing:
-                        // [upsertSleepSessionAtomic] reconciles one waking day at a time,
-                        // idempotently, and re-points legacy mis-keyed blocks itself — which was the
-                        // blanket clear's stated reason for existing.
+                        // The `when` below is the guard, and it is exhaustive on purpose — see
+                        // [ConnectPurge]. It reads as dead code and is not: it is what makes
+                        // re-introducing a connect-time delete a compile error rather than a
+                        // one-line edit.
+                        //
+                        // History, because this keeps getting re-added: connect used to clear *all*
+                        // sleep for every family except YCBT and rebuild it from the ring. No ring
+                        // re-supplies more than its own buffer, and the two smallest re-supply a
+                        // single day — CRP sends `queryHistorySleep(daysAgo=0)`, jring
+                        // `makeHistoryQueryCommand()` with its 1-day default (JringDriver.kt:105,
+                        // NOT `syncWindowDays`, which only sizes the progress bar) — so every
+                        // connect destroyed each night older than that, and a new night replaced
+                        // the last one instead of joining it (issue #43, zaggash's R11). The
+                        // rebuild was never load-bearing: [upsertSleepSessionAtomic] reconciles one
+                        // waking day at a time, idempotently, and re-points legacy mis-keyed blocks
+                        // itself — which was the blanket clear's stated reason for existing. The
+                        // demo purge was the last surviving fragment of that same model.
                         when (connectPurge(event.deviceType)) {
                             ConnectPurge.NOTHING -> {}
-                            ConnectPurge.DEMO_ROWS -> {
-                                db.measurementDao().clearDemo()
-                                db.activityDailyDao().clearDemo()
-                                db.sleepStageBlockDao().clearDemo()
-                                db.sleepSessionDao().clearDemo()
-                            }
                         }
                         "CONNECTED"
                     }
@@ -660,7 +661,12 @@ internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): Strin
 
 /**
  * True when a `DeviceStateChanged(CONNECTED, …)` is a real connection transition rather than a
- * mid-session re-assertion, and may therefore retire the demo rows in [EventPersistenceSubscriber].
+ * mid-session re-assertion.
+ *
+ * **No production caller.** It gated the connect-time demo purge; with that purge gone a connect
+ * does nothing worth gating, so this is currently exercised only by `EventPersistenceIdentityTest`.
+ * It is kept because the distinction it draws is real, non-obvious, and re-derived wrongly every
+ * time someone needs it — any future connect-time action wants exactly this gate.
  *
  * Exactly two things publish a CONNECTED event, and `deviceType` separates them cleanly:
  *  - `RingBLEClient`'s own connect always passes `deviceType = activeCoordinator.deviceType`, which
@@ -677,19 +683,40 @@ internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): Strin
 internal fun isConnectTransition(eventDeviceType: RingDeviceType?): Boolean = eventDeviceType != null
 
 /**
- * What a CONNECTED event is allowed to remove.
+ * What a CONNECTED event is allowed to remove: **nothing**.
  *
- * There is deliberately **no member meaning "real rows"**. Connecting must never delete stored
- * history (issue #43), and encoding that as a type instead of a comment means re-introducing the old
- * behaviour takes more than adding a `.clear()` call: it needs a new member here, which fails to
- * compile against the exhaustive `when`s in [EventPersistenceSubscriber] and in
- * `EventPersistenceIdentityTest`. That is the tripwire the deleted `preservesSleepOnConnect` never
- * had — it made destructive clearing a per-family *option*, and every family took it but one.
+ * The enum has exactly one member, and that is the point. Connecting must never delete stored
+ * history (issue #43) and — since the iOS-parity fix — must not delete demo rows either. Encoding
+ * that as a *type* rather than a comment means widening what a connect may delete cannot be done
+ * by editing one line: it needs a new member here, which fails to compile against the exhaustive
+ * `when`s in [EventPersistenceSubscriber] and in `EventPersistenceIdentityTest`. That is the
+ * tripwire the deleted `preservesSleepOnConnect` boolean never had — it made destructive clearing
+ * a per-family *option*, and every family took it but one.
+ *
+ * Its limit, stated plainly so nobody trusts it further than it goes: it forces a compile error
+ * only for an author who routes the new deletion through this enum. A bare
+ * `db.measurementDao().clearDemo()` dropped straight into the CONNECTED arm still compiles. The
+ * type documents and channels the invariant; the tests below it are what actually enforce it.
+ *
+ * A `DEMO_ROWS` member used to live here. It was the last fragment of the old "connect = clear
+ * everything and rebuild from the ring" design, and it fired on every reconnect — measured at
+ * roughly one every five minutes on a COLMI R10 — so seeded demo data could not survive alongside
+ * a paired ring for more than a few minutes. iOS never had a connect-time purge at all, so this
+ * now matches it.
  */
-internal enum class ConnectPurge { NOTHING, DEMO_ROWS }
+internal enum class ConnectPurge { NOTHING }
 
-internal fun connectPurge(eventDeviceType: RingDeviceType?): ConnectPurge =
-    if (isConnectTransition(eventDeviceType)) ConnectPurge.DEMO_ROWS else ConnectPurge.NOTHING
+/**
+ * Always [ConnectPurge.NOTHING].
+ *
+ * Kept as a function rather than inlined so the guard has one named place to sit, and so the
+ * exhaustive `when`s that enforce it have something to switch on. The result does not depend on
+ * [eventDeviceType] — nothing is deleted for any family — but the parameter is retained so that a
+ * future connect-time action has the device in hand and reaches for [isConnectTransition] rather
+ * than firing on decoder status echoes as well as real connects.
+ */
+@Suppress("UNUSED_PARAMETER")
+internal fun connectPurge(eventDeviceType: RingDeviceType?): ConnectPurge = ConnectPurge.NOTHING
 
 internal fun shouldReplaceCompleteSleep(
     existingStart: Long,
