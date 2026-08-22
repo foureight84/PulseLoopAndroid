@@ -46,7 +46,8 @@ object LocalModelCatalog {
         apiKey?.takeIf { it.isNotBlank() }?.let { headers["Authorization"] = "Bearer $it" }
 
         return try {
-            Result.Success(parseEntries(ResponsesHttp.get(url, headers, timeoutSeconds)))
+            // followRedirects = false: `validate` vets the typed URL, not where a redirect lands.
+            Result.Success(parseEntries(ResponsesHttp.get(url, headers, timeoutSeconds, followRedirects = false)))
         } catch (e: ResponsesError.Http) {
             Result.Failure("The server answered HTTP ${e.status} for /v1/models.")
         } catch (e: ResponsesError.Transport) {

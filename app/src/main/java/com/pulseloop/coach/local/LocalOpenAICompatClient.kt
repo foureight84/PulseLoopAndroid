@@ -67,8 +67,12 @@ class LocalOpenAICompatClient(
 
     override suspend fun send(requestBody: ByteArray): OpenAIResponse {
         // The base URL, not the key, is what makes this provider usable.
-        val endpoint = LocalEndpoint.chatCompletionsUrl(baseUrl) ?: throw ResponsesError.MissingAPIKey
         LocalEndpoint.validate(baseUrl)?.let { throw ResponsesError.Decoding(LocalEndpoint.message(it)) }
+        // Not MissingAPIKey — the key is optional on this provider, so blaming it sends the user
+        // to the one field that is allowed to be empty. A URL that survives `validate` but can't
+        // be normalized is malformed, which is what the message says.
+        val endpoint = LocalEndpoint.chatCompletionsUrl(baseUrl)
+            ?: throw ResponsesError.Decoding(LocalEndpoint.message(LocalEndpoint.Problem.MALFORMED))
 
         val req = try {
             json.parseToJsonElement(String(requestBody)).jsonObject
@@ -82,7 +86,11 @@ class LocalOpenAICompatClient(
         val headers = mutableMapOf<String, String>()
         apiKey?.takeIf { it.isNotBlank() }?.let { headers["Authorization"] = "Bearer $it" }
 
-        val responseBody = ResponsesHttp.post(endpoint, bodyBytes, headers, readTimeoutSeconds)
+        // followRedirects = false: the body carries the user's health context, `validate` above
+        // vets only the typed URL, and cleartext is permitted app-wide — so a 307 off the LAN
+        // would resend it in the clear. See ResponsesHttp.clientFor.
+        val responseBody = ResponsesHttp.post(
+            endpoint, bodyBytes, headers, readTimeoutSeconds, followRedirects = false)
 
         val root = try {
             json.parseToJsonElement(responseBody).jsonObject
@@ -372,20 +380,36 @@ class LocalOpenAICompatClient(
         return com.pulseloop.coach.usage.CoachTokenUsage(inputTokens = input, outputTokens = output)
     }
 
-    /** Removes `<think>…</think>` reasoning blocks. Tolerant of an unterminated trailing `<think>`
-     *  (truncated output) — the remainder is dropped rather than fed to the JSON parser. */
+    /**
+     * Removes `<think>…</think>` reasoning blocks. Tolerant at both ends: an unterminated trailing
+     * `<think>` (truncated output) drops its remainder, and a leading unmatched `</think>` drops
+     * everything before it.
+     *
+     * That second case is the common one, not an edge case. R1-style distills served by llama.cpp
+     * and Ollama have the *opening* tag injected into the prompt by the chat template, so the
+     * completion starts mid-thought and the only tag in `content` is a bare closing one. Matching
+     * pairs only, the whole chain of thought used to reach `CoachResponseParser.parse`, which then
+     * burned `maxFinalAttempts` repair generations — each up to the 180 s read timeout — before
+     * the turn ended in "Bad response".
+     */
     private fun stripThinking(text: String): String {
+        var body = text
+        val firstClose = body.indexOf("</think>")
+        if (firstClose >= 0) {
+            val firstOpen = body.indexOf("<think>")
+            if (firstOpen < 0 || firstClose < firstOpen) body = body.substring(firstClose + 8)
+        }
         val out = StringBuilder()
         var scan = 0
         while (true) {
-            val open = text.indexOf("<think>", scan)
+            val open = body.indexOf("<think>", scan)
             if (open < 0) break
-            out.append(text, scan, open)
-            val close = text.indexOf("</think>", open + 7)
-            if (close < 0) { scan = text.length; break }
+            out.append(body, scan, open)
+            val close = body.indexOf("</think>", open + 7)
+            if (close < 0) { scan = body.length; break }
             scan = close + 8
         }
-        out.append(text, scan, text.length)
+        out.append(body, scan, body.length)
         return out.toString().trim()
     }
 

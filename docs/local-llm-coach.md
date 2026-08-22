@@ -57,13 +57,22 @@ A LAN box at `http://192.168.1.50:11434` has no TLS. Android blocks cleartext by
 `network_security_config.xml`, so every local request would fail with `CleartextNotPermitted`
 before it left the device.
 
-Network Security Config can't express a CIDR allowlist, so the fix is two-layer:
+Network Security Config can't express a CIDR allowlist, so the fix is three-layer:
 
 1. `res/xml/network_security_config.xml` permits cleartext (cloud providers stay HTTPS because
    their endpoints are hardcoded `https://` constants).
 2. `LocalEndpoint.validate` refuses a plaintext `http://` URL whose host is **not** loopback,
-   RFC1918/CGNAT private, link-local, or `*.local` — the CIDR check the manifest can't do,
+   RFC1918/CGNAT private, link-local, or a local-only name — the CIDR check the manifest can't do,
    enforced where it can be. `https://` hosts are unrestricted (a self-hosted box with a cert).
+   Local-only names cover `*.local`, `*.lan`, `*.home`, `*.internal`, `*.home.arpa`, Tailscale's
+   `*.ts.net`, and single-label hosts (`http://nas:11434`) — a box addressed by the name its
+   router or mDNS hands out is an ordinary setup, and rejecting it told the user their server had
+   to be on their local network, which is where it already was.
+3. The local provider sends with **redirects disabled** (`ResponsesHttp.clientFor`,
+   `followRedirects = false`). Layer 2 vets the URL the user typed, not the one a request ends up
+   on; with cleartext permitted app-wide, a `307` from the validated LAN host to a public `http://`
+   one would resend the health-context POST body in the clear. Cloud providers keep redirects —
+   their hosts are `https://` constants.
 
 ## 4. Timeouts
 
@@ -111,9 +120,17 @@ One press of **Detect server & configure** runs:
    (SGLang), `/api/v0/models` (LM Studio). Deliberately *not* `owned_by` from `/v1/models` —
    vLLM says `vllm`, but Ollama says `library` and LM Studio says `organization_owner`, and any
    proxy rewrites all three. Cosmetic only: it drives the summary line, never the request body.
-3. A chat request carrying one throwaway tool.
-4. A chat request carrying a minimal `response_format: json_schema`; only if that's refused is
+3. A **baseline** chat request carrying no optional fields at all.
+4. A chat request carrying one throwaway tool.
+5. A chat request carrying a minimal `response_format: json_schema`; only if that's refused is
    `json_object` tried.
+
+Step 3 is what makes steps 4 and 5 readable. Without it, every rejection *of the request as a
+whole* — a model id `/v1/models` lists but can't actually load (LM Studio with JIT loading off, a
+model pulled between the two calls), a chat route that wants auth when the listing didn't, a broken
+chat template — comes back as "tools: not supported" and persists `toolCalling = false`, costing
+the coach all access to the user's data while blaming the wrong thing. If the baseline is refused
+or inconclusive, steps 4 and 5 are skipped and both settings are left exactly as they were.
 
 Classification rule: **4xx means the server refused the field** (vLLM answers `400` for a disabled
 tool parser and `422` for a field its deserializer doesn't know, so the status itself carries no
@@ -122,7 +139,15 @@ and the setting is **left at its default rather than switched off**, with a note
 Tool calling in particular only ever turns off on an explicit refusal — an inconclusive probe must
 not silently strip the coach of its ability to read the user's data.
 
-Probes 3 and 4 use `max_tokens: 8` and a two-character prompt, and a minimal schema rather than the
+**A suggestion only overwrites a stored setting when the probe reached a verdict.** Detect is also
+how you refresh the model list, so it gets pressed on setups that already work, and the safe
+defaults above (tools ON, structured OFF) are right for a first run and wrong for a re-detect:
+a user who turned tools off by hand for a vLLM server without `--enable-auto-tool-choice` would
+otherwise have them switched back on by a press meant to do something else, and every turn would
+`400`. Same for Max tokens — a server that reports no context window yields `0`, which means "not
+detected", not "clear what the user typed".
+
+Probes 3–5 use `max_tokens: 8` and a two-character prompt, and a minimal schema rather than the
 coach's own (a large schema risks a rejection *about the schema* being read as "unsupported"). The
 timeout is 120 s because on Ollama/LM Studio the first probe also pays for paging the model in.
 

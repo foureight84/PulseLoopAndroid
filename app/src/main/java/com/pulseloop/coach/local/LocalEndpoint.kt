@@ -82,20 +82,33 @@ object LocalEndpoint {
         Problem.MALFORMED -> "That doesn't look like a URL — use host:port or http://host:port"
         Problem.UNSUPPORTED_SCHEME -> "Only http:// and https:// are supported."
         Problem.PUBLIC_CLEARTEXT ->
-            "Plain http:// is only allowed for a server on this device or your local network. " +
+            "Plain http:// is only allowed for a server on this device or your local network " +
+            "(an IP address, a plain hostname, or a .local / .lan / .ts.net name). " +
             "Use https:// to reach one over the internet."
     }
 
     /**
-     * True when [host] provably can't be routed off the local network: loopback (incl. the
-     * `10.0.2.2` alias an emulator uses for the dev machine, which is RFC1918 anyway), RFC1918
-     * (`10/8`, `172.16/12`, `192.168/16`), CGNAT `100.64/10` (Tailscale), link-local `169.254/16`,
-     * IPv6 loopback/ULA/link-local, and mDNS `.local` names.
+     * True when [host] can't be routed off the local network: loopback (incl. the `10.0.2.2` alias
+     * an emulator uses for the dev machine, which is RFC1918 anyway), RFC1918 (`10/8`,
+     * `172.16/12`, `192.168/16`), CGNAT `100.64/10` (Tailscale), link-local `169.254/16`, IPv6
+     * loopback/ULA/link-local, mDNS `.local` names, and the name forms that only resolve on a
+     * local network.
+     *
+     * That last group is why this isn't purely an address test. Addressing an inference box by the
+     * name its router or mDNS hands out — `http://nas:11434`, `http://ollama.lan:8080`, a
+     * Tailscale MagicDNS `http://box.tail1234.ts.net:11434` — is an ordinary setup, and rejecting
+     * it told the user their server had to be on their local network, which is exactly where it
+     * was. A single-label host has no public TLD and cannot be resolved off-LAN; the suffixes in
+     * [LOCAL_SUFFIXES] are the reserved/local-scope ones (RFC 8375 `.home.arpa`, RFC 6762
+     * `.local`, the `.lan`/`.home`/`.internal` conventions, and Tailscale's `.ts.net`).
      */
     internal fun isPrivateHost(host: String): Boolean {
         val h = host.trim('[', ']')
         if (h == "localhost" || h.endsWith(".localhost")) return true
-        if (h.endsWith(".local")) return true
+        if (LOCAL_SUFFIXES.any { h.endsWith(it) }) return true
+        // A bare hostname with no dot at all: resolvable only via DNS search domain, mDNS or
+        // NetBIOS, i.e. on-link. `h.contains(':')` below still catches a bracket-less IPv6 form.
+        if (!h.contains('.') && !h.contains(':') && h.isNotEmpty()) return true
         if (h.contains(':')) {   // IPv6
             val v6 = h.lowercase()
             return v6 == "::1" || v6.startsWith("fc") || v6.startsWith("fd") || v6.startsWith("fe80:")
@@ -115,4 +128,12 @@ object LocalEndpoint {
             else -> false
         }
     }
+
+    /** Suffixes that are reserved for, or conventionally used on, a local network only. */
+    private val LOCAL_SUFFIXES = listOf(
+        ".local",       // RFC 6762 mDNS
+        ".home.arpa",   // RFC 8375
+        ".lan", ".home", ".internal",   // common router defaults
+        ".ts.net",      // Tailscale MagicDNS
+    )
 }

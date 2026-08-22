@@ -74,6 +74,45 @@ class LocalCapabilityProbeTest {
         assertEquals(LocalStructuredOutput.OFF, report().suggestedStructuredOutput)
     }
 
+    // ── Whether a suggestion may overwrite a hand-set value ──────────────
+
+    @Test
+    fun `an unrun probe is not conclusive, so Detect leaves the setting alone`() {
+        // The state after a blank model pick or a failed baseline request. `suggestedToolCalling`
+        // is still true here — that default is for a first-time setup, not for a re-detect over a
+        // user who deliberately turned tools off for a vLLM server without --enable-auto-tool-choice.
+        val r = report()
+        assertTrue(r.suggestedToolCalling)
+        assertFalse(r.toolCallingConclusive)
+        assertEquals(LocalStructuredOutput.OFF, r.suggestedStructuredOutput)
+        assertFalse(r.structuredOutputConclusive)
+    }
+
+    @Test
+    fun `a refusal is conclusive`() {
+        val r = report(
+            tools = LocalCapabilityProbe.Support.NO,
+            schema = LocalCapabilityProbe.Support.NO,
+            obj = LocalCapabilityProbe.Support.NO,
+        )
+        assertTrue(r.toolCallingConclusive)
+        assertTrue(r.structuredOutputConclusive)
+    }
+
+    @Test
+    fun `a strict-schema yes is conclusive even though JSON mode goes untested`() {
+        // The weaker mode is deliberately skipped once the stronger one is accepted.
+        val r = report(schema = LocalCapabilityProbe.Support.YES)
+        assertTrue(r.structuredOutputConclusive)
+        assertEquals(LocalStructuredOutput.JSON_SCHEMA, r.suggestedStructuredOutput)
+    }
+
+    @Test
+    fun `a context window the server never reported suggests nothing`() {
+        // 0 means "not detected", which must not clear a Max tokens value the user typed.
+        assertEquals(0, report().suggestedMaxTokens)
+    }
+
     @Test
     fun `the summary names the engine, model and both capabilities`() {
         val s = report(

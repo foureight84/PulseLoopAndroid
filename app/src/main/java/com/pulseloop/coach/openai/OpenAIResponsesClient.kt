@@ -68,13 +68,14 @@ internal object ResponsesHttp {
         body: ByteArray,
         headers: Map<String, String> = emptyMap(),
         readTimeoutSeconds: Int? = null,
+        followRedirects: Boolean = true,
     ): String {
         val builder = okhttp3.Request.Builder()
             .url(url)
             .post(okhttp3.RequestBody.create(jsonMediaType, body))
         for ((name, value) in headers) builder.header(name, value)
         val request = builder.build()
-        val call = clientFor(readTimeoutSeconds)
+        val call = clientFor(readTimeoutSeconds, followRedirects)
 
         return withContext(Dispatchers.IO) {
             for (attempt in 0..MAX_UNSENT_RETRIES) {
@@ -124,13 +125,14 @@ internal object ResponsesHttp {
         url: String,
         headers: Map<String, String> = emptyMap(),
         readTimeoutSeconds: Int? = null,
+        followRedirects: Boolean = true,
     ): String {
         val builder = okhttp3.Request.Builder().url(url).get()
         for ((name, value) in headers) builder.header(name, value)
         val request = builder.build()
         return withContext(Dispatchers.IO) {
             try {
-                clientFor(readTimeoutSeconds).newCall(request).execute().use { response ->
+                clientFor(readTimeoutSeconds, followRedirects).newCall(request).execute().use { response ->
                     val text = response.body?.string() ?: ""
                     if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
                     text
@@ -147,11 +149,24 @@ internal object ResponsesHttp {
      * The shared client, or a derived one with a longer read timeout. `newBuilder()` shares the
      * connection pool and dispatcher, so a self-hosted model that thinks for three minutes doesn't
      * cost us a second pool. Null (every cloud provider) keeps the 60 s default.
+     *
+     * [followRedirects] = false is the local provider's. `LocalEndpoint.validate` vets the URL the
+     * *user typed* — it cannot vet where a redirect lands, and the app permits cleartext app-wide
+     * (`network_security_config.xml`, which has no CIDR syntax), so a 307 from the validated LAN
+     * host to a public `http://` one would resend the health-context POST body in the clear with
+     * nothing left to stop it. Cloud providers keep redirects; their hosts are https:// constants.
      */
-    private fun clientFor(readTimeoutSeconds: Int?): okhttp3.OkHttpClient =
-        if (readTimeoutSeconds == null || readTimeoutSeconds <= 0) client
+    private fun clientFor(
+        readTimeoutSeconds: Int?,
+        followRedirects: Boolean = true,
+    ): okhttp3.OkHttpClient =
+        if ((readTimeoutSeconds == null || readTimeoutSeconds <= 0) && followRedirects) client
         else client.newBuilder()
-            .readTimeout(readTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+            .apply {
+                if (readTimeoutSeconds != null && readTimeoutSeconds > 0)
+                    readTimeout(readTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+                if (!followRedirects) { followRedirects(false); followSslRedirects(false) }
+            }
             .build()
 
     /**

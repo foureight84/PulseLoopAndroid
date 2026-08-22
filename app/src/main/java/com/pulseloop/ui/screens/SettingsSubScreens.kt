@@ -29,6 +29,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -499,21 +500,32 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                                 localModel = report.suggestedModel
                                                 providerStore.localModel = localModel
                                             }
-                                            localToolCalling = report.suggestedToolCalling
-                                            providerStore.localToolCalling = localToolCalling
-                                            localStructured = report.suggestedStructuredOutput
-                                            providerStore.localStructuredOutput = localStructured
+                                            // Only a probe that reached a verdict may overwrite
+                                            // these. Detect is also how you refresh the model
+                                            // list, so it gets pressed on a working setup — and
+                                            // the safe defaults behind `suggested*` (tools ON,
+                                            // structured OFF) would then undo a deliberate choice
+                                            // rather than leave it alone. The notes say what was
+                                            // skipped and why.
+                                            if (report.toolCallingConclusive) {
+                                                localToolCalling = report.suggestedToolCalling
+                                                providerStore.localToolCalling = localToolCalling
+                                            }
+                                            if (report.structuredOutputConclusive) {
+                                                localStructured = report.suggestedStructuredOutput
+                                                providerStore.localStructuredOutput = localStructured
+                                            }
                                             // Derived from the server's context window, minus a
                                             // reserve for the prompt — never a straight copy, or
                                             // `prompt + max_tokens` would exceed the context and
-                                            // the server would reject the request. 0 = leave
-                                            // blank and let the server decide.
+                                            // the server would reject the request. 0 means the
+                                            // server reported no context window at all (a thin
+                                            // proxy, an engine we can't identify, Ollama when
+                                            // `/api/show` doesn't parse) — "not detected", which
+                                            // is no reason to clear a value the user typed.
                                             if (report.suggestedMaxTokens > 0) {
                                                 localMaxTokens = report.suggestedMaxTokens.toString()
                                                 providerStore.localMaxTokens = report.suggestedMaxTokens
-                                            } else {
-                                                localMaxTokens = ""
-                                                providerStore.localMaxTokens = 0
                                             }
                                             localProbeOk = true
                                             localProbeResult = report.summary
@@ -532,7 +544,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             ) { Text(if (localProbeBusy) "Detecting…" else "Detect server & configure") }
                             if (localProbeBusy) {
                                 Text(
-                                    "Sending two tiny test messages. This can take a minute if the model " +
+                                    "Sending three tiny test messages. This can take a minute if the model " +
                                     "still has to load.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -635,7 +647,18 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                         localTimeout.toIntOrNull()?.let { v -> providerStore.localTimeoutSeconds = v }
                                     },
                                     label = { Text("Timeout (s)") },
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        // The store clamps to 10..1800 on write, and a blank field
+                                        // skips the write entirely, so the text can show a value
+                                        // that was never stored (type "5", store holds 10) or an
+                                        // empty box over a live setting. Reconciling per keystroke
+                                        // would fight the user — "1" would jump to "10" — so read
+                                        // the stored value back when the field loses focus.
+                                        .onFocusChanged { focus ->
+                                            if (!focus.isFocused)
+                                                localTimeout = providerStore.localTimeoutSeconds.toString()
+                                        },
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                                 )

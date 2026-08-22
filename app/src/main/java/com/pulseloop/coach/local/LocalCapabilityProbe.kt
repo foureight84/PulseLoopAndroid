@@ -19,8 +19,10 @@ import kotlinx.serialization.json.*
  * is to send the field and see whether the server takes it — so [run] sends two deliberately tiny
  * chat requests, one carrying a throwaway tool and one carrying a throwaway `response_format`.
  *
- * Cost: two generations of at most a few tokens. On a server that has to page the model in first
- * (Ollama, LM Studio) the first probe can take tens of seconds — hence [PROBE_TIMEOUT_SECONDS].
+ * Cost: three generations of at most a few tokens — a plain baseline request first, then the two
+ * carrying the fields under test. The baseline is what makes a 4xx readable as "this field is
+ * refused" rather than "this request is refused". On a server that has to page the model in first
+ * (Ollama, LM Studio) the first of them can take tens of seconds — hence [PROBE_TIMEOUT_SECONDS].
  *
  * Failure is never destructive. A probe that errors for an unrelated reason (network blip, model
  * still loading) leaves that capability at its safe default rather than switching it off, and the
@@ -70,6 +72,25 @@ object LocalCapabilityProbe {
         /** Tool calling stays ON unless the server actively refused it — an inconclusive probe
          *  must not silently strip the coach of its ability to read the user's data. */
         val suggestedToolCalling: Boolean get() = toolCalling != Support.NO
+
+        /**
+         * Whether the probes actually reached a verdict, so a suggestion may **overwrite a setting
+         * the user chose by hand**.
+         *
+         * [suggestedToolCalling] and [suggestedStructuredOutput] both have a safe default for the
+         * inconclusive case, which is right for a first-time setup and wrong for a re-detect: a
+         * user who turned tools off for a vLLM server without `--enable-auto-tool-choice`, then
+         * pressed Detect to refresh the model list, would have them switched back on and every
+         * turn would 400. Probes are skipped entirely when the model comes back blank
+         * ([pickModel] on a multi-model server) or when the baseline request fails — neither says
+         * anything about capabilities.
+         */
+        val toolCallingConclusive: Boolean get() = toolCalling != Support.UNKNOWN
+
+        /** As [toolCallingConclusive]. One conclusive probe is enough: a `YES` on the strict
+         *  schema deliberately leaves the weaker JSON mode untested. */
+        val structuredOutputConclusive: Boolean
+            get() = jsonSchema != Support.UNKNOWN || jsonObject != Support.UNKNOWN
 
         /**
          * The value to store in **Max tokens**, derived from [contextWindow]; 0 means "leave
@@ -173,7 +194,31 @@ object LocalCapabilityProbe {
             return Report(engine, version, models, model, contextWindow = context, notes = notes)
         }
 
-        // 3. Capability probes.
+        // 3. Baseline. A plain chat request with no optional fields at all, so the 4xx-means-no
+        //    reading below is about the probed field rather than about the request as a whole.
+        //    Skipping this was how an unloadable model id or an auth-gated chat route turned into
+        //    "tools: not supported" and a persisted `toolCalling = false`.
+        when (val baseline = send(baseUrl, headers, model, BASELINE_PROBE)) {
+            is Outcome.Accepted -> Unit
+            is Outcome.Refused -> {
+                notes.add(
+                    "The server refused a plain chat request for `$model` (HTTP " +
+                    "${baseline.status}) — ${shorten(baseline.body)}. Tools and response format " +
+                    "couldn't be tested, so both are left unchanged. Check the model can actually " +
+                    "load and that the chat route accepts the same key as /v1/models."
+                )
+                return Report(engine, version, models, model, contextWindow = context, notes = notes)
+            }
+            is Outcome.Inconclusive -> {
+                notes.add(
+                    "Couldn't complete a plain chat request (${baseline.reason}) — tools and " +
+                    "response format are left unchanged."
+                )
+                return Report(engine, version, models, model, contextWindow = context, notes = notes)
+            }
+        }
+
+        // 4. Capability probes.
         val tools = probe(baseUrl, headers, model, TOOL_PROBE, "Tool calling", notes)
         val schema = probe(baseUrl, headers, model, SCHEMA_PROBE, "Strict schema", notes)
         // Only worth asking about the weaker mode when the stronger one was refused.
@@ -253,6 +298,7 @@ object LocalCapabilityProbe {
                         Json.encodeToString(JsonObject.serializer(), body).toByteArray(),
                         headers,
                         IDENTIFY_TIMEOUT_SECONDS,
+                        followRedirects = false,
                     )
                 } catch (_: Exception) { return null }
                 // `model_info` is keyed by architecture, e.g. "qwen3.context_length", so match on
@@ -282,7 +328,7 @@ object LocalCapabilityProbe {
         if (tokens >= 10_000) "${tokens / 1000}k" else tokens.toString()
 
     private suspend fun get(url: String, headers: Map<String, String>): String? = try {
-        ResponsesHttp.get(url, headers, IDENTIFY_TIMEOUT_SECONDS)
+        ResponsesHttp.get(url, headers, IDENTIFY_TIMEOUT_SECONDS, followRedirects = false)
     } catch (_: Exception) {
         null   // A 404 here just means "not this engine".
     }
@@ -296,23 +342,24 @@ object LocalCapabilityProbe {
 
     // ── Capability probes ────────────────────────────────────────────────
 
-    /**
-     * Sends [extra] alongside a one-token chat request and classifies the answer.
-     *
-     * A 4xx is the server telling us it won't take the field — that's [Support.NO], and the exact
-     * status doesn't matter (vLLM answers 400 for a disabled tool parser and 422 for a field its
-     * deserializer doesn't know). A 5xx or a transport failure says nothing about the capability,
-     * so it stays [Support.UNKNOWN] and the caller keeps its default.
-     */
-    private suspend fun probe(
+    /** What one probe request actually got back, before it is read as a capability verdict. */
+    private sealed interface Outcome {
+        object Accepted : Outcome
+        /** The server answered 4xx — it read the request and refused it. */
+        data class Refused(val status: Int, val body: String) : Outcome
+        /** 5xx, transport failure, or an unusable URL: says nothing either way. */
+        data class Inconclusive(val reason: String) : Outcome
+    }
+
+    /** Sends a one-token chat request carrying [extra] and reports what came back. */
+    private suspend fun send(
         baseUrl: String,
         headers: Map<String, String>,
         model: String,
         extra: Map<String, JsonElement>,
-        label: String,
-        notes: MutableList<String>,
-    ): Support {
-        val url = LocalEndpoint.chatCompletionsUrl(baseUrl) ?: return Support.UNKNOWN
+    ): Outcome {
+        val url = LocalEndpoint.chatCompletionsUrl(baseUrl)
+            ?: return Outcome.Inconclusive("the server address couldn't be parsed")
         val body = JsonObject(buildMap {
             put("model", JsonPrimitive(model))
             put("messages", JsonArray(listOf(JsonObject(mapOf(
@@ -328,18 +375,47 @@ object LocalCapabilityProbe {
                 Json.encodeToString(JsonObject.serializer(), body).toByteArray(),
                 headers,
                 PROBE_TIMEOUT_SECONDS,
+                followRedirects = false,
             )
-            Support.YES
+            Outcome.Accepted
         } catch (e: ResponsesError.Http) {
-            if (e.status in 400..499) {
-                notes.add("$label: not supported (HTTP ${e.status}) — ${shorten(e.body)}")
-                Support.NO
-            } else {
-                notes.add("$label: couldn't tell (HTTP ${e.status}) — left unchanged.")
-                Support.UNKNOWN
-            }
+            if (e.status in 400..499) Outcome.Refused(e.status, e.body)
+            else Outcome.Inconclusive("HTTP ${e.status}")
         } catch (e: Exception) {
-            notes.add("$label: couldn't tell (${e.message ?: "no response"}) — left unchanged.")
+            Outcome.Inconclusive(e.message ?: "no response")
+        }
+    }
+
+    /**
+     * Sends [extra] alongside a one-token chat request and classifies the answer.
+     *
+     * A 4xx is the server telling us it won't take the field — that's [Support.NO], and the exact
+     * status doesn't matter (vLLM answers 400 for a disabled tool parser and 422 for a field its
+     * deserializer doesn't know). A 5xx or a transport failure says nothing about the capability,
+     * so it stays [Support.UNKNOWN] and the caller keeps its default.
+     *
+     * Reading a 4xx as "this field is unsupported" is only sound because [run] has already
+     * established with [BASELINE_PROBE] that a request carrying *no* optional fields succeeds.
+     * Without that, every whole-request rejection — a model id `/v1/models` lists but can't load
+     * (LM Studio with JIT off, a model pulled between the two calls), a chat route that wants auth
+     * when the listing didn't, a broken chat template — would come back as "tools: no" and
+     * silently persist `toolCalling = false`, which costs the coach all access to the user's data.
+     */
+    private suspend fun probe(
+        baseUrl: String,
+        headers: Map<String, String>,
+        model: String,
+        extra: Map<String, JsonElement>,
+        label: String,
+        notes: MutableList<String>,
+    ): Support = when (val outcome = send(baseUrl, headers, model, extra)) {
+        is Outcome.Accepted -> Support.YES
+        is Outcome.Refused -> {
+            notes.add("$label: not supported (HTTP ${outcome.status}) — ${shorten(outcome.body)}")
+            Support.NO
+        }
+        is Outcome.Inconclusive -> {
+            notes.add("$label: couldn't tell (${outcome.reason}) — left unchanged.")
             Support.UNKNOWN
         }
     }
@@ -352,6 +428,9 @@ object LocalCapabilityProbe {
         } catch (_: Exception) { null } ?: body
         return message.trim().lineSequence().firstOrNull().orEmpty().take(160)
     }
+
+    /** Nothing optional at all — the control the capability probes are measured against. */
+    private val BASELINE_PROBE: Map<String, JsonElement> = emptyMap()
 
     /** A throwaway tool. Named so it can't collide with a real coach tool in a server-side log. */
     private val TOOL_PROBE: Map<String, JsonElement> = mapOf(

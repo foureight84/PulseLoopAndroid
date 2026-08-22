@@ -10,8 +10,15 @@
   Network Security Config has no CIDR syntax, so "permit cleartext to private addresses only"
   cannot be expressed here. The restriction is enforced one layer up instead, in
   LocalEndpoint.validate: a plain http:// URL is accepted only for loopback, RFC1918, CGNAT,
-  link-local or *.local hosts, and anything on the public internet must be https://. Every cloud
-  provider endpoint in the app is a hardcoded https:// constant and is unaffected by this file.
+  link-local, or a local-only name (*.local, *.lan, *.ts.net, a bare hostname), and anything on
+  the public internet must be https://. Every cloud provider endpoint in the app is a hardcoded
+  https:// constant and is unaffected by this file.
+
+  Know what that layering does NOT cover on its own: validate() vets the URL the user typed, not
+  the one a request ends up on. With cleartext permitted app-wide, a 307 from the validated LAN
+  host to a public http:// one would resend the coach's health-context POST body in the clear.
+  The local provider therefore sends with redirects disabled (ResponsesHttp.clientFor,
+  followRedirects = false) — that is the other half of this restriction, not an optimisation.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">

@@ -195,6 +195,35 @@ class LocalOpenAICompatClientTest {
     }
 
     @Test
+    fun `an unmatched leading close-think is stripped`() {
+        // R1-style distills on llama.cpp/Ollama get the OPENING tag from the chat template, so the
+        // completion starts mid-thought and content carries only the closing tag. Left in, the
+        // whole chain of thought reached the parser and burned the repair budget.
+        val r = client().ingestResponse(parse("""
+            {"id":"c","choices":[{"message":{"role":"assistant",
+             "content":"the user wants a plan. let me think.</think>{\"title\":\"ok\"}"}}]}
+        """.trimIndent()))
+        assertEquals("{\"title\":\"ok\"}", r.outputText)
+    }
+
+    @Test
+    fun `an unterminated trailing open-think still drops its remainder`() {
+        val r = client().ingestResponse(parse("""
+            {"id":"c","choices":[{"message":{"role":"assistant",
+             "content":"{\"title\":\"ok\"}<think>and then I would"}}]}
+        """.trimIndent()))
+        assertEquals("{\"title\":\"ok\"}", r.outputText)
+    }
+
+    @Test
+    fun `text with no think tags at all is untouched`() {
+        val r = client().ingestResponse(parse("""
+            {"id":"c","choices":[{"message":{"role":"assistant","content":"{\"title\":\"ok\"}"}}]}
+        """.trimIndent()))
+        assertEquals("{\"title\":\"ok\"}", r.outputText)
+    }
+
+    @Test
     fun `tool call arguments survive both the string and object encodings`() {
         val asString = client().ingestResponse(parse("""
             {"id":"a","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[

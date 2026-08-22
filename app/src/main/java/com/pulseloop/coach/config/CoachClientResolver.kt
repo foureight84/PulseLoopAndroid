@@ -1,6 +1,7 @@
 package com.pulseloop.coach.config
 
 import com.pulseloop.coach.gemini.GeminiClient
+import com.pulseloop.coach.local.LocalEndpoint
 import com.pulseloop.coach.local.LocalOpenAICompatClient
 import com.pulseloop.coach.minimax.MiniMaxClient
 import com.pulseloop.coach.openai.OpenAIResponsesClient
@@ -56,10 +57,14 @@ object CoachClientResolver {
             Resolution(key, MiniMaxClient(apiKey = key ?: "", model = settings.resolvedMinimaxModel))
         }
         CoachProviderMode.LOCAL_OPENAI_COMPAT -> {
-            // Readiness is the base URL. `localKey` may legitimately be blank and is passed
-            // through as null so the client omits the Authorization header entirely.
+            // Readiness is a base URL that would actually work — `validate`, not `isNotBlank`.
+            // Settings persists the field on every keystroke, so a blank-check flips the coach to
+            // "Active" on the first character typed, and every turn then fails inside `send()`
+            // with the same URL-validation text the Settings field is already showing inline.
+            // `localKey` may legitimately be blank and is passed through as null so the client
+            // omits the Authorization header entirely.
             val baseUrl = settings.resolvedLocalBaseUrl
-            Resolution(baseUrl.takeIf { it.isNotBlank() }, LocalOpenAICompatClient(
+            Resolution(baseUrl.takeIf { LocalEndpoint.validate(it) == null }, LocalOpenAICompatClient(
                 baseUrl = baseUrl,
                 model = settings.resolvedLocalModel,
                 apiKey = localKey?.takeIf { it.isNotBlank() },
