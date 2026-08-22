@@ -1,6 +1,7 @@
 package com.pulseloop.coach.config
 
 import com.pulseloop.coach.gemini.GeminiClient
+import com.pulseloop.coach.local.LocalOpenAICompatClient
 import com.pulseloop.coach.minimax.MiniMaxClient
 import com.pulseloop.coach.openai.OpenAIResponse
 import com.pulseloop.coach.openai.ResponsesClient
@@ -104,6 +105,55 @@ class CoachClientResolverTest {
         assertTrue(openRouter.client is OpenRouterClient)
     }
 
+    // ── Local / self-hosted (docs/local-llm-coach.md) ───────────────────
+
+    @Test
+    fun testLocalModeReadinessIsTheBaseUrlNotTheKey() {
+        // The whole point of the provider: a key-less server must still enable the coach.
+        val ready = CoachClientResolver.resolve(
+            CoachProviderSettings(
+                providerMode = CoachProviderMode.LOCAL_OPENAI_COMPAT,
+                localBaseUrl = "http://192.168.1.50:11434",
+                localModel = "qwen3:8b",
+            ),
+            openAIKey = null, geminiKey = null, openRouterKey = null, localKey = null,
+        )
+        assertEquals("http://192.168.1.50:11434", ready.key)
+        assertTrue(ready.client is LocalOpenAICompatClient)
+    }
+
+    @Test
+    fun testLocalModeWithNoBaseUrlIsNotReadyEvenWithAKey() {
+        val notReady = CoachClientResolver.resolve(
+            CoachProviderSettings(providerMode = CoachProviderMode.LOCAL_OPENAI_COMPAT),
+            openAIKey = "sk-test", geminiKey = null, openRouterKey = null, localKey = "sk-local",
+        )
+        assertNull(notReady.key)
+        assertTrue(notReady.client is LocalOpenAICompatClient)
+    }
+
+    @Test
+    fun testLocalBaseUrlIsTrimmed() {
+        val s = CoachProviderSettings(localBaseUrl = "  http://localhost:8080  ", localModel = " m ")
+        assertEquals("http://localhost:8080", s.resolvedLocalBaseUrl)
+        assertEquals("m", s.resolvedLocalModel)
+    }
+
+    @Test
+    fun testBlankLocalModelIsNotSubstituted() {
+        // llama.cpp ignores `model`; inventing a slug would 404 on the servers that read it.
+        assertEquals("", CoachProviderSettings(localModel = "   ").resolvedLocalModel)
+    }
+
+    @Test
+    fun testLocalStructuredOutputTolerantDecode() {
+        for (mode in LocalStructuredOutput.entries) {
+            assertEquals(mode, LocalStructuredOutput.fromRaw(mode.rawValue))
+        }
+        assertEquals(LocalStructuredOutput.OFF, LocalStructuredOutput.fromRaw(null))
+        assertEquals(LocalStructuredOutput.OFF, LocalStructuredOutput.fromRaw("grammar"))
+    }
+
     // ── Active model ────────────────────────────────────────────────────
 
     @Test
@@ -119,6 +169,8 @@ class CoachClientResolverTest {
             s.copy(providerMode = CoachProviderMode.USER_OPENROUTER_KEY), "gpt-5.4"))
         assertEquals("MiniMax-M2", CoachClientResolver.activeModel(
             s.copy(providerMode = CoachProviderMode.USER_MINIMAX_KEY), "gpt-5.4"))
+        assertEquals("qwen3:8b", CoachClientResolver.activeModel(
+            s.copy(providerMode = CoachProviderMode.LOCAL_OPENAI_COMPAT, localModel = "qwen3:8b"), "gpt-5.4"))
         assertEquals("gpt-5.4", CoachClientResolver.activeModel(
             s.copy(providerMode = CoachProviderMode.USER_OPENAI_KEY), "gpt-5.4"))
         assertEquals(OpenAIModel.DEFAULT.slug, CoachClientResolver.activeModel(

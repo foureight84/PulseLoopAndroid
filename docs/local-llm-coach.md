@@ -1,0 +1,124 @@
+# Local / self-hosted LLM support for the AI Coach
+
+Branch: `feat/local-llm-coach`. Adds a `LOCAL_OPENAI_COMPAT` coach provider that points at any
+OpenAI-**Chat-Completions**-compatible server the user runs themselves — Ollama, llama.cpp
+(`llama-server`), vLLM, SGLang, LM Studio, and anything else speaking the same wire format —
+with the API key **optional**.
+
+## 1. What the engines actually implement
+
+Every popular local engine converged on the same de-facto standard: OpenAI's **Chat Completions**
+(`POST {base}/v1/chat/completions`) plus `GET {base}/v1/models`. None of them implement the
+OpenAI **Responses** API in the form this app speaks natively (Ollama and llama.cpp expose a
+`/v1/responses` shim, but it is non-stateful and not universal), so the adapter targets Chat
+Completions — exactly like `MiniMaxClient` and `OpenRouterClient` already do.
+
+| Engine | Default base | Auth | `tools` | `response_format` | Notes |
+|---|---|---|---|---|---|
+| **Ollama** | `http://localhost:11434` | none — key field "required but ignored", dummy `ollama` | yes | yes (JSON mode / schema) | `tool_choice`, `n`, `user`, `logit_bias`, image **URLs** unsupported (base64 images only) |
+| **llama.cpp** `llama-server` | `http://127.0.0.1:8080` | none unless `--api-key` | yes, best with `--jinja` | `json_object` **and** `json_schema`; can't combine with `grammar` | `model` field ignored unless `--alias`/router mode |
+| **vLLM** | `http://localhost:8000` | none unless `--api-key` / `VLLM_API_KEY` | only with `--enable-auto-tool-choice --tool-call-parser <p>` | yes (xgrammar/guided decoding) | pydantic `extra="allow"` → unknown top-level fields are **warned, not rejected** |
+| **SGLang** | `http://localhost:30000` | none unless `--api-key` | yes (`tools`, `tool_choice`, `parallel_tool_calls`) | yes, plus `regex` / `ebnf` | message roles are a strict `Literal` — see §2 |
+| **LM Studio** | `http://localhost:1234` | none | yes | `json_schema` only (**no** `json_object`) | also has `/v1/responses` |
+
+Consequence: **assume Chat Completions, assume nothing else.** Everything beyond
+`model` / `messages` / `tools` / `response_format` / `max_tokens` has to be opt-in.
+
+## 2. The `role: developer` trap
+
+OpenAI's Responses API (what `CoachOrchestrator` builds) puts the per-turn context in a
+`developer` message. Chat Completions predates that role, and the local engines disagree:
+
+- **SGLang** validates roles against a pydantic `Literal`. Current `main` has
+  `_GenericMessageRole = Literal["system","assistant","tool","function","developer","latest_reminder"]`
+  with a `_normalize_role` validator that **raises** (→ HTTP 400) for anything else. `developer`
+  was added later; released versions in the wild reject it outright.
+- **vLLM** accepts it (`extra="allow"`, openai-python message types) and hands the role straight to
+  the model's Jinja chat template — where a template with no `developer` branch silently folds it
+  into the user/other bucket.
+- **Ollama / llama.cpp / LM Studio** document only `system` / `user` / `assistant` / `tool`.
+
+Even where the server accepts the role, the *chat template* usually can't render it. So the adapter
+**always folds `developer` → `system`**, unconditionally, for every local backend. This is lossless
+(the content is instructions either way) and is already what `MiniMaxClient.chatRole` does.
+
+Second, related hazard: many local chat templates require the system message to be **first and
+singular** and raise on a system turn after a user turn. `MiniMaxClient` appends
+`CoachResponseSchema.promptInstruction` as a *trailing* system message; the local adapter instead
+**merges all system messages into one leading system message**, so strict templates render.
+
+## 3. Cleartext HTTP
+
+A LAN box at `http://192.168.1.50:11434` has no TLS. Android blocks cleartext by default
+(`usesCleartextTraffic` is false from API 28) and the app currently ships **no**
+`network_security_config.xml`, so every local request would fail with `CleartextNotPermitted`
+before it left the device.
+
+Network Security Config can't express a CIDR allowlist, so the fix is two-layer:
+
+1. `res/xml/network_security_config.xml` permits cleartext (cloud providers stay HTTPS because
+   their endpoints are hardcoded `https://` constants).
+2. `LocalEndpoint.validate` refuses a plaintext `http://` URL whose host is **not** loopback,
+   RFC1918/CGNAT private, link-local, or `*.local` — the CIDR check the manifest can't do,
+   enforced where it can be. `https://` hosts are unrestricted (a self-hosted box with a cert).
+
+## 4. Timeouts
+
+`ResponsesHttp` hardcodes a 60 s read timeout. A 30B model on CPU can spend minutes on one
+tool-loop round, so the local provider needs a user-configurable read timeout (default 180 s).
+`ResponsesHttp.post` gains an optional `readTimeoutSeconds` that derives a per-call client from the
+shared one (`newBuilder()` keeps the connection pool and dispatcher).
+
+The existing retry policy already fits: a stopped local server raises `ConnectException`, which
+`isProvablyUnsent` classifies as retryable, and a read timeout is (correctly) not retried.
+
+## 5. Capability toggles, because local ≠ uniform
+
+Three switches in Settings, because the same request body is fatal on one setup and required on
+another:
+
+- **Tool calling** (default on). vLLM 400s on `tools` without `--enable-auto-tool-choice`; small
+  models hallucinate calls. Off ⇒ the adapter drops `tools` entirely and the coach answers from
+  the prompt context alone.
+- **Structured output**: `off` (default) / `json_object` / `json_schema`. Off relies on the
+  injected `promptInstruction` plus the orchestrator's JSON-repair loop — the same path MiniMax
+  uses, and the only one that works everywhere. `json_schema` sends
+  `{type:"json_schema", json_schema:{name, strict, schema}}` from `CoachResponseSchema.schema`.
+  LM Studio has no `json_object`; some llama.cpp builds error when `json_schema` meets `grammar`.
+- **Max output tokens** (blank = omit). Local defaults vary from unlimited to a few hundred.
+
+`reasoning` / `reasoning_effort` are **not** sent: only Ollama documents them, and vLLM/SGLang
+would warn or 400. Anthropic `cache_control` and OpenRouter's `provider` block are likewise absent.
+
+## 6. Changes in this repo
+
+| File | Change |
+|---|---|
+| `coach/config/CoachProviderSettings.kt` | new `LOCAL_OPENAI_COMPAT` mode + `local*` fields |
+| `coach/config/CoachProviderSettingsStore.kt` | persist base URL, model, optional key, toggles |
+| `coach/local/LocalEndpoint.kt` | **new** — URL normalise/validate, private-host rule |
+| `coach/local/LocalOpenAICompatClient.kt` | **new** — the Chat Completions adapter |
+| `coach/local/LocalModelCatalog.kt` | **new** — `GET /v1/models` for the model dropdown |
+| `coach/openai/OpenAIResponsesClient.kt` | `ResponsesHttp`: per-call read timeout + `get` |
+| `coach/config/CoachClientResolver.kt` | local branch; readiness sentinel is the **base URL**, not a key |
+| `coach/usage/CoachModelPricing.kt` | local models cost $0 |
+| `ui/screens/SettingsSubScreens.kt` | local provider section |
+| `AndroidManifest.xml`, `res/xml/network_security_config.xml` | cleartext for LAN servers |
+
+### Readiness gate
+
+`CoachClientResolver.Resolution.key` is the sentinel that `PulseLoopApp` ANDs into
+`CoachFeatureFlags.coachEnabled`. For local, the key is legitimately absent, so the resolver
+returns the **base URL** as the sentinel — blank URL ⇒ coach stays off, key or no key. The client
+mirrors that: it throws `ResponsesError.MissingAPIKey` only when the *base URL* is missing, never
+for an empty key.
+
+## Sources
+
+- [Ollama — OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility)
+- [llama.cpp — server README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+- [vLLM — Tool Calling](https://docs.vllm.ai/en/stable/features/tool_calling/)
+- [vLLM — `entrypoints/openai/protocol.py`](https://github.com/vllm-project/vllm/blob/v0.11.0/vllm/entrypoints/openai/protocol.py) (`OpenAIBaseModel`, `extra="allow"`)
+- [SGLang — `entrypoints/openai/protocol.py`](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/openai/protocol.py) (`_GenericMessageRole`, `_normalize_role`)
+- [SGLang — OpenAI APIs: Completions](https://docs.sglang.io/docs/basic_usage/openai_api_completions)
+- [LM Studio — OpenAI compatibility endpoints](https://lmstudio.ai/docs/developer/openai-compat)

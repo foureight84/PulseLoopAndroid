@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP, for the "Local / self-hosted" AI Coach provider only in practice.
+
+  A user's own inference server (Ollama on 11434, llama.cpp on 8080, vLLM on 8000, SGLang on
+  30000, LM Studio on 1234) sits on the LAN with no TLS certificate, so every request to it would
+  otherwise fail with CleartextNotPermitted — Android has blocked cleartext by default since
+  API 28.
+
+  Network Security Config has no CIDR syntax, so "permit cleartext to private addresses only"
+  cannot be expressed here. The restriction is enforced one layer up instead, in
+  LocalEndpoint.validate: a plain http:// URL is accepted only for loopback, RFC1918, CGNAT,
+  link-local or *.local hosts, and anything on the public internet must be https://. Every cloud
+  provider endpoint in the app is a hardcoded https:// constant and is unaffected by this file.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

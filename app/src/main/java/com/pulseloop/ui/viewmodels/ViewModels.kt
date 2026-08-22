@@ -864,7 +864,10 @@ class CoachViewModel(
                 // estimate. Both are null when the model is unknown/on-device/no usage reported —
                 // the usage sheet shows "cost unavailable" rather than a wrong number.
                 val cost = usage?.reportedCostUSD
-                    ?: usage?.let { com.pulseloop.coach.usage.CoachPricingCatalog.cost(result.modelUsed, it) }
+                    ?: usage?.let {
+                        com.pulseloop.coach.usage.CoachPricingCatalog.cost(
+                            result.modelUsed, it, result.providerUsed)
+                    }
                 db.coachMessageDao().insert(CoachMessageEntity(
                     id = assistantMessageId, conversationId = conversationId,
                     role = persistedRole, body = reply.text,

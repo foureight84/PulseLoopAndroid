@@ -62,6 +62,19 @@ object CoachPricingCatalog {
     /** The model strings that always cost $0 (local / scripted). */
     private val freeModels: Set<String> = setOf("offline-stub")
 
+    /**
+     * Cost for a turn, given the provider that ran it. A self-hosted model costs the user nothing
+     * per token no matter what it's called, and its name (`qwen3:8b`, `Llama-3.3-70B`, or blank on
+     * llama.cpp) would otherwise fall through to the longest-prefix match and, at worst, price a
+     * local run at a cloud rate. Provider-blind callers keep the two-arg form.
+     *
+     * [providerRaw] is `CoachProviderMode.rawValue` as persisted on the message; unknown/null
+     * values fall through to the catalog.
+     */
+    fun cost(model: String, usage: CoachTokenUsage, providerRaw: String?): Double? =
+        if (providerRaw == com.pulseloop.coach.config.CoachProviderMode.LOCAL_OPENAI_COMPAT.rawValue) 0.0
+        else cost(model, usage)
+
     /** The estimated USD cost of [usage] for [model]. Returns 0 for offline
      *  models, `null` for an unrecognized model, else the priced estimate. */
     fun cost(model: String, usage: CoachTokenUsage): Double? {

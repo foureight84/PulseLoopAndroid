@@ -52,12 +52,18 @@ internal object ResponsesHttp {
      * [ResponsesError.Transport] on network failure and [ResponsesError.Http]
      * (with the error body) on a non-2xx status.
      */
-    suspend fun post(url: String, body: ByteArray, headers: Map<String, String> = emptyMap()): String {
+    suspend fun post(
+        url: String,
+        body: ByteArray,
+        headers: Map<String, String> = emptyMap(),
+        readTimeoutSeconds: Int? = null,
+    ): String {
         val builder = okhttp3.Request.Builder()
             .url(url)
             .post(okhttp3.RequestBody.create(jsonMediaType, body))
         for ((name, value) in headers) builder.header(name, value)
         val request = builder.build()
+        val call = clientFor(readTimeoutSeconds)
 
         for (attempt in 0..MAX_UNSENT_RETRIES) {
             try {
@@ -66,7 +72,7 @@ internal object ResponsesHttp {
                 // CoachTurnError as a bare SocketTimeoutException — bypassing the transport copy
                 // and printing the JDK's one-word "timeout" again, the exact bug this fixes.
                 // `use` closes the response on every path, including a mid-read failure.
-                return client.newCall(request).execute().use { response ->
+                return call.newCall(request).execute().use { response ->
                     val text = response.body?.string() ?: ""
                     if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
                     text
@@ -94,6 +100,43 @@ internal object ResponsesHttp {
         // Unreachable — the final attempt either returns or throws — but keeps the compiler happy.
         throw IllegalStateException("request never ran")
     }
+
+    /**
+     * A one-off `GET`, for the local provider's `/v1/models` discovery. No retry: unlike a chat
+     * turn this is a user-initiated refresh they can simply press again, and a failure here is
+     * informational rather than a burned message.
+     */
+    suspend fun get(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        readTimeoutSeconds: Int? = null,
+    ): String {
+        val builder = okhttp3.Request.Builder().url(url).get()
+        for ((name, value) in headers) builder.header(name, value)
+        val request = builder.build()
+        return try {
+            clientFor(readTimeoutSeconds).newCall(request).execute().use { response ->
+                val text = response.body?.string() ?: ""
+                if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
+                text
+            }
+        } catch (e: ResponsesError) {
+            throw e
+        } catch (e: Exception) {
+            throw ResponsesError.Transport(e)
+        }
+    }
+
+    /**
+     * The shared client, or a derived one with a longer read timeout. `newBuilder()` shares the
+     * connection pool and dispatcher, so a self-hosted model that thinks for three minutes doesn't
+     * cost us a second pool. Null (every cloud provider) keeps the 60 s default.
+     */
+    private fun clientFor(readTimeoutSeconds: Int?): okhttp3.OkHttpClient =
+        if (readTimeoutSeconds == null || readTimeoutSeconds <= 0) client
+        else client.newBuilder()
+            .readTimeout(readTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+            .build()
 
     /**
      * True when [e] means the request never left the device, so re-sending it is side-effect free.

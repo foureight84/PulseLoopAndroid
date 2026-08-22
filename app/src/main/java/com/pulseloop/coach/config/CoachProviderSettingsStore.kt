@@ -83,6 +83,52 @@ class CoachProviderSettingsStore(context: Context) {
             else prefs.edit().putString(KEY_REASONING_EFFORT, value).apply()
         }
 
+    // ── Local / self-hosted provider (docs/local-llm-coach.md) ──────────
+    // The base URL lives in the same encrypted file as the keys: it's a private network address,
+    // and it's what gates readiness in place of a key.
+
+    /** Base URL of the self-hosted OpenAI-compatible server, as the user typed it. */
+    var localBaseUrl: String
+        get() = prefs.getString(KEY_LOCAL_BASE_URL, "") ?: ""
+        set(value) { prefs.edit().putString(KEY_LOCAL_BASE_URL, value).apply() }
+
+    val hasLocalBaseUrl: Boolean get() = localBaseUrl.isNotBlank()
+
+    /** OPTIONAL bearer token. Blank is the normal case — llama.cpp/vLLM/SGLang only require one
+     *  when started with `--api-key`, and Ollama ignores the header entirely. */
+    var localApiKey: String
+        get() = prefs.getString(KEY_LOCAL_API_KEY, "") ?: ""
+        set(value) { prefs.edit().putString(KEY_LOCAL_API_KEY, value).apply() }
+
+    val hasLocalKey: Boolean get() = localApiKey.isNotBlank()
+
+    /** Model name the server expects; free-form (the `/v1/models` picker just fills it in). */
+    var localModel: String
+        get() = prefs.getString(KEY_LOCAL_MODEL, "") ?: ""
+        set(value) { prefs.edit().putString(KEY_LOCAL_MODEL, value).apply() }
+
+    /** Send `tools` to the local server. Default on. */
+    var localToolCalling: Boolean
+        get() = prefs.getBoolean(KEY_LOCAL_TOOL_CALLING, true)
+        set(value) { prefs.edit().putBoolean(KEY_LOCAL_TOOL_CALLING, value).apply() }
+
+    /** How hard to constrain the output shape; default [LocalStructuredOutput.OFF]. */
+    var localStructuredOutput: LocalStructuredOutput
+        get() = LocalStructuredOutput.fromRaw(prefs.getString(KEY_LOCAL_STRUCTURED_OUTPUT, null))
+        set(value) { prefs.edit().putString(KEY_LOCAL_STRUCTURED_OUTPUT, value.rawValue).apply() }
+
+    /** `max_tokens` for local requests; 0 = omit the field. */
+    var localMaxTokens: Int
+        get() = prefs.getInt(KEY_LOCAL_MAX_TOKENS, 0)
+        set(value) { prefs.edit().putInt(KEY_LOCAL_MAX_TOKENS, maxOf(0, value)).apply() }
+
+    /** Read timeout for local requests, in seconds. Clamped to a sane floor so a stray `1` can't
+     *  make every turn time out with no way back except reinstalling. */
+    var localTimeoutSeconds: Int
+        get() = prefs.getInt(KEY_LOCAL_TIMEOUT_SECONDS,
+            com.pulseloop.coach.local.LocalOpenAICompatClient.DEFAULT_READ_TIMEOUT_SECONDS)
+        set(value) { prefs.edit().putInt(KEY_LOCAL_TIMEOUT_SECONDS, value.coerceIn(10, 1800)).apply() }
+
     /** Master toggle for the coach composer's attach-image button. */
     var imageInputEnabled: Boolean
         get() = prefs.getBoolean(KEY_IMAGE_INPUT_ENABLED, false)
@@ -98,6 +144,12 @@ class CoachProviderSettingsStore(context: Context) {
         orProviderSort = orProviderSort,
         reasoningEffort = reasoningEffort,
         imageInputEnabled = imageInputEnabled,
+        localBaseUrl = localBaseUrl,
+        localModel = localModel,
+        localToolCalling = localToolCalling,
+        localStructuredOutput = localStructuredOutput,
+        localMaxTokens = localMaxTokens,
+        localTimeoutSeconds = localTimeoutSeconds,
     )
 
     companion object {
@@ -112,5 +164,12 @@ class CoachProviderSettingsStore(context: Context) {
         private const val KEY_OR_PROVIDER_SORT = "openrouter_provider_sort"
         private const val KEY_REASONING_EFFORT = "coach_reasoning_effort"
         private const val KEY_IMAGE_INPUT_ENABLED = "coach_image_input_enabled"
+        private const val KEY_LOCAL_BASE_URL = "local_llm_base_url"
+        private const val KEY_LOCAL_API_KEY = "local_llm_api_key"
+        private const val KEY_LOCAL_MODEL = "local_llm_model"
+        private const val KEY_LOCAL_TOOL_CALLING = "local_llm_tool_calling"
+        private const val KEY_LOCAL_STRUCTURED_OUTPUT = "local_llm_structured_output"
+        private const val KEY_LOCAL_MAX_TOKENS = "local_llm_max_tokens"
+        private const val KEY_LOCAL_TIMEOUT_SECONDS = "local_llm_timeout_seconds"
     }
 }
