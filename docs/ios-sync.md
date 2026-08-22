@@ -24,10 +24,10 @@ intentional platform differences listed at the bottom.
 |---|---|
 | **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `88c0f6b` — Merge PR #131 (sleep hypnogram alignment + scrubber), 2026-08-08 |
-| **Last triage date** | 2026-08-08 |
+| **Last triaged iOS commit** | `439ca81` — Merge PR #93 (Colmi R11 CRP driver), 2026-08-09 |
+| **Last triage date** | 2026-08-22 |
 | **Last port date** | 2026-08-08 — PR #45 (ios_sync_2026-08-08, 5 plan commits + 2 CR remediation commits = 7 total) |
-| **Range covered** | 11 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131 + 1 direct commit (`160c775`) → **10 ported, #130 backed out** |
+| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **10 ported, #130 backed out, #93 open (5 hardening gaps)** |
 
 ---
 
@@ -114,6 +114,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | Backed out of PR #45, then **rebuilt from `decompiled-rwfit-official/`** on `feat/rwfit-vendor-rebuild`. Legacy `0x7E` path complete; JieLi `0xAB` framing complete but its history bodies are not decoded yet. **No hardware validation.** See below. |
 | ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
 | ☑ | [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | 07-11 | **Apple Health sync → Health Connect** (per-type toggles, vitals/sleep/activity/workout export, backfill choice, remove-all). Re-triaged 2026-08-09 from SKIP: the *behaviour* ports even though HealthKit doesn't. Write-only; profile import can't port (Health Connect has no DOB/sex type). Design + 7-phase plan in [`health-connect-integration.md`](health-connect-integration.md); reference implementation is `Gadgetbridge/` at the parent repo root, not iOS. Not blocked by the Play Store — the declaration form is a publishing gate, and Gadgetbridge ships this sideload-only. | **ADAPT** | XL | **Phases 0–6 complete** on `feat/health-connect-foundation` (write-only, 16 `WRITE_*` / 0 `READ_*`; lifecycle, removal, grant/revocation resets, archive-restore stamp, docs). Runtime-verified API 35. See `health-connect-integration.md` §8 |
+| ☐ | [#93](https://github.com/saksham2001/PulseLoopiOS/pull/93) `439ca81` | 08-09 | **Colmi R11 CRP driver** — the iOS port *of Android's own* CRP work, so the driver itself is ALREADY-HAVE. What does not exist on Android is the **adversarial-review hardening** iOS added on top in `4d65b60`: 5 real gaps, listed in the 2026-08-22 triage note below. | **PARTIAL** (hardening only) | S–M | ☐ open — see "2026-08-22 triage" |
 
 ## Port priority — open items (as of 2026-08-08)
 
@@ -131,7 +132,11 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 >    `decompiled-rwfit-official/` (see the backed-out section below for what was wrong),
 >    then recombined.
 >
-> Next triage after those: `git -C <ios-repo> log --first-parent --oneline 88c0f6b..main`.
+> 3. **#93 CRP hardening** (queued 2026-08-22) — five small, independent fixes to the existing
+>    Android CRP driver, listed in "2026-08-22 triage" below. Item (1), gating `CONNECTED` on the
+>    `fdd3` reply channel, is worth doing on its own even if the rest waits.
+>
+> Next triage after those: `git -C <ios-repo> log --first-parent --oneline 439ca81..main`.
 >
 > **Newly queued, independent of the two above:** **#80 → Health Connect** (re-triaged
 > 2026-08-09 from SKIP to ADAPT/XL). Design and a 7-phase implementation plan are written up in
@@ -438,6 +443,72 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
 - ~~**#74 Measurement-Frequency relocation**~~ ✅ **DONE** `368a3f2` (2026-07-19) — see the session note below.
+
+### 2026-08-22 triage (since `88c0f6b` → `439ca81`, 12 commits / 1 first-parent)
+
+Exactly **one** untriaged first-parent item: **PR #93, the Colmi R11 CRP driver** (25 files,
+2876 ins). It is not a normal upstream item — it is the *iOS port of this repo's own Android CRP
+work* (`5427dc0 fix(crp): port the R11 opcode corrections and read-backs from Android`), so the
+driver, the pairing card and the wear-state UX are all ALREADY-HAVE here. Verified present on
+Android before writing this: `CRPDriver/CRPDecoder/CRPProtocol/CRPSyncEngine/CRPCoordinator`,
+`WearableModel.colmiR11CRP` ("Colmi R11 (Da Rings app)", `forcedFamilyScanMatches`), and the
+not-worn measurement hint (`RingSyncCoordinator.measureNotWorn` → `Screens.kt:320`).
+
+**What Android does NOT have** is the hardening iOS added afterwards in `4d65b60` ("reset the
+frame assembler across reconnects, gate connect on fdd3"), an adversarial review of that branch.
+Five of its eight findings apply here; three do not, for reasons worth recording so nobody
+re-ports them.
+
+**Port these five (☐ open):**
+
+1. **`CONNECTED` fires before the reply channel is live.** `CRPDriver` doesn't override
+   `requiredSubscriptionsBeforeConnected` (only `YCBTDriver` does), so the connection counts as up
+   on the first successful CCCD write — which is `fdd1` (steps), never `fdd3`, which carries every
+   command reply. `RingBLEClient.kt:903` already threads the driver's list through, so this is a
+   one-property override. Consequence today: `runStartup` writes its whole handshake (~26 frames)
+   into a channel we may not be listening to yet, and a lost reply is indistinguishable from a slow
+   one — the exact signature of the opcode bug this driver just fixed. **Highest value of the five.**
+2. **Firmware is re-queried on every poll pass.** `CRPSyncEngine.runStartup` sends
+   `queryFirmwareVersion()` outside the `readBacksSent` gate, while the six read-backs beside it are
+   gated. A firmware string is exactly as immutable as a sensor roster, and this ring funnels the
+   handshake, timing config, history pull *and* on-demand measures through the single `fdd2`
+   channel (a spot SpO2 alone needs ~48 s of it). Fold it into `sendConnectionReadBacks()`.
+3. **The timing-history follow-up guard ignores the day.** `requestedTimingFrames` is keyed
+   `cmd * 100 + frameIndex`. Every timing query is day 0 today, but this engine already issues
+   multi-day sleep requests (`SLEEP_BACKFILL_DAYS = 6`), so the moment vitals get the same backfill
+   the key silently swallows day 1's frame-1 follow-up. Key on `day` as well as `cmd`.
+4. **The firmware string is coerced, not validated.** `CRPDecoder.decodeFirmwareVersion` does
+   `String(payload, Charsets.UTF_8)`, which substitutes U+FFFD rather than failing — a binary
+   payload renders as replacement characters and is presented as a firmware version. Do strict
+   UTF-8, then trim padding, then reject any remaining control byte to an ack.
+5. **The trim is the vendor's, and it is too wide.** The same function uses `trim { it <= ' ' }`,
+   which strips a binary payload's leading junk and passes whatever follows — `01 02 03 41` → `"A"`.
+   iOS deliberately narrowed this. Ports together with (4).
+
+**Do NOT port these three — they don't apply to Android:**
+
+- **Frame-assembler reset across reconnects.** This was iOS's headline bug: auto-reconnect there
+  re-dialled with a bare `central.connect` and kept the driver instance, so a half-assembled frame
+  from the dropped link was completed with bytes from the new one and decoded as a genuine (but
+  fabricated) vital sample. **Android is already safe by construction** — it connects with
+  `autoConnect = false` (`RingBLEClient.kt:804`, matching the official QRing app) and *every*
+  reconnect path funnels through `beginConnect`, which calls `installDriver` (`:787`) and builds a
+  fresh `CRPDriver` with a fresh `CRPFrameAssembler`. Adding a `reset()` hook here would be dead
+  code. `CRPDriver`'s KDoc already states this invariant correctly; keep it accurate if the
+  reconnect path is ever changed to reuse a driver, because that is what would reintroduce the bug.
+- **Half-open sleep-backfill loop.** iOS used `1...0`, which traps if the tuning knob is turned
+  down to today-only. Kotlin's `1..0` is simply an empty range — `for (daysAgo in
+  1..SLEEP_BACKFILL_DAYS)` is already safe at `SLEEP_BACKFILL_DAYS = 0`.
+- **"Once per connection" comment corrections.** Android's comments already say the right thing
+  (`readBacksSent` is documented as per-engine-instance, and a fresh engine is built per connect).
+
+**Effort:** S–M in total; (1) is a one-line override, (2)–(3) are small engine edits, (4)–(5) are
+one decoder function plus tests. No schema change, no UI. Existing `CRPDecoderTest` /
+`CRPSyncEngineTest` / `CRPProtocolTest` are the natural homes for the oracles — iOS added 63 lines
+to `CRPDecoderTests.swift` and 33 to `CRPSyncEngineTests.swift` in the same commit, so port those.
+
+**Also noted:** the iOS-side R11 branch (`feat/colmi-r11-crp-driver`, `4d65b60`) is fully merged
+into iOS `main`; nothing is outstanding on that branch.
 
 ### 2026-07-20 PR #28 review + fix pass (branch `iOS_sync_2026-07-16`)
 
