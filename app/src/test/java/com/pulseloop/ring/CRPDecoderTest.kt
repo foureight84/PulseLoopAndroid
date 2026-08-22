@@ -117,9 +117,9 @@ class CRPDecoderTest {
 
     @Test
     fun `firmware version reaches the device record as its own event, not a connection change`() {
-        // NOT RingDecodedEvent.Status: that bridges to DeviceStateChanged(CONNECTED), and a
-        // device-info reply says nothing about the connection. runStartup re-queries firmware on
-        // every ~30-minute sync pass, so that path would restate CONNECTED all session long.
+        // NOT RingDecodedEvent.Status: that bridges to DeviceStateChanged(CONNECTED), and a firmware
+        // reply says nothing about the connection — bridging it would restamp the device row as
+        // freshly connected every time a firmware string arrived.
         val decoded = RingDecodedEvent.FirmwareRevision("MOY-R1K3-2.1.6")
         val events = RingEventBridge.eventsFor(decoded)
         assertEquals("MOY-R1K3-2.1.6", (events.single() as PulseEvent.FirmwareRevision).version)
@@ -150,6 +150,28 @@ class CRPDecoderTest {
         val sent = CRPProtocol.queryFirmwareVersion()
         assertEquals(3, sent[4].toInt() and 0xFF)
         assertEquals(3, sent[5].toInt() and 0xFF)
+    }
+
+    @Test
+    fun `a non-text firmware payload is acked rather than coerced into a version`() {
+        // Whatever decodeFirmwareVersion returns is shown verbatim in the Settings device card, so a
+        // payload that isn't a version string must ack. `String(bytes, UTF_8)` would have coerced
+        // the first into a U+FFFD run and the second into control junk, and published both as a
+        // firmware version. The second is the narrow-trim case: the vendor's `trim { it <= ' ' }`
+        // would have yielded "A" from it.
+        val payloads = listOf(
+            byteArrayOf(0xC3.toByte(), 0x28, 0xA0.toByte(), 0xFF.toByte()),  // invalid UTF-8
+            byteArrayOf(0x01, 0x02, 0x03, 0x41),                             // valid UTF-8, binary
+        )
+        for (payload in payloads) {
+            val frame = CRPProtocol.frame(3, CRPCommands.CMD_QUERY_FIRMWARE_VERSION, payload)
+            val events = CRPDecoder.decode(frame, fdd3)
+            assertTrue(
+                "payload must not publish a version",
+                events.none { it is RingDecodedEvent.FirmwareRevision },
+            )
+            assertTrue(events.single() is RingDecodedEvent.CommandAck)
+        }
     }
 
     @Test
@@ -199,6 +221,26 @@ class CRPDecoderTest {
         val full = CRPProtocol.frame(1, 9, byteArrayOf(0x50))
         assertTrue(driver.ingest(full.copyOfRange(0, 4), fdd3).isEmpty())
         assertEquals(1, driver.ingest(full.copyOfRange(4, full.size), fdd3).size)
+    }
+
+    @Test
+    fun `connect is held until the command-reply channel is live`() {
+        // Without this override the connect counts as up on whichever notify char finishes its CCCD
+        // write first — for CRP that is fdd1 (steps), never fdd3 (every command reply), so the
+        // runStartup handshake would write into a channel we aren't listening to yet.
+        val driver = CRPDriver(null)
+        assertEquals(
+            listOf(RequiredSubscription(CRPUUIDs.CHAR_CMD_NOTIFY, SubscriptionMode.NOTIFICATION)),
+            driver.requiredSubscriptionsBeforeConnected,
+        )
+        // A required subscription that isn't a declared notify char could never be satisfied, and
+        // the connect would fail its topology check — guard against it.
+        for (required in driver.requiredSubscriptionsBeforeConnected) {
+            assertTrue(
+                "${required.uuid} is not a declared notify characteristic",
+                driver.notifyUUIDs.any { it.equals(required.uuid, ignoreCase = true) },
+            )
+        }
     }
 
     // ── Sleep history (group 2 / cmd 14, vendor e1/j.b) ──────────────────────────────────────

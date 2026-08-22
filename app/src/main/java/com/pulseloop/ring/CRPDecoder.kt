@@ -1,5 +1,8 @@
 package com.pulseloop.ring
 
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.time.Instant
 import java.time.ZoneId
 
@@ -59,6 +62,9 @@ object CRPDecoder {
     private const val SESSION_GAP_MINUTES = 60
     /** CRPHistoryDay caps at 14 days ago; a larger dayIndex is a corrupt reply. */
     private const val MAX_HISTORY_DAY = 14
+    /** NUL — the padding byte some firmwares pad the firmware string with; trimmed, but a control
+     *  byte still present after trimming rejects the payload. */
+    private const val NUL = '\u0000'
 
     fun decode(
         data: ByteArray,
@@ -192,15 +198,32 @@ object CRPDecoder {
      *
      * Surfaced as [RingDecodedEvent.FirmwareRevision], not [RingDecodedEvent.FirmwareVersion]
      * (which carries an `Int` — the jring 0xF6 numeric build — and can't hold this) and not
-     * [RingDecodedEvent.Status] (which bridges to `DeviceStateChanged(CONNECTED, …)`; persistence
-     * rebuilds the sleep tables on every one of those, and [CRPSyncEngine.runStartup] re-queries
-     * firmware on every sync pass).
+     * [RingDecodedEvent.Status] (which bridges to `DeviceStateChanged(CONNECTED, …)`; a firmware
+     * reply says nothing about the connection, and bridging it would restamp the device row as
+     * freshly connected every time a firmware string arrived).
      */
     private fun decodeFirmwareVersion(payload: ByteArray): List<RingDecodedEvent>? {
-        // Trims NUL padding as well as whitespace: some firmwares pad the frame to a fixed width.
-        val version = String(payload, Charsets.UTF_8).trim { it <= ' ' }
-        if (version.isEmpty()) return null  // empty or all-padding — the caller acks it instead
-        return listOf(RingDecodedEvent.FirmwareRevision(version))
+        // Validated, not coerced: whatever this returns is shown verbatim in the Settings device
+        // card. `String(bytes, UTF_8)` is LENIENT on the JVM — it substitutes U+FFFD for invalid
+        // bytes and cannot fail — so a binary payload would render as a row of replacement
+        // characters presented as a firmware version. A REPORTing decoder throws instead.
+        val decoder = Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        val raw = try {
+            decoder.decode(ByteBuffer.wrap(payload)).toString()
+        } catch (_: CharacterCodingException) {
+            return null   // not text at all — the caller acks it
+        }
+        // Trim only what firmwares actually pad with: whitespace and NUL. Deliberately narrower
+        // than the vendor's `trim { it <= ' ' }`, which strips ALL control bytes and would let a
+        // binary payload's leading junk come off so whatever printable byte followed passed as a
+        // "version" (01 02 03 41 -> "A"). Padding comes off, then anything still holding a control
+        // byte is rejected outright rather than salvaged.
+        val trimmed = raw.trim { it.isWhitespace() || it == NUL }
+        if (trimmed.isEmpty()) return null
+        if (trimmed.any { it.isISOControl() }) return null
+        return listOf(RingDecodedEvent.FirmwareRevision(trimmed))
     }
 
     /**

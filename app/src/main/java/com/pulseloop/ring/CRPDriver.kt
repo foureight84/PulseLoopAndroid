@@ -32,6 +32,22 @@ class CRPDriver(private val writer: RingCommandWriter?) : WearableDriver {
     override val batteryServiceUUID: String = CRPUUIDs.SERVICE_BATTERY
     override val batteryCharUUID: String = CRPUUIDs.CHAR_BATTERY_LEVEL
 
+    /**
+     * Hold CONNECTED until `fdd3` is live. Without this the connection counts as up on whichever
+     * notify characteristic completes its CCCD write first — for CRP that is `fdd1` (the steps
+     * push), never `fdd3`, which carries *every* command reply. CONNECTED is what runs
+     * [CRPSyncEngine.runStartup], so a handshake begun too early would write the clock, firmware
+     * query, read-backs, timing config and the whole history pull into a channel we aren't
+     * listening to yet, and each lost reply is indistinguishable from a slow one.
+     *
+     * Only `fdd3` is required: `fdd1`/`fdd6`/`2a37` carry no reply the handshake waits on, so
+     * gating on them would only delay the connect. NOTIFICATION, not INDICATION — CRP's
+     * characteristics are notify (unlike YCBT's indicate pair).
+     */
+    override val requiredSubscriptionsBeforeConnected = listOf(
+        RequiredSubscription(CRPUUIDs.CHAR_CMD_NOTIFY, SubscriptionMode.NOTIFICATION),
+    )
+
     // MARK: Framing — the encoder/engine already build full CRP frames.
     override fun frame(command: ByteArray): ByteArray = command
 
