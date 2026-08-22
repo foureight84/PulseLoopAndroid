@@ -124,14 +124,13 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 > out so the other 10 items can land. Version bumped to 2.5.0 (`68c9788`) to match iOS
 > MARKETING_VERSION.
 
-> **▶ RESUME HERE (next session):** Two open threads, in order:
+> **▶ RESUME HERE (next session):** Three open threads, in order:
 > 1. **PR #45 review remediation** — the 2026-08-09 review found parity bugs in #95, #98,
 >    #99, #100 and a regression in #94. See "Session notes — 2026-08-09 cross-platform
 >    review" below.
 > 2. **#130 RWfit redo** — on `feat/rwfit-ring-family`, rebuilt from
 >    `decompiled-rwfit-official/` (see the backed-out section below for what was wrong),
 >    then recombined.
->
 > 3. **#93 CRP hardening** (queued 2026-08-22) — five small, independent fixes to the existing
 >    Android CRP driver, listed in "2026-08-22 triage" below. Item (1), gating `CONNECTED` on the
 >    `fdd3` reply channel, is worth doing on its own even if the rest waits.
