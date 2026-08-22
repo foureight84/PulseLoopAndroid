@@ -29,6 +29,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +43,9 @@ import androidx.compose.ui.unit.sp
 import com.pulseloop.coach.config.CoachProviderMode
 import com.pulseloop.coach.config.CoachProviderSettingsStore
 import com.pulseloop.coach.config.GeminiModel
+import com.pulseloop.coach.config.LocalStructuredOutput
+import com.pulseloop.coach.local.LocalCapabilityProbe
+import com.pulseloop.coach.local.LocalEndpoint
 import com.pulseloop.coach.config.MiniMaxModel
 import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
@@ -205,8 +209,16 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
             Column(Modifier.padding(16.dp)) {
                 Text("AI Coach", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
+                // Readiness differs by provider: the local mode is gated by the server address,
+                // not a key, so the old key-only check told a correctly-configured user their
+                // "API key" was missing.
+                val isLocal = providerStore.providerMode == CoachProviderMode.LOCAL_OPENAI_COMPAT
+                val ready = if (isLocal) providerStore.hasLocalBaseUrl else keyStore.apiKey.isNotBlank()
+                val activeModel = if (isLocal) providerStore.localModel.ifBlank { "local server" }
+                    else selectedModel
                 Text(
-                    if (coachEnabled && keyStore.apiKey.isNotBlank()) "Active — ${selectedModel}"
+                    if (coachEnabled && ready) "Active — $activeModel"
+                    else if (coachEnabled && isLocal) "Server address needed"
                     else if (coachEnabled) "API key needed"
                     else "Disabled",
                     style = MaterialTheme.typography.bodySmall,
@@ -260,12 +272,28 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     var orSort by remember { mutableStateOf(providerStore.orProviderSort) }
                     var reasoningEffort by remember { mutableStateOf(providerStore.reasoningEffort) }
                     var imageInput by remember { mutableStateOf(providerStore.imageInputEnabled) }
+                    // Local / self-hosted (docs/local-llm-coach.md).
+                    var localBaseUrl by remember { mutableStateOf(providerStore.localBaseUrl) }
+                    var localKey by remember { mutableStateOf(providerStore.localApiKey) }
+                    var localKeyVisible by remember { mutableStateOf(false) }
+                    var localModel by remember { mutableStateOf(providerStore.localModel) }
+                    var localToolCalling by remember { mutableStateOf(providerStore.localToolCalling) }
+                    var localStructured by remember { mutableStateOf(providerStore.localStructuredOutput) }
+                    var localMaxTokens by remember { mutableStateOf(providerStore.localMaxTokens.takeIf { it > 0 }?.toString() ?: "") }
+                    var localTimeout by remember { mutableStateOf(providerStore.localTimeoutSeconds.toString()) }
+                    // Discovered via GET /v1/models; advisory, the typed slug always wins.
+                    var localDiscovered by remember { mutableStateOf<List<String>>(emptyList()) }
+                    var localProbeBusy by remember { mutableStateOf(false) }
+                    var localProbeResult by remember { mutableStateOf<String?>(null) }
+                    var localProbeNotes by remember { mutableStateOf<List<String>>(emptyList()) }
+                    var localProbeOk by remember { mutableStateOf(false) }
 
                     val providerOptions = listOf(
                         CoachProviderMode.USER_OPENAI_KEY to "OpenAI",
                         CoachProviderMode.USER_GEMINI_KEY to "Google Gemini",
                         CoachProviderMode.USER_OPENROUTER_KEY to "OpenRouter (100+ models)",
                         CoachProviderMode.USER_MINIMAX_KEY to "MiniMax",
+                        CoachProviderMode.LOCAL_OPENAI_COMPAT to "Local / self-hosted (no key needed)",
                     )
                     val providerLabel = providerOptions.firstOrNull { it.first == providerMode }?.second ?: "OpenAI"
 
@@ -421,6 +449,228 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 onRemove = { minimaxKey = ""; providerStore.minimaxApiKey = "" },
                             )
                         }
+                        CoachProviderMode.LOCAL_OPENAI_COMPAT -> {
+                            // Any OpenAI-Chat-Completions-compatible server the user runs: Ollama,
+                            // llama.cpp, vLLM, SGLang, LM Studio. No key required — see
+                            // docs/local-llm-coach.md. The base URL is what gates readiness.
+                            val urlProblem = LocalEndpoint.validate(localBaseUrl)
+                                .takeIf { localBaseUrl.isNotBlank() }
+                            OutlinedTextField(
+                                value = localBaseUrl,
+                                onValueChange = {
+                                    localBaseUrl = it; providerStore.localBaseUrl = it
+                                    localProbeResult = null; localProbeOk = false
+                                    localProbeNotes = emptyList(); localDiscovered = emptyList()
+                                },
+                                label = { Text("Server address") },
+                                placeholder = { Text("http://192.168.1.50:11434") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                isError = urlProblem != null,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                            )
+                            Text(
+                                urlProblem?.let { LocalEndpoint.message(it) }
+                                    ?: "Default ports — Ollama 11434 · LM Studio 1234 · llama.cpp 8080 · vLLM 8000 · SGLang 30000. " +
+                                       "The /v1 path is added for you.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (urlProblem != null) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+                            // One press does the whole setup: identifies the engine, lists models,
+                            // and probes whether the server actually accepts `tools` and
+                            // `response_format` — which depend on launch flags that no metadata
+                            // endpoint exposes. The detected values are applied straight to the
+                            // controls below, which stay editable.
+                            Button(
+                                onClick = {
+                                    localProbeBusy = true; localProbeResult = null; localProbeNotes = emptyList()
+                                    scope.launch {
+                                        try {
+                                            val report = LocalCapabilityProbe.run(
+                                                baseUrl = localBaseUrl,
+                                                apiKey = localKey,
+                                                currentModel = localModel,
+                                            )
+                                            localDiscovered = report.models
+                                            if (report.suggestedModel.isNotBlank()) {
+                                                localModel = report.suggestedModel
+                                                providerStore.localModel = localModel
+                                            }
+                                            // Only a probe that reached a verdict may overwrite
+                                            // these. Detect is also how you refresh the model
+                                            // list, so it gets pressed on a working setup — and
+                                            // the safe defaults behind `suggested*` (tools ON,
+                                            // structured OFF) would then undo a deliberate choice
+                                            // rather than leave it alone. The notes say what was
+                                            // skipped and why.
+                                            if (report.toolCallingConclusive) {
+                                                localToolCalling = report.suggestedToolCalling
+                                                providerStore.localToolCalling = localToolCalling
+                                            }
+                                            if (report.structuredOutputConclusive) {
+                                                localStructured = report.suggestedStructuredOutput
+                                                providerStore.localStructuredOutput = localStructured
+                                            }
+                                            // Derived from the server's context window, minus a
+                                            // reserve for the prompt — never a straight copy, or
+                                            // `prompt + max_tokens` would exceed the context and
+                                            // the server would reject the request. 0 means the
+                                            // server reported no context window at all (a thin
+                                            // proxy, an engine we can't identify, Ollama when
+                                            // `/api/show` doesn't parse) — "not detected", which
+                                            // is no reason to clear a value the user typed.
+                                            if (report.suggestedMaxTokens > 0) {
+                                                localMaxTokens = report.suggestedMaxTokens.toString()
+                                                providerStore.localMaxTokens = report.suggestedMaxTokens
+                                            }
+                                            localProbeOk = true
+                                            localProbeResult = report.summary
+                                            localProbeNotes = report.notes
+                                        } catch (e: LocalCapabilityProbe.Unreachable) {
+                                            localProbeOk = false; localProbeResult = e.reason
+                                        } catch (e: Exception) {
+                                            localProbeOk = false
+                                            localProbeResult = e.message ?: "Couldn't reach the server."
+                                        }
+                                        localProbeBusy = false
+                                    }
+                                },
+                                enabled = localBaseUrl.isNotBlank() && urlProblem == null && !localProbeBusy,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text(if (localProbeBusy) "Detecting…" else "Detect server & configure") }
+                            if (localProbeBusy) {
+                                Text(
+                                    "Sending three tiny test messages. This can take a minute if the model " +
+                                    "still has to load.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            localProbeResult?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (localProbeOk) PulseColors.success else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            // Only non-empty when a probe was inconclusive or refused — the
+                            // difference between "off because your server said no" and "off
+                            // because we couldn't tell" is the whole point of showing it.
+                            localProbeNotes.forEach { note ->
+                                Text(
+                                    "• $note",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+                            if (localDiscovered.isNotEmpty()) {
+                                ModelDropdown(
+                                    "Model", localModel.ifBlank { "Choose a model" },
+                                    localDiscovered.map { it to "" },
+                                ) { localModel = it; providerStore.localModel = it }
+                            }
+                            // Always typeable: a router in front of the server can serve names
+                            // /v1/models doesn't list, and llama.cpp ignores the field entirely.
+                            OutlinedTextField(
+                                value = localModel,
+                                onValueChange = { localModel = it; providerStore.localModel = it },
+                                label = { Text("Model name") },
+                                placeholder = { Text("qwen3:8b") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                            )
+                            Spacer(Modifier.height(8.dp))
+
+                            KeyField(
+                                label = "API key (optional)", value = localKey, visible = localKeyVisible,
+                                saved = providerStore.hasLocalKey,
+                                onValue = { localKey = it }, onVisibility = { localKeyVisible = !localKeyVisible },
+                                onSave = { providerStore.localApiKey = localKey },
+                                onRemove = { localKey = ""; providerStore.localApiKey = "" },
+                            )
+                            Text(
+                                "Only needed if you started the server with --api-key. Leave blank otherwise.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Tool calling")
+                                    Text(
+                                        "Lets the coach read your data. Detect sets this for you; turn it off " +
+                                        "if your server rejects tools (vLLM needs --enable-auto-tool-choice).",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Switch(checked = localToolCalling, onCheckedChange = {
+                                    localToolCalling = it; providerStore.localToolCalling = it
+                                })
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+                            ModelDropdown(
+                                "Response format", localStructured.label,
+                                LocalStructuredOutput.entries.map { it.label to it.blurb },
+                            ) { picked ->
+                                val mode = LocalStructuredOutput.entries.first { it.label == picked }
+                                localStructured = mode; providerStore.localStructuredOutput = mode
+                            }
+
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = localMaxTokens,
+                                    onValueChange = {
+                                        localMaxTokens = it.filter { c -> c.isDigit() }
+                                        providerStore.localMaxTokens = localMaxTokens.toIntOrNull() ?: 0
+                                    },
+                                    label = { Text("Max tokens") },
+                                    placeholder = { Text("auto") },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                                )
+                                OutlinedTextField(
+                                    value = localTimeout,
+                                    onValueChange = {
+                                        localTimeout = it.filter { c -> c.isDigit() }
+                                        localTimeout.toIntOrNull()?.let { v -> providerStore.localTimeoutSeconds = v }
+                                    },
+                                    label = { Text("Timeout (s)") },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        // The store clamps to 10..1800 on write, and a blank field
+                                        // skips the write entirely, so the text can show a value
+                                        // that was never stored (type "5", store holds 10) or an
+                                        // empty box over a live setting. Reconciling per keystroke
+                                        // would fight the user — "1" would jump to "10" — so read
+                                        // the stored value back when the field loses focus.
+                                        .onFocusChanged { focus ->
+                                            if (!focus.isFocused)
+                                                localTimeout = providerStore.localTimeoutSeconds.toString()
+                                        },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                                )
+                            }
+                            Text(
+                                "Leave max tokens blank to let the server decide. Raise the timeout for a large " +
+                                "model on CPU — a slow reply is not retried.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
                         else -> {
                             // OpenAI (and legacy modes): the original model picker + key field.
                             ModelDropdown("Model", selectedModel, models.map { it to "" }) {
@@ -459,9 +709,11 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
 
                     HorizontalDivider()
 
-                    // Tool toggles. MiniMax's compat endpoint has no hosted web search, so hide
-                    // the toggle for it (the client drops the tool anyway — this is the UI half).
-                    if (providerMode != CoachProviderMode.USER_MINIMAX_KEY) {
+                    // Tool toggles. Neither MiniMax's compat endpoint nor any self-hosted engine
+                    // has a hosted web search, so hide the toggle for both (each client drops the
+                    // tool anyway — this is the UI half).
+                    if (providerMode != CoachProviderMode.USER_MINIMAX_KEY &&
+                        providerMode != CoachProviderMode.LOCAL_OPENAI_COMPAT) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Web Search")

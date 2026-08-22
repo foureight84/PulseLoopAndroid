@@ -1,6 +1,8 @@
 package com.pulseloop.coach.config
 
 import com.pulseloop.coach.gemini.GeminiClient
+import com.pulseloop.coach.local.LocalEndpoint
+import com.pulseloop.coach.local.LocalOpenAICompatClient
 import com.pulseloop.coach.minimax.MiniMaxClient
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.openai.ResponsesClient
@@ -18,6 +20,11 @@ import com.pulseloop.settings.ApiKeyStore
  * run (used to gate `CoachFeatureFlags.coachEnabled`). A client is returned
  * even when the key is absent (`key == null`); the feature-flags gate prevents
  * an empty-key call.
+ *
+ * For [CoachProviderMode.LOCAL_OPENAI_COMPAT] the sentinel is the **base URL**, not a key: a
+ * self-hosted Ollama/llama.cpp/vLLM/SGLang server is unauthenticated by default, so requiring a
+ * key there would leave the coach permanently disabled for the normal setup. See
+ * `docs/local-llm-coach.md`.
  */
 object CoachClientResolver {
 
@@ -30,6 +37,7 @@ object CoachClientResolver {
         geminiKey: String?,
         openRouterKey: String?,
         minimaxKey: String? = null,
+        localKey: String? = null,
         openAIClientFactory: (String) -> ResponsesClient = { OpenAIResponsesClient(it) },
     ): Resolution = when (settings.providerMode) {
         CoachProviderMode.USER_GEMINI_KEY -> {
@@ -47,6 +55,24 @@ object CoachClientResolver {
         CoachProviderMode.USER_MINIMAX_KEY -> {
             val key = minimaxKey?.takeIf { it.isNotBlank() }
             Resolution(key, MiniMaxClient(apiKey = key ?: "", model = settings.resolvedMinimaxModel))
+        }
+        CoachProviderMode.LOCAL_OPENAI_COMPAT -> {
+            // Readiness is a base URL that would actually work — `validate`, not `isNotBlank`.
+            // Settings persists the field on every keystroke, so a blank-check flips the coach to
+            // "Active" on the first character typed, and every turn then fails inside `send()`
+            // with the same URL-validation text the Settings field is already showing inline.
+            // `localKey` may legitimately be blank and is passed through as null so the client
+            // omits the Authorization header entirely.
+            val baseUrl = settings.resolvedLocalBaseUrl
+            Resolution(baseUrl.takeIf { LocalEndpoint.validate(it) == null }, LocalOpenAICompatClient(
+                baseUrl = baseUrl,
+                model = settings.resolvedLocalModel,
+                apiKey = localKey?.takeIf { it.isNotBlank() },
+                toolCallingEnabled = settings.localToolCalling,
+                structuredOutput = settings.localStructuredOutput,
+                maxOutputTokens = settings.localMaxTokens.takeIf { it > 0 },
+                readTimeoutSeconds = settings.localTimeoutSeconds,
+            ))
         }
         else -> {
             // USER_OPENAI_KEY / OFFLINE_STUB / BACKEND_PROXY all use the OpenAI
@@ -67,6 +93,7 @@ object CoachClientResolver {
         geminiKey = store.geminiApiKey,
         openRouterKey = store.openRouterApiKey,
         minimaxKey = store.minimaxApiKey,
+        localKey = store.localApiKey,
         openAIClientFactory = openAIClientFactory,
     )
 
@@ -101,6 +128,9 @@ object CoachClientResolver {
             CoachProviderMode.USER_GEMINI_KEY -> settings.geminiModel
             CoachProviderMode.USER_OPENROUTER_KEY -> settings.resolvedOpenRouterModel
             CoachProviderMode.USER_MINIMAX_KEY -> settings.resolvedMinimaxModel
+            // Reported verbatim for attribution — including blank, which is a valid llama.cpp
+            // setup. `CoachPricingCatalog` prices this provider at $0 regardless of the string.
+            CoachProviderMode.LOCAL_OPENAI_COMPAT -> settings.resolvedLocalModel
             else -> openAIModel.ifEmpty { OpenAIModel.DEFAULT.slug }
         }
 }
