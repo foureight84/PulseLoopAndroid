@@ -1,7 +1,9 @@
 package com.pulseloop.coach.openai
 
 import com.pulseloop.coach.attachments.CoachImagePayload
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -38,6 +40,15 @@ class OpenAIResponsesClient(
  * (30 s connect / 60 s read) instead of a fresh connection pool per agent turn,
  * and one place for the [ResponsesError.Transport]/[ResponsesError.Http] mapping
  * all three providers share.
+ *
+ * Both entry points switch to [Dispatchers.IO] themselves. `execute()` is a BLOCKING call, and
+ * Android throws `NetworkOnMainThreadException` for one on the main thread — an exception whose
+ * `message` is **null**, so it surfaces to the user as a bare "no connection" that points at
+ * their network instead of at the code. `CoachOrchestrator` happens to wrap its turns in
+ * `withContext(Dispatchers.IO)` already, which is why this was invisible until a Compose
+ * `scope.launch` (Settings' server-detect button, which runs on `Dispatchers.Main`) became the
+ * second caller. Owning the dispatcher here rather than trusting every call site removes the
+ * whole class of bug; the redundant nesting for orchestrator calls costs nothing.
  */
 internal object ResponsesHttp {
     private val jsonMediaType = "application/json".toMediaType()
@@ -65,40 +76,43 @@ internal object ResponsesHttp {
         val request = builder.build()
         val call = clientFor(readTimeoutSeconds)
 
-        for (attempt in 0..MAX_UNSENT_RETRIES) {
-            try {
-                // Both the call and the body read live inside the try. A read timeout can fire
-                // while the body is still streaming, and if that escaped uncaught it would reach
-                // CoachTurnError as a bare SocketTimeoutException — bypassing the transport copy
-                // and printing the JDK's one-word "timeout" again, the exact bug this fixes.
-                // `use` closes the response on every path, including a mid-read failure.
-                return call.newCall(request).execute().use { response ->
-                    val text = response.body?.string() ?: ""
-                    if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
-                    text
+        return withContext(Dispatchers.IO) {
+            for (attempt in 0..MAX_UNSENT_RETRIES) {
+                try {
+                    // Both the call and the body read live inside the try. A read timeout can fire
+                    // while the body is still streaming, and if that escaped uncaught it would reach
+                    // CoachTurnError as a bare SocketTimeoutException — bypassing the transport copy
+                    // and printing the JDK's one-word "timeout" again, the exact bug this fixes.
+                    // `use` closes the response on every path, including a mid-read failure.
+                    return@withContext call.newCall(request).execute().use { response ->
+                        val text = response.body?.string() ?: ""
+                        if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
+                        text
+                    }
+                } catch (e: ResponsesError) {
+                    // An HTTP status is an answer from the provider, not a transport failure. Never
+                    // retried, and never re-wrapped as Transport by the catch below.
+                    throw e
+                } catch (e: Exception) {
+                    // Only retry failures that provably never reached the provider: DNS resolution and
+                    // TCP connect. A momentary DNS miss (radio handover, a VPN or private-DNS resolver
+                    // still coming up) otherwise kills the whole turn and burns the user's message.
+                    //
+                    // A read timeout is deliberately NOT retried. OkHttp reports connect and read
+                    // timeouts as the same SocketTimeoutException, so we cannot tell "never sent" from
+                    // "sent, answer lost" — and re-sending the latter bills the user's API key for a
+                    // generation that already ran.
+                    if (!isProvablyUnsent(e) || attempt == MAX_UNSENT_RETRIES) throw ResponsesError.Transport(e)
+                    // delay(), not Thread.sleep(): the turn is cancellable (the user leaves the coach
+                    // screen, WorkManager stops the summary worker), and a blocking sleep would keep an
+                    // IO thread parked and then fire the remaining doomed attempts anyway.
+                    delay(RETRY_BACKOFF_MS shl attempt)   // 400ms, 800ms
                 }
-            } catch (e: ResponsesError) {
-                // An HTTP status is an answer from the provider, not a transport failure. Never
-                // retried, and never re-wrapped as Transport by the catch below.
-                throw e
-            } catch (e: Exception) {
-                // Only retry failures that provably never reached the provider: DNS resolution and
-                // TCP connect. A momentary DNS miss (radio handover, a VPN or private-DNS resolver
-                // still coming up) otherwise kills the whole turn and burns the user's message.
-                //
-                // A read timeout is deliberately NOT retried. OkHttp reports connect and read
-                // timeouts as the same SocketTimeoutException, so we cannot tell "never sent" from
-                // "sent, answer lost" — and re-sending the latter bills the user's API key for a
-                // generation that already ran.
-                if (!isProvablyUnsent(e) || attempt == MAX_UNSENT_RETRIES) throw ResponsesError.Transport(e)
-                // delay(), not Thread.sleep(): the turn is cancellable (the user leaves the coach
-                // screen, WorkManager stops the summary worker), and a blocking sleep would keep an
-                // IO thread parked and then fire the remaining doomed attempts anyway.
-                delay(RETRY_BACKOFF_MS shl attempt)   // 400ms, 800ms
             }
+            // Unreachable — the final attempt either returns or throws — but keeps the
+            // compiler happy.
+            throw IllegalStateException("request never ran")
         }
-        // Unreachable — the final attempt either returns or throws — but keeps the compiler happy.
-        throw IllegalStateException("request never ran")
     }
 
     /**
@@ -114,16 +128,18 @@ internal object ResponsesHttp {
         val builder = okhttp3.Request.Builder().url(url).get()
         for ((name, value) in headers) builder.header(name, value)
         val request = builder.build()
-        return try {
-            clientFor(readTimeoutSeconds).newCall(request).execute().use { response ->
-                val text = response.body?.string() ?: ""
-                if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
-                text
+        return withContext(Dispatchers.IO) {
+            try {
+                clientFor(readTimeoutSeconds).newCall(request).execute().use { response ->
+                    val text = response.body?.string() ?: ""
+                    if (!response.isSuccessful) throw ResponsesError.Http(response.code, text)
+                    text
+                }
+            } catch (e: ResponsesError) {
+                throw e
+            } catch (e: Exception) {
+                throw ResponsesError.Transport(e)
             }
-        } catch (e: ResponsesError) {
-            throw e
-        } catch (e: Exception) {
-            throw ResponsesError.Transport(e)
         }
     }
 

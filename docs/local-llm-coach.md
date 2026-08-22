@@ -89,6 +89,8 @@ another:
   `{type:"json_schema", json_schema:{name, strict, schema}}` from `CoachResponseSchema.schema`.
   LM Studio has no `json_object`; some llama.cpp builds error when `json_schema` meets `grammar`.
 - **Max output tokens** (blank = omit). Local defaults vary from unlimited to a few hundred.
+  Auto-detect fills this in from the server's reported **context window** — see §5b, and note it is
+  a derivation, never a copy.
 
 `reasoning` / `reasoning_effort` are **not** sent: only Ollama documents them, and vLLM/SGLang
 would warn or 400. Anthropic `cache_control` and OpenRouter's `provider` block are likewise absent.
@@ -127,6 +129,37 @@ timeout is 120 s because on Ollama/LM Studio the first probe also pays for pagin
 The probe never picks a model when several are served and none matches the current setting —
 guessing would silently move a working setup onto a different model.
 
+### 5b. Max tokens is derived from the context window, never copied from it
+
+Every engine reports the model's context window, under its own name:
+
+| Engine | Route | Field |
+|---|---|---|
+| vLLM | `/v1/models` | `max_model_len` (262144 on the reference server) |
+| llama.cpp | `/v1/models`, `/props` | `n_ctx` as served, `n_ctx_train` as the model ceiling |
+| LM Studio | `/api/v0/models` | `loaded_context_length`, `max_context_length` |
+| Ollama | `POST /api/show` | `model_info["<arch>.context_length"]` |
+| SGLang | `/get_model_info` | context length |
+
+A context window is **prompt + completion**, so writing it straight into `max_tokens` is wrong in
+a way that fails closed: the server checks `max_tokens` against what is *left* after the prompt and
+rejects a request where the two overflow. The derivation instead reserves room for the prompt:
+
+```
+headroom  = context − PROMPT_RESERVE_TOKENS (6144)
+suggested = min(headroom, MAX_SUGGESTED_TOKENS (32768))
+headroom < 512  ⇒  leave Max tokens blank and warn
+```
+
+6144 is the measured coach prompt (3.1–3.3k input tokens for a plain turn on-device) doubled, so a
+turn replaying history and feeding back tool results still fits. The 32768 cap keeps a 262k context
+from becoming a licence for a runaway generation — a `coach_response` needs far less.
+
+**The warning is the more valuable half.** Ollama ships a default `num_ctx` of **2048**, smaller
+than the coach's own prompt: without detection the prompt is silently truncated and the model gets
+blamed. Detecting context lets Settings say so, and point at the server-side fix (`num_ctx`,
+llama.cpp `-c`, vLLM `--max-model-len`) rather than at a setting in the app.
+
 ### Measured on a real server (vLLM 0.27.1, Qwen3.8-27B-INT8)
 
 | Probe | Result |
@@ -135,6 +168,7 @@ guessing would silently move a working setup onto a different model.
 | `GET /version` | `{"version":"0.27.1"}` → engine identified |
 | `tools` | HTTP 200 → supported |
 | `response_format: json_schema` | HTTP 200 → supported |
+| `max_model_len` | 262144 → Max tokens suggested as 32768 (capped) |
 | `role: developer` | **HTTP 422, `unknown role: developer`** |
 
 Also observed: with a reasoning parser enabled, vLLM returns the chain of thought in

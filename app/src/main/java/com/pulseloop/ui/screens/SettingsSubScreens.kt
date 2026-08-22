@@ -208,8 +208,16 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
             Column(Modifier.padding(16.dp)) {
                 Text("AI Coach", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
+                // Readiness differs by provider: the local mode is gated by the server address,
+                // not a key, so the old key-only check told a correctly-configured user their
+                // "API key" was missing.
+                val isLocal = providerStore.providerMode == CoachProviderMode.LOCAL_OPENAI_COMPAT
+                val ready = if (isLocal) providerStore.hasLocalBaseUrl else keyStore.apiKey.isNotBlank()
+                val activeModel = if (isLocal) providerStore.localModel.ifBlank { "local server" }
+                    else selectedModel
                 Text(
-                    if (coachEnabled && keyStore.apiKey.isNotBlank()) "Active — ${selectedModel}"
+                    if (coachEnabled && ready) "Active — $activeModel"
+                    else if (coachEnabled && isLocal) "Server address needed"
                     else if (coachEnabled) "API key needed"
                     else "Disabled",
                     style = MaterialTheme.typography.bodySmall,
@@ -495,6 +503,18 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                             providerStore.localToolCalling = localToolCalling
                                             localStructured = report.suggestedStructuredOutput
                                             providerStore.localStructuredOutput = localStructured
+                                            // Derived from the server's context window, minus a
+                                            // reserve for the prompt — never a straight copy, or
+                                            // `prompt + max_tokens` would exceed the context and
+                                            // the server would reject the request. 0 = leave
+                                            // blank and let the server decide.
+                                            if (report.suggestedMaxTokens > 0) {
+                                                localMaxTokens = report.suggestedMaxTokens.toString()
+                                                providerStore.localMaxTokens = report.suggestedMaxTokens
+                                            } else {
+                                                localMaxTokens = ""
+                                                providerStore.localMaxTokens = 0
+                                            }
                                             localProbeOk = true
                                             localProbeResult = report.summary
                                             localProbeNotes = report.notes

@@ -53,6 +53,9 @@ object LocalCapabilityProbe {
         val toolCalling: Support = Support.UNKNOWN,
         val jsonSchema: Support = Support.UNKNOWN,
         val jsonObject: Support = Support.UNKNOWN,
+        /** The server's **context window** for the chosen model (prompt + completion), when it
+         *  reports one. This is NOT an output budget — see [suggestedMaxTokens]. */
+        val contextWindow: Int? = null,
         /** Per-probe detail, shown under the summary so an inconclusive result is explainable. */
         val notes: List<String> = emptyList(),
     ) {
@@ -67,6 +70,37 @@ object LocalCapabilityProbe {
         /** Tool calling stays ON unless the server actively refused it — an inconclusive probe
          *  must not silently strip the coach of its ability to read the user's data. */
         val suggestedToolCalling: Boolean get() = toolCalling != Support.NO
+
+        /**
+         * The value to store in **Max tokens**, derived from [contextWindow]; 0 means "leave
+         * blank and let the server decide".
+         *
+         * A context window is not an output budget, and copying it across would be actively
+         * harmful: `max_tokens` is checked against what's *left* after the prompt, so a request
+         * with `prompt + max_tokens > context` is rejected outright. We therefore reserve
+         * [PROMPT_RESERVE_TOKENS] for the coach's own prompt — measured at ~3.3k for a plain turn,
+         * doubled to cover tool results and replayed history — and cap the remainder at
+         * [MAX_SUGGESTED_TOKENS], well past what a coach_response needs, so a huge context doesn't
+         * turn into a runaway generation budget.
+         *
+         * When the headroom is too small to be worth setting, this returns 0 and
+         * [contextTooSmall] carries the warning instead: a server whose context can't even hold
+         * the prompt (Ollama ships a 2048-token `num_ctx` default, smaller than our prompt) will
+         * silently truncate, and a wrong `max_tokens` would only mask that.
+         */
+        val suggestedMaxTokens: Int get() {
+            val ctx = contextWindow ?: return 0
+            val headroom = ctx - PROMPT_RESERVE_TOKENS
+            if (headroom < MIN_USEFUL_OUTPUT_TOKENS) return 0
+            return minOf(headroom, MAX_SUGGESTED_TOKENS)
+        }
+
+        /** True when the reported context can't comfortably hold the coach's prompt, so the user
+         *  needs to raise it on the server (Ollama `num_ctx`, llama.cpp `-c`, vLLM
+         *  `--max-model-len`) rather than tune anything in the app. */
+        val contextTooSmall: Boolean
+            get() = contextWindow != null &&
+                contextWindow - PROMPT_RESERVE_TOKENS < MIN_USEFUL_OUTPUT_TOKENS
 
         /** One line for the Settings summary. */
         val summary: String get() = buildString {
@@ -84,6 +118,7 @@ object LocalCapabilityProbe {
                 LocalStructuredOutput.JSON_OBJECT -> "JSON mode"
                 LocalStructuredOutput.OFF -> "prompt-only"
             })
+            contextWindow?.let { append(" · ${formatTokens(it)} ctx") }
         }
     }
 
@@ -107,21 +142,35 @@ object LocalCapabilityProbe {
         apiKey?.takeIf { it.isNotBlank() }?.let { headers["Authorization"] = "Bearer $it" }
 
         // 1. Models — also the reachability check, so its failure is the one hard failure.
-        val models = when (val r = LocalModelCatalog.fetch(baseUrl, apiKey)) {
-            is LocalModelCatalog.Result.Success -> r.models
+        val entries = when (val r = LocalModelCatalog.fetch(baseUrl, apiKey)) {
+            is LocalModelCatalog.Result.Success -> r.entries
             is LocalModelCatalog.Result.Failure -> throw Unreachable(r.message)
         }
+        val models = entries.map { it.id }
         val model = pickModel(models, currentModel)
 
         // 2. Engine identity — best-effort, from the engine-specific info routes. Never fatal.
         val (engine, version) = identify(baseUrl, headers)
 
+        // Context window: from the listing when the engine puts it there (vLLM, llama.cpp,
+        // LM Studio), else from that engine's own route.
+        val context = entries.firstOrNull { it.id == model }?.contextWindow
+            ?: contextFromEngine(baseUrl, headers, engine, model)
+
         val notes = mutableListOf<String>()
+        if (context != null && context - PROMPT_RESERVE_TOKENS < MIN_USEFUL_OUTPUT_TOKENS) {
+            notes.add(
+                "Context is only ${formatTokens(context)} — the coach's prompt alone is around " +
+                "${formatTokens(PROMPT_RESERVE_TOKENS / 2)}. Raise it on the server " +
+                "(Ollama `num_ctx`, llama.cpp `-c`, vLLM `--max-model-len`) or replies will be " +
+                "truncated."
+            )
+        }
         if (model.isBlank()) {
             // Capability probes need a model name on every engine except llama.cpp, and without
             // one a 400 would be indistinguishable from "capability unsupported".
             notes.add("Pick a model, then run this again to detect tools and response format.")
-            return Report(engine, version, models, model, notes = notes)
+            return Report(engine, version, models, model, contextWindow = context, notes = notes)
         }
 
         // 3. Capability probes.
@@ -131,7 +180,7 @@ object LocalCapabilityProbe {
         val obj = if (schema == Support.YES) Support.UNKNOWN
             else probe(baseUrl, headers, model, JSON_OBJECT_PROBE, "JSON mode", notes)
 
-        return Report(engine, version, models, model, tools, schema, obj, notes)
+        return Report(engine, version, models, model, tools, schema, obj, context, notes)
     }
 
     /** Sole model → use it. Otherwise keep the user's current pick when the server still has it;
@@ -178,6 +227,59 @@ object LocalCapabilityProbe {
         get("$base/api/v0/models", headers)?.let { return Engine.LM_STUDIO to null }
         return Engine.UNKNOWN to null
     }
+
+    /**
+     * The context window from an engine's own route, for the two that don't put it in
+     * `/v1/models`. Best-effort: a null here just means the app won't suggest a budget.
+     *
+     * Ollama is the one that matters. Its `/v1/models` carries no context at all, and its default
+     * `num_ctx` is **2048** — smaller than the coach's own prompt — so without this a user would
+     * get silently truncated context and blame the model.
+     */
+    private suspend fun contextFromEngine(
+        baseUrl: String,
+        headers: Map<String, String>,
+        engine: Engine,
+        model: String,
+    ): Int? {
+        val base = LocalEndpoint.normalize(baseUrl) ?: return null
+        return when (engine) {
+            Engine.OLLAMA -> {
+                if (model.isBlank()) return null
+                val body = JsonObject(mapOf("model" to JsonPrimitive(model)))
+                val text = try {
+                    ResponsesHttp.post(
+                        "$base/api/show",
+                        Json.encodeToString(JsonObject.serializer(), body).toByteArray(),
+                        headers,
+                        IDENTIFY_TIMEOUT_SECONDS,
+                    )
+                } catch (_: Exception) { return null }
+                // `model_info` is keyed by architecture, e.g. "qwen3.context_length", so match on
+                // the suffix rather than guessing the family.
+                val info = jsonObjectOrNull(text)?.get("model_info") as? JsonObject ?: return null
+                info.entries.firstOrNull { it.key.endsWith(".context_length") }
+                    ?.value?.let { (it as? JsonPrimitive)?.intOrNull }?.takeIf { it > 0 }
+            }
+            Engine.SGLANG -> {
+                val text = get("$base/get_model_info", headers) ?: return null
+                val root = jsonObjectOrNull(text) ?: return null
+                LocalModelCatalog.contextWindowOf(root)
+            }
+            Engine.LLAMA_CPP -> {
+                val text = get("$base/props", headers) ?: return null
+                val root = jsonObjectOrNull(text) ?: return null
+                LocalModelCatalog.contextWindowOf(root)
+                    ?: (root["default_generation_settings"] as? JsonObject)
+                        ?.let { LocalModelCatalog.contextWindowOf(it) }
+            }
+            else -> null
+        }
+    }
+
+    /** "262,144" → "262k"; small values stay exact so a 2048 warning reads literally. */
+    internal fun formatTokens(tokens: Int): String =
+        if (tokens >= 10_000) "${tokens / 1000}k" else tokens.toString()
 
     private suspend fun get(url: String, headers: Map<String, String>): String? = try {
         ResponsesHttp.get(url, headers, IDENTIFY_TIMEOUT_SECONDS)
@@ -296,4 +398,18 @@ object LocalCapabilityProbe {
     private const val IDENTIFY_TIMEOUT_SECONDS = 10
     /** Enough that a grammar-constrained probe emits something, small enough to stay cheap. */
     private const val PROBE_MAX_TOKENS = 8
+
+    /**
+     * Context reserved for input before any of it is offered as output budget. A plain coach turn
+     * measured 3.1–3.3k input tokens on a real device; this doubles that so a turn that replays
+     * history and feeds back tool results still fits.
+     */
+    internal const val PROMPT_RESERVE_TOKENS = 6144
+
+    /** Below this much headroom, suggesting a budget is worse than saying the context is too small. */
+    internal const val MIN_USEFUL_OUTPUT_TOKENS = 512
+
+    /** A coach_response plus reasoning needs far less than this; the cap stops a 262k context from
+     *  becoming a licence for a runaway generation. */
+    internal const val MAX_SUGGESTED_TOKENS = 32_768
 }
