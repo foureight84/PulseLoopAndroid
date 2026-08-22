@@ -120,6 +120,26 @@ class StravaTCXBuilderTest {
     }
 
     @Test
+    fun `pause intervals pair through the gps_stopped and gps_started markers Android writes`() {
+        // LiveWorkoutManager.pause/resume write `paused`+`gps_stopped` sharing one timestamp,
+        // then `resumed`+`gps_started` sharing another (mirrors iOS PulseServices). The pairing
+        // must react only to `paused`/`resumed` and treat the gps_* markers as transparent.
+        val pausedAt = start + 15_000L
+        val resumedAt = start + 45_000L
+        val events = listOf(
+            ActivityEventEntity(id = "1", sessionId = "s1", kind = "paused", timestamp = pausedAt),
+            ActivityEventEntity(id = "2", sessionId = "s1", kind = "gps_stopped", timestamp = pausedAt),
+            ActivityEventEntity(id = "3", sessionId = "s1", kind = "resumed", timestamp = resumedAt),
+            ActivityEventEntity(id = "4", sessionId = "s1", kind = "gps_started", timestamp = resumedAt),
+        )
+        val intervals = StravaTCXBuilder.pauseIntervals(events, endedAt = start + 60_000L)
+
+        assertEquals(1, intervals.size)
+        assertEquals(pausedAt, intervals[0].start)
+        assertEquals(resumedAt, intervals[0].end)
+    }
+
+    @Test
     fun `sport attribute uses the three TCX-legal values`() {
         fun sportOf(type: String) = StravaTCXBuilder
             .build(session(type = type), listOf(gps(0), gps(60_000)), emptyList())!!

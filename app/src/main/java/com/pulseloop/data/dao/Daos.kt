@@ -272,6 +272,20 @@ interface ActivityGpsPointDao {
 }
 
 @Dao
+interface ActivityEventDao {
+    // iOS ActivityRepository.events(): the pause/resume lifecycle markers the live-workout
+    // recorder writes (LiveWorkoutManager.pause/resume mirror PulseServices.pause/resume). The
+    // Strava TCX build reads them to drop trackpoints recorded while paused — before this DAO
+    // existed the table had neither an Android writer nor a reader, so every upload carried the
+    // paused span's fixes.
+    @Query("SELECT * FROM activity_events WHERE sessionId = :sessionId ORDER BY timestamp ASC")
+    suspend fun forSession(sessionId: String): List<ActivityEventEntity>
+
+    @Insert
+    suspend fun insert(event: ActivityEventEntity)
+}
+
+@Dao
 interface SleepSessionDao {
     // A day can now hold several sessions (main night + daytime naps, split by SleepSegmentation).
     // Single-session callers (Today tile, widget, coach) want the *main* sleep, so surface the

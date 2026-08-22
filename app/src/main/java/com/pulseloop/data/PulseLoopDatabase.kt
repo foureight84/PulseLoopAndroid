@@ -54,6 +54,9 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun deviceMeasurementConfigDao(): DeviceMeasurementConfigDao
     abstract fun activitySessionDao(): ActivitySessionDao
     abstract fun activityGpsPointDao(): ActivityGpsPointDao
+    // ActivityEventEntity is already in the @Database entities above (and "activity_events" is
+    // in ALL_TABLES), so exposing its DAO adds no schema — no version bump, no migration.
+    abstract fun activityEventDao(): ActivityEventDao
     abstract fun sleepSessionDao(): SleepSessionDao
     abstract fun sleepStageBlockDao(): SleepStageBlockDao
     abstract fun coachConversationDao(): CoachConversationDao
