@@ -31,8 +31,8 @@ the work list, and assembling one from all three is how items get missed.
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
 | **Last triaged iOS commit** | `439ca81` — Merge PR #93 (Colmi R11 CRP driver), 2026-08-09 |
 | **Last triage date** | 2026-08-22 |
-| **Last port date** | 2026-08-08 — PR #45 (ios_sync_2026-08-08, 5 plan commits + 2 CR remediation commits = 7 total) |
-| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **10 ported, #130 backed out, #93 open (5 hardening gaps)** |
+| **Last port date** | 2026-08-22 — PR #93 hardening (`c95b6e8`, 5 fixes from iOS `4d65b60`) |
+| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **11 ported (incl. #93 hardening), #130 backed out** |
 
 ---
 
@@ -47,14 +47,13 @@ blocked on something outside the code.
 
 | # | Item | What is actually left | Size | Ready? |
 |---|------|----------------------|------|--------|
-| 1 | **#93 CRP (R11) hardening** | Five independent fixes to the existing CRP driver: gate `CONNECTED` on `fdd3`, stop re-querying firmware every poll pass, key the timing follow-up guard on `day`, validate the firmware string instead of coercing it (+ its narrower trim). Step-by-step plan: [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md). | S–M | ✅ start now |
-| 2 | **#94 `CoachNotificationDataTrigger`** | The *actual feature* of #94 was never ported — an event-bus subscriber that runs the due check-in slot when a sync completes, recovering a slot skipped for stale data. What shipped was the window constant mistaken for it (and its regression, since fixed in `8df67b1`). | M | ✅ start now |
-| 3 | **Workout pause intervals** | `activity_events` is never written on Android, so Strava TCX can't drop paused trackpoints. `totalPauseSeconds` is already honoured — this is the per-interval detail only. | S–M | ✅ start now |
-| 4 | **#96 nutrition subset** | `food_products`/`FoodProductDao`/`CachedFoodProductEntity` exist but **nothing can populate them**: no Open Food Facts client, no barcode scanner, no AI photo analysis, no coach `log_meal` tool. The ledger row is corrected to ADAPT (subset); this is the rest of it. | L | ✅ start now |
-| 5 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
-| 6 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
-| 7 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
-| 8 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
+| 1 | **#94 `CoachNotificationDataTrigger`** | The *actual feature* of #94 was never ported — an event-bus subscriber that runs the due check-in slot when a sync completes, recovering a slot skipped for stale data. What shipped was the window constant mistaken for it (and its regression, since fixed in `8df67b1`). | M | ✅ start now |
+| 2 | **Workout pause intervals** | `activity_events` is never written on Android, so Strava TCX can't drop paused trackpoints. `totalPauseSeconds` is already honoured — this is the per-interval detail only. | S–M | ✅ start now |
+| 3 | **#96 nutrition subset** | `food_products`/`FoodProductDao`/`CachedFoodProductEntity` exist but **nothing can populate them**: no Open Food Facts client, no barcode scanner, no AI photo analysis, no coach `log_meal` tool. The ledger row is corrected to ADAPT (subset); this is the rest of it. | L | ✅ start now |
+| 4 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
+| 5 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
+| 6 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
+| 7 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
 
 ### Not on this list, and why
 
@@ -166,7 +165,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | Backed out of PR #45, then **rebuilt from `decompiled-rwfit-official/`** on `feat/rwfit-vendor-rebuild`. Legacy `0x7E` path complete; JieLi `0xAB` framing complete but its history bodies are not decoded yet. **No hardware validation.** See below. |
 | ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
 | ☑ | [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | 07-11 | **Apple Health sync → Health Connect** (per-type toggles, vitals/sleep/activity/workout export, backfill choice, remove-all). Re-triaged 2026-08-09 from SKIP: the *behaviour* ports even though HealthKit doesn't. Write-only; profile import can't port (Health Connect has no DOB/sex type). Design + 7-phase plan in [`health-connect-integration.md`](health-connect-integration.md); reference implementation is `Gadgetbridge/` at the parent repo root, not iOS. Not blocked by the Play Store — the declaration form is a publishing gate, and Gadgetbridge ships this sideload-only. | **ADAPT** | XL | **Phases 0–6 complete** on `feat/health-connect-foundation` (write-only, 16 `WRITE_*` / 0 `READ_*`; lifecycle, removal, grant/revocation resets, archive-restore stamp, docs). Runtime-verified API 35. See `health-connect-integration.md` §8 |
-| ☐ | [#93](https://github.com/saksham2001/PulseLoopiOS/pull/93) `439ca81` | 08-09 | **Colmi R11 CRP driver** — the iOS port *of Android's own* CRP work, so the driver itself is ALREADY-HAVE. What does not exist on Android is the **adversarial-review hardening** iOS added on top in `4d65b60`: 5 real gaps, listed in the 2026-08-22 triage note below. | **PARTIAL** (hardening only) | S–M | ☐ open — step-by-step plan in [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md) |
+| ☑ | [#93](https://github.com/saksham2001/PulseLoopiOS/pull/93) `439ca81` | 08-09 | **Colmi R11 CRP driver** — the iOS port *of Android's own* CRP work, so the driver itself is ALREADY-HAVE. The **adversarial-review hardening** iOS added on top in `4d65b60` (5 gaps, 2026-08-22 triage note below) is now ported. | **PARTIAL** (hardening only) | S–M | `c95b6e8` (2026-08-22) — fdd3 connect gate, firmware once-per-connection, day-keyed follow-up guard, validated + narrow-trim firmware string (items 4+5). See [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md) |
 
 ## Port priority — open items (as of 2026-08-08)
 
@@ -178,8 +177,8 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 
 > **▶ RESUME HERE:** see [**Outstanding — the single list**](#outstanding--the-single-list) above.
 > It consolidates every open thread that used to be split across this block, the port queue and the
-> session notes. Top of the list is **#93 CRP hardening**, which has a full implementation plan in
-> [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md).
+> session notes. **#93 CRP hardening is now done** (`c95b6e8`, 2026-08-22); top of the list is now
+> **#94 `CoachNotificationDataTrigger`**.
 >
 > Next triage after those: `git -C <ios-repo> log --first-parent --oneline 439ca81..main`.
 >
@@ -504,8 +503,8 @@ frame assembler across reconnects, gate connect on fdd3"), an adversarial review
 Five of its eight findings apply here; three do not, for reasons worth recording so nobody
 re-ports them.
 
-**Port these five (☐ open).** Step-by-step instructions, with the Kotlin and the tests, are in
-[`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md); this list is the summary.
+**Port these five (☑ done 2026-08-22, `c95b6e8`).** Step-by-step instructions, with the Kotlin and
+the tests, are in [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md); this list is the summary.
 
 1. **`CONNECTED` fires before the reply channel is live.** `CRPDriver` doesn't override
    `requiredSubscriptionsBeforeConnected` (only `YCBTDriver` does), so the connection counts as up
