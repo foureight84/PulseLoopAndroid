@@ -114,7 +114,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | Backed out of PR #45, then **rebuilt from `decompiled-rwfit-official/`** on `feat/rwfit-vendor-rebuild`. Legacy `0x7E` path complete; JieLi `0xAB` framing complete but its history bodies are not decoded yet. **No hardware validation.** See below. |
 | ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
 | ☑ | [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | 07-11 | **Apple Health sync → Health Connect** (per-type toggles, vitals/sleep/activity/workout export, backfill choice, remove-all). Re-triaged 2026-08-09 from SKIP: the *behaviour* ports even though HealthKit doesn't. Write-only; profile import can't port (Health Connect has no DOB/sex type). Design + 7-phase plan in [`health-connect-integration.md`](health-connect-integration.md); reference implementation is `Gadgetbridge/` at the parent repo root, not iOS. Not blocked by the Play Store — the declaration form is a publishing gate, and Gadgetbridge ships this sideload-only. | **ADAPT** | XL | **Phases 0–6 complete** on `feat/health-connect-foundation` (write-only, 16 `WRITE_*` / 0 `READ_*`; lifecycle, removal, grant/revocation resets, archive-restore stamp, docs). Runtime-verified API 35. See `health-connect-integration.md` §8 |
-| ☐ | [#93](https://github.com/saksham2001/PulseLoopiOS/pull/93) `439ca81` | 08-09 | **Colmi R11 CRP driver** — the iOS port *of Android's own* CRP work, so the driver itself is ALREADY-HAVE. What does not exist on Android is the **adversarial-review hardening** iOS added on top in `4d65b60`: 5 real gaps, listed in the 2026-08-22 triage note below. | **PARTIAL** (hardening only) | S–M | ☐ open — see "2026-08-22 triage" |
+| ☐ | [#93](https://github.com/saksham2001/PulseLoopiOS/pull/93) `439ca81` | 08-09 | **Colmi R11 CRP driver** — the iOS port *of Android's own* CRP work, so the driver itself is ALREADY-HAVE. What does not exist on Android is the **adversarial-review hardening** iOS added on top in `4d65b60`: 5 real gaps, listed in the 2026-08-22 triage note below. | **PARTIAL** (hardening only) | S–M | ☐ open — step-by-step plan in [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md) |
 
 ## Port priority — open items (as of 2026-08-08)
 
@@ -132,8 +132,11 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 >    `decompiled-rwfit-official/` (see the backed-out section below for what was wrong),
 >    then recombined.
 > 3. **#93 CRP hardening** (queued 2026-08-22) — five small, independent fixes to the existing
->    Android CRP driver, listed in "2026-08-22 triage" below. Item (1), gating `CONNECTED` on the
->    `fdd3` reply channel, is worth doing on its own even if the rest waits.
+>    Android CRP driver. **A full implementation plan, written for an agent picking this up cold,
+>    is in [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md)** — per-item diagnosis, the
+>    Kotlin to write, the tests to add, the two existing tests that must change, and the three iOS
+>    findings that deliberately do NOT port. Item (1), gating `CONNECTED` on the `fdd3` reply
+>    channel, is worth doing on its own even if the rest waits.
 >
 > Next triage after those: `git -C <ios-repo> log --first-parent --oneline 439ca81..main`.
 >
@@ -458,7 +461,8 @@ frame assembler across reconnects, gate connect on fdd3"), an adversarial review
 Five of its eight findings apply here; three do not, for reasons worth recording so nobody
 re-ports them.
 
-**Port these five (☐ open):**
+**Port these five (☐ open).** Step-by-step instructions, with the Kotlin and the tests, are in
+[`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md); this list is the summary.
 
 1. **`CONNECTED` fires before the reply channel is live.** `CRPDriver` doesn't override
    `requiredSubscriptionsBeforeConnected` (only `YCBTDriver` does), so the connection counts as up
