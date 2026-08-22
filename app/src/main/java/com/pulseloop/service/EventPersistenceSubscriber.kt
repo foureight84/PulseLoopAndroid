@@ -661,7 +661,12 @@ internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): Strin
 
 /**
  * True when a `DeviceStateChanged(CONNECTED, …)` is a real connection transition rather than a
- * mid-session re-assertion, and may therefore retire the demo rows in [EventPersistenceSubscriber].
+ * mid-session re-assertion.
+ *
+ * **No production caller.** It gated the connect-time demo purge; with that purge gone a connect
+ * does nothing worth gating, so this is currently exercised only by `EventPersistenceIdentityTest`.
+ * It is kept because the distinction it draws is real, non-obvious, and re-derived wrongly every
+ * time someone needs it — any future connect-time action wants exactly this gate.
  *
  * Exactly two things publish a CONNECTED event, and `deviceType` separates them cleanly:
  *  - `RingBLEClient`'s own connect always passes `deviceType = activeCoordinator.deviceType`, which
@@ -682,11 +687,16 @@ internal fun isConnectTransition(eventDeviceType: RingDeviceType?): Boolean = ev
  *
  * The enum has exactly one member, and that is the point. Connecting must never delete stored
  * history (issue #43) and — since the iOS-parity fix — must not delete demo rows either. Encoding
- * that as a *type* rather than a comment means re-introducing any connect-time delete cannot be
- * done with a one-line `.clear()`: it needs a new member here, which fails to compile against the
- * exhaustive `when`s in [EventPersistenceSubscriber] and in `EventPersistenceIdentityTest`. That is
- * the tripwire the deleted `preservesSleepOnConnect` boolean never had — it made destructive
- * clearing a per-family *option*, and every family took it but one.
+ * that as a *type* rather than a comment means widening what a connect may delete cannot be done
+ * by editing one line: it needs a new member here, which fails to compile against the exhaustive
+ * `when`s in [EventPersistenceSubscriber] and in `EventPersistenceIdentityTest`. That is the
+ * tripwire the deleted `preservesSleepOnConnect` boolean never had — it made destructive clearing
+ * a per-family *option*, and every family took it but one.
+ *
+ * Its limit, stated plainly so nobody trusts it further than it goes: it forces a compile error
+ * only for an author who routes the new deletion through this enum. A bare
+ * `db.measurementDao().clearDemo()` dropped straight into the CONNECTED arm still compiles. The
+ * type documents and channels the invariant; the tests below it are what actually enforce it.
  *
  * A `DEMO_ROWS` member used to live here. It was the last fragment of the old "connect = clear
  * everything and rebuild from the ring" design, and it fired on every reconnect — measured at
@@ -700,10 +710,10 @@ internal enum class ConnectPurge { NOTHING }
  * Always [ConnectPurge.NOTHING].
  *
  * Kept as a function rather than inlined so the guard has one named place to sit, and so the
- * exhaustive `when`s that enforce it have something to switch on. [eventDeviceType] is retained
- * because [isConnectTransition] remains the meaningful distinction elsewhere — a real connect from
- * the BLE client versus a decoder re-asserting CONNECTED from an ordinary device-info reply — and
- * because any future connect-time action needs exactly that gate to be correct.
+ * exhaustive `when`s that enforce it have something to switch on. The result does not depend on
+ * [eventDeviceType] — nothing is deleted for any family — but the parameter is retained so that a
+ * future connect-time action has the device in hand and reaches for [isConnectTransition] rather
+ * than firing on decoder status echoes as well as real connects.
  */
 @Suppress("UNUSED_PARAMETER")
 internal fun connectPurge(eventDeviceType: RingDeviceType?): ConnectPurge = ConnectPurge.NOTHING

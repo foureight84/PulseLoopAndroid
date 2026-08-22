@@ -2,6 +2,7 @@ package com.pulseloop.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.Bucket
 import com.pulseloop.data.entity.*
@@ -273,9 +274,11 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         val offset = _state.value.dayOffset
         val shownNow = System.currentTimeMillis() - offset * 86_400_000L
         val shownReference = TimeUtil.referenceNightLocal(shownNow)
-        // A day is either all-ring or all-demo (the seeder skips days with ring data); prefer ring.
+        // A day can hold BOTH a ring night and a seeded demo one — the seeder's guard only skips
+        // days that already have ring data, and since PR #52 a connect no longer purges demo rows
+        // afterwards. Real wins (`DemoDataPolicy`).
         val shownAll = db.sleepSessionDao().allByDay(shownReference).filter { it.totalMinutes > 0 }
-        val shownRing = shownAll.filter { it.sourceRaw != "demo" }
+        val shownRing = shownAll.filterNot { DemoDataPolicy.isDemo(it.sourceRaw) }
         val daySessions = (if (shownRing.isNotEmpty()) shownRing else shownAll).sortedBy { it.startAt }
         val dayBlocks = daySessions.associate { it.id to blocksFor(it.id) }
         // The primary (longest) session drives the scripted day-level coach fallback.
@@ -293,12 +296,18 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             SleepRangeKey.MONTH -> 30
             SleepRangeKey.YEAR -> 365
         }
+        // Once the ring has synced any night, the aggregate is built from ring nights only —
+        // averaging seeded nights in alongside them reports a history the user never slept
+        // (`DemoDataPolicy`). With no ring data yet, demo nights are the whole picture.
+        val sleepHasReal = db.sleepSessionDao().hasReal()
         val anchor = if (range == SleepRangeKey.DAY) shownReference
-            else db.sleepSessionDao().recent(1).firstOrNull()?.let { TimeUtil.startOfDayLocal(it.date) }
+            else (if (sleepHasReal) db.sleepSessionDao().recentReal(1) else db.sleepSessionDao().recent(1))
+                .firstOrNull()?.let { TimeUtil.startOfDayLocal(it.date) }
                 ?: TimeUtil.startOfTodayLocal()
         val start = anchor - (expected - 1) * 86_400_000L
         val end = anchor + 86_400_000L - 1
-        val sessions = db.sleepSessionDao().inRange(start, end)
+        val sessions = if (sleepHasReal) db.sleepSessionDao().inRangeReal(start, end)
+            else db.sleepSessionDao().inRange(start, end)
         sessions.forEach { blocksFor(it.id) }  // warm cache for the collapse lookup below
         val realLookup: (String) -> List<SleepStageBlockEntity> = { blocksCache[it] ?: emptyList() }
         // Collapse each waking day (main night + naps) into one combined summary so a night plus
@@ -577,11 +586,18 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         // iOS `rangeSamples`: demo mode charts the FULL seeded history (per kind) instead of the
         // 24h window — that's what makes sparse demo series (daily HRV/temp) render as the
         // month-long scatter the Simulator shows. Real ring data keeps the 24h window.
-        suspend fun series(kind: MeasurementKind): List<com.pulseloop.data.entity.MeasurementEntity> =
-            if (db.measurementDao().hasDemo(kind.name))
+        //
+        // Which mode applies is decided by whether the ring has synced THIS kind, not by whether
+        // demo rows exist (`DemoDataPolicy`). Keying it off `hasDemo` alone was fine while a
+        // connect purged demo rows; since PR #52 it isn't — one reseed would otherwise pin every
+        // chart to demo-mode full history, over a demo/real interleaved series, forever.
+        suspend fun series(kind: MeasurementKind): List<com.pulseloop.data.entity.MeasurementEntity> = when {
+            db.measurementDao().hasReal(kind.name) ->
+                db.measurementDao().rangeReal(kind.name, twentyFourHoursAgo, now)
+            db.measurementDao().hasDemo(kind.name) ->
                 db.measurementDao().range(kind.name, 0, Long.MAX_VALUE)
-            else
-                db.measurementDao().range(kind.name, twentyFourHoursAgo, now)
+            else -> emptyList()
+        }
 
         val hr = series(MeasurementKind.HEART_RATE)
         val spo2 = series(MeasurementKind.SPO2)

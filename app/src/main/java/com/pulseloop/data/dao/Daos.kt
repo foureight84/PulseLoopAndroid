@@ -64,6 +64,12 @@ interface MeasurementDao {
     @Query("SELECT EXISTS(SELECT 1 FROM measurements WHERE kindRaw = :kind AND sourceRaw = 'demo')")
     suspend fun hasDemo(kind: String): Boolean
 
+    /** Whether the ring has ever synced this kind. The demo/real chooser (`DemoDataPolicy`):
+     *  once this is true a reader takes the `*Real` query and stops charting seeded rows, instead
+     *  of interleaving the two into one series. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurements WHERE kindRaw = :kind AND sourceRaw NOT IN ('demo','mock'))")
+    suspend fun hasReal(kind: String): Boolean
+
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
@@ -128,6 +134,14 @@ interface ActivityDailyDao {
 
     @Query("SELECT * FROM activity_daily ORDER BY date DESC LIMIT :limit")
     fun recentFlow(limit: Int = 7): Flow<List<ActivityDailyEntity>>
+
+    /** Synced days only — the trend leg of the demo/real chooser (`DemoDataPolicy`). */
+    @Query("SELECT * FROM activity_daily WHERE source NOT IN ('demo','mock') ORDER BY date DESC LIMIT :limit")
+    suspend fun recentReal(limit: Int = 7): List<ActivityDailyEntity>
+
+    /** Whether the ring has ever synced a day. */
+    @Query("SELECT EXISTS(SELECT 1 FROM activity_daily WHERE source NOT IN ('demo','mock'))")
+    suspend fun hasReal(): Boolean
 
     @Upsert
     suspend fun upsert(entry: ActivityDailyEntity)
@@ -289,6 +303,19 @@ interface SleepSessionDao {
 
     @Query("SELECT * FROM sleep_sessions WHERE date BETWEEN :start AND :end ORDER BY date ASC")
     suspend fun inRange(start: Long, end: Long): List<SleepSessionEntity>
+
+    /** Synced sessions in a window — the aggregate leg of the demo/real chooser
+     *  (`DemoDataPolicy`). Blending demo and ring nights across a week skews every average, and
+     *  two sessions on the SAME date collapse into one impossible ~13h night. */
+    @Query("SELECT * FROM sleep_sessions WHERE date BETWEEN :start AND :end AND sourceRaw NOT IN ('demo','mock') ORDER BY date ASC")
+    suspend fun inRangeReal(start: Long, end: Long): List<SleepSessionEntity>
+
+    @Query("SELECT * FROM sleep_sessions WHERE sourceRaw NOT IN ('demo','mock') ORDER BY date DESC LIMIT :limit")
+    suspend fun recentReal(limit: Int = 7): List<SleepSessionEntity>
+
+    /** Whether the ring has ever synced a night. */
+    @Query("SELECT EXISTS(SELECT 1 FROM sleep_sessions WHERE sourceRaw NOT IN ('demo','mock'))")
+    suspend fun hasReal(): Boolean
 
     /**
      * Health Connect export selection (Phase 2): sessions committed after [watermark], by

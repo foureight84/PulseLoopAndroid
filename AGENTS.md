@@ -101,10 +101,13 @@ transition:
   status packets. `runStartup` re-sends them, and `runStartup` is also the ~30-minute background
   sync — so they recur for the whole life of a connection.
 
-`isConnectTransition(event.deviceType)` is that gate, and `connectPurge` is what it feeds — though
-`connectPurge` now returns `ConnectPurge.NOTHING` unconditionally, so nothing is deleted on either
-path. Be precise about its scope, because it is narrower than it looks: it decides only what a
-CONNECTED event may *delete*. The row write below it — `stateRaw = "CONNECTED"`, `lastConnectedAt`, `lastSyncAt` — is
+`isConnectTransition(event.deviceType)` is that gate. It used to feed `connectPurge`; now that a
+connect deletes nothing, `connectPurge` ignores its argument and returns `ConnectPurge.NOTHING`
+unconditionally, so `isConnectTransition` has **no production caller left** — only
+`EventPersistenceIdentityTest`. It is kept because the distinction is real and gets re-derived
+wrongly each time someone needs it, and any future connect-time action wants exactly it. Be precise
+about the gate's scope, because it is narrower than it looks: it decides only what a CONNECTED
+event may *delete*. The row write below it — `stateRaw = "CONNECTED"`, `lastConnectedAt`, `lastSyncAt` — is
 **outside** the gate and still runs for every decoder `Status`, so a jring `0x0C` reply does still
 restamp the device row as freshly connected on each sync pass. That is harmless today; it is not
 something the gate prevents, so don't cite it as if it were.
@@ -123,8 +126,21 @@ Settings → Privacy & Data → Clear Demo Data.
 
 `ConnectPurge` now has exactly **one** member, `NOTHING`, and the single-branch `when`s that switch
 on it in `EventPersistenceSubscriber` and `EventPersistenceIdentityTest` read as dead code but are
-not: they are what makes re-adding a connect-time delete a compile error instead of a one-line edit.
-Don't "simplify" them away.
+not: they are what makes *widening* what a connect deletes a compile error instead of a one-line
+edit. Don't "simplify" them away. Know the limit, though — it only catches an author who routes the
+new deletion through the enum; a bare `clearDemo()` dropped into the CONNECTED arm still compiles.
+The two tests named below are the actual enforcement.
+
+**Readers must choose between demo and real rows, because nothing separates them any more.** The
+purge was also, accidentally, the thing keeping seeded rows out of every unfiltered query. With it
+gone the two coexist indefinitely, so `DemoDataPolicy` (`data/DemoDataPolicy.kt`) states the rule:
+**real wins** — a reader surfaces demo rows only while the corresponding real series is empty, and
+switches to the `*Real` DAO queries the moment the ring has synced anything. Derived values that
+are *persisted or exported* — `hrRestingBaseline`, `estimatedActiveCalories`, Health Connect
+records — read `*Real` unconditionally, since a demo-derived number outlives the demo data behind
+it. When you add a query over `measurements`, `activity_daily`, or `sleep_sessions`, decide which
+of those two it is; "it's just a read" was how a seeded 56 bpm night became a real user's auto HR
+zone floor.
 
 Two related things worth knowing before changing this area:
 

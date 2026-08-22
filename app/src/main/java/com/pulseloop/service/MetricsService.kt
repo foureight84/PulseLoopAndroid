@@ -1,5 +1,6 @@
 package com.pulseloop.service
 
+import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.*
 import com.pulseloop.ring.MeasurementKind
@@ -39,9 +40,17 @@ object MetricsService {
 
         val todayActivity = db.activityDailyDao().byDay(todayStart)
         val device = db.deviceDao().current()
-        val hr24h = db.measurementDao().range(MeasurementKind.HEART_RATE.name, now - 24 * 3600_000L, now)
-        val spo24h = db.measurementDao().range(MeasurementKind.SPO2.name, now - 24 * 3600_000L, now)
-        val recent7 = db.activityDailyDao().recent(7)
+        // Real wins over seeded rows once the ring has synced the series (`DemoDataPolicy`) —
+        // a connect no longer purges demo data, so the two coexist indefinitely.
+        val dayAgo = now - 24 * 3600_000L
+        val hr24h = if (db.measurementDao().hasReal(MeasurementKind.HEART_RATE.name))
+            db.measurementDao().rangeReal(MeasurementKind.HEART_RATE.name, dayAgo, now)
+        else db.measurementDao().range(MeasurementKind.HEART_RATE.name, dayAgo, now)
+        val spo24h = if (db.measurementDao().hasReal(MeasurementKind.SPO2.name))
+            db.measurementDao().rangeReal(MeasurementKind.SPO2.name, dayAgo, now)
+        else db.measurementDao().range(MeasurementKind.SPO2.name, dayAgo, now)
+        val recent7 = if (db.activityDailyDao().hasReal()) db.activityDailyDao().recentReal(7)
+            else db.activityDailyDao().recent(7)
 
         val latestHr = db.measurementDao().latest(MeasurementKind.HEART_RATE.name, now)?.toInt()
         val latestSpo2 = db.measurementDao().latest(MeasurementKind.SPO2.name, now)?.toInt()
@@ -61,7 +70,9 @@ object MetricsService {
             restingHeartRate = restingHr,
             peakHeartRate = hrValues.maxOrNull()?.toInt(),
             batteryPercent = device?.batteryPercent,
-            isDemo = todayActivity?.source == "mock",
+            // The seeder writes source = "demo"; comparing against "mock" (the iOS spelling)
+            // alone meant this never fired, so seeded steps/HR were reported as live data.
+            isDemo = DemoDataPolicy.isDemo(todayActivity?.source),
             stepsTrend = recent7.map { it.steps.toDouble() },
             hrTrend24h = hrValues,
             spo2Trend24h = spoValues,
@@ -82,8 +93,10 @@ object MetricsService {
     ): List<MetricSample> {
         val now = System.currentTimeMillis()
         val cutoff = now - hours * 3600_000L
-        return db.measurementDao().range(kind.name, cutoff, now)
-            .map { MetricSample(it.timestamp, it.value) }
+        val rows = if (db.measurementDao().hasReal(kind.name))
+            db.measurementDao().rangeReal(kind.name, cutoff, now)   // real wins (`DemoDataPolicy`)
+        else db.measurementDao().range(kind.name, cutoff, now)
+        return rows.map { MetricSample(it.timestamp, it.value) }
     }
 
     // ── Device Capabilities ──────────────────────────────────────────────
