@@ -11,8 +11,13 @@ intentional platform differences listed at the bottom.
    (PR merges — not individual commits — are the unit of triage.)
 2. For each PR: read the diff (`git diff <merge-sha>^1 <merge-sha>`), decide a verdict,
    and add a row. Judge **behavior**, not code — a Swift fix ports as a Kotlin rule.
-3. When a PORT/ADAPT item ships, fill in its **Android commit** column.
+3. When a PORT/ADAPT item ships, fill in its **Android commit** column **and** remove it from
+   [Outstanding — the single list](#outstanding--the-single-list).
 4. Update **Last triaged iOS commit** below.
+
+**Just want to know what to work on?** Read [Outstanding — the single list](#outstanding--the-single-list)
+and stop there. The port queue is the per-PR audit trail; the session notes are history. Neither is
+the work list, and assembling one from all three is how items get missed.
 
 **Verdicts:** `PORT` (Android needs it) · `ADAPT` (concept ports, implementation differs) ·
 `PARTIAL` (some of it applies) · `ALREADY-HAVE` (Android already does this) ·
@@ -28,6 +33,44 @@ intentional platform differences listed at the bottom.
 | **Last triage date** | 2026-08-22 |
 | **Last port date** | 2026-08-08 — PR #45 (ios_sync_2026-08-08, 5 plan commits + 2 CR remediation commits = 7 total) |
 | **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **10 ported, #130 backed out, #93 open (5 hardening gaps)** |
+
+---
+
+## Outstanding — the single list
+
+Everything upstream that is **not yet on Android `main`**, in one place. This replaces reading the
+port queue, the resume block and the session notes to assemble the picture yourself. The port queue
+below is the per-PR audit trail; **this table is the work list.**
+
+Ordered by readiness, not size: the top rows can be started immediately, the bottom rows are
+blocked on something outside the code.
+
+| # | Item | What is actually left | Size | Ready? |
+|---|------|----------------------|------|--------|
+| 1 | **#93 CRP (R11) hardening** | Five independent fixes to the existing CRP driver: gate `CONNECTED` on `fdd3`, stop re-querying firmware every poll pass, key the timing follow-up guard on `day`, validate the firmware string instead of coercing it (+ its narrower trim). Step-by-step plan: [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md). | S–M | ✅ start now |
+| 2 | **#94 `CoachNotificationDataTrigger`** | The *actual feature* of #94 was never ported — an event-bus subscriber that runs the due check-in slot when a sync completes, recovering a slot skipped for stale data. What shipped was the window constant mistaken for it (and its regression, since fixed in `8df67b1`). | M | ✅ start now |
+| 3 | **Workout pause intervals** | `activity_events` is never written on Android, so Strava TCX can't drop paused trackpoints. `totalPauseSeconds` is already honoured — this is the per-interval detail only. | S–M | ✅ start now |
+| 4 | **#96 nutrition subset** | `food_products`/`FoodProductDao`/`CachedFoodProductEntity` exist but **nothing can populate them**: no Open Food Facts client, no barcode scanner, no AI photo analysis, no coach `log_meal` tool. The ledger row is corrected to ADAPT (subset); this is the rest of it. | L | ✅ start now |
+| 5 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
+| 6 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
+| 7 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
+| 8 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
+
+### Not on this list, and why
+
+- **#80 Health Connect** — done. All seven phases (0–6) are complete and **merged to `main`**; the
+  ledger's "on `feat/health-connect-foundation`" is stale.
+- **PR #45 review remediation** — done. The 2026-08-09 review's parity bugs in #95/#98/#99/#100 and
+  the #94 regression were all fixed in `8df67b1` + `8f81c40`. Only rows 2–4 above survive from it.
+- **#130 RWfit rebuild** — the *rebuild* is done and on `main` (the ledger's
+  `feat/rwfit-vendor-rebuild` is stale); only row 5 remains.
+- Everything else in the port queue is `☑` or `⊘`.
+
+### Branch note
+
+The ledger's older entries name branches that no longer exist — `feat/rwfit-vendor-rebuild`,
+`iOS_sync_2026-07-16`, `ios_sync_2026-08-08` were all merged and deleted. **Check `main` before
+believing a branch reference in a session note below.**
 
 ---
 
@@ -124,19 +167,10 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 > out so the other 10 items can land. Version bumped to 2.5.0 (`68c9788`) to match iOS
 > MARKETING_VERSION.
 
-> **▶ RESUME HERE (next session):** Three open threads, in order:
-> 1. **PR #45 review remediation** — the 2026-08-09 review found parity bugs in #95, #98,
->    #99, #100 and a regression in #94. See "Session notes — 2026-08-09 cross-platform
->    review" below.
-> 2. **#130 RWfit redo** — on `feat/rwfit-ring-family`, rebuilt from
->    `decompiled-rwfit-official/` (see the backed-out section below for what was wrong),
->    then recombined.
-> 3. **#93 CRP hardening** (queued 2026-08-22) — five small, independent fixes to the existing
->    Android CRP driver. **A full implementation plan, written for an agent picking this up cold,
->    is in [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md)** — per-item diagnosis, the
->    Kotlin to write, the tests to add, the two existing tests that must change, and the three iOS
->    findings that deliberately do NOT port. Item (1), gating `CONNECTED` on the `fdd3` reply
->    channel, is worth doing on its own even if the rest waits.
+> **▶ RESUME HERE:** see [**Outstanding — the single list**](#outstanding--the-single-list) above.
+> It consolidates every open thread that used to be split across this block, the port queue and the
+> session notes. Top of the list is **#93 CRP hardening**, which has a full implementation plan in
+> [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md).
 >
 > Next triage after those: `git -C <ios-repo> log --first-parent --oneline 439ca81..main`.
 >
