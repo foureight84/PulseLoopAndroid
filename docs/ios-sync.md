@@ -31,8 +31,8 @@ the work list, and assembling one from all three is how items get missed.
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
 | **Last triaged iOS commit** | `439ca81` — Merge PR #93 (Colmi R11 CRP driver), 2026-08-09 |
 | **Last triage date** | 2026-08-22 |
-| **Last port date** | 2026-08-22 — PR #93 hardening (`c95b6e8`, 5 fixes from iOS `4d65b60`) |
-| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **11 ported (incl. #93 hardening), #130 backed out** |
+| **Last port date** | 2026-08-22 — PR #94 `CoachNotificationDataTrigger` (`9d43227`) + PR #93 hardening (`c95b6e8`) |
+| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **11 ported, #130 backed out** (#94's data-trigger feature and #93's 5 hardening fixes both landed this session) |
 
 ---
 
@@ -47,13 +47,12 @@ blocked on something outside the code.
 
 | # | Item | What is actually left | Size | Ready? |
 |---|------|----------------------|------|--------|
-| 1 | **#94 `CoachNotificationDataTrigger`** | The *actual feature* of #94 was never ported — an event-bus subscriber that runs the due check-in slot when a sync completes, recovering a slot skipped for stale data. What shipped was the window constant mistaken for it (and its regression, since fixed in `8df67b1`). | M | ✅ start now |
-| 2 | **Workout pause intervals** | `activity_events` is never written on Android, so Strava TCX can't drop paused trackpoints. `totalPauseSeconds` is already honoured — this is the per-interval detail only. | S–M | ✅ start now |
-| 3 | **#96 nutrition subset** | `food_products`/`FoodProductDao`/`CachedFoodProductEntity` exist but **nothing can populate them**: no Open Food Facts client, no barcode scanner, no AI photo analysis, no coach `log_meal` tool. The ledger row is corrected to ADAPT (subset); this is the rest of it. | L | ✅ start now |
-| 4 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
-| 5 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
-| 6 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
-| 7 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
+| 1 | **Workout pause intervals** | `activity_events` is never written on Android, so Strava TCX can't drop paused trackpoints. `totalPauseSeconds` is already honoured — this is the per-interval detail only. | S–M | ✅ start now |
+| 2 | **#96 nutrition subset** | `food_products`/`FoodProductDao`/`CachedFoodProductEntity` exist but **nothing can populate them**: no Open Food Facts client, no barcode scanner, no AI photo analysis, no coach `log_meal` tool. The ledger row is corrected to ADAPT (subset); this is the rest of it. | L | ✅ start now |
+| 3 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
+| 4 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
+| 5 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
+| 6 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
 
 ### Not on this list, and why
 
@@ -154,7 +153,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | # | iOS PR | Merged | Title | Verdict | Effort | Android commit |
 |---|--------|--------|-------|---------|--------|----------------|
 | ☑ | [#73](https://github.com/saksham2001/PulseLoopiOS/pull/73) `7a30014` | ~07-20 | Privacy & Data Reset (Unpair Ring / Reset App Data / Unpair+Reset) | **PORT** | S–M | `802789d` |
-| ☑ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | `0ca53a1` + `c4aab74` (CR fix: wire STALE_DATA_WINDOW_MS) |
+| ☑ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | `0ca53a1` + `c4aab74` (CR fix: wire STALE_DATA_WINDOW_MS) + **`9d43227`** (the data-trigger feature itself — the bus subscriber + (dateKey,slotRaw) dedupe + stale-skip — was the one part of #94 never ported) |
 | ☑ | [#95](https://github.com/saksham2001/PulseLoopiOS/pull/95) `dae95ab` | ~07-22 | HR zone colors/thresholds (evidence-based defaults + Standard/Auto/Custom modes + resting-HR baseline learning) | **PORT** | M–L | `0ca53a1` |
 | ☑ | [#97](https://github.com/saksham2001/PulseLoopiOS/pull/97) `cb8e1cd` | ~07-23 | LittleMeatball R10M YCBT support + 9 shared YCBT bugfixes | **ALREADY-HAVE** | — | iOS PR is itself a port of PulseLoopAndroid#31 |
 | ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **ADAPT (subset — manual meal logging + goals only; no OFF search, barcode, AI photo or coach `log_meal`)** | XL | `4084671` + `c4aab74` (CR fix: null-goal guard, dead button wired) |
@@ -1515,9 +1514,9 @@ the pre-fix builder. Suite: 794 → 812.
 
 ### Still open
 
-- **#94's actual feature** is `CoachNotificationDataTrigger` (run the due slot when a sync
-  completes, recovering a slot skipped for stale data). Not ported — it's an event-bus subscriber,
-  not the window constant that was mistaken for it.
+- ~~**#94's actual feature**~~ **now ported in `9d43227`** (`CoachNotificationDataTrigger`
+  bus subscriber + (dateKey,slotRaw) dedupe + stale-skip). It was an event-bus subscriber, not the
+  window constant that had been mistaken for it.
 - **#96 subset**: no OFF search, no barcode scan, no AI photo analysis, no coach `log_meal` tool.
 - **Pause intervals**: `activity_events` is never written on Android, so TCX can't drop paused
   trackpoints yet. `totalPauseSeconds` is honoured.
