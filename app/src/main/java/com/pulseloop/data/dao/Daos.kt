@@ -574,6 +574,22 @@ interface FoodProductDao {
     @Upsert
     suspend fun upsert(product: CachedFoodProductEntity)
 
+    /** Row count — the cheap probe iOS's `upsertCachedProduct` runs before deciding to prune. */
+    @Query("SELECT COUNT(*) FROM food_products")
+    suspend fun count(): Int
+
+    /**
+     * Bounded LRU (iOS `pruneProductCache`): keep the [keep] most recently used rows and
+     * delete the rest in a single statement. The NOT IN subquery is the whole table when the
+     * cache is at or under the cap, so the statement is a no-op there; `code` only breaks
+     * `lastUsedAt` ties, deterministically. Query-only — no schema change.
+     */
+    @Query(
+        "DELETE FROM food_products WHERE code NOT IN " +
+            "(SELECT code FROM food_products ORDER BY lastUsedAt DESC, code ASC LIMIT :keep)",
+    )
+    suspend fun prune(keep: Int)
+
     @Query("DELETE FROM food_products")
     suspend fun clear()
 }
