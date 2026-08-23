@@ -43,7 +43,7 @@ import com.pulseloop.data.entity.*
         MealEntryEntity::class,
         CachedFoodProductEntity::class,
     ],
-    version = 22,
+    version = 23,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -428,6 +428,20 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Normalizes `meal_entries.confidenceRaw`. The column defaulted to "medium", which is
+         * not a value in the known/partial/unknown vocabulary the rest of the app (and iOS)
+         * uses — every deliberate writer maps onto those three, so any stored "medium" is the
+         * old default leaking through, never a user's or the coach's intent. iOS's own reader
+         * falls back to `.known` for an unrecognized raw (NutritionModels.swift:147), so this
+         * just makes the stored bytes agree with how both platforms already read them.
+         */
+        private val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE `meal_entries` SET `confidenceRaw` = 'known' WHERE `confidenceRaw` = 'medium'")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -516,6 +530,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_19_20,
                         MIGRATION_20_21,
                         MIGRATION_21_22,
+                        MIGRATION_22_23,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

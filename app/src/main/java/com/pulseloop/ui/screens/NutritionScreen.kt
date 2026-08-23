@@ -221,9 +221,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                         quantity = save.quantity,
                         userEdited = save.userEdited,
                     )
-                    // null keeps MealEntryEntity's own default — see MealLogSave.confidenceRaw.
-                    db.mealEntryDao().upsert(
-                        save.confidenceRaw?.let { entry.copy(confidenceRaw = it) } ?: entry)
+                    db.mealEntryDao().upsert(entry)
                     reload()
                 }
                 showAddDialog = false
@@ -262,13 +260,6 @@ data class MealLogSave(
     val carbsG: Double,
     val fatG: Double,
     val sourceRaw: String = NutritionTools.sourceRawManual,
-    /**
-     * iOS MealEntry.init defaults `confidence: DecodeConfidence = .known` and MealLogSheet never
-     * overrides it (NutritionModels.swift:99), so a label-backed database pick records "known".
-     * Null leaves MealEntryEntity's own default in place for the manual path, whose pre-existing
-     * "medium" is outside the known/partial/unknown vocabulary — reported, not changed here.
-     */
-    val confidenceRaw: String? = null,
     val offProductCode: String? = null,
     val servingDescription: String? = null,
     val servingGrams: Double? = null,
@@ -433,7 +424,6 @@ fun MealLogDialog(
                         carbsG = carbs.toDoubleOrNull() ?: 0.0,
                         fatG = fat.toDoubleOrNull() ?: 0.0,
                         sourceRaw = NutritionTools.sourceRawOffBarcode,
-                        confidenceRaw = "known",
                         offProductCode = pp.code,
                         servingDescription = pp.servingDescription,
                         servingGrams = pp.gramsBasis,
