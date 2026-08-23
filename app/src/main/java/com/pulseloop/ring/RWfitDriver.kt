@@ -166,12 +166,15 @@ class RWfitDriver(private val writer: RingCommandWriter?) : WearableDriver {
                 listOf(RingDecodedEvent.Status(address = null))
             }
 
-            // The 05-group history bodies have their own per-type layouts which have NOT been
-            // extracted from the vendor yet. Logged, not guessed — this is exactly the gap that
-            // made the first version of this driver worthless. RWfitSyncEngine does not request
-            // history on a JieLi link for the same reason.
-            t.cmd == 0x05.toByte() -> {
-                Log.i(TAG, "JieLi history frame ${t.key} (${frame.payload.size}B) — decoder not yet ported")
+            // The 05-group history bodies, decoded per-type from the vendor parsers
+            // (`x5/b.java` a0/V/T/Z/U/S/W/Y/R — see RWfitJLHistory for the layouts). Steps come
+            // up as ActivityBuckets (the records are per-interval deltas the vendor sums per
+            // date), everything else as the same HistoryMeasurement/SleepTimeline events the
+            // legacy path emits. Still unported: sport {5,14,16}, Muslim count {5,23,16} and the
+            // other non-metric 05 keys, plus the {5,x,0x30} delete variants the vendor sends
+            // after sync (no parser for them exists in the vendor either — x5/b.java dispatch).
+            t.cmd == 0x05.toByte() -> RWfitJLHistory.decode(t.key, frame.payload) ?: run {
+                Log.i(TAG, "JieLi history frame key 0x${"%02X".format(t.key)} (${frame.payload.size}B) — decoder not yet ported")
                 emptyList()
             }
 
