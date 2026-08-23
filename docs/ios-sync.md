@@ -1612,10 +1612,15 @@ on, whereas "fixing" it would put us an hour off theirs.
 
 - **Legacy `0x7E`: complete.** Framing, serials, XOR, the `0xFE`/`0xFF` handshake, multi-packet
   reassembly, all six history streams, battery, manifest-gated cascade.
-- **JieLi `0xAB`: framing complete, payloads not.** Handshake, battery, time sync and the ACK
-  discipline work; the `05`-group history bodies have their own per-type layouts that have **not**
-  been extracted. `RWfitSyncEngine` therefore does not request history on a JieLi link, and the
-  driver logs those frames rather than guessing at them.
+- **JieLi `0xAB`: framing and history payloads complete (updated 2026-08-22).** Handshake,
+  battery, time sync and the ACK discipline work; the `05`-group history bodies are now decoded
+  per-type from the vendor parsers (`RWfitJLHistory.kt`; layouts in `x5/b.java`
+  `a0`/`V`/`T`/`Z`/`U`/`S`/`W`/`Y`/`R`, each cited), and `RWfitSyncEngine` fires the whole ported
+  catalog once per connection as bare `{5, type, 0x10}` triples — no payload, the vendor's own
+  request shape (`y.java:345-537`, `TRingHeartRateStatisticsActivity.java:545`). Remaining gaps:
+  sport `{5,14,16}` (`Q`), Muslim count `{5,23,16}` (`X`) and the other non-metric `05` keys (the
+  driver still logs those), and the `{5,x,0x30}` delete variants — which have **no vendor parser**
+  in `x5/b.java` at all and are never sent here.
 - **Feature bitmap not decoded** (`x5/b.java i()` → `SupportMenuBean`), so `bitmapGatedCapabilities`
   is declared but nothing grants from it yet. Manual/realtime measurement and the per-SKU sensors
   stay ungranted rather than being handed out unconditionally — the vendor has no legacy on-demand
@@ -1625,8 +1630,11 @@ on, whereas "fixing" it would put us an hour off theirs.
 
 ### Testing
 
-49 unit tests across `RWfitCodecTest` (20), `RWfitDecoderTest` (16) and `RWfitDriverTest` (13),
-asserting vendor byte layouts rather than the implementation. Suite: 812 → 866.
+Unit tests across `RWfitCodecTest` (20), `RWfitDecoderTest` (17), `RWfitJLHistoryTest` (17) and
+`RWfitDriverTest` (21), asserting vendor byte layouts rather than the implementation. The 2026-08-22
+JieLi payload port added `RWfitJLHistoryTest` and replaced the old "JieLi does not request history"
+driver test with the burst/once-per-connection/reply-decode set; parent re-ran the full suite after
+landing: **1191 tests, 0 failures** (was 1170).
 
 **No hardware validation.** Nothing here has talked to a real RWfit ring. Say so on the PR.
 
