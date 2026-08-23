@@ -108,10 +108,25 @@ class LocalOpenAICompatClient(
         val tools = (req["tools"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
         val previousResponseId = (req["previous_response_id"] as? JsonPrimitive)?.contentOrNull
 
-        if (previousResponseId == null) setupConversation(input)
+        // A caller-supplied strict schema (`text.format`) — the contract every other adapter
+        // already honors (OpenRouterClient.chatResponseFormat). Non-chat callers such as the
+        // meal estimator and the summary generator ask for their OWN json_schema here; without
+        // this the coach chat's `coach_response` schema was substituted for theirs, which on a
+        // guided-decoding backend made their reply impossible to produce, not merely unlikely.
+        val callerFormat = callerJsonSchema(req)
+
+        if (previousResponseId == null) setupConversation(input, callerFormat != null)
         else appendContinuation(previousResponseId, input)
 
-        return buildChatBody(if (toolCallingEnabled) convertTools(tools) else emptyList())
+        return buildChatBody(if (toolCallingEnabled) convertTools(tools) else emptyList(), callerFormat)
+    }
+
+    /** The caller's `text.format` when it is a usable json_schema block, else null. */
+    internal fun callerJsonSchema(req: JsonObject): JsonObject? {
+        val format = (req["text"] as? JsonObject)?.get("format") as? JsonObject ?: return null
+        if ((format["type"] as? JsonPrimitive)?.contentOrNull != "json_schema") return null
+        if (format["schema"] !is JsonObject) return null
+        return format
     }
 
     // ── Conversation setup ───────────────────────────────────────────────
@@ -122,7 +137,7 @@ class LocalOpenAICompatClient(
      * joins the system block rather than trailing the conversation (where MiniMax puts it) because
      * a system turn after a user turn raises in several local chat templates.
      */
-    private fun setupConversation(input: List<JsonObject>) {
+    private fun setupConversation(input: List<JsonObject>, callerSuppliedSchema: Boolean = false) {
         messages = mutableListOf()
         storedAssistantMessage.clear()
 
@@ -143,8 +158,10 @@ class LocalOpenAICompatClient(
         }
         // Only the prompt tells an unconstrained local model what shape to answer in. Even with
         // `response_format` on, this stays — it's what the orchestrator's JSON-repair loop leans on
-        // when a small model ignores the grammar.
-        systemParts.add(CoachResponseSchema.promptInstruction)
+        // when a small model ignores the grammar. A caller that brought its OWN schema gets the
+        // instruction for THAT schema instead: injecting `coach_response` there told the model to
+        // answer in a shape its caller cannot parse.
+        if (!callerSuppliedSchema) systemParts.add(CoachResponseSchema.promptInstruction)
         systemPrompt = systemParts.filter { it.isNotBlank() }.joinToString("\n\n")
         messages.addAll(conversation)
     }
@@ -247,8 +264,11 @@ class LocalOpenAICompatClient(
 
     // ── Build request body ───────────────────────────────────────────────
 
-    internal fun buildChatBody(tools: List<JsonObject>): JsonObject {
+    internal fun buildChatBody(tools: List<JsonObject>, callerFormat: JsonObject? = null): JsonObject {
         val allMessages = mutableListOf<JsonObject>()
+        val systemPrompt = if (callerFormat == null) systemPrompt
+            else listOf(systemPrompt, schemaInstruction(callerFormat))
+                .filter { it.isNotBlank() }.joinToString("\n\n")
         if (systemPrompt.isNotBlank()) {
             allMessages.add(JsonObject(mapOf(
                 "role" to JsonPrimitive("system"),
@@ -264,7 +284,7 @@ class LocalOpenAICompatClient(
             "messages" to JsonArray(allMessages),
         )
         if (tools.isNotEmpty()) body["tools"] = JsonArray(tools)
-        responseFormat()?.let { body["response_format"] = it }
+        responseFormat(callerFormat)?.let { body["response_format"] = it }
         maxOutputTokens?.takeIf { it > 0 }?.let { body["max_tokens"] = JsonPrimitive(it) }
         return JsonObject(body)
     }
@@ -276,17 +296,35 @@ class LocalOpenAICompatClient(
      * LM Studio and recent llama.cpp all accept. `JSON_OBJECT` is the older, weaker mode; LM
      * Studio doesn't implement it, hence the choice.
      */
-    internal fun responseFormat(): JsonObject? = when (structuredOutput) {
+    internal fun responseFormat(callerFormat: JsonObject? = null): JsonObject? = when (structuredOutput) {
+        // The user picked OFF because their backend rejects `response_format` outright. A caller's
+        // schema does not override that — it travels in the prompt instead, and every structured
+        // caller here decodes fence-tolerantly.
         LocalStructuredOutput.OFF -> null
         LocalStructuredOutput.JSON_OBJECT -> JsonObject(mapOf("type" to JsonPrimitive("json_object")))
         LocalStructuredOutput.JSON_SCHEMA -> JsonObject(mapOf(
             "type" to JsonPrimitive("json_schema"),
             "json_schema" to JsonObject(mapOf(
-                "name" to JsonPrimitive("coach_response"),
+                "name" to JsonPrimitive(
+                    (callerFormat?.get("name") as? JsonPrimitive)?.contentOrNull ?: "coach_response"),
                 "strict" to JsonPrimitive(true),
-                "schema" to CoachResponseSchema.schema,
+                "schema" to (callerFormat?.get("schema") as? JsonObject ?: CoachResponseSchema.schema),
             )),
         ))
+    }
+
+    /**
+     * The prompt-side statement of a caller-supplied schema, standing in for
+     * [CoachResponseSchema.promptInstruction]. It is what carries the shape when the user's
+     * Response format is OFF, and the backup when a small model ignores the grammar.
+     */
+    internal fun schemaInstruction(callerFormat: JsonObject): String {
+        val name = (callerFormat["name"] as? JsonPrimitive)?.contentOrNull ?: "response"
+        val schema = callerFormat["schema"] as? JsonObject ?: return ""
+        return "Your final answer MUST be a single JSON object (no Markdown, no code fences, " +
+            "no prose before or after) matching this exact `$name` JSON Schema. Every key listed " +
+            "in \"required\" must be present:\n" +
+            json.encodeToString(JsonObject.serializer(), schema)
     }
 
     // ── Parse Chat Completions response → OpenAIResponse (internal for tests) ─
