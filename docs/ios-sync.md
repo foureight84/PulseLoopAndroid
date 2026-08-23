@@ -31,8 +31,8 @@ the work list, and assembling one from all three is how items get missed.
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
 | **Last triaged iOS commit** | `439ca81` — Merge PR #93 (Colmi R11 CRP driver), 2026-08-09 |
 | **Last triage date** | 2026-08-22 |
-| **Last port date** | 2026-08-22 — PR #96 nutrition OFF client + cache (`a13238d`) + five coach tools (`05d8833`, barcode/AI-photo deferred as needs-hardware) + Workout pause intervals (`71f251e`) + PR #94 `CoachNotificationDataTrigger` (`9d43227`) + PR #93 hardening (`c95b6e8`) |
-| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **11 ported, #130 backed out** (#94's data-trigger feature and #93's 5 hardening fixes both landed this session) |
+| **Last port date** | 2026-08-23 — PR #96 nutrition **complete**: barcode scanner + AI meal analysis (`e80c76c`) on top of the OFF client (`a13238d`) and five coach tools (`05d8833`); plus the self-hosted-provider schema fix they exposed (`d3d1371`). 2026-08-22 — #130 RWfit JieLi history (`c9be848`), Workout pause intervals (`71f251e`), PR #94 `CoachNotificationDataTrigger` (`9d43227`), PR #93 hardening (`c95b6e8`) |
+| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **all 12 ported** (#130 was backed out as fabricated, then rebuilt from the vendor decompile — see its row below). Verified against a live `git fetch` on 2026-08-23: `origin/main` is `439ca81` and local `main` is 0 commits behind, so upstream is fully triaged and ported |
 
 ---
 
@@ -42,16 +42,15 @@ Everything upstream that is **not yet on Android `main`**, in one place. This re
 port queue, the resume block and the session notes to assemble the picture yourself. The port queue
 below is the per-PR audit trail; **this table is the work list.**
 
-Ordered by readiness, not size: the top rows can be started immediately, the bottom rows are
-blocked on something outside the code.
+Ordered by readiness, not size. **As of 2026-08-23 no row can be started** — the port queue is
+empty. Two rows need ring hardware to verify code that is already written; the third needs an
+Android screen that does not exist yet. Nothing here is waiting on someone to finish a port.
 
 | # | Item | What is actually left | Size | Ready? |
 |---|------|----------------------|------|--------|
-| 1 | **#96 nutrition subset** | **2 of 4 parts done this session** (`a13238d` + `05d8833`): the Open Food Facts client + 500-row LRU cache (so `food_products` now populates) and the five coach tools (`search_food_database`/`get_nutrition_log`/`log_meal`/`update_meal_entry`/`delete_meal_entry`). **Remaining: barcode scanner + AI photo analysis** — both camera features (iOS `BarcodeScannerSheet` VisionKit; `MealAnalysisSheet` 423-line photo + vision-LLM), the build has no camera/barcode/vision dependency, and there is no device here, so they are **deferred, not ported blind** (hardware guidance — see #82/#90). | L→M | ⛔ needs hardware (camera) for the remaining 2 parts |
-| 2 | **#130 RWfit — finish the JieLi `0xAB` path** | The vendor rebuild landed on `main`. The legacy `0x7E` path is complete; the JieLi `0xAB` framing is complete but **its history bodies are not decoded yet**. Read `decompiled-rwfit-official/`, never iOS and never guesswork (root `AGENTS.md`). | M | ✅ start now |
-| 3 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
-| 4 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
-| 5 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. | S | ⛔ blocked — Android has no Activity-trends screen to fix |
+| 1 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
+| 2 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
+| 3 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. The `S` is the *iOS* fix; Android has no Activity-trends screen at all, so the real scope is building the screen first. This is the one remaining **feature** gap — it is not blocked on hardware. | S (iOS) / L (Android) | ⛔ blocked — Android has no Activity-trends screen to fix |
 
 ### Not on this list, and why
 
@@ -60,8 +59,12 @@ blocked on something outside the code.
   `origin`, but it is fully contained in `main` — read `main`, not the branch.
 - **PR #45 review remediation** — done. The 2026-08-09 review's parity bugs in #95/#98/#99/#100 and
   the #94 regression were all fixed in `8df67b1` + `8f81c40`. Only rows 2–4 above survive from it.
-- **#130 RWfit rebuild** — the *rebuild* is done and on `main` (the ledger's
-  `feat/rwfit-vendor-rebuild` is stale); only row 5 remains.
+- **#130 RWfit rebuild** — done, including the JieLi `0xAB` history bodies (`c9be848`,
+  2026-08-22). The rebuild is on `main` (the ledger's `feat/rwfit-vendor-rebuild` is stale).
+  **Never hardware-validated** — see the rebuild section's own caveat before shipping it.
+- **#96 nutrition subset** — done, all four parts. The OFF client + cache (`a13238d`) and five
+  coach tools (`05d8833`) landed 2026-08-22; the barcode scanner + AI meal analysis landed
+  2026-08-23 (`e80c76c`). Device-verified end to end — see the session note below.
 - Everything else in the port queue is `☑` or `⊘`.
 
 ### Branch note
@@ -155,7 +158,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | `0ca53a1` + `c4aab74` (CR fix: wire STALE_DATA_WINDOW_MS) + **`9d43227`** (the data-trigger feature itself — the bus subscriber + (dateKey,slotRaw) dedupe + stale-skip — was the one part of #94 never ported) |
 | ☑ | [#95](https://github.com/saksham2001/PulseLoopiOS/pull/95) `dae95ab` | ~07-22 | HR zone colors/thresholds (evidence-based defaults + Standard/Auto/Custom modes + resting-HR baseline learning) | **PORT** | M–L | `0ca53a1` |
 | ☑ | [#97](https://github.com/saksham2001/PulseLoopiOS/pull/97) `cb8e1cd` | ~07-23 | LittleMeatball R10M YCBT support + 9 shared YCBT bugfixes | **ALREADY-HAVE** | — | iOS PR is itself a port of PulseLoopAndroid#31 |
-| ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **ADAPT (subset)** — manual meal logging + goals (`4084671`+`c4aab74`); this session added the OFF client + cache (`a13238d`) and the five coach tools (`05d8833`). **Barcode + AI photo remain** (camera features; need a build dependency + a real device — deferred, not ported blind). | XL | `4084671` + `c4aab74` + `a13238d` + `05d8833` |
+| ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **ADAPT — complete 2026-08-23.** Manual meal logging + goals (`4084671`+`c4aab74`), OFF client + 500-row cache (`a13238d`), five coach tools (`05d8833`), and finally both camera features (`e80c76c`): ML Kit + CameraX barcode scanner restricted to OFF's four symbologies, and the four-phase AI meal-analysis sheet running one structured single-shot call through the existing coach provider stack. Two divergences, both deliberate: the photo is **not persisted** (`MealEntryEntity` has no photo-ref column and this port ships no migration), and the entry buttons gate on the coach master toggle alone (Android has neither iOS's photo-analysis sub-toggle nor an on-device provider mode). Landing it also exposed and fixed a self-hosted-provider bug (`d3d1371`) — see the session note. | XL | `4084671` + `c4aab74` + `a13238d` + `05d8833` + `e80c76c` |
 | ☑ | [#99](https://github.com/saksham2001/PulseLoopiOS/pull/99) `f06be51` | ~07-25 | Full-data JSON export/import (all models → single JSON file, atomic wipe-and-restore on import) | **PORT** | M | `802789d` + `c4aab74` (CR fix: atomic transaction, wearableLogs roundtrip, BuildConfig appVersion) |
 | ☑ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | `4ce34dc` + `c4aab74` (CR fix: mobile endpoint, intent-filter, redirect handler, pollUntilDone, BuildConfig secrets, shared OkHttpClient) |
 | ☑ | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | `68c9788` (versionName → 2.5.0 to match iOS MARKETING_VERSION) |
@@ -175,8 +178,11 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 
 > **▶ RESUME HERE:** see [**Outstanding — the single list**](#outstanding--the-single-list) above.
 > It consolidates every open thread that used to be split across this block, the port queue and the
-> session notes. **#93 CRP hardening is now done** (`c95b6e8`, 2026-08-22); top of the list is now
-> **#94 `CoachNotificationDataTrigger`**.
+> session notes. **As of 2026-08-23 the port queue is empty** — a live `git fetch` puts
+> `origin/main` at `439ca81` with local `main` 0 commits behind, and every first-parent item since
+> `0d1b965` is ported. The three remaining rows are all blocked: #82 and #90 need ring hardware to
+> validate code that is already written, #79 needs an Android Activity-trends screen that does not
+> exist. **Do not start a port from this block — there is none to start.**
 >
 > Next triage after those: `git -C <ios-repo> log --first-parent --oneline 439ca81..main`.
 >
@@ -485,6 +491,58 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
 - ~~**#74 Measurement-Frequency relocation**~~ ✅ **DONE** `368a3f2` (2026-07-19) — see the session note below.
+
+### 2026-08-23 session — #96 camera features, on a real device
+
+Closes #96. Both camera features landed in `e80c76c`, plus a coach-provider fix in `d3d1371`
+that finishing them exposed.
+
+**Runtime-verified on a Pixel 10 Pro (API 37, arm64), debug build, against the user's own
+vLLM server** — not emulated, not inferred from tests:
+
+- **Barcode → OFF → prefill → save.** A real packaged-food scan resolved through Open Food
+  Facts and persisted: `sourceRaw=off_barcode`, `offProductCode=0010878850577`. Read back out
+  of `pulseloop.db`, not just off the screen.
+- **Describe → LLM → review → save.** Text-only path: 317 kcal / P18 C29 F15, persisted with
+  `sourceRaw=llm_estimate`, `confidenceRaw=partial` (medium→partial), `notes` = the assumptions
+  string, meal type inferred `lunch` at 13:00.
+- **Photo → vision → review → save.** *Needed human hands — the phone was handed back for
+  this one.* A photographed plate came back as "Spaghetti with Meatballs, Basil & Parmesan",
+  880 kcal, with assumptions describing detail only visible in the image ("5 medium pan-fried
+  meatballs… ~20g shaved parmesan"). That text is the proof the `CoachAttachmentStore`
+  downscale → base64 `input_image` pipeline actually reached the model. Row persisted correctly.
+- **Failed phase + retry** rendered correctly — observed for real, before the fix below.
+- ML Kit initialized on device (its prefs file exists); empty crash buffer, no app-level
+  error or warning lines throughout.
+
+**The bug this exposed — worth reading before touching the local provider.**
+`LocalOpenAICompatClient` ignored the caller's `text.format` entirely and substituted the coach
+chat's own `coach_response` schema, in `response_format` *and* in the system prompt via
+`CoachResponseSchema.promptInstruction`. On a guided-decoding backend that is not degradation,
+it is impossibility: the model was constrained to one shape and instructed to produce that same
+wrong shape, so `MealAnalysisLogic.decode` could never parse it. The meal estimator failed
+**every** call with "The AI didn't return a usable estimate" until fixed. Every other adapter
+already translated that field (`OpenRouterClient.chatResponseFormat`), so the local client was
+the outlier — and `CoachSummaryGenerator` sends `text.format` the same way and had the same
+latent bug. `Response format = OFF` still sends no `response_format`: that setting means the
+backend rejects the field, and a caller does not get to override the user's compatibility choice.
+
+**Two deliberate divergences from iOS**, both as instructed:
+
+- The photo is **not persisted**. `MealEntryEntity` genuinely has no photo-ref column
+  (`NutritionEntities.kt:6-36`), and this port ships no schema migration, so the image feeds
+  the analysis call and is then discarded. iOS stores it via `CoachAttachmentStore` into
+  `photoRefJSON` (`MealAnalysisSheet.swift:296-307`).
+- The entry buttons gate on **coach-enabled alone**. iOS gates on coach + cloud provider + a
+  nutrition photo-analysis sub-toggle (`NutritionView.swift:36-48`); Android has neither that
+  pref nor an on-device provider mode, so the three-part gate collapses to one.
+
+**One smaller parity fix:** a barcode row now records confidence `known`, matching iOS's
+`MealEntry.init` default (`NutritionModels.swift:99`). Android's `MealEntryEntity` defaults to
+`"medium"`, which is not in the known/partial/unknown vocabulary at all — left alone here
+because it predates this work and other writers depend on it. **Worth fixing separately.**
+
+Suite 1191 → 1211, 0 failures.
 
 ### 2026-08-22 triage (since `88c0f6b` → `439ca81`, 12 commits / 1 first-parent)
 
