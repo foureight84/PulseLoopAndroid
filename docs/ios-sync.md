@@ -537,12 +537,46 @@ backend rejects the field, and a caller does not get to override the user's comp
   nutrition photo-analysis sub-toggle (`NutritionView.swift:36-48`); Android has neither that
   pref nor an on-device provider mode, so the three-part gate collapses to one.
 
-**One smaller parity fix:** a barcode row now records confidence `known`, matching iOS's
-`MealEntry.init` default (`NutritionModels.swift:99`). Android's `MealEntryEntity` defaults to
-`"medium"`, which is not in the known/partial/unknown vocabulary at all — left alone here
-because it predates this work and other writers depend on it. **Worth fixing separately.**
+**Meal confidence now matches iOS** (`0765b37`, DB v22 → v23). `MealEntryEntity.confidenceRaw`
+defaulted to `"medium"`, which is not a value in the known/partial/unknown vocabulary anything
+else uses — every deliberate writer maps onto those three
+(`NutritionTools.decodeConfidenceRaw`, `MealAnalysisLogic.confidenceRaw`, `MeasurementModal`,
+`MetricsService`), and every other entity in the schema already defaults to `"known"`. A stored
+`"medium"` was therefore never anyone's intent, only the default leaking through. iOS has no
+such value at all: `MealEntry.init` defaults to `.known` (`NutritionModels.swift:99`) and its
+reader falls back to `.known` for an unrecognized raw (:147). Entity + `DataArchive` DTO now
+default to `"known"`, and `MIGRATION_22_23` rewrites the rows that already carry `"medium"`
+(unconditional — no legitimate row can hold it). This also let the `MealLogSave.confidenceRaw`
+plumbing go: with the default correct there is nothing to override, which is exactly iOS's
+arrangement.
+
+Verified in place on the Pixel: `user_version` 23, no crash on upgrade, the existing
+`off_barcode` row moved `medium` → `known` while both `llm_estimate` rows kept `partial`.
+**No migration unit test** — this module sets `exportSchema = false`, so there is no
+`MigrationTestHelper` harness to hang one on. Worth knowing before you try to add one.
 
 Suite 1191 → 1211, 0 failures.
+
+**Carry-forward rules from this session** (the durable bits, so they survive without a memory
+store):
+
+1. **A new structured, non-chat caller on the coach provider stack must be tried against the
+   *local* provider, not just OpenAI/Gemini.** That is where `text.format` was being silently
+   discarded, and the failure mode is total, not partial. `d3d1371` fixed the client; it did not
+   make the class of bug impossible.
+2. **`Response format = OFF` is a user compatibility choice, not a capability hint.** It means
+   the backend rejects `response_format` outright. A caller's schema never overrides it — the
+   schema goes in the prompt, and every structured caller decodes fence-tolerantly.
+3. **Three ring families are shipped-but-unvalidated**: YCBT (#82), LuckRing/TK18 (#90) and
+   RWfit (#130). #130 in particular was rebuilt entirely from the vendor decompile with no
+   hardware. Blind-porting *from the decompiled vendor app* is the normal practice here;
+   porting from iOS parity or guesswork is what got PR #45 backed out. Say "no hardware
+   validation" on the PR.
+4. **#79 is the one remaining feature gap and its `S` is misleading** — that sizes the iOS fix.
+   Android has no Activity-trends screen at all, so the real work is building the screen.
+5. **Upstream is fully triaged as of 2026-08-23** (live `git fetch`: `origin/main` = `439ca81`,
+   local `main` 0 behind). Local `main` carries one extra commit, `f6eb177`, a demo-seed that is
+   not upstream — do not try to "port" it.
 
 ### 2026-08-22 triage (since `88c0f6b` → `439ca81`, 12 commits / 1 first-parent)
 
