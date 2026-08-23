@@ -172,6 +172,23 @@ dependencies {
     // series, so it is a faithful API reference for this pin.
     implementation("androidx.health.connect:connect-client:1.1.0")
 
+    // Phase 9 (iOS #96 stage A): barcode scanner. ML Kit's bundled-model artifact runs
+    // regardless of Play Services state (the -play-services variant would dead-end on
+    // devices without the updated services). CameraX 1.4.x for preview + analysis.
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    val cameraXVersion = "1.4.2"
+    implementation("androidx.camera:camera-core:$cameraXVersion")
+    // The CameraX camera2 implementation artifact is "camera-camera2" (the partial's
+    // "camera2" coordinate does not exist on Google Maven).
+    implementation("androidx.camera:camera-camera2:$cameraXVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
+    implementation("androidx.camera:camera-view:$cameraXVersion")
+
+    // CameraX's ProcessCameraProvider.getInstance() exposes Guava ListenableFuture in its
+    // signature, but the graph also carries Google's "9999.0-empty-to-avoid-conflict-with-guava"
+    // stub, which strips the class at compile time. Full guava restores it.
+    implementation("com.google.guava:guava:33.3.1-android")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 

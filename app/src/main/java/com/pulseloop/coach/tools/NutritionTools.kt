@@ -56,6 +56,7 @@ object NutritionTools {
      * only the entity default ("manual"), so the database/estimate split below uses iOS's
      * canonical strings; the archive and Health Connect exporters round-trip any of them.
      */
+    internal const val sourceRawOffBarcode = "off_barcode"    // scanned barcode resolved via OFF
     internal const val sourceRawOffSearch = "off_search"      // OFF text-search pick
     internal const val sourceRawLlmEstimate = "llm_estimate"  // coach estimate, no grounding
     internal const val sourceRawManual = "manual"             // user typed the numbers

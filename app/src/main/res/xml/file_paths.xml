@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="diagnostics" path="/" />
+    <!-- Phase 9 (iOS #96 stage A/B): TakePicture camera captures — the system camera app
+         writes the JPEG to this FileProvider URI. -->
+    <files-path name="camera_captures" path="camera_captures/" />
 </paths>
