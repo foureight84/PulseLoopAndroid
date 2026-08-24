@@ -224,8 +224,24 @@ class CoachNotificationSlotRunner(
         } catch (e: Exception) {
             // Ultimate fallback — pre-extraction worker behavior: even when everything
             // else blows up, the user still gets the generic check-in.
+            val slot = resolvedSlot ?: CoachNotificationSlot.forcedSlot(hourOf(now))
             runCatching { deliver(GENERIC_TITLE, GENERIC_BODY) }
-            return CoachNotificationOutcome.Sent(resolvedSlot ?: CoachNotificationSlot.forcedSlot(hourOf(now)))
+            // Record it like every other delivery. This IS a send, so the (dateKey, slotRaw)
+            // key has to exist or the data trigger (which re-runs the due slot on the next
+            // sync completion, minutes later) sees no record and delivers the slot a second
+            // time — exactly the double-send the dedupe exists to stop. Best-effort: if the
+            // failure that landed us here was the DAO itself, we still don't want to throw.
+            runCatching {
+                recordDao.insert(
+                    CoachNotificationRecordEntity(
+                        title = GENERIC_TITLE,
+                        body = GENERIC_BODY,
+                        dateKey = dateKeyFor(now),
+                        slotRaw = slotRaw(slot),
+                    )
+                )
+            }
+            return CoachNotificationOutcome.Sent(slot)
         } finally {
             runInFlight.set(false)
         }

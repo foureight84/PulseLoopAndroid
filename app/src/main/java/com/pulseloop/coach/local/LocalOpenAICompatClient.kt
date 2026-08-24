@@ -321,6 +321,15 @@ class LocalOpenAICompatClient(
     internal fun schemaInstruction(callerFormat: JsonObject): String {
         val name = (callerFormat["name"] as? JsonPrimitive)?.contentOrNull ?: "response"
         val schema = callerFormat["schema"] as? JsonObject ?: return ""
+        // The coach chat sends its OWN `coach_response` text.format on every turn
+        // (CoachOrchestrator.coachResponseTextFormat), so this is the chat's normal path too —
+        // not just the meal estimator's. Its hand-written instruction says strictly more than a
+        // schema dump (no "message" key, put the answer in "summary", the length caps) and the
+        // orchestrator's JSON-repair loop leans on that wording, so keep it for that schema
+        // instead of degrading the main local-LLM path to raw JSON Schema.
+        if (name == "coach_response" && schema == CoachResponseSchema.schema) {
+            return CoachResponseSchema.promptInstruction
+        }
         return "Your final answer MUST be a single JSON object (no Markdown, no code fences, " +
             "no prose before or after) matching this exact `$name` JSON Schema. Every key listed " +
             "in \"required\" must be present:\n" +

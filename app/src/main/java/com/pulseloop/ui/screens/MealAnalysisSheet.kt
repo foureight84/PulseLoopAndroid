@@ -604,7 +604,11 @@ object MealAnalysisLogic {
         if (trimmed.isEmpty()) return null
         val json = Json { ignoreUnknownKeys = true }
         if (trimmed.startsWith("{")) {
-            return try { json.decodeFromString(Estimate.serializer(), trimmed) } catch (_: Exception) { null }
+            // Whole-text parse first, but FALL THROUGH to the slice on failure rather than
+            // returning: kotlinx rejects trailing input, so a reply that opens with the object
+            // and appends a sentence of prose ("{...}\n\nLet me know if…") is perfectly
+            // recoverable and used to be reported as "no usable estimate".
+            try { return json.decodeFromString(Estimate.serializer(), trimmed) } catch (_: Exception) { }
         }
         val start = trimmed.indexOf('{')
         val end = trimmed.lastIndexOf('}')

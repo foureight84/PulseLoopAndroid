@@ -6,7 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -69,7 +69,7 @@ class OpenFoodFactsClient(
 ) : FoodDatabaseClient {
 
     override suspend fun product(barcode: String): FoodProduct? = withContext(Dispatchers.IO) {
-        val base = productBase.toHttpUrl() ?: throw OpenFoodFactsError.InvalidUrl
+        val base = productBase.toHttpUrlOrNull() ?: throw OpenFoodFactsError.InvalidUrl
         val url = base.newBuilder()
             .addPathSegment("api")
             .addPathSegment("v2")
@@ -90,7 +90,7 @@ class OpenFoodFactsClient(
 
     override suspend fun search(query: String, pageSize: Int): List<FoodProduct> =
         withContext(Dispatchers.IO) {
-            val base = searchBase.toHttpUrl() ?: throw OpenFoodFactsError.InvalidUrl
+            val base = searchBase.toHttpUrlOrNull() ?: throw OpenFoodFactsError.InvalidUrl
             val url = base.newBuilder()
                 .addPathSegment("search")
                 .addQueryParameter("q", query)

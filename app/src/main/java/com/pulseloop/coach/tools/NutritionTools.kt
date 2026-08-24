@@ -111,9 +111,9 @@ object NutritionTools {
         val dao = db.foodProductDao()
         val result = kotlinx.coroutines.runBlocking {
             // Cache-first: substring match against locally cached products (zero network).
-            val cached = FoodProductCache.recent(dao, 100)
-                .filter { it.name.contains(query, ignoreCase = true) }
-                .take(limit)
+            // Matched in SQL over the whole table — a recent-N page filtered in memory misses
+            // cached products that fell out of that window and pays a network call for them.
+            val cached = FoodProductCache.search(dao, query, limit)
             if (cached.isNotEmpty()) {
                 resultsJson(cached.map { it.asFoodProduct() }, "local_cache")
             } else {

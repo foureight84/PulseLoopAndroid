@@ -25,6 +25,16 @@ object FoodProductCache {
         dao.recent(limit)
 
     /**
+     * Substring match over the WHOLE cache, most-used first — the cache-first leg of
+     * `search_food_database`. Goes through the DAO's `LIKE` query rather than filtering a
+     * recent-N page in memory: the cache holds up to [MAX_CACHED_PRODUCTS] rows, so a
+     * recent-100 window silently misses an older cached match and sends the tool to the
+     * rate-limited Open Food Facts API for a product it already has.
+     */
+    suspend fun search(dao: FoodProductDao, query: String, limit: Int): List<CachedFoodProductEntity> =
+        dao.search(query, limit)
+
+    /**
      * Mark a cached product as used (bumps the frequency/recency signals). Re-upserts the
      * cache row only — iOS's `touchProduct` mutates the row and lets the caller batch the
      * save with the meal insert; Room has no unsaved state, so this writes exactly that one

@@ -86,7 +86,14 @@ class CoachNotificationDataTrigger(
             // on every sync-completion a re-linked ring produces.
             val s = checkinSettings()
             if (!s.coachEnabled || !s.notificationsEnabled) return@launch
-            slotRun()
+            // The run itself is a sibling job on [scope], NOT a child of this debounce job:
+            // the next "done" event cancels debounceJob, and a run started here takes seconds
+            // (network generation). Cancelling it mid-flight can land between
+            // recordDao.insert and deliver() inside runDueSlot — the slot recorded as sent
+            // with no notification shown, and the dedupe then suppresses every later attempt
+            // that day. Only the pending delay above is cancellable; concurrent runs are
+            // already covered by the runner's process-wide in-flight guard (SkippedDuplicate).
+            scope.launch { slotRun() }
         }
     }
 
