@@ -63,10 +63,30 @@ sealed class PulseEvent {
     data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
     data class TemperatureSample(val celsius: Double, val timestamp: java.time.Instant, val isHistory: Boolean = false) : PulseEvent()
     data class SleepTimeline(
-        val timestamp: java.time.Instant,
-        val stages: List<SleepStage>,
+        val sessionStart: java.time.Instant,
+        val sessionEnd: java.time.Instant,
+        val segments: List<SleepStageSegment>,
         val completeSession: Boolean = false,
-    ) : PulseEvent()
+    ) : PulseEvent() {
+        constructor(
+            timestamp: java.time.Instant,
+            stages: List<SleepStage>,
+            completeSession: Boolean = false,
+        ) : this(
+            sessionStart = timestamp,
+            sessionEnd = timestamp.plusSeconds(stages.size * 60L),
+            segments = contiguousSleepSegments(timestamp, stages),
+            completeSession = completeSession,
+        )
+
+        val timestamp: java.time.Instant get() = sessionStart
+        val stages: List<SleepStage> get() = segments.flatMap { segment ->
+            val minutes = kotlin.math.round(
+                java.time.Duration.between(segment.start, segment.end).seconds / 60.0
+            ).toInt().coerceAtLeast(0)
+            List(minutes) { segment.stage }
+        }
+    }
     data class SyncProgress(val stage: String) : PulseEvent()
     data class FirmwareVersion(val version: Int?) : PulseEvent()
     /** The ring's firmware version as a display string (CRP `3/3` → `MOY-R1K3-2.1.6`). Distinct

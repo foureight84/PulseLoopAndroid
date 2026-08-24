@@ -116,8 +116,21 @@ class HealthConnectPrefsStoreTest {
         val store = storeWith("{\"enabled\":true}")
         assertTrue(store.current.enabled)
         assertTrue(store.current.workouts) // field did not exist when the blob was written
+        assertFalse(store.current.sleepIdentityV2Done)
         assertNull(store.current.lastSyncAt)
         assertFalse(store.current.isConnected)
+    }
+
+    @Test
+    fun sleepIdentityV2MarkerDefaultsFalseAndRoundTripsTrue() {
+        assertFalse(storeWith(null).current.sleepIdentityV2Done)
+        assertFalse(storeWith("{\"enabled\":true}").current.sleepIdentityV2Done)
+
+        val fake = FakeSharedPreferences()
+        val store = HealthConnectPrefsStore(fake)
+        store.update { it.copy(sleepIdentityV2Done = true) }
+
+        assertTrue(HealthConnectPrefsStore(fake).current.sleepIdentityV2Done)
     }
 
     @Test

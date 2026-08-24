@@ -6,7 +6,9 @@ import androidx.health.connect.client.records.ExerciseRoute
 import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.Record
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.metadata.Device
+import androidx.health.connect.client.time.TimeRangeFilter
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.health.exporters.ActivityExporter
 import com.pulseloop.health.exporters.NutritionExporter
@@ -14,7 +16,9 @@ import com.pulseloop.health.exporters.RestingHeartRateExporter
 import com.pulseloop.health.exporters.SleepExporter
 import com.pulseloop.health.exporters.VitalsExporter
 import com.pulseloop.health.exporters.WorkoutExporter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import java.time.Instant
 
 /**
  * Chunk + retry progress for one kind's insert pass (see [healthConnectInsertChunked]).
@@ -164,6 +168,38 @@ internal fun watermarkAdvance(
  */
 internal fun effectiveWatermark(storedWatermark: Long?, newOnlyConsentAt: Long?): Long =
     maxOf(storedWatermark ?: 0L, newOnlyConsentAt ?: 0L)
+
+internal fun sleepIdentityV2MigrationRequired(
+    prefs: HealthConnectPrefs,
+    granted: Set<String>,
+): Boolean = prefs.enabled &&
+    prefs.backfillChoice != HealthConnectPrefs.BackfillChoice.NOT_ASKED &&
+    prefs.sleep &&
+    HealthConnectPermissions.sleep.first() in granted &&
+    !prefs.sleepIdentityV2Done
+
+/**
+ * Functional seam for the ordered one-time sleep identity migration. A false gate is a successful
+ * no-op; a failed delete returns false without resetting the watermark or setting the marker.
+ */
+internal suspend fun migrateSleepIdentityV2(
+    required: Boolean,
+    deleteLegacyRecords: suspend () -> Unit,
+    resetSleepWatermark: () -> Unit,
+    markDone: () -> Unit,
+): Boolean {
+    if (!required) return true
+    return try {
+        deleteLegacyRecords()
+        resetSleepWatermark()
+        markDone()
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        false
+    }
+}
 
 /**
  * If [e] carries the platform's single-record size-limit message and [records] contains an
@@ -369,14 +405,43 @@ class HealthConnectExporter(
             if (groupHigh > (vitalsWm ?: 0L)) store.setWatermark(HealthConnectWatermarks.Key.VITALS, groupHigh)
         }
 
+        val sleepMigrationRequired = sleepIdentityV2MigrationRequired(prefs, granted)
+        val sleepIdentityReady = migrateSleepIdentityV2(
+            required = sleepMigrationRequired,
+            deleteLegacyRecords = {
+                // Health Connect scopes this range deletion to records written by the calling app;
+                // records from other apps and PulseLoop's Room data are not touched.
+                client.deleteRecords(
+                    SleepSessionRecord::class,
+                    TimeRangeFilter.after(Instant.EPOCH),
+                )
+            },
+            resetSleepWatermark = {
+                store.resetWatermarks(setOf(HealthConnectWatermarks.Key.SLEEP))
+            },
+            markDone = {
+                store.update { it.copy(sleepIdentityV2Done = true) }
+            },
+        )
+        if (sleepMigrationRequired && sleepIdentityReady) {
+            // The reset invalidated the snapshot; the normal sleep exporter rebuilds v2 records
+            // from the allowed Room window in this same pass.
+            wm0 = store.currentWatermarks
+        } else if (!sleepIdentityReady) {
+            errors += "sleep migration: could not replace legacy Health Connect sleep records; " +
+                "sleep export was skipped and will retry on the next pass"
+        }
+
         // ── Sleep group (Phase 2; watermarked on SleepSessionEntity.updatedAt — a re-synced
-        //    night re-upserts the same pl-sleep-<dayEpochMs> record in place) ──
+        //    session re-upserts the same stable v2 record in place) ──
         if (!prefs.sleep) {
             skipped += "sleep (toggle off)"
         } else {
             val permission = HealthConnectPermissions.sleep.first()
             if (permission !in granted) {
                 skipped += "sleep (permission not granted)"
+            } else if (!sleepIdentityReady) {
+                skipped += "sleep (stable identity migration pending)"
             } else {
                 val sleepPending = SleepExporter(db).build(effectiveWatermark(wm0.sleep, prefs.newOnlyConsentAt), device)
                 val sleepProgress = insertChunked(sleepPending.records, sleepPending.highWaters) { chunk ->
