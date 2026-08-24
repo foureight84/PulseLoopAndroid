@@ -193,7 +193,11 @@ class RWfitDriverTest {
     }
 
     @Test
-    fun `a JieLi link does not request legacy history`() {
+    fun `a JieLi link requests its history streams as bare triples after the handshake`() {
+        // JieLi has no manifest: the vendor requests each 05-group stream directly with the bare
+        // {5, type, 0x10} triple, no payload (blesdk/service/y.java:345-537, e.g.
+        // TRingHeartRateStatisticsActivity.java:545). The burst covers every stream RWfitJLHistory
+        // decodes, in HistoryType order (breathe has no JieLi type and drops out).
         val writer = RecordingWriter()
         val driver = RWfitDriver(writer)
         driver.connectionDidStart()
@@ -201,9 +205,110 @@ class RWfitDriverTest {
 
         driver.makeSyncEngine().runStartup()
 
-        // Device info, time and battery only — the 05-group history bodies aren't decodable yet, so
-        // requesting them would spend the link on frames we could only log.
-        assertEquals(3, writer.frames.size)
+        assertTrue("expected 0xAB frames", writer.frames.all { it[0] == 0xAB.toByte() })
+        assertEquals(12, writer.frames.size)   // device info + time + battery + 9 history streams
+        val triples = writer.frames.map { Triple(it[6].toInt() and 0xFF, it[7].toInt() and 0xFF, it[8].toInt() and 0xFF) }
+        assertEquals(
+            listOf(
+                Triple(2, 4, 0x10),   // device info
+                Triple(2, 1, 0),      // time sync
+                Triple(2, 3, 0x10),   // battery
+                Triple(5, 2, 0x10),   // steps
+                Triple(5, 5, 0x10),   // sleep
+                Triple(5, 3, 0x10),   // heart rate
+                Triple(5, 4, 0x10),   // blood pressure
+                Triple(5, 9, 0x10),   // SpO2
+                Triple(5, 8, 0x10),   // temperature
+                Triple(5, 10, 0x10),  // HRV
+                Triple(5, 13, 0x10),  // stress
+                Triple(5, 16, 0x10),  // blood sugar
+            ),
+            triples,
+        )
+    }
+
+    @Test
+    fun `JieLi history is requested once per connection, not per poll pass`() {
+        // runStartup doubles as the ~30-minute background sync: the handshake frames go out again,
+        // but the 05-group burst must not — the ring would just re-send buffers we already hold.
+        val writer = RecordingWriter()
+        val driver = RWfitDriver(writer)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+        fun historyFrames() = writer.frames.count { it[0] == 0xAB.toByte() && (it[6].toInt() and 0xFF) == 5 }
+
+        driver.makeSyncEngine().runStartup()
+        assertEquals(9, historyFrames())
+        driver.makeSyncEngine().runStartup()
+        assertEquals(9, historyFrames())
+    }
+
+    @Test
+    fun `a reconnected JieLi link re-requests its history`() {
+        // reset() runs on connectionDidEnd/Start, re-arming the once-per-connection gate. A real
+        // reconnect re-runs GATT discovery (servicesDiscovered) before runStartup, as in the
+        // production connect sequence.
+        val writer = RecordingWriter()
+        val driver = RWfitDriver(writer)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+        driver.makeSyncEngine().runStartup()
+
+        driver.connectionDidEnd()
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+        writer.clear()
+        driver.makeSyncEngine().runStartup()
+
+        assertEquals(12, writer.frames.size)
+        assertEquals(9, writer.frames.count { (it[6].toInt() and 0xFF) == 5 })
+    }
+
+    @Test
+    fun `a JieLi history reply decodes through the driver and is acked`() {
+        // {5,3,16} heart-rate reply: two 6-byte records, the second a zero-bpm "no reading" slot
+        // the vendor drops (x5/b.java V @1318-1320). The frame is app-ACKed (flag 0x11) before the
+        // decode result is produced, as on every other JieLi inbound.
+        val writer = RecordingWriter()
+        val driver = RWfitDriver(writer)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        fun be32(v: Long) = byteArrayOf(
+            ((v shr 24) and 0xFF).toByte(), ((v shr 16) and 0xFF).toByte(),
+            ((v shr 8) and 0xFF).toByte(), (v and 0xFF).toByte(),
+        )
+        val records = be32(0x00_0B_C0_00) + byteArrayOf(72, 0x00) +
+            be32(0x00_0B_C0_3C) + byteArrayOf(0x00, 0x00)
+        val frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x03, 0x10), records)
+
+        val events = driver.ingest(frame, "n")
+
+        val measurements = events.filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+        assertEquals(1, measurements.size)
+        assertEquals(MeasurementKind.HEART_RATE, measurements[0].kind_field)
+        assertEquals(72.0, measurements[0].value, 0.0)
+        val ack = writer.frames.single()
+        assertEquals(0xAB.toByte(), ack[0])
+        assertEquals(0x11, ack[1].toInt() and 0xFF)   // FLAG_ACK
+        assertArrayEquals(byteArrayOf(0x05, 0x03, 0x10), ack.copyOfRange(6, 9))
+    }
+
+    @Test
+    fun `an unported JieLi history key still decodes to nothing and the frame is still acked`() {
+        // e.g. sport {5,14,16}: no PulseLoop metric, so the driver logs and drops the records
+        // (the frame itself is still ACKed — ACK-before-decode is a link discipline, not a
+        // parse verdict).
+        val writer = RecordingWriter()
+        val driver = RWfitDriver(writer)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        val frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x14, 0x10), ByteArray(16))
+
+        assertTrue(driver.ingest(frame, "n").isEmpty())
+        val ack = writer.frames.single()
+        assertEquals(0x11, ack[1].toInt() and 0xFF)
     }
 
     @Test

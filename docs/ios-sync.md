@@ -11,8 +11,13 @@ intentional platform differences listed at the bottom.
    (PR merges — not individual commits — are the unit of triage.)
 2. For each PR: read the diff (`git diff <merge-sha>^1 <merge-sha>`), decide a verdict,
    and add a row. Judge **behavior**, not code — a Swift fix ports as a Kotlin rule.
-3. When a PORT/ADAPT item ships, fill in its **Android commit** column.
+3. When a PORT/ADAPT item ships, fill in its **Android commit** column **and** remove it from
+   [Outstanding — the single list](#outstanding--the-single-list).
 4. Update **Last triaged iOS commit** below.
+
+**Just want to know what to work on?** Read [Outstanding — the single list](#outstanding--the-single-list)
+and stop there. The port queue is the per-PR audit trail; the session notes are history. Neither is
+the work list, and assembling one from all three is how items get missed.
 
 **Verdicts:** `PORT` (Android needs it) · `ADAPT` (concept ports, implementation differs) ·
 `PARTIAL` (some of it applies) · `ALREADY-HAVE` (Android already does this) ·
@@ -24,10 +29,57 @@ intentional platform differences listed at the bottom.
 |---|---|
 | **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `88c0f6b` — Merge PR #131 (sleep hypnogram alignment + scrubber), 2026-08-08 |
-| **Last triage date** | 2026-08-08 |
-| **Last port date** | 2026-08-08 — PR #45 (ios_sync_2026-08-08, 5 plan commits + 2 CR remediation commits = 7 total) |
-| **Range covered** | 11 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131 + 1 direct commit (`160c775`) → **10 ported, #130 backed out** |
+| **Last triaged iOS commit** | `439ca81` — Merge PR #93 (Colmi R11 CRP driver), 2026-08-09 |
+| **Last triage date** | 2026-08-22 |
+| **Last port date** | 2026-08-23 — PR #96 nutrition **complete**: barcode scanner + AI meal analysis (`e80c76c`) on top of the OFF client (`a13238d`) and five coach tools (`05d8833`); plus the self-hosted-provider schema fix they exposed (`d3d1371`). 2026-08-22 — #130 RWfit JieLi history (`c9be848`), Workout pause intervals (`71f251e`), PR #94 `CoachNotificationDataTrigger` (`9d43227`), PR #93 hardening (`c95b6e8`) |
+| **Range covered** | 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **all 12 ported** (#130 was backed out as fabricated, then rebuilt from the vendor decompile — see its row below). Verified against a live `git fetch` on 2026-08-23: `origin/main` is `439ca81` and local `main` is 0 commits behind, so upstream is fully triaged and ported |
+
+---
+
+## Outstanding — the single list
+
+Everything upstream that is **not yet on Android `main`**, in one place. This replaces reading the
+port queue, the resume block and the session notes to assemble the picture yourself. The port queue
+below is the per-PR audit trail; **this table is the work list.**
+
+Ordered by readiness, not size. **As of 2026-08-23 no row can be started** — the port queue is
+empty. Two rows need ring hardware to verify code that is already written; the third needs an
+Android screen that does not exist yet. Nothing here is waiting on someone to finish a port.
+
+| # | Item | What is actually left | Size | Ready? |
+|---|------|----------------------|------|--------|
+| 1 | **#82 YCBT (TK5 + SmartHealth-Colmi)** | Protocol layer is on `main` (`7a941a5`, `849131d`). **No code known to be missing** — what is missing is a live connect against real hardware. If one fails, re-read `BleHelper.java`'s connect sequence: the vendor's MTU/bonding/pacing timing was deliberately *not* copied (see the 2026-07-19 note). | — | ⛔ needs hardware |
+| 2 | **#90 LuckRing / TK18** | Protocol layer is on `main` (`57e1e23`). Same position as #82: no known code gap, never validated against a real TK18. | — | ⛔ needs hardware |
+| 3 | **#79 Activity Year trends** | Divide the in-progress current month by elapsed days, not a full 30/31. The `S` is the *iOS* fix; Android has no Activity-trends screen at all, so the real scope is building the screen first. This is the one remaining **feature** gap — it is not blocked on hardware. | S (iOS) / L (Android) | ⛔ blocked — Android has no Activity-trends screen to fix |
+
+### Not on this list, and why
+
+- **#80 Health Connect** — done. Phases 0–6 (all of them) are complete and **merged to `main`** at
+  `11abb92`. The `feat/health-connect-foundation` branch the port-queue row names still exists on
+  `origin`, but it is fully contained in `main` — read `main`, not the branch.
+- **PR #45 review remediation** — done. The 2026-08-09 review's parity bugs in #95/#98/#99/#100 and
+  the #94 regression were all fixed in `8df67b1` + `8f81c40`. Only rows 2–4 above survive from it.
+- **#130 RWfit rebuild** — done, including the JieLi `0xAB` history bodies (`c9be848`,
+  2026-08-22). The rebuild is on `main` (the ledger's `feat/rwfit-vendor-rebuild` is stale).
+  **Never hardware-validated** — see the rebuild section's own caveat before shipping it.
+- **#96 nutrition subset** — done, all four parts. The OFF client + cache (`a13238d`) and five
+  coach tools (`05d8833`) landed 2026-08-22; the barcode scanner + AI meal analysis landed
+  2026-08-23 (`e80c76c`). Device-verified end to end — see the session note below.
+- Everything else in the port queue is `☑` or `⊘`.
+
+### Branch note
+
+Two different kinds of stale branch reference appear below, and both resolve the same way — the
+work is on `main`:
+
+- **Merged and deleted** — `feat/rwfit-vendor-rebuild` (`8d16513`), `iOS_sync_2026-07-16`
+  (`0b971ac`), `ios_sync_2026-08-08` (`4434841`). All three are ancestors of `main`; neither the
+  local nor the `origin` ref still exists.
+- **Merged but still present** — `feat/health-connect-foundation` (`11abb92`),
+  `feat/rwfit-ring-family` (`b073dad`). The refs exist on `origin` and are fully contained in
+  `main`, so checking one out gains nothing.
+
+**Check `main` before believing a branch reference in a session note below** (verified 2026-08-22).
 
 ---
 
@@ -103,10 +155,10 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | # | iOS PR | Merged | Title | Verdict | Effort | Android commit |
 |---|--------|--------|-------|---------|--------|----------------|
 | ☑ | [#73](https://github.com/saksham2001/PulseLoopiOS/pull/73) `7a30014` | ~07-20 | Privacy & Data Reset (Unpair Ring / Reset App Data / Unpair+Reset) | **PORT** | S–M | `802789d` |
-| ☑ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | `0ca53a1` + `c4aab74` (CR fix: wire STALE_DATA_WINDOW_MS) |
+| ☑ | [#94](https://github.com/saksham2001/PulseLoopiOS/pull/94) `459f7f1` | ~07-21 | Background syncs + `StaleDataPolicy` + data-gated coach notifications | **ADAPT** | M | `0ca53a1` + `c4aab74` (CR fix: wire STALE_DATA_WINDOW_MS) + **`9d43227`** (the data-trigger feature itself — the bus subscriber + (dateKey,slotRaw) dedupe + stale-skip — was the one part of #94 never ported) |
 | ☑ | [#95](https://github.com/saksham2001/PulseLoopiOS/pull/95) `dae95ab` | ~07-22 | HR zone colors/thresholds (evidence-based defaults + Standard/Auto/Custom modes + resting-HR baseline learning) | **PORT** | M–L | `0ca53a1` |
 | ☑ | [#97](https://github.com/saksham2001/PulseLoopiOS/pull/97) `cb8e1cd` | ~07-23 | LittleMeatball R10M YCBT support + 9 shared YCBT bugfixes | **ALREADY-HAVE** | — | iOS PR is itself a port of PulseLoopAndroid#31 |
-| ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **ADAPT (subset — manual meal logging + goals only; no OFF search, barcode, AI photo or coach `log_meal`)** | XL | `4084671` + `c4aab74` (CR fix: null-goal guard, dead button wired) |
+| ☑ | [#96](https://github.com/saksham2001/PulseLoopiOS/pull/96) `c0def0f` | ~07-24 | Calorie + macro nutrition tracking (meal logging, barcode scan, OFF search, AI photo analysis, coach `log_meal` tool, intake goals, provenance tags) | **ADAPT — complete 2026-08-23.** Manual meal logging + goals (`4084671`+`c4aab74`), OFF client + 500-row cache (`a13238d`), five coach tools (`05d8833`), and finally both camera features (`e80c76c`): ML Kit + CameraX barcode scanner restricted to OFF's four symbologies, and the four-phase AI meal-analysis sheet running one structured single-shot call through the existing coach provider stack. Two divergences, both deliberate: the photo is **not persisted** (`MealEntryEntity` has no photo-ref column and this port ships no migration), and the entry buttons gate on the coach master toggle alone (Android has neither iOS's photo-analysis sub-toggle nor an on-device provider mode). Landing it also exposed and fixed a self-hosted-provider bug (`d3d1371`) — see the session note. | XL | `4084671` + `c4aab74` + `a13238d` + `05d8833` + `e80c76c` |
 | ☑ | [#99](https://github.com/saksham2001/PulseLoopiOS/pull/99) `f06be51` | ~07-25 | Full-data JSON export/import (all models → single JSON file, atomic wipe-and-restore on import) | **PORT** | M | `802789d` + `c4aab74` (CR fix: atomic transaction, wearableLogs roundtrip, BuildConfig appVersion) |
 | ☑ | [#100](https://github.com/saksham2001/PulseLoopiOS/pull/100) `4947628` | ~07-26 | Strava OAuth connect + TCX upload (GPS-HR merge, auto-dedup, token refresh) + shareable PNG stat cards | **ADAPT** | L | `4ce34dc` + `c4aab74` (CR fix: mobile endpoint, intent-filter, redirect handler, pollUntilDone, BuildConfig secrets, shared OkHttpClient) |
 | ☑ | — `160c775` | ~07-26 | Set version to 2.5.0 + read About version from bundle | **ALREADY-HAVE** | — | `68c9788` (versionName → 2.5.0 to match iOS MARKETING_VERSION) |
@@ -114,6 +166,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#130](https://github.com/saksham2001/PulseLoopiOS/pull/130) `cf5c0f4` | ~08-04 | RWfit ring family (dual 0x7E/0xAB protocol, full metric set, service-UUID recognition) | **ADAPT** | L–XL | Backed out of PR #45, then **rebuilt from `decompiled-rwfit-official/`** on `feat/rwfit-vendor-rebuild`. Legacy `0x7E` path complete; JieLi `0xAB` framing complete but its history bodies are not decoded yet. **No hardware validation.** See below. |
 | ☑ | [#131](https://github.com/saksham2001/PulseLoopiOS/pull/131) `88c0f6b` | ~08-08 | Sleep hypnogram label alignment + press-and-hold stage scrubber (+ sync spinner rewrite, iOS-only) | **ADAPT** | S–M | `802789d` |
 | ☑ | [#80](https://github.com/saksham2001/PulseLoopiOS/pull/80) `c1275ad` | 07-11 | **Apple Health sync → Health Connect** (per-type toggles, vitals/sleep/activity/workout export, backfill choice, remove-all). Re-triaged 2026-08-09 from SKIP: the *behaviour* ports even though HealthKit doesn't. Write-only; profile import can't port (Health Connect has no DOB/sex type). Design + 7-phase plan in [`health-connect-integration.md`](health-connect-integration.md); reference implementation is `Gadgetbridge/` at the parent repo root, not iOS. Not blocked by the Play Store — the declaration form is a publishing gate, and Gadgetbridge ships this sideload-only. | **ADAPT** | XL | **Phases 0–6 complete** on `feat/health-connect-foundation` (write-only, 16 `WRITE_*` / 0 `READ_*`; lifecycle, removal, grant/revocation resets, archive-restore stamp, docs). Runtime-verified API 35. See `health-connect-integration.md` §8 |
+| ☑ | [#93](https://github.com/saksham2001/PulseLoopiOS/pull/93) `439ca81` | 08-09 | **Colmi R11 CRP driver** — the iOS port *of Android's own* CRP work, so the driver itself is ALREADY-HAVE. The **adversarial-review hardening** iOS added on top in `4d65b60` (5 gaps, 2026-08-22 triage note below) is now ported. | **PARTIAL** (hardening only) | S–M | `c95b6e8` (2026-08-22) — fdd3 connect gate, firmware once-per-connection, day-keyed follow-up guard, validated + narrow-trim firmware string (items 4+5). See [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md) |
 
 ## Port priority — open items (as of 2026-08-08)
 
@@ -123,15 +176,15 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 > out so the other 10 items can land. Version bumped to 2.5.0 (`68c9788`) to match iOS
 > MARKETING_VERSION.
 
-> **▶ RESUME HERE (next session):** Two open threads, in order:
-> 1. **PR #45 review remediation** — the 2026-08-09 review found parity bugs in #95, #98,
->    #99, #100 and a regression in #94. See "Session notes — 2026-08-09 cross-platform
->    review" below.
-> 2. **#130 RWfit redo** — on `feat/rwfit-ring-family`, rebuilt from
->    `decompiled-rwfit-official/` (see the backed-out section below for what was wrong),
->    then recombined.
+> **▶ RESUME HERE:** see [**Outstanding — the single list**](#outstanding--the-single-list) above.
+> It consolidates every open thread that used to be split across this block, the port queue and the
+> session notes. **As of 2026-08-23 the port queue is empty** — a live `git fetch` puts
+> `origin/main` at `439ca81` with local `main` 0 commits behind, and every first-parent item since
+> `0d1b965` is ported. The three remaining rows are all blocked: #82 and #90 need ring hardware to
+> validate code that is already written, #79 needs an Android Activity-trends screen that does not
+> exist. **Do not start a port from this block — there is none to start.**
 >
-> Next triage after those: `git -C <ios-repo> log --first-parent --oneline 88c0f6b..main`.
+> Next triage after those: `git -C <ios-repo> log --first-parent --oneline 439ca81..main`.
 >
 > **Newly queued, independent of the two above:** **#80 → Health Connect** (re-triaged
 > 2026-08-09 from SKIP to ADAPT/XL). Design and a 7-phase implementation plan are written up in
@@ -438,6 +491,159 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
 - ~~**#74 Measurement-Frequency relocation**~~ ✅ **DONE** `368a3f2` (2026-07-19) — see the session note below.
+
+### 2026-08-23 session — #96 camera features, on a real device
+
+Closes #96. Both camera features landed in `e80c76c`, plus a coach-provider fix in `d3d1371`
+that finishing them exposed.
+
+**Runtime-verified on a Pixel 10 Pro (API 37, arm64), debug build, against the user's own
+vLLM server** — not emulated, not inferred from tests:
+
+- **Barcode → OFF → prefill → save.** A real packaged-food scan resolved through Open Food
+  Facts and persisted: `sourceRaw=off_barcode`, `offProductCode=0010878850577`. Read back out
+  of `pulseloop.db`, not just off the screen.
+- **Describe → LLM → review → save.** Text-only path: 317 kcal / P18 C29 F15, persisted with
+  `sourceRaw=llm_estimate`, `confidenceRaw=partial` (medium→partial), `notes` = the assumptions
+  string, meal type inferred `lunch` at 13:00.
+- **Photo → vision → review → save.** *Needed human hands — the phone was handed back for
+  this one.* A photographed plate came back as "Spaghetti with Meatballs, Basil & Parmesan",
+  880 kcal, with assumptions describing detail only visible in the image ("5 medium pan-fried
+  meatballs… ~20g shaved parmesan"). That text is the proof the `CoachAttachmentStore`
+  downscale → base64 `input_image` pipeline actually reached the model. Row persisted correctly.
+- **Failed phase + retry** rendered correctly — observed for real, before the fix below.
+- ML Kit initialized on device (its prefs file exists); empty crash buffer, no app-level
+  error or warning lines throughout.
+
+**The bug this exposed — worth reading before touching the local provider.**
+`LocalOpenAICompatClient` ignored the caller's `text.format` entirely and substituted the coach
+chat's own `coach_response` schema, in `response_format` *and* in the system prompt via
+`CoachResponseSchema.promptInstruction`. On a guided-decoding backend that is not degradation,
+it is impossibility: the model was constrained to one shape and instructed to produce that same
+wrong shape, so `MealAnalysisLogic.decode` could never parse it. The meal estimator failed
+**every** call with "The AI didn't return a usable estimate" until fixed. Every other adapter
+already translated that field (`OpenRouterClient.chatResponseFormat`), so the local client was
+the outlier — and `CoachSummaryGenerator` sends `text.format` the same way and had the same
+latent bug. `Response format = OFF` still sends no `response_format`: that setting means the
+backend rejects the field, and a caller does not get to override the user's compatibility choice.
+
+**Two deliberate divergences from iOS**, both as instructed:
+
+- The photo is **not persisted**. `MealEntryEntity` genuinely has no photo-ref column
+  (`NutritionEntities.kt:6-36`), and this port ships no schema migration, so the image feeds
+  the analysis call and is then discarded. iOS stores it via `CoachAttachmentStore` into
+  `photoRefJSON` (`MealAnalysisSheet.swift:296-307`).
+- The entry buttons gate on **coach-enabled alone**. iOS gates on coach + cloud provider + a
+  nutrition photo-analysis sub-toggle (`NutritionView.swift:36-48`); Android has neither that
+  pref nor an on-device provider mode, so the three-part gate collapses to one.
+
+**Meal confidence now matches iOS** (`0765b37`, DB v22 → v23). `MealEntryEntity.confidenceRaw`
+defaulted to `"medium"`, which is not a value in the known/partial/unknown vocabulary anything
+else uses — every deliberate writer maps onto those three
+(`NutritionTools.decodeConfidenceRaw`, `MealAnalysisLogic.confidenceRaw`, `MeasurementModal`,
+`MetricsService`), and every other entity in the schema already defaults to `"known"`. A stored
+`"medium"` was therefore never anyone's intent, only the default leaking through. iOS has no
+such value at all: `MealEntry.init` defaults to `.known` (`NutritionModels.swift:99`) and its
+reader falls back to `.known` for an unrecognized raw (:147). Entity + `DataArchive` DTO now
+default to `"known"`, and `MIGRATION_22_23` rewrites the rows that already carry `"medium"`
+(unconditional — no legitimate row can hold it). This also let the `MealLogSave.confidenceRaw`
+plumbing go: with the default correct there is nothing to override, which is exactly iOS's
+arrangement.
+
+Verified in place on the Pixel: `user_version` 23, no crash on upgrade, the existing
+`off_barcode` row moved `medium` → `known` while both `llm_estimate` rows kept `partial`.
+**No migration unit test** — this module sets `exportSchema = false`, so there is no
+`MigrationTestHelper` harness to hang one on. Worth knowing before you try to add one.
+
+Suite 1191 → 1211, 0 failures.
+
+**Carry-forward rules from this session** (the durable bits, so they survive without a memory
+store):
+
+1. **A new structured, non-chat caller on the coach provider stack must be tried against the
+   *local* provider, not just OpenAI/Gemini.** That is where `text.format` was being silently
+   discarded, and the failure mode is total, not partial. `d3d1371` fixed the client; it did not
+   make the class of bug impossible.
+2. **`Response format = OFF` is a user compatibility choice, not a capability hint.** It means
+   the backend rejects `response_format` outright. A caller's schema never overrides it — the
+   schema goes in the prompt, and every structured caller decodes fence-tolerantly.
+3. **Three ring families are shipped-but-unvalidated**: YCBT (#82), LuckRing/TK18 (#90) and
+   RWfit (#130). #130 in particular was rebuilt entirely from the vendor decompile with no
+   hardware. Blind-porting *from the decompiled vendor app* is the normal practice here;
+   porting from iOS parity or guesswork is what got PR #45 backed out. Say "no hardware
+   validation" on the PR.
+4. **#79 is the one remaining feature gap and its `S` is misleading** — that sizes the iOS fix.
+   Android has no Activity-trends screen at all, so the real work is building the screen.
+5. **Upstream is fully triaged as of 2026-08-23** (live `git fetch`: `origin/main` = `439ca81`,
+   local `main` 0 behind). Local `main` carries one extra commit, `f6eb177`, a demo-seed that is
+   not upstream — do not try to "port" it.
+
+### 2026-08-22 triage (since `88c0f6b` → `439ca81`, 12 commits / 1 first-parent)
+
+Exactly **one** untriaged first-parent item: **PR #93, the Colmi R11 CRP driver** (25 files,
+2876 ins). It is not a normal upstream item — it is the *iOS port of this repo's own Android CRP
+work* (`5427dc0 fix(crp): port the R11 opcode corrections and read-backs from Android`), so the
+driver, the pairing card and the wear-state UX are all ALREADY-HAVE here. Verified present on
+Android before writing this: `CRPDriver/CRPDecoder/CRPProtocol/CRPSyncEngine/CRPCoordinator`,
+`WearableModel.colmiR11CRP` ("Colmi R11 (Da Rings app)", `forcedFamilyScanMatches`), and the
+not-worn measurement hint (`RingSyncCoordinator.measureNotWorn` → `Screens.kt:320`).
+
+**What Android does NOT have** is the hardening iOS added afterwards in `4d65b60` ("reset the
+frame assembler across reconnects, gate connect on fdd3"), an adversarial review of that branch.
+Five of its eight findings apply here; three do not, for reasons worth recording so nobody
+re-ports them.
+
+**Port these five (☑ done 2026-08-22, `c95b6e8`).** Step-by-step instructions, with the Kotlin and
+the tests, are in [`crp-r11-hardening-plan.md`](crp-r11-hardening-plan.md); this list is the summary.
+
+1. **`CONNECTED` fires before the reply channel is live.** `CRPDriver` doesn't override
+   `requiredSubscriptionsBeforeConnected` (only `YCBTDriver` does), so the connection counts as up
+   on the first successful CCCD write — which is `fdd1` (steps), never `fdd3`, which carries every
+   command reply. `RingBLEClient.kt:903` already threads the driver's list through, so this is a
+   one-property override. Consequence today: `runStartup` writes its whole handshake (~26 frames)
+   into a channel we may not be listening to yet, and a lost reply is indistinguishable from a slow
+   one — the exact signature of the opcode bug this driver just fixed. **Highest value of the five.**
+2. **Firmware is re-queried on every poll pass.** `CRPSyncEngine.runStartup` sends
+   `queryFirmwareVersion()` outside the `readBacksSent` gate, while the six read-backs beside it are
+   gated. A firmware string is exactly as immutable as a sensor roster, and this ring funnels the
+   handshake, timing config, history pull *and* on-demand measures through the single `fdd2`
+   channel (a spot SpO2 alone needs ~48 s of it). Fold it into `sendConnectionReadBacks()`.
+3. **The timing-history follow-up guard ignores the day.** `requestedTimingFrames` is keyed
+   `cmd * 100 + frameIndex`. Every timing query is day 0 today, but this engine already issues
+   multi-day sleep requests (`SLEEP_BACKFILL_DAYS = 6`), so the moment vitals get the same backfill
+   the key silently swallows day 1's frame-1 follow-up. Key on `day` as well as `cmd`.
+4. **The firmware string is coerced, not validated.** `CRPDecoder.decodeFirmwareVersion` does
+   `String(payload, Charsets.UTF_8)`, which substitutes U+FFFD rather than failing — a binary
+   payload renders as replacement characters and is presented as a firmware version. Do strict
+   UTF-8, then trim padding, then reject any remaining control byte to an ack.
+5. **The trim is the vendor's, and it is too wide.** The same function uses `trim { it <= ' ' }`,
+   which strips a binary payload's leading junk and passes whatever follows — `01 02 03 41` → `"A"`.
+   iOS deliberately narrowed this. Ports together with (4).
+
+**Do NOT port these three — they don't apply to Android:**
+
+- **Frame-assembler reset across reconnects.** This was iOS's headline bug: auto-reconnect there
+  re-dialled with a bare `central.connect` and kept the driver instance, so a half-assembled frame
+  from the dropped link was completed with bytes from the new one and decoded as a genuine (but
+  fabricated) vital sample. **Android is already safe by construction** — it connects with
+  `autoConnect = false` (`RingBLEClient.kt:804`, matching the official QRing app) and *every*
+  reconnect path funnels through `beginConnect`, which calls `installDriver` (`:787`) and builds a
+  fresh `CRPDriver` with a fresh `CRPFrameAssembler`. Adding a `reset()` hook here would be dead
+  code. `CRPDriver`'s KDoc already states this invariant correctly; keep it accurate if the
+  reconnect path is ever changed to reuse a driver, because that is what would reintroduce the bug.
+- **Half-open sleep-backfill loop.** iOS used `1...0`, which traps if the tuning knob is turned
+  down to today-only. Kotlin's `1..0` is simply an empty range — `for (daysAgo in
+  1..SLEEP_BACKFILL_DAYS)` is already safe at `SLEEP_BACKFILL_DAYS = 0`.
+- **"Once per connection" comment corrections.** Android's comments already say the right thing
+  (`readBacksSent` is documented as per-engine-instance, and a fresh engine is built per connect).
+
+**Effort:** S–M in total; (1) is a one-line override, (2)–(3) are small engine edits, (4)–(5) are
+one decoder function plus tests. No schema change, no UI. Existing `CRPDecoderTest` /
+`CRPSyncEngineTest` / `CRPProtocolTest` are the natural homes for the oracles — iOS added 63 lines
+to `CRPDecoderTests.swift` and 33 to `CRPSyncEngineTests.swift` in the same commit, so port those.
+
+**Also noted:** the iOS-side R11 branch (`feat/colmi-r11-crp-driver`, `4d65b60`) is fully merged
+into iOS `main`; nothing is outstanding on that branch.
 
 ### 2026-07-20 PR #28 review + fix pass (branch `iOS_sync_2026-07-16`)
 
@@ -1399,12 +1605,14 @@ the pre-fix builder. Suite: 794 → 812.
 
 ### Still open
 
-- **#94's actual feature** is `CoachNotificationDataTrigger` (run the due slot when a sync
-  completes, recovering a slot skipped for stale data). Not ported — it's an event-bus subscriber,
-  not the window constant that was mistaken for it.
+- ~~**#94's actual feature**~~ **now ported in `9d43227`** (`CoachNotificationDataTrigger`
+  bus subscriber + (dateKey,slotRaw) dedupe + stale-skip). It was an event-bus subscriber, not the
+  window constant that had been mistaken for it.
 - **#96 subset**: no OFF search, no barcode scan, no AI photo analysis, no coach `log_meal` tool.
-- **Pause intervals**: `activity_events` is never written on Android, so TCX can't drop paused
-  trackpoints yet. `totalPauseSeconds` is honoured.
+- ~~**Pause intervals**~~ **now ported in `71f251e`**: `LiveWorkoutManager.pause/resume`
+  write the `paused`/`resumed` (+ `gps_stopped`/`gps_started`) `activity_events` and
+  `StravaUploader` reads them into `StravaTCXBuilder.pauseIntervals()`, so paused trackpoints drop.
+  `totalPauseSeconds` was already honoured.
 
 ---
 
@@ -1496,10 +1704,15 @@ on, whereas "fixing" it would put us an hour off theirs.
 
 - **Legacy `0x7E`: complete.** Framing, serials, XOR, the `0xFE`/`0xFF` handshake, multi-packet
   reassembly, all six history streams, battery, manifest-gated cascade.
-- **JieLi `0xAB`: framing complete, payloads not.** Handshake, battery, time sync and the ACK
-  discipline work; the `05`-group history bodies have their own per-type layouts that have **not**
-  been extracted. `RWfitSyncEngine` therefore does not request history on a JieLi link, and the
-  driver logs those frames rather than guessing at them.
+- **JieLi `0xAB`: framing and history payloads complete (updated 2026-08-22).** Handshake,
+  battery, time sync and the ACK discipline work; the `05`-group history bodies are now decoded
+  per-type from the vendor parsers (`RWfitJLHistory.kt`; layouts in `x5/b.java`
+  `a0`/`V`/`T`/`Z`/`U`/`S`/`W`/`Y`/`R`, each cited), and `RWfitSyncEngine` fires the whole ported
+  catalog once per connection as bare `{5, type, 0x10}` triples — no payload, the vendor's own
+  request shape (`y.java:345-537`, `TRingHeartRateStatisticsActivity.java:545`). Remaining gaps:
+  sport `{5,14,16}` (`Q`), Muslim count `{5,23,16}` (`X`) and the other non-metric `05` keys (the
+  driver still logs those), and the `{5,x,0x30}` delete variants — which have **no vendor parser**
+  in `x5/b.java` at all and are never sent here.
 - **Feature bitmap not decoded** (`x5/b.java i()` → `SupportMenuBean`), so `bitmapGatedCapabilities`
   is declared but nothing grants from it yet. Manual/realtime measurement and the per-SKU sensors
   stay ungranted rather than being handed out unconditionally — the vendor has no legacy on-demand
@@ -1509,8 +1722,11 @@ on, whereas "fixing" it would put us an hour off theirs.
 
 ### Testing
 
-49 unit tests across `RWfitCodecTest` (20), `RWfitDecoderTest` (16) and `RWfitDriverTest` (13),
-asserting vendor byte layouts rather than the implementation. Suite: 812 → 866.
+Unit tests across `RWfitCodecTest` (20), `RWfitDecoderTest` (17), `RWfitJLHistoryTest` (17) and
+`RWfitDriverTest` (21), asserting vendor byte layouts rather than the implementation. The 2026-08-22
+JieLi payload port added `RWfitJLHistoryTest` and replaced the old "JieLi does not request history"
+driver test with the burst/once-per-connection/reply-decode set; parent re-ran the full suite after
+landing: **1191 tests, 0 failures** (was 1170).
 
 **No hardware validation.** Nothing here has talked to a real RWfit ring. Say so on the PR.
 

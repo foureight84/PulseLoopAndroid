@@ -77,6 +77,24 @@ fun PulseLoopApp() {
         val batteryAlerts = remember { com.pulseloop.service.BatteryAlertMonitor(context) }
         val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
         val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
+        // iOS #94: runs the due check-in slot the moment a full sync completes, so a
+        // slot the periodic worker skipped for stale data is delivered a few minutes
+        // later instead of being lost. Same app-lifetime lifecycle as the coordinator.
+        val checkinDataTrigger = remember {
+            com.pulseloop.notifications.CoachNotificationDataTrigger(
+                context = context,
+                checkinSettings = {
+                    com.pulseloop.notifications.CoachCheckinSettings(
+                        coachEnabled = apiKeyStore.coachEnabled,
+                        notificationsEnabled = apiKeyStore.notificationsEnabled,
+                        apiKey = apiKeyStore.apiKey,
+                        model = apiKeyStore.model,
+                        morningHour = apiKeyStore.morningHour,
+                        eveningHour = apiKeyStore.eveningHour,
+                    )
+                },
+            )
+        }
 
         // ── Coach wiring ─────────────────────────────────────────────────
         // Both the client AND the feature flags are resolved per turn through
@@ -85,6 +103,12 @@ fun PulseLoopApp() {
         // without rebuilding the orchestrator — a frozen flags snapshot would
         // keep coachEnabled=false after a key is pasted, or send a stale model
         // slug to a newly selected provider, until process restart.
+        // One Open Food Facts client for the lifetime of composition: the nutrition tools
+        // (iOS #96 `search_food_database`) reach it through the per-turn ToolExecutionContext.
+        // toolContextFactory is called once per turn, so remembering the client keeps the
+        // OkHttp stack off the per-turn rebuild path.
+        val foodClient = remember { com.pulseloop.nutrition.OpenFoodFactsClient() }
+
         val coachOrchestrator = remember {
             CoachOrchestrator(
                 com.pulseloop.coach.config.CoachClientResolver.clientFactory(providerStore, apiKeyStore),
@@ -108,6 +132,7 @@ fun PulseLoopApp() {
                         db = db,
                         flags = flags,
                         coordinator = coordinator,
+                        foodClient = foodClient,
                     )
                 },
             )
@@ -172,6 +197,7 @@ fun PulseLoopApp() {
             batteryAlerts.start()
             coordinator.start()
             summaryCoordinator.start()
+            checkinDataTrigger.start()
 
             // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
             // process restart — the live GATT is gone, so the views would otherwise show a

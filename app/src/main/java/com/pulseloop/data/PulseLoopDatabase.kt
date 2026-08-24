@@ -43,7 +43,7 @@ import com.pulseloop.data.entity.*
         MealEntryEntity::class,
         CachedFoodProductEntity::class,
     ],
-    version = 21,
+    version = 23,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -54,6 +54,9 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun deviceMeasurementConfigDao(): DeviceMeasurementConfigDao
     abstract fun activitySessionDao(): ActivitySessionDao
     abstract fun activityGpsPointDao(): ActivityGpsPointDao
+    // ActivityEventEntity is already in the @Database entities above (and "activity_events" is
+    // in ALL_TABLES), so exposing its DAO adds no schema — no version bump, no migration.
+    abstract fun activityEventDao(): ActivityEventDao
     abstract fun sleepSessionDao(): SleepSessionDao
     abstract fun sleepStageBlockDao(): SleepStageBlockDao
     abstract fun coachConversationDao(): CoachConversationDao
@@ -408,6 +411,37 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v21 -> v22: per-day/slot dedupe on delivered check-ins (iOS #94
+         * CoachNotificationDataTrigger). The data trigger re-runs the due slot when a
+         * full sync completes, so both the periodic worker and the trigger need a shared
+         * "did this slot already fire today?" lookup — dateKey (local epoch day) + slotRaw
+         * (lowercase slot name) is that key. Both columns are NOT NULL with defaults so
+         * pre-#94 rows (and archive restores, which don't carry the fields) get 0/"" and
+         * can never match a real dedupe query. The composite index backs the EXISTS check.
+         */
+        private val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `coach_notification_records` ADD COLUMN `dateKey` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `coach_notification_records` ADD COLUMN `slotRaw` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_coach_notification_records_dateKey_slotRaw` ON `coach_notification_records` (`dateKey`, `slotRaw`)")
+            }
+        }
+
+        /**
+         * Normalizes `meal_entries.confidenceRaw`. The column defaulted to "medium", which is
+         * not a value in the known/partial/unknown vocabulary the rest of the app (and iOS)
+         * uses — every deliberate writer maps onto those three, so any stored "medium" is the
+         * old default leaking through, never a user's or the coach's intent. iOS's own reader
+         * falls back to `.known` for an unrecognized raw (NutritionModels.swift:147), so this
+         * just makes the stored bytes agree with how both platforms already read them.
+         */
+        private val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE `meal_entries` SET `confidenceRaw` = 'known' WHERE `confidenceRaw` = 'medium'")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -495,6 +529,8 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_18_19,
                         MIGRATION_19_20,
                         MIGRATION_20_21,
+                        MIGRATION_21_22,
+                        MIGRATION_22_23,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

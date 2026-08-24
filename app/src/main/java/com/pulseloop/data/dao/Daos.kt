@@ -272,6 +272,20 @@ interface ActivityGpsPointDao {
 }
 
 @Dao
+interface ActivityEventDao {
+    // iOS ActivityRepository.events(): the pause/resume lifecycle markers the live-workout
+    // recorder writes (LiveWorkoutManager.pause/resume mirror PulseServices.pause/resume). The
+    // Strava TCX build reads them to drop trackpoints recorded while paused — before this DAO
+    // existed the table had neither an Android writer nor a reader, so every upload carried the
+    // paused span's fixes.
+    @Query("SELECT * FROM activity_events WHERE sessionId = :sessionId ORDER BY timestamp ASC")
+    suspend fun forSession(sessionId: String): List<ActivityEventEntity>
+
+    @Insert
+    suspend fun insert(event: ActivityEventEntity)
+}
+
+@Dao
 interface SleepSessionDao {
     // A day can now hold several sessions (main night + daytime naps, split by SleepSegmentation).
     // Single-session callers (Today tile, widget, coach) want the *main* sleep, so surface the
@@ -500,6 +514,12 @@ interface CoachNotificationRecordDao {
     @Query("SELECT * FROM coach_notification_records ORDER BY createdAt DESC LIMIT :limit")
     suspend fun recent(limit: Int = 6): List<CoachNotificationRecordEntity>
 
+    /** Whether a check-in was already recorded for (day, slot) — the iOS #94 dedupe
+     *  that makes the periodic worker and the sync-completion data trigger safe to
+     *  both run the due slot without double-sending. */
+    @Query("SELECT EXISTS(SELECT 1 FROM coach_notification_records WHERE dateKey = :dateKey AND slotRaw = :slotRaw)")
+    suspend fun existsForDateKeyAndSlot(dateKey: Long, slotRaw: String): Boolean
+
     @Query("DELETE FROM coach_notification_records")
     suspend fun clear()
 }
@@ -524,6 +544,11 @@ interface MealEntryDao {
      *  demo/mock exclusion as the other groups. */
     @Query("SELECT * FROM meal_entries WHERE updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY updatedAt ASC")
     suspend fun updatedSince(watermark: Long): List<MealEntryEntity>
+
+    /** Coach update/delete meal tools (iOS #96): single-entry lookup by primary key.
+     *  Query-only — no schema change. (Deletion already exists as [deleteById].) */
+    @Query("SELECT * FROM meal_entries WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): MealEntryEntity?
 
     @Upsert
     suspend fun upsert(entry: MealEntryEntity)
@@ -553,6 +578,22 @@ interface FoodProductDao {
 
     @Upsert
     suspend fun upsert(product: CachedFoodProductEntity)
+
+    /** Row count — the cheap probe iOS's `upsertCachedProduct` runs before deciding to prune. */
+    @Query("SELECT COUNT(*) FROM food_products")
+    suspend fun count(): Int
+
+    /**
+     * Bounded LRU (iOS `pruneProductCache`): keep the [keep] most recently used rows and
+     * delete the rest in a single statement. The NOT IN subquery is the whole table when the
+     * cache is at or under the cap, so the statement is a no-op there; `code` only breaks
+     * `lastUsedAt` ties, deterministically. Query-only — no schema change.
+     */
+    @Query(
+        "DELETE FROM food_products WHERE code NOT IN " +
+            "(SELECT code FROM food_products ORDER BY lastUsedAt DESC, code ASC LIMIT :keep)",
+    )
+    suspend fun prune(keep: Int)
 
     @Query("DELETE FROM food_products")
     suspend fun clear()

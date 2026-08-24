@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.work.WorkManager
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.entity.ActivityEventEntity
 import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.ui.components.ActivityMeta
 import kotlinx.coroutines.*
@@ -89,9 +90,15 @@ class LiveWorkoutManager(
 
     suspend fun pause(session: ActivitySessionEntity) {
         val now = System.currentTimeMillis()
-        // endedAt doubles as the pausedAt marker — resume() turns it into a pause span and
-        // clears it. iOS keeps a `paused` ActivityEvent instead; the marker column is the
-        // Android equivalent since there is no event table here. Do NOT add to
+        // Mirror iOS PulseServices.pause (PulseServices.swift): write the `paused` +
+        // `gps_stopped` ActivityEvents so the Strava TCX build can pair this pause with its
+        // later `resumed` and drop the trackpoints recorded while paused. Both events share
+        // this one `now` timestamp, exactly like iOS's single Date() stamp.
+        // The endedAt column STILL doubles as the pausedAt marker alongside the events:
+        // resume() turns it into the pause span and clears it, and it is what
+        // totalPauseSeconds is computed from — the tick clock, the finish carry, and the TCX
+        // TotalTimeSeconds all key on it. iOS computes the span from the last `paused` event
+        // instead; keeping the marker means all that existing math is untouched. Do NOT add to
         // totalPauseSeconds here: the pause span isn't known until resume/finish, and the old
         // code added the entire elapsed-since-start, corrupting every downstream duration.
         val updated = session.copy(
@@ -100,6 +107,10 @@ class LiveWorkoutManager(
             updatedAt = now,
         )
         db.activitySessionDao().upsert(updated)
+        // The pause markers themselves (why: see the comment above). The TCX builder reacts
+        // only to `paused`/`resumed`; `gps_stopped` documents the GPS stop, for parity with iOS.
+        db.activityEventDao().insert(ActivityEventEntity(sessionId = session.id, kind = "paused", timestamp = now))
+        db.activityEventDao().insert(ActivityEventEntity(sessionId = session.id, kind = "gps_stopped", timestamp = now))
         gps.stop()
         polling.pause()
         tickJob?.cancel()
@@ -109,7 +120,8 @@ class LiveWorkoutManager(
 
     suspend fun resume(session: ActivitySessionEntity) {
         val now = System.currentTimeMillis()
-        // Only the actual pause span joins the total (iOS: `now - lastPause.timestamp` at resume).
+        // Only the actual pause span joins the total (iOS: `now - lastPause.timestamp` at resume
+        // — the span from the last `paused` event; the endedAt marker holds the same value here).
         val pausedAt = session.endedAt ?: now
         val updated = session.copy(
             statusRaw = "recording",
@@ -118,6 +130,10 @@ class LiveWorkoutManager(
             updatedAt = now,
         )
         db.activitySessionDao().upsert(updated)
+        // Mirror iOS PulseServices.resume: `resumed` closes the open pause for the TCX builder;
+        // `gps_started` documents the GPS restart. Same shared `now` as iOS's single Date().
+        db.activityEventDao().insert(ActivityEventEntity(sessionId = session.id, kind = "resumed", timestamp = now))
+        db.activityEventDao().insert(ActivityEventEntity(sessionId = session.id, kind = "gps_started", timestamp = now))
         if (updated.useGps) gps.start(updated.id, updated.type)
         polling.resume()
         startTick(updated)

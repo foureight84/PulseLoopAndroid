@@ -44,10 +44,16 @@ object StravaUploader {
         val hrEnd = session.endedAt ?: System.currentTimeMillis()
         val hrSamples = db.measurementDao().range(MeasurementKind.HEART_RATE.name, session.startedAt, hrEnd)
 
-        // Pause *intervals* would let us drop trackpoints recorded while paused, but Android never
-        // writes the activity_events table, so there are none to read. `totalPauseSeconds` is
-        // maintained, and the builder already subtracts it from TotalTimeSeconds.
-        val tcx = StravaTCXBuilder.build(session, gpsPoints, hrSamples, pauseIntervals = emptyList())
+        // Pause *intervals* let the builder drop trackpoints recorded while paused. The
+        // live-workout recorder writes `paused`/`resumed` (+ `gps_stopped`/`gps_started`)
+        // events per session — LiveWorkoutManager.pause/resume, mirroring iOS PulseServices —
+        // so read them back on the same DAO path as gpsPoints/hrSamples above. A workout
+        // finished while paused has no closing `resumed`; pauseIntervals closes that trailing
+        // pause at hrEnd. `totalPauseSeconds` is still subtracted from TotalTimeSeconds by the
+        // builder (the endedAt marker kept alongside the events is what maintains it).
+        val events = db.activityEventDao().forSession(session.id)
+        val pauses = StravaTCXBuilder.pauseIntervals(events, hrEnd)
+        val tcx = StravaTCXBuilder.build(session, gpsPoints, hrSamples, pauseIntervals = pauses)
 
         return if (tcx != null) {
             uploadTcx(session, tcx, name, tokens, tokenStore)

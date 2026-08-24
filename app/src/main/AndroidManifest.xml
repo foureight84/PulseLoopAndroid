@@ -21,6 +21,12 @@
     <!-- Phase 7: Notifications for coach check-ins (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Phase 9 (iOS #96 stage A): barcode scanner. The scanner screen falls back to a
+         message when the permission is denied or no camera exists (iOS
+         BarcodeScannerSheet.swift:20-39), so the camera is NOT required. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
     <!-- Phase 4+: Foreground service for workout. Android 14+ requires the "health" foreground
          service type to be paired with at least one of ACTIVITY_RECOGNITION/BODY_SENSORS/
          HIGH_SAMPLING_RATE_SENSORS or startForeground() throws SecurityException — this was

@@ -25,29 +25,29 @@ class CRPSyncEngineTest {
      *  `daysAgo` rising in the payload — see CRPSyncEngine.sendSleepBackfill. */
     private val sleepBackfill = List(6) { 2 to 14 }
 
-    /** The read-backs that let the ring describe itself instead of us guessing: SpO2 support type,
-     *  then each all-day monitor's configured interval. See CRPSyncEngine.runStartup. */
-    private val readBackQueries = listOf(2 to 37, 2 to 6, 2 to 7, 2 to 8, 2 to 45, 2 to 21)
+    /** The connection-scoped self-description queries, sent once per connection: the firmware
+     *  version, SpO2 support type, then each all-day monitor's configured interval.
+     *  See CRPSyncEngine.runStartup / sendConnectionQueries. */
+    private val connectionQueries = listOf(3 to 3, 2 to 37, 2 to 6, 2 to 7, 2 to 8, 2 to 45, 2 to 21)
 
     /** The all-day monitor enables sent on connect (default ALL_ON): HR, HRV, stress, SpO2, temp —
      *  see CRPSyncEngine.applyTimingSettings. Without these a fresh R11 records no history. */
     private val timingEnables = listOf(1 to 6, 1 to 7, 1 to 39, 1 to 8, 1 to 13)
 
     @Test
-    fun `runStartup sends set-time, firmware query, user info, default monitor enables, then the history pull`() {
-        // The firmware query is 3/3 (`b1/l.k` -> d1/b.queryFirmwareVersion), NOT the 7/1 it used to
-        // send -- that opcode is the vendor's `querySavedGomoreKey` and the R11 never answers it.
+    fun `runStartup sends set-time, the connection queries, user info, default monitor enables, then the history pull`() {
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)
         engine.runStartup()
-        // set-time, firmware query, read-backs, default-on monitor enables, then the history pull.
+        // set-time, then the once-per-connection self-description queries (firmware + read-backs),
+        // the default-on monitor enables, then the history pull.
         //
-        // The read-backs MUST precede the enables: they report each monitor's current interval, and
-        // the enables force everything on moments later. Asking afterwards would only describe the
-        // state we just imposed. If this assertion fails, move the call site back — don't reorder the
-        // expectation. See CRPSyncEngine.sendConnectionReadBacks.
+        // The connection queries MUST precede the enables: the state queries report each monitor's
+        // current interval, and the enables force everything on moments later. Asking afterwards
+        // would only describe the state we just imposed. If this assertion fails, move the call
+        // site back — don't reorder the expectation. See CRPSyncEngine.sendConnectionQueries.
         assertEquals(
-            listOf(1 to 1, 3 to 3) + readBackQueries + timingEnables + historyQueries + sleepBackfill,
+            listOf(1 to 1) + connectionQueries + timingEnables + historyQueries + sleepBackfill,
             w.opcodes(),
         )
 
@@ -56,11 +56,12 @@ class CRPSyncEngineTest {
             UserProfileValues(metric = true, gender = 1u, age = 30u, heightCm = 180u, weightKg = 75u),
         )
         engine.runStartup()
-        // A second pass on the same connection re-sends the poll work but NOT the read-backs, and
+        // A second pass on the same connection re-sends the poll work but NOT the connection
+        // queries (firmware included — a firmware string is as immutable as the sensor roster) and
         // NOT the sleep backfill — what the ring supports cannot change between syncs, and the older
         // nights were already pulled. runStartup is the ~30-minute background sync, so anything
         // repeated here lands on the single fdd2 channel every half hour forever.
-        assertEquals(listOf(1 to 1, 3 to 3, 1 to 0) + timingEnables + historyQueries, w.opcodes())
+        assertEquals(listOf(1 to 1, 1 to 0) + timingEnables + historyQueries, w.opcodes())
     }
 
     @Test
@@ -80,28 +81,48 @@ class CRPSyncEngineTest {
 
     /**
      * `runStartup` doubles as the ~30-minute background poll and is also reached from
-     * `refresh()`/`querySleep()`. Re-asking what the ring supports on every one of those would add
-     * six writes per pass to the single `fdd2` channel a spot SpO2 needs for ~48 s. A fresh engine is
-     * built per connection, so the next connection asks again.
+     * `refresh()`/`querySleep()`. Re-asking what the ring supports (and its firmware) on every one
+     * of those would add seven writes per pass to the single `fdd2` channel a spot SpO2 needs for
+     * ~48 s. A fresh engine is built per connection, so the next connection asks again.
      */
     @Test
-    fun `read-backs are sent once per connection, not once per poll pass`() {
+    fun `connection queries are sent once per connection, not once per poll pass`() {
         val w = FakeWriter()
         val engine = CRPSyncEngine(w)
         engine.runStartup()
-        assertTrue(w.opcodes().containsAll(readBackQueries))
+        assertTrue(w.opcodes().containsAll(connectionQueries))
 
         w.sent.clear()
         engine.runStartup()
         engine.runStartup()
-        for (q in readBackQueries) {
-            assertTrue("read-back $q must not repeat within a connection", q !in w.opcodes())
+        for (q in connectionQueries) {
+            assertTrue("connection query $q must not repeat within a connection", q !in w.opcodes())
         }
 
         // A new connection builds a new engine, which asks again.
         val reconnected = FakeWriter()
         CRPSyncEngine(reconnected).runStartup()
-        assertTrue(reconnected.opcodes().containsAll(readBackQueries))
+        assertTrue(reconnected.opcodes().containsAll(connectionQueries))
+    }
+
+    @Test
+    fun `firmware is asked once per connection, not on every poll pass`() {
+        // runStartup IS the ~30-minute background sync. A firmware string is exactly as immutable
+        // as the sensor roster gated beside it, and fdd2 is the scarce channel (a spot SpO2 needs
+        // ~48 s of it).
+        val w = FakeWriter()
+        val engine = CRPSyncEngine(w)
+        engine.runStartup()
+        assertTrue("firmware asked on the first pass", (3 to 3) in w.opcodes())
+
+        w.sent.clear()
+        engine.runStartup()
+        assertTrue("firmware must not repeat every pass", (3 to 3) !in w.opcodes())
+
+        // A new connection builds a new engine, which asks again.
+        val reconnected = FakeWriter()
+        CRPSyncEngine(reconnected).runStartup()
+        assertTrue((3 to 3) in reconnected.opcodes())
     }
 
     @Test
@@ -189,6 +210,22 @@ class CRPSyncEngineTest {
         engine.runStartup(); w.sent.clear()
         engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_TIMING_HR, 0, 0))
         assertEquals(1, w.sent.size)
+    }
+
+    @Test
+    fun `the follow-up guard distinguishes days`() {
+        // The engine already issues multi-day sleep requests (sendSleepBackfill); the moment the
+        // timing vitals get the same backfill, a key without `day` would silently swallow day 1's
+        // frame-1 follow-up. A different day must be a different follow-up.
+        val w = FakeWriter()
+        val engine = CRPSyncEngine(w)
+        engine.runStartup(); w.sent.clear()
+        engine.handle(RingDecodedEvent.TimingHistoryFrame(cmd = CRPCommands.CMD_QUERY_TIMING_HR, day = 0, frameIndex = 0))
+        engine.handle(RingDecodedEvent.TimingHistoryFrame(cmd = CRPCommands.CMD_QUERY_TIMING_HR, day = 1, frameIndex = 0))
+        assertEquals("a different day is a different follow-up", 2, w.sent.size)
+        // queryTimingHeartRateHistory frames the [day][frameIndex] payload at frame bytes 6/7.
+        assertEquals(0, w.sent[0][6].toInt())   // day 0 in the payload
+        assertEquals(1, w.sent[1][6].toInt())   // day 1
     }
 
     @Test

@@ -66,7 +66,11 @@ class RWfitEncoder(
 
     /**
      * One history stream. Legacy requests carry an **empty payload** — the ring replies with
-     * everything it holds for that stream (`blesdk/service/l.java`).
+     * everything it holds for that stream (`blesdk/service/l.java`). JieLi requests are the bare
+     * `{5, type, 0x10}` triple with **no payload at all** — the vendor's own senders are exactly
+     * that (`blesdk/service/y.java:345-537`, one per stream; UI screens likewise, e.g.
+     * `TRingHeartRateStatisticsActivity.java:545`), and the reply is a single (possibly
+     * multi-packet) frame holding the stream's full record list.
      *
      * Returns null when the stream doesn't exist on this framing (HRV/stress/blood sugar are
      * JieLi-only; breathe is legacy-only).

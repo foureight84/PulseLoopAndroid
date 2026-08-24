@@ -21,7 +21,7 @@ android {
         // versionCode/versionName are overridable from Gradle properties so the release CI
         // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
         // Local builds fall back to the literals below.
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 38
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 39
         versionName = (project.findProperty("appVersionName") as String?) ?: "2.7.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -171,6 +171,23 @@ dependencies {
     // 1.1.0 is the current stable (verified 2026-08-14); the official guide targets the 1.1.0
     // series, so it is a faithful API reference for this pin.
     implementation("androidx.health.connect:connect-client:1.1.0")
+
+    // Phase 9 (iOS #96 stage A): barcode scanner. ML Kit's bundled-model artifact runs
+    // regardless of Play Services state (the -play-services variant would dead-end on
+    // devices without the updated services). CameraX 1.4.x for preview + analysis.
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    val cameraXVersion = "1.4.2"
+    implementation("androidx.camera:camera-core:$cameraXVersion")
+    // The CameraX camera2 implementation artifact is "camera-camera2" (the partial's
+    // "camera2" coordinate does not exist on Google Maven).
+    implementation("androidx.camera:camera-camera2:$cameraXVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
+    implementation("androidx.camera:camera-view:$cameraXVersion")
+
+    // CameraX's ProcessCameraProvider.getInstance() exposes Guava ListenableFuture in its
+    // signature, but the graph also carries Google's "9999.0-empty-to-avoid-conflict-with-guava"
+    // stub, which strips the class at compile time. Full guava restores it.
+    implementation("com.google.guava:guava:33.3.1-android")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

@@ -18,6 +18,14 @@ object PendingActionExecutor {
     )
 
     suspend fun execute(action: PendingAction, db: PulseLoopDatabase): String {
+        // Meal actions (iOS #96) target a MealEntry, not an ActivitySession — branch before
+        // the session lookup so a meal id is never matched against activity ids.
+        if (action.kind == PendingActionKind.UPDATE_MEAL_ENTRY ||
+            action.kind == PendingActionKind.DELETE_MEAL_ENTRY
+        ) {
+            return executeMeal(action, db)
+        }
+
         val sessions = db.activitySessionDao().recent(200)
         val session = sessions.firstOrNull { it.id == action.activityId }
             ?: return "That workout no longer exists."
@@ -25,6 +33,10 @@ object PendingActionExecutor {
         val typeLabel = activityLabels[session.type] ?: session.type
 
         return when (action.kind) {
+            // Meal kinds are handled by the early return above (before the session lookup, since
+            // a meal id is never an activity id); these keep the when exhaustive.
+            PendingActionKind.DELETE_MEAL_ENTRY,
+            PendingActionKind.UPDATE_MEAL_ENTRY -> executeMeal(action, db)
             PendingActionKind.DELETE_ACTIVITY_SESSION -> {
                 com.pulseloop.service.ActivityRollup.reverse(db, session)
                 db.activitySessionDao().upsert(
@@ -40,6 +52,34 @@ object PendingActionExecutor {
                 applyUpdates(db, action.updates, session)
                 "Updated the $typeLabel session."
             }
+        }
+    }
+
+    /**
+     * Ported from executeMeal in PendingActionExecutor.swift (iOS PR #96). The meal id rides
+     * [PendingAction.activityId] — the field is named for the original activity actions and
+     * meal actions reuse it (older persisted cards keep decoding). Updates apply through
+     * [com.pulseloop.coach.tools.NutritionTools.applyMealUpdates], the same pure function the
+     * today-path of the update_meal_entry tool uses, so both paths behave identically.
+     */
+    private suspend fun executeMeal(action: PendingAction, db: PulseLoopDatabase): String {
+        val entry = db.mealEntryDao().byId(action.activityId)
+            ?: return "That meal no longer exists."
+        return when (action.kind) {
+            PendingActionKind.DELETE_MEAL_ENTRY -> {
+                val name = entry.name
+                db.mealEntryDao().deleteById(entry.id)
+                "Deleted \"$name\"."
+            }
+            PendingActionKind.UPDATE_MEAL_ENTRY -> {
+                val updated = action.mealUpdates?.let {
+                    com.pulseloop.coach.tools.NutritionTools.applyMealUpdates(it, entry)
+                } ?: entry
+                db.mealEntryDao().upsert(updated)
+                "Updated \"${updated.name}\"."
+            }
+            // Unreachable: execute() routes only the two meal kinds here.
+            else -> ""
         }
     }
 

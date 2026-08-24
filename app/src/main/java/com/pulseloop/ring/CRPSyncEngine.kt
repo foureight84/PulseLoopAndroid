@@ -34,14 +34,8 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         // Set the device clock first (matches the vendor's connect handshake), then user info so
         // the ring's step/calorie algorithm has real inputs.
         send(CRPProtocol.setTime())
-        // Query firmware version so the UI doesn't show "Firmware: reading" (zaggash's report).
-        // The 23-sends/0-replies in the 2026-07-25 capture were our fault, not the ring's: the old
-        // opcode was group 7 cmd 1, which the vendor SDK uses for `querySavedGomoreKey`, not
-        // firmware. The real query is group 3 cmd 3 (`b1/l.k` → `d1/b.queryFirmwareVersion`), and
-        // it answers with a UTF-8 string — `MOY-R1K3-2.1.6` on zaggash's R11.
-        send(CRPProtocol.queryFirmwareVersion())
         profile?.let { send(userInfoFrame(it)) }
-        sendConnectionReadBacks()
+        sendConnectionQueries()
         // Enable all-day vital monitoring. A fresh ring has these OFF, so without this the ring
         // stores no HR/SpO2/HRV/stress/temperature history and every history query below returns an
         // empty reply (issue #29, zaggash's full-day capture). When the user has saved a config we
@@ -60,24 +54,31 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         queryAllHistory()
     }
 
-    /** Whether this connection's read-backs have been sent. A fresh [CRPSyncEngine] is built per
-     *  connection (`RingBLEClient` calls `driver.makeSyncEngine()` on connect), so instance state
-     *  gives "once per connection" for free. */
-    private var readBacksSent = false
+    /** Whether this connection's self-description queries have been sent. A fresh [CRPSyncEngine]
+     *  is built per connection (`RingBLEClient` calls `driver.makeSyncEngine()` on connect), so
+     *  instance state gives "once per connection" for free. */
+    private var connectionQueriesSent = false
 
     /**
      * Ask the ring to describe itself, once per connection.
      *
+     * The firmware version string (`group 3 / cmd 3`) is immutable between syncs — exactly like
+     * the sensor roster beside it — so it is gated here too, not re-queried on every poll pass.
+     * The version query is group 3 cmd 3 (`b1/l.k` → `d1/b.queryFirmwareVersion`), NOT the group
+     * 7 cmd 1 it used to send: that opcode is the vendor's `querySavedGomoreKey`, which is why the
+     * R11 answered none of the 23 sends in the 2026-07-25 capture. It answers with a bare UTF-8
+     * string — `MOY-R1K3-2.1.6` on zaggash's R11.
+     *
      * `querySupportSpO2Type` answers NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN; the timing-state
      * queries report each all-day monitor's configured interval (0 = off). Together they are the
      * evidence base for whether a silent history query means "the monitor is off" or "this ring
-     * lacks the sensor" — stress (`2/47`), temperature (`2/22`) and firmware (`7/1`) all went
-     * unanswered on zaggash's ring, and these replies are how we tell those apart next capture.
+     * lacks the sensor" — stress (`2/47`) and temperature (`2/22`) went unanswered on zaggash's
+     * ring, and these replies are how we tell those apart next capture.
      *
      * Deliberately **not** part of the poll pass. [runStartup] doubles as the ~30-minute background
      * re-sync and is also reached from `refresh()`/`querySleep()`, but what a ring supports cannot
-     * change between syncs. Re-asking would add six writes to every pass on a ring that funnels the
-     * handshake, timing config, history pull *and* on-demand measures through the single `fdd2`
+     * change between syncs. Re-asking would add seven writes to every pass on a ring that funnels
+     * the handshake, timing config, history pull *and* on-demand measures through the single `fdd2`
      * channel — and a spot SpO2 needs ~48 s of that channel to return a reading.
      *
      * **Call order matters: this must run BEFORE [applyTimingSettings].** The state queries report
@@ -87,9 +88,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
      * monitor was off. `CRPSyncEngineTest` pins the ordering; if that assertion ever fails, fix the
      * call site rather than the expectation.
      */
-    private fun sendConnectionReadBacks() {
-        if (readBacksSent) return
-        readBacksSent = true
+    private fun sendConnectionQueries() {
+        if (connectionQueriesSent) return
+        connectionQueriesSent = true
+        send(CRPProtocol.queryFirmwareVersion())
         send(CRPProtocol.querySupportSpO2Type())
         send(CRPProtocol.queryTimingHeartRateState())
         send(CRPProtocol.queryTimingHrvState())
@@ -98,10 +100,16 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         send(CRPProtocol.queryTimingTempState())
     }
 
-    /** Frame follow-ups already requested this poll pass, keyed `cmd * 100 + frameIndex`, so a ring
-     *  that re-sends the same frame can't trigger a request storm. Cleared at the start of every
-     *  [queryAllHistory] pass so each sync re-pulls the full timeline. */
-    private val requestedTimingFrames = mutableSetOf<Int>()
+    /** One timing-history follow-up we've already asked for. Keyed on `day` as well as `cmd` —
+     *  today's queries are all day 0, but this engine already issues multi-day requests for sleep
+     *  ([sendSleepBackfill]), and a key without `day` would silently swallow day 1's frame-1
+     *  follow-up the moment the timing vitals get the same backfill treatment. */
+    private data class TimingFrameRequest(val cmd: Int, val day: Int, val frameIndex: Int)
+
+    /** Frame follow-ups already requested this poll pass, so a ring that re-sends the same frame
+     *  can't trigger a request storm. Cleared at the start of every [queryAllHistory] pass so each
+     *  sync re-pulls the full timeline. */
+    private val requestedTimingFrames = mutableSetOf<TimingFrameRequest>()
 
     /** Request the stored all-day timelines the ring has accumulated: the group-2 "timing" vital
      *  timelines (HR/SpO2/HRV/stress), temperature, and sleep. Vendor `u3/g1.java` fires the same set
@@ -123,7 +131,7 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     }
 
     /** Whether this connection has already backfilled older nights. Same "fresh engine per
-     *  connection" trick as [readBacksSent]. */
+     *  connection" trick as [connectionQueriesSent]. */
     private var sleepBackfillSent = false
 
     /**
@@ -176,7 +184,8 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
             if (event.frameIndex >= terminalFrameIndex(event.cmd)) return
             val nextIndex = event.frameIndex + 1
             // Guard against a ring that re-sends the same frame spamming duplicate follow-ups.
-            if (!requestedTimingFrames.add(event.cmd * 100 + nextIndex)) return
+            val request = TimingFrameRequest(event.cmd, event.day, nextIndex)
+            if (!requestedTimingFrames.add(request)) return
             send(timingQuery(event.cmd, event.day, nextIndex))
         }
     }

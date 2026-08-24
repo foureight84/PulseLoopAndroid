@@ -21,7 +21,14 @@ data class MealEntryEntity(
     val servingDescription: String? = null,
     val servingGrams: Double? = null,
     val quantity: Double = 1.0,
-    val confidenceRaw: String = "medium",
+    /**
+     * iOS `MealEntry.init` defaults `confidence: DecodeConfidence = .known`
+     * (NutritionModels.swift:99), and its reader falls back to `.known` for an
+     * unrecognized raw (:147). "medium" was never in the known/partial/unknown
+     * vocabulary — nothing ever wrote it deliberately, it only leaked out of this
+     * default. MIGRATION_22_23 normalizes the rows that got it.
+     */
+    val confidenceRaw: String = "known",
     val userEdited: Boolean = false,
     val notes: String? = null,
     val loggedByCoach: Boolean = false,

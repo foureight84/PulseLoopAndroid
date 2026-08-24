@@ -38,12 +38,30 @@ class LocalOpenAICompatClientTest {
         input: List<JsonObject>,
         tools: List<JsonObject> = emptyList(),
         previousResponseId: String? = null,
+        textFormat: JsonObject? = null,
     ) = JsonObject(buildMap {
         put("model", JsonPrimitive("qwen3:8b"))
         put("input", JsonArray(input))
         put("tools", JsonArray(tools))
         previousResponseId?.let { put("previous_response_id", JsonPrimitive(it)) }
+        textFormat?.let { put("text", JsonObject(mapOf("format" to it))) }
     })
+
+    /** A caller-supplied strict schema, shaped like MealEstimator's `meal_estimate`. */
+    private val mealFormat = JsonObject(mapOf(
+        "type" to JsonPrimitive("json_schema"),
+        "name" to JsonPrimitive("meal_estimate"),
+        "strict" to JsonPrimitive(true),
+        "schema" to JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(mapOf(
+                "name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                "calories" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
+            )),
+            "required" to JsonArray(listOf(JsonPrimitive("name"), JsonPrimitive("calories"))),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
+    ))
 
     private val functionTool = JsonObject(mapOf(
         "type" to JsonPrimitive("function"),
@@ -314,5 +332,67 @@ class LocalOpenAICompatClientTest {
         val toolIdx = m.indexOfFirst { role(it) == "tool" }
         assertTrue(assistantIdx in 0 until toolIdx)
         assertEquals("call_1", m[toolIdx]["tool_call_id"]!!.jsonPrimitive.content)
+    }
+
+    // ── Caller-supplied schema (iOS #96 meal estimator / summary generator) ──
+
+    @Test
+    fun `a caller schema replaces the coach_response schema in response_format`() {
+        val body = client(structured = LocalStructuredOutput.JSON_SCHEMA)
+            .buildRequestBody(request(listOf(msg("user", "hi")), textFormat = mealFormat))
+        val schema = body["response_format"]!!.jsonObject["json_schema"]!!.jsonObject
+        assertEquals("meal_estimate", schema["name"]!!.jsonPrimitive.content)
+        // The point of the fix: a guided-decoding backend must not be handed the chat schema for
+        // a meal call — it would force a shape MealAnalysisLogic.decode can never parse.
+        assertEquals(
+            mealFormat["schema"]!!.jsonObject,
+            schema["schema"]!!.jsonObject,
+        )
+    }
+
+    @Test
+    fun `a caller schema suppresses the coach_response prompt instruction`() {
+        val body = client(structured = LocalStructuredOutput.JSON_SCHEMA)
+            .buildRequestBody(request(listOf(msg("system", "SYS"), msg("user", "hi")), textFormat = mealFormat))
+        val system = content(messages(body).first { role(it) == "system" })
+        assertTrue(system.startsWith("SYS"))
+        assertFalse(system.contains("coach_response"))
+        assertFalse(system.contains("response_type"))
+        // …and states the caller's schema instead, which is what carries the shape when the
+        // user's Response format is OFF.
+        assertTrue(system.contains("meal_estimate"))
+        assertTrue(system.contains("calories"))
+    }
+
+    @Test
+    fun `no caller schema keeps the coach_response instruction and schema`() {
+        val body = client(structured = LocalStructuredOutput.JSON_SCHEMA)
+            .buildRequestBody(request(listOf(msg("user", "hi"))))
+        assertEquals(
+            "coach_response",
+            body["response_format"]!!.jsonObject["json_schema"]!!.jsonObject["name"]!!.jsonPrimitive.content,
+        )
+        assertTrue(content(messages(body).first { role(it) == "system" }).contains("coach_response"))
+    }
+
+    @Test
+    fun `response format off still sends no response_format even with a caller schema`() {
+        // OFF means "my backend rejects response_format"; a caller's schema does not override
+        // that — it travels in the prompt, and structured callers decode fence-tolerantly.
+        val body = client(structured = LocalStructuredOutput.OFF)
+            .buildRequestBody(request(listOf(msg("user", "hi")), textFormat = mealFormat))
+        assertNull(body["response_format"])
+        assertTrue(content(messages(body).first { role(it) == "system" }).contains("meal_estimate"))
+    }
+
+    @Test
+    fun `a malformed text format is ignored rather than replacing the coach schema`() {
+        val notJsonSchema = JsonObject(mapOf("type" to JsonPrimitive("text")))
+        val body = client(structured = LocalStructuredOutput.JSON_SCHEMA)
+            .buildRequestBody(request(listOf(msg("user", "hi")), textFormat = notJsonSchema))
+        assertEquals(
+            "coach_response",
+            body["response_format"]!!.jsonObject["json_schema"]!!.jsonObject["name"]!!.jsonPrimitive.content,
+        )
     }
 }

@@ -228,7 +228,7 @@ data class PulseArchive(
     val fiberG: Double? = null, val sugarG: Double? = null, val sodiumMg: Double? = null,
     val sourceRaw: String = "manual", val offProductCode: String? = null,
     val servingDescription: String? = null, val servingGrams: Double? = null,
-    val quantity: Double = 1.0, val confidenceRaw: String = "medium",
+    val quantity: Double = 1.0, val confidenceRaw: String = "known",
     val userEdited: Boolean = false, val notes: String? = null,
     val loggedByCoach: Boolean = false, val createdAt: Long,
     // Phase 6: exported so an in-place-edited meal's updatedAt survives an archive round-trip.
