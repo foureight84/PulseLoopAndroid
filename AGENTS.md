@@ -12,6 +12,28 @@ root) and match its actual behavior. Do not port iOS's CoreBluetooth sequencing 
 Bluetooth stack behaves differently (pairing/bonding flow, MTU negotiation, background
 restrictions), and a straight iOS port has caused real pairing/data-collection bugs before.
 
+## Manufacturer data: Android splits the field, iOS doesn't — put the company ID back
+
+`ScanRecord.getManufacturerSpecificData()` returns a `SparseArray` **keyed by company ID, with the
+ID removed from the value**. CoreBluetooth hands iOS the raw block, company ID and all. Every
+coordinator was ported from Swift and therefore matches a little-endian company-ID *prefix*
+(`TK5Coordinator` `10786501`, `ColmiSmartHealthCoordinator` `1078`, `LuckRingCoordinator` `64ff`,
+`RWfitProtocol.MANUFACTURER_HEX_PREFIXES` `d605…`/`d606…`). `RingBLEClient` used to pass
+`valueAt(0)` through untouched, so those prefixes could never appear and **every manufacturer-data
+fallback in the registry was dead code on Android** — a ring whose name the catalog didn't
+recognise matched nothing at all (issue #56, an `Ale-Hop2211 E1C7` YCBT ring). It also read only
+entry 0 despite a comment claiming otherwise.
+
+Build `AdvertisementInfo` through `AdvertisementMatcher` (`WearableDriver.kt`), which restores the
+company ID and offers **every** entry to each coordinator, registry order still outermost. If you
+add a coordinator that matches manufacturer bytes, write the prefix in on-air layout (company ID
+first) and cover it in `AdvertisementMatcherTest`.
+
+Same lesson, different field: a name pattern is one convention, so keep it in one constant.
+`WearableModel.SMARTHEALTH_NAME_PATTERN` gates two decisions in series — whether
+`modelForAdvertisedName` returns a card at all, and whether `ColmiSmartHealthCoordinator` accepts
+the name — and the two copies that used to exist drifted into the same bug.
+
 ## Colmi/Yawell OS-bonding is a hand-curated allowlist — not "match QRing exactly"
 
 **This is the one rule in this file most likely to get silently reverted by a future "generalize

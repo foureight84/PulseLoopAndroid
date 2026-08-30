@@ -1159,13 +1159,18 @@ class RingBLEClient(
 
     private fun matchDeviceType(name: String?, scanRecord: ScanRecord?): RingDeviceType? {
         val serviceUUIDs = scanRecord?.serviceUuids?.map { it.uuid.toString() } ?: emptyList()
-        // Iterate all manufacturer-specific data entries to find a match
-        var mfg: ByteArray? = null
+        // Flatten the SparseArray to (companyId, value) pairs — every entry, not just index 0.
+        // [AdvertisementMatcher] puts the company ID back in front of each value: Android strips
+        // it into the key, the coordinators match it as a prefix, and without it every
+        // manufacturer-data fallback in the registry was unreachable (issue #56).
+        val manufacturerEntries = mutableListOf<Pair<Int, ByteArray>>()
         scanRecord?.manufacturerSpecificData?.let { data ->
-            if (data.size() > 0) mfg = data.valueAt(0)
+            for (i in 0 until data.size()) {
+                val value = data.valueAt(i) ?: continue
+                manufacturerEntries.add(data.keyAt(i) to value)
+            }
         }
-        val info = AdvertisementInfo(serviceUUIDs, mfg)
-        return coordinators.firstOrNull { it.matches(name, info) }?.deviceType
+        return AdvertisementMatcher.match(coordinators, name, serviceUUIDs, manufacturerEntries)
     }
 
     private inline fun updateState(crossinline update: BLEState.() -> BLEState) {

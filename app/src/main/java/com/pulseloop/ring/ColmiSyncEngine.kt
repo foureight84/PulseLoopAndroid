@@ -85,6 +85,20 @@ class ColmiSyncEngine(
     private var manualHRActive = false
     private var manualSpO2Active = false
 
+    /**
+     * This ring answered the `0x1E` realtime-HR request with a `0x9E` error frame, so the session
+     * runs on the `0x69` spot-measure stream instead (see [onRealtimeHeartRateRejected]).
+     *
+     * Sticky for the life of the engine: once a ring has refused `0x1E` it refuses every one of
+     * them, so later workouts skip the probe and start on `0x69` directly. A reconnect builds a
+     * new driver and a new engine, so this never outlives the firmware it was measured against.
+     */
+    @Volatile private var realtimeRejected = false
+
+    /** Wall-clock of the last `0x69` frame seen while the fallback stream runs — the fallback
+     *  keepalive re-issues the start only when the ring has actually gone quiet. */
+    @Volatile private var lastFallbackFrameAt = 0L
+
     /** Last bpm seen while a manual spot measurement runs: QRing reports it in the 0x6A stop
      *  frame so the ring's own measurement log records the reading (0 = cancelled). */
     private var lastManualBpm = 0
@@ -98,6 +112,11 @@ class ColmiSyncEngine(
 
         /** 20 s wall-clock re-arm, matching QRing's HeartActivity timer. */
         private const val REALTIME_KEEPALIVE_MS = 20_000L
+
+        /** How long the `0x69` fallback stream may stay silent before the start is re-issued.
+         *  Generous on purpose: the R09's SpO2 twin streamed warm-up frames for ~25 s before its
+         *  first reading, so a shorter window would restart a measurement that was working. */
+        private const val FALLBACK_STREAM_IDLE_MS = 30_000L
     }
 
     override fun runStartup() {
@@ -176,6 +195,21 @@ class ColmiSyncEngine(
      * the ring's reported interval.
      */
     override fun handleRawNotify(data: ByteArray) {
+        // Realtime-HR rejection / fallback bookkeeping runs ahead of the seeding guard: both are
+        // live-measurement concerns, unrelated to whether a config seed is in progress.
+        val frame = ColmiPacket.validating(data)?.bytes
+        if (frame?.get(0)?.toUByte() == ColmiCommandID.REALTIME_HEART_RATE_ERROR) {
+            onRealtimeHeartRateRejected()
+            return
+        }
+        // Any 0x69 *heart-rate* frame is proof the fallback stream is alive. Reading type matters:
+        // a concurrent 0x69/3 SpO2 measure shares the opcode and must not stand in for HR traffic.
+        if (frame?.get(0)?.toUByte() == ColmiCommandID.MANUAL_HEART_RATE &&
+            frame[1].toUByte() == ColmiCommandID.RT_HEART_RATE
+        ) {
+            lastFallbackFrameAt = System.currentTimeMillis()
+        }
+
         // Device-support reply is independent of config seeding: remember the temperature-path
         // capability and, if the ring wants a bond, ask the client to create one. Return early —
         // a 0x3C frame carries nothing else we consume.
@@ -537,6 +571,12 @@ class ColmiSyncEngine(
     // MARK: Measurement actions
 
     override fun startHeartRate() {
+        // A ring that has already refused 0x1E on this connection never gets asked again — go
+        // straight to the 0x69 stream the vendor app itself uses (see onRealtimeHeartRateRejected).
+        if (realtimeRejected) {
+            startFallbackHeartRateStream()
+            return
+        }
         realtimeHRActive = true
         writer?.enqueue(encoder.realtimeHeartRate(enable = true))
         // Re-arm the stream on a wall-clock timer like QRing (20 s), not per received frame:
@@ -547,6 +587,67 @@ class ColmiSyncEngine(
             while (isActive) {
                 delay(REALTIME_KEEPALIVE_MS)
                 if (realtimeHRActive) writer?.enqueue(encoder.realtimeHeartRateContinue())
+            }
+        }
+    }
+
+    /**
+     * The ring answered `0x1E` with a `0x9E` error frame — it does not implement the continuous
+     * realtime-HR request. Move the live session onto the `0x69` stream instead.
+     *
+     * **Why `0x69` is the right fallback, not a guess.** No `BaseReqCmd` in the decompiled QRing
+     * app is built with opcode 30 — the SDK only ever *receives* `0x1E` (`BeanFactory` case 30 →
+     * `RealTimeHeartRateRsp`, a bare bpm push). `0x1E` as a *request* comes from GadgetBridge
+     * (`YawellRingDeviceSupport.onEnableRealtimeHeartRateMeasurement`), which is where PulseLoop
+     * took it from, and RT-series firmware rejects it. Every live reading QRing itself takes goes
+     * through `StartHeartRateReq.getSimpleReq(TYPE_HEARTRATE=1)` = `0x69 01 00`, whose reply
+     * (`StartHeartRateRsp`: `[type, errCode, value]`) the decoder already maps to
+     * `HeartRateSample`, and which the ring keeps streaming until a `0x6A` stops it.
+     *
+     * Issue #55, `R09_9D07` / firmware `RT09_3.10.22_260420`: every one of the eleven `0x1E`
+     * frames in the user's capture — start, stop and continue alike — came back `9e ee`, so the
+     * workout screen never showed a bpm, while `0x69 03` (SpO2, same command family) streamed
+     * warm-up frames for ~25 s and then returned real readings.
+     */
+    private fun onRealtimeHeartRateRejected() {
+        if (!realtimeHRActive && !realtimeRejected) {
+            // Unsolicited 0x9E with no session running (the ring volunteering a failed reading):
+            // remember the refusal so the next startHeartRate skips the probe, but start nothing.
+            realtimeRejected = true
+            return
+        }
+        realtimeRejected = true
+        if (!realtimeHRActive) return
+        realtimeHRActive = false
+        realtimeKeepaliveJob?.cancel(); realtimeKeepaliveJob = null
+        startFallbackHeartRateStream()
+    }
+
+    /**
+     * Run the live-HR session on `0x69` and keep it alive.
+     *
+     * The re-arm is idle-gated rather than unconditional: the ring streams on its own once
+     * started, and re-issuing `0x69 01` mid-measurement restarts the reading. It fires only after
+     * [FALLBACK_STREAM_IDLE_MS] of silence, which is what covers a ring-side measurement window
+     * expiring partway through a workout. Repeat starts are safe — the capture in issue #55 shows
+     * the ring accepting three `0x69 03` starts in ninety seconds.
+     */
+    private fun startFallbackHeartRateStream() {
+        if (manualHRActive) return  // already streaming on 0x69
+        manualHRActive = true
+        lastManualBpm = 0
+        lastFallbackFrameAt = System.currentTimeMillis()
+        writer?.enqueue(encoder.manualHeartRate(enable = true))
+        realtimeKeepaliveJob?.cancel()
+        realtimeKeepaliveJob = scope.launch {
+            while (isActive) {
+                delay(REALTIME_KEEPALIVE_MS)
+                if (!manualHRActive) continue
+                val silentFor = System.currentTimeMillis() - lastFallbackFrameAt
+                if (silentFor >= FALLBACK_STREAM_IDLE_MS) {
+                    lastFallbackFrameAt = System.currentTimeMillis()
+                    writer?.enqueue(encoder.manualHeartRate(enable = true))
+                }
             }
         }
     }

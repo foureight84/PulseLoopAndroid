@@ -94,19 +94,30 @@ object TK5Coordinator : WearableCoordinator {
  *
  * Both confirmed YCBT rings (`TK5 24AA`, `R99 54DC`) name themselves `<MODEL><SPACE><4 hex>`, while
  * every QRing-Colmi in the catalog uses an underscore (`R02_A1B2`, `COLMI R10_9C3F`). That
- * space-versus-underscore split is the primary signal — not the manufacturer data, which is
- * unconfirmed for this family (the only capture in it, the TK5, isn't even this coordinator).
+ * space-versus-underscore split is the primary signal; the manufacturer marker is the fallback for
+ * a unit the catalog doesn't name, and issue #56 confirmed one (`Ale-Hop2211 E1C7`, company 0x7810)
+ * — the first capture that actually belongs to this coordinator.
  */
 @OptIn(ExperimentalStdlibApi::class)
 object ColmiSmartHealthCoordinator : WearableCoordinator {
     override val deviceType: RingDeviceType = RingDeviceType.COLMI_SMART_HEALTH
 
-    /** The SmartHealth naming convention: model, one space, four hex digits. Anchored end to end. */
-    private val namePattern = Regex("^[A-Za-z0-9]+( [A-Za-z0-9]+)* [0-9A-Fa-f]{4}$")
+    /** The SmartHealth naming convention: model, one space, four hex digits. Anchored end to end.
+     *  The literal lives on [WearableModel.SMARTHEALTH_NAME_PATTERN] — this coordinator and the
+     *  catalog card gate the *same* decision in series (the card decides whether
+     *  `modelForAdvertisedName` returns non-null at all), so a second copy here can only drift.
+     *  It did: both rejected the hyphen in `Ale-Hop2211 E1C7` (issue #56). */
+    private val namePattern = Regex(WearableModel.SMARTHEALTH_NAME_PATTERN)
 
     /** The Yucheng SDK's company ID (0x7810, little-endian => `1078`), matched as a manufacturer-
      *  data prefix. Demoted to corroborating evidence only — never overrides a name match, since a
-     *  QRing-Colmi may carry the same company ID. */
+     *  QRing-Colmi may carry the same company ID.
+     *
+     *  Confirmed on hardware by issue #56: an `Ale-Hop2211 E1C7` (JieLi, model string `TRINITY`,
+     *  ships with SmartHealth) advertises `1078 d408 7700 …` alongside Heart Rate + `FEE7` — the
+     *  same shape the TK5 capture shows, but without TK5's `6501` second word, which is why that
+     *  coordinator stands aside for this one. Until the Android fix in [AdvertisementMatcher] this
+     *  branch was unreachable, so the ring matched nothing at all. */
     private const val MANUFACTURER_HEX_MARKER = "1078"
 
     private fun isSmartHealthName(name: String?): Boolean = name != null && namePattern.matches(name)
