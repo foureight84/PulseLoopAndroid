@@ -79,10 +79,14 @@ class ColmiSyncEngine(
     private val watchdogTimeoutMs = 10_000L
     private val activityWatchdogTimeoutMs = 20_000L
 
-    // Realtime HR keepalive
-    private var realtimeHRActive = false
+    // Realtime HR keepalive.
+    // Volatile: written on Main (start/stop actions), read on the notify thread —
+    // [handleRawNotify] → [onRealtimeHeartRateRejected] decides whether a `0x9E` is the reply to
+    // a live `0x1E` session or an unsolicited push, and a stale read there strands the workout
+    // with no bpm for its whole duration.
+    @Volatile private var realtimeHRActive = false
     private var realtimeKeepaliveJob: Job? = null
-    private var manualHRActive = false
+    @Volatile private var manualHRActive = false
     private var manualSpO2Active = false
 
     /**
@@ -680,6 +684,11 @@ class ColmiSyncEngine(
     override fun stopSpO2() {
         if (!manualSpO2Active) return
         manualSpO2Active = false
+        // `0x6A` tears down the ring's whole realtime engine, HR included — that is exactly why
+        // RingSyncCoordinator follows every spot stop with restartWorkoutHeartRateIfActive(). Drop
+        // the HR bookkeeping with it, or that restart short-circuits on a stream the ring has
+        // already stopped and the workout shows no bpm until the idle keepalive re-arms.
+        manualHRActive = false
         writer?.enqueue(encoder.manualSpO2(enable = false))
     }
 

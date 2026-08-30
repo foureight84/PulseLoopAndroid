@@ -59,12 +59,23 @@ class AdvertisementMatcherTest {
     /** Company 0x7810 (Yucheng) + the exact value bytes from the issue's nRF capture. */
     private val aleHopManufacturer = listOf(0x7810 to bytes("d408770058ddeb05e1c70000bf0c4362b6005c000058ddeb05e1c7"))
 
+    /**
+     * The ring's advertised services, in the form `RingBLEClient` actually builds them
+     * (`scanRecord.serviceUuids.map { it.uuid.toString() }`): Android expands a 16-bit UUID to the
+     * full Bluetooth base UUID, so a short `"0000fee7"` here would silently miss any coordinator
+     * that matches on a service.
+     */
+    private val aleHopServices = listOf(
+        "0000180d-0000-1000-8000-00805f9b34fb",   // Heart Rate
+        "0000fee7-0000-1000-8000-00805f9b34fb",   // Yucheng/Tencent
+    )
+
     @Test
     fun `the reported YCBT ring is claimed by the SmartHealth coordinator`() {
         val matched = AdvertisementMatcher.match(
             registry,
             name = "Ale-Hop2211 E1C7",
-            serviceUUIDs = listOf("0000180d", "0000fee7"),
+            serviceUUIDs = aleHopServices,
             manufacturerEntries = aleHopManufacturer,
         )
         assertEquals(RingDeviceType.COLMI_SMART_HEALTH, matched)
@@ -75,7 +86,7 @@ class AdvertisementMatcherTest {
         // Isolate the manufacturer path from the name path: a name the catalog does not claim.
         // With the company ID restored the Yucheng marker matches; with it stripped — the old
         // valueAt(0) behaviour — nothing in the registry claims the device at all.
-        val serviceUUIDs = listOf("0000180d", "0000fee7")
+        val serviceUUIDs = aleHopServices
         assertEquals(
             RingDeviceType.COLMI_SMART_HEALTH,
             AdvertisementMatcher.match(registry, "Unlabeled", serviceUUIDs, aleHopManufacturer),

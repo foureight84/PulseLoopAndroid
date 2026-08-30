@@ -107,6 +107,28 @@ class ColmiRealtimeHeartRateFallbackTest {
     }
 
     @Test
+    fun `a spot SpO2 stop lets the workout stream be restarted straight away`() {
+        // 0x6A tears down the ring's whole realtime engine, so RingSyncCoordinator follows every
+        // spot stop with restartWorkoutHeartRateIfActive() -> startHeartRate(). That restart must
+        // actually re-issue the 0x69 start rather than short-circuit on stale HR bookkeeping,
+        // or the workout shows no bpm until the idle keepalive re-arms 30s later.
+        val writer = RecordingWriter()
+        val engine = engineWith(writer)
+
+        engine.startHeartRate()
+        engine.handleRawNotify(rejection())   // fallback stream now running on 0x69
+
+        engine.startSpO2()
+        engine.stopSpO2()
+        writer.clear()
+
+        engine.startHeartRate()   // restartWorkoutHeartRateIfActive
+        assertEquals(listOf(0x69), writer.opcodes())
+        assertArrayEquals(byteArrayOf(0x69, 0x01), writer.commands.single())
+        engine.destroy()
+    }
+
+    @Test
     fun `an unsolicited rejection with no session running starts nothing`() {
         val writer = RecordingWriter()
         val engine = engineWith(writer)

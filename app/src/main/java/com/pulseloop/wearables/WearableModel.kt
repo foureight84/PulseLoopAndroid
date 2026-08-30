@@ -222,15 +222,27 @@ data class WearableModel(
          * anchor themselves (`^…$`/`^…`), so `containsMatchIn` mirrors iOS's
          * `NSRegularExpression.firstMatch`.
          */
+        /**
+         * Compiled once per distinct pattern, not once per call: four coordinators consult
+         * [modelForAdvertisedName] and [com.pulseloop.ring.AdvertisementMatcher] now walks the
+         * registry once per manufacturer block, so a single scan result used to recompile the
+         * whole catalog's regexes dozens of times on the scan callback thread. A pattern that
+         * fails to compile maps to `null` and simply never matches, as before.
+         */
+        private val compiledNamePatterns: Map<String, Regex?> =
+            CATALOG.flatMap { it.advertisedNamePatterns }.distinct().associateWith { pattern ->
+                try {
+                    Regex(pattern)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+
         fun modelForAdvertisedName(advertisedName: String?): WearableModel? {
             if (advertisedName == null) return null
             return CATALOG.firstOrNull { model ->
                 model.advertisedNamePatterns.any { pattern ->
-                    try {
-                        Regex(pattern).containsMatchIn(advertisedName)
-                    } catch (_: Exception) {
-                        false
-                    }
+                    compiledNamePatterns[pattern]?.containsMatchIn(advertisedName) == true
                 }
             }
         }
