@@ -40,6 +40,23 @@ data class WearableModel(
     val requiresOsBond: Boolean = false,
 ) {
     companion object {
+        /**
+         * The SmartHealth naming convention: model, one space, four hex digits — the
+         * space-versus-underscore split that separates a SmartHealth-flavoured Colmi (`R99 54DC`)
+         * from a QRing one (`R02_A1B2`). Anchored end to end.
+         *
+         * The model half allows `-` because resellers badge these rings under their own hyphenated
+         * names: the unit in issue #56 advertises as `Ale-Hop2211 E1C7`, a textbook SmartHealth
+         * name that the original `[A-Za-z0-9]`-only class rejected on the hyphen alone. Widening it
+         * cannot pull in a QRing-Colmi — those have no space before the hex — and this is the
+         * broadest card in [CATALOG], scanned last, so every narrower model still gets first shot.
+         *
+         * Shared with `ColmiSmartHealthCoordinator`, which used to keep its own copy of the same
+         * literal. Two copies of one convention is exactly how issue #56 slipped through; keep it
+         * at one.
+         */
+        const val SMARTHEALTH_NAME_PATTERN = "^[A-Za-z0-9-]+( [A-Za-z0-9-]+)* [0-9A-Fa-f]{4}$"
+
         // "jring" is intentionally lowercase — that's how the brand styles its name.
         val JRING = WearableModel(
             id = "jring", displayName = "jring", brand = "jring", family = RingDeviceType.JRING,
@@ -131,7 +148,7 @@ data class WearableModel(
             id = "colmi-smarthealth", displayName = "Colmi / Yawell (SmartHealth app)", brand = "Colmi",
             family = RingDeviceType.COLMI_SMART_HEALTH,
             tint = PulseColors.hrv, blurb = "HR · SpO₂ · Sleep",
-            advertisedNamePatterns = listOf("^[A-Za-z0-9]+( [A-Za-z0-9]+)* [0-9A-Fa-f]{4}$"),
+            advertisedNamePatterns = listOf(SMARTHEALTH_NAME_PATTERN),
         )
 
         // TK18 -- the LuckRing app / "K6" protocol (company ID 0xFF64). The only hardware-tested unit
@@ -205,15 +222,27 @@ data class WearableModel(
          * anchor themselves (`^…$`/`^…`), so `containsMatchIn` mirrors iOS's
          * `NSRegularExpression.firstMatch`.
          */
+        /**
+         * Compiled once per distinct pattern, not once per call: four coordinators consult
+         * [modelForAdvertisedName] and [com.pulseloop.ring.AdvertisementMatcher] now walks the
+         * registry once per manufacturer block, so a single scan result used to recompile the
+         * whole catalog's regexes dozens of times on the scan callback thread. A pattern that
+         * fails to compile maps to `null` and simply never matches, as before.
+         */
+        private val compiledNamePatterns: Map<String, Regex?> =
+            CATALOG.flatMap { it.advertisedNamePatterns }.distinct().associateWith { pattern ->
+                try {
+                    Regex(pattern)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+
         fun modelForAdvertisedName(advertisedName: String?): WearableModel? {
             if (advertisedName == null) return null
             return CATALOG.firstOrNull { model ->
                 model.advertisedNamePatterns.any { pattern ->
-                    try {
-                        Regex(pattern).containsMatchIn(advertisedName)
-                    } catch (_: Exception) {
-                        false
-                    }
+                    compiledNamePatterns[pattern]?.containsMatchIn(advertisedName) == true
                 }
             }
         }

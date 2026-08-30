@@ -206,6 +206,12 @@ interface RingSyncEngine {
 
 /**
  * Ported from [AdvertisementInfo] in WearableCoordinator.swift.
+ *
+ * [manufacturerData] is one manufacturer-specific data block in its **on-air layout**: the
+ * little-endian company ID first, then the vendor bytes. That is what CoreBluetooth hands iOS,
+ * and it is what every coordinator's prefix matches (`1078…`, `64ff…`, `d605…`). Android's
+ * `ScanRecord` splits the same field the other way, so build this through
+ * [AdvertisementMatcher.manufacturerBlocks] rather than from `valueAt()` directly.
  */
 data class AdvertisementInfo(
     val serviceUUIDs: List<String>,
@@ -220,6 +226,63 @@ data class AdvertisementInfo(
 
     override fun hashCode(): Int =
         31 * serviceUUIDs.hashCode() + manufacturerData.contentHashCode()
+}
+
+/**
+ * Turns Android's parsed advertisement fields into the [AdvertisementInfo]s the coordinators
+ * expect, and walks the registry against them.
+ *
+ * Exists because of a platform mismatch that made every manufacturer-data fallback dead code on
+ * Android (issue #56). `ScanRecord.getManufacturerSpecificData()` returns a `SparseArray` **keyed
+ * by company ID with the ID stripped from the value**; the coordinators were ported from Swift,
+ * where CoreBluetooth includes the company ID in the bytes, so they all match a little-endian
+ * company-ID prefix (`TK5Coordinator` `10786501`, `ColmiSmartHealthCoordinator` `1078`,
+ * `LuckRingCoordinator` `64ff`, `RWfitProtocol.MANUFACTURER_HEX_PREFIXES` `d605…`/`d606…`). Those
+ * prefixes can never appear in a `valueAt()` payload, so the fallback never fired for any YCBT,
+ * LuckRing or RWfit ring — a ring whose name the catalog doesn't recognise was simply invisible.
+ */
+object AdvertisementMatcher {
+
+    /**
+     * Re-attach the company ID to each entry, little-endian, restoring the on-air layout.
+     *
+     * Returns one block per entry — **all** of them, not just index 0: a device may advertise
+     * several company blocks and nothing guarantees the family marker is the first. A device with
+     * no manufacturer data yields a single `null` block, so the service/name matches still run.
+     */
+    fun manufacturerBlocks(entries: List<Pair<Int, ByteArray>>): List<ByteArray?> {
+        if (entries.isEmpty()) return listOf(null)
+        return entries.map { (companyId, value) ->
+            byteArrayOf(
+                (companyId and 0xFF).toByte(),
+                ((companyId shr 8) and 0xFF).toByte(),
+            ) + value
+        }
+    }
+
+    /**
+     * First coordinator in registry order that claims the advertisement, or `null`.
+     *
+     * Registry order stays the outer loop — it is load-bearing (see `RingBLEClient.coordinators`) —
+     * so a coordinator listed earlier still wins even when a later one matches a different
+     * manufacturer block of the same device.
+     */
+    fun match(
+        coordinators: List<WearableCoordinator>,
+        name: String?,
+        serviceUUIDs: List<String>,
+        manufacturerEntries: List<Pair<Int, ByteArray>>,
+    ): RingDeviceType? {
+        val blocks = manufacturerBlocks(manufacturerEntries)
+        for (coordinator in coordinators) {
+            for (block in blocks) {
+                if (coordinator.matches(name, AdvertisementInfo(serviceUUIDs, block))) {
+                    return coordinator.deviceType
+                }
+            }
+        }
+        return null
+    }
 }
 
 /**
