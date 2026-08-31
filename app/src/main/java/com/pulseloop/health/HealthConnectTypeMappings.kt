@@ -4,9 +4,11 @@ import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.MealType
 import androidx.health.connect.client.records.SleepSessionRecord
 import com.pulseloop.ring.SleepStage
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
+import java.util.UUID
 
 /**
  * Pure identity + mapping helpers for the Health Connect export — the Android port of the iOS
@@ -58,6 +60,17 @@ object HealthConnectTypeMappings {
      */
     fun hrRecordId(hourStartEpochMs: Long, segmentIndex: Int? = null): String =
         if (segmentIndex == null) "pl-hr-$hourStartEpochMs" else "pl-hr-$hourStartEpochMs-$segmentIndex"
+
+    /**
+     * Bounded v2 sleep identity derived only from the stable Room session id. Corrections can
+     * change a session's duration, bounds, waking day, or main/nap role without changing this id.
+     */
+    fun sleepSessionRecordIdV2(sessionId: String): String {
+        val uuid = UUID.nameUUIDFromBytes(
+            "pulseloop:sleep:v2:$sessionId".toByteArray(StandardCharsets.UTF_8),
+        )
+        return "pl-sleep-v2-$uuid"
+    }
 
     // ── time helpers ──
 

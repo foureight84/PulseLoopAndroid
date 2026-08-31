@@ -71,8 +71,15 @@ object RingEventBridge {
             listOf(PulseEvent.SyncProgress("done"))
 
         is RingDecodedEvent.SleepTimeline -> {
-            if (!isWithinHistoryWindow(decoded._timestamp, now) || decoded.stages.isEmpty()) emptyList()
-            else listOf(PulseEvent.SleepTimeline(decoded._timestamp, decoded.stages, decoded.completeSession))
+            if (!isWithinHistoryWindow(decoded.sessionStart, now) ||
+                !isWithinHistoryWindow(decoded.sessionEnd, now) ||
+                decoded.sessionEnd <= decoded.sessionStart || decoded.segments.isEmpty()) emptyList()
+            else listOf(PulseEvent.SleepTimeline(
+                decoded.sessionStart,
+                decoded.sessionEnd,
+                decoded.segments,
+                decoded.completeSession,
+            ))
         }
 
         is RingDecodedEvent.Battery -> {

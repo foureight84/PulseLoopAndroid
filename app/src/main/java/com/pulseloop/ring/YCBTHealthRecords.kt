@@ -1,6 +1,9 @@
 package com.pulseloop.ring
 
+import com.pulseloop.util.TimeUtil
 import java.time.Instant
+import java.time.Duration
+import java.time.ZoneId
 
 /**
  * Ported from YCBTHealthRecords.swift.
@@ -10,6 +13,9 @@ import java.time.Instant
 object YCBTHealthRecords {
     private const val TEMPERATURE_FILLER: Int = 15
     private const val MAX_SLEEP_SESSION_MINUTES = 24 * 60
+    // Pixel 7 + R10M FCF4 emitted one proven night as three complete records 1h52m and 42m apart.
+    private val MAX_OVERNIGHT_FRAGMENT_GAP = Duration.ofHours(3)
+    private val MAX_STITCHED_SLEEP_SPAN = Duration.ofHours(16)
 
     fun decode(buffer: ByteArray, type: YCBTHistoryType): List<RingDecodedEvent> {
         return when (type) {
@@ -171,38 +177,188 @@ object YCBTHealthRecords {
         var cursor = 0
         while (cursor + headerLength <= buffer.size) {
             val recordLength = YCBTBytes.u16(buffer, cursor + 2)
+            val remaining = buffer.size - cursor
             val segmentsStart = cursor + headerLength
             val declared = maxOf(0, recordLength - headerLength) / segmentLength
             val available = (buffer.size - segmentsStart) / segmentLength
             val segmentCount = minOf(declared, available)
 
-            val stages = mutableListOf<SleepStage>()
-            var sessionStart: Instant? = null
+            val headerStart = YCBTBytes.date(YCBTBytes.u32(buffer, cursor + 4))
+            val headerEnd = YCBTBytes.date(YCBTBytes.u32(buffer, cursor + 8))
+            val headerDuration = Duration.between(headerStart, headerEnd)
+            val validHeader = !headerDuration.isNegative && !headerDuration.isZero &&
+                headerDuration <= Duration.ofMinutes(MAX_SLEEP_SESSION_MINUTES.toLong())
+            val validDeclaredWidth = recordLength >= headerLength &&
+                recordLength <= remaining &&
+                (recordLength - headerLength) % segmentLength == 0
+            val rawSegments = mutableListOf<SleepStageSegment>()
             val seenStarts = mutableSetOf<Int>()
+            var allDeclaredSegmentsValid = true
+            var nextRecordBoundary: Int? = null
             for (index in 0 until segmentCount) {
                 val offset = segmentsStart + index * segmentLength
-                val stage = sleepStage(buffer[offset].toInt() and 0xFF) ?: continue
-                val segmentStart = YCBTBytes.u32(buffer, offset + 1)
-                if (!seenStarts.add(segmentStart)) continue
+                if (buffer[offset] == 0xaf.toByte() && buffer[offset + 1] == 0xfa.toByte()) {
+                    nextRecordBoundary = offset
+                    allDeclaredSegmentsValid = false
+                    break
+                }
+                val stage = sleepStage(buffer[offset].toInt() and 0xFF)
+                val segmentStartRaw = YCBTBytes.u32(buffer, offset + 1)
                 val segmentSeconds = YCBTBytes.u24(buffer, offset + 5)
-                if (sessionStart == null) sessionStart = YCBTBytes.date(segmentStart)
-                val remaining = MAX_SLEEP_SESSION_MINUTES - stages.size
-                if (remaining <= 0) break
-                val minutes = kotlin.math.round(segmentSeconds / 60.0).toInt().coerceIn(1, remaining)
-                repeat(minutes) { stages.add(stage) }
+                val segmentStart = YCBTBytes.date(segmentStartRaw)
+                val segmentEnd = segmentStart.plusSeconds(segmentSeconds.toLong())
+                val validFields = stage != null && segmentSeconds > 0
+                val uniqueStart = seenStarts.add(segmentStartRaw)
+                val intersectsHeader = validHeader && segmentStart < headerEnd && segmentEnd > headerStart
+                if (!validFields || !intersectsHeader) {
+                    allDeclaredSegmentsValid = false
+                }
+                if (validFields && uniqueStart && (!validHeader || intersectsHeader)) {
+                    rawSegments += SleepStageSegment(stage ?: continue, segmentStart, segmentEnd)
+                }
             }
-            if (sessionStart != null && stages.isNotEmpty()) {
+
+            if (segmentCount < declared) allDeclaredSegmentsValid = false
+            val structurallyComplete = validDeclaredWidth && allDeclaredSegmentsValid &&
+                nextRecordBoundary == null
+            val normalized = if (validHeader && structurallyComplete) {
+                when {
+                    declared == 0 -> listOf(SleepStageSegment(SleepStage.UNKNOWN, headerStart, headerEnd))
+                    rawSegments.isEmpty() -> emptyList()
+                    else -> normalizeSleepSegments(headerStart, headerEnd, rawSegments)
+                }
+            } else {
+                fallbackSleepSegments(rawSegments)
+            }
+            if (normalized.isNotEmpty()) {
+                val useHeaderBounds = validHeader && structurallyComplete
+                val sessionStart = if (useHeaderBounds) headerStart else normalized.first().start
+                val sessionEnd = if (useHeaderBounds) headerEnd else normalized.last().end
                 events.add(
                     RingDecodedEvent.SleepTimeline(
-                        _timestamp = sessionStart,
-                        stages = stages,
-                        completeSession = true,
+                        sessionStart = sessionStart,
+                        sessionEnd = sessionEnd,
+                        segments = normalized,
+                        completeSession = useHeaderBounds,
                     )
                 )
             }
-            cursor = segmentsStart + segmentCount * segmentLength
+            cursor = when {
+                nextRecordBoundary != null -> nextRecordBoundary
+                recordLength in headerLength..remaining -> cursor + recordLength
+                recordLength > remaining -> maxOf(cursor + 1, segmentsStart + segmentCount * segmentLength)
+                else -> cursor + 1
+            }
         }
-        return events
+        return stitchCompleteOvernightFragments(events)
+    }
+
+    private fun stitchCompleteOvernightFragments(
+        events: List<RingDecodedEvent>,
+    ): List<RingDecodedEvent> {
+        val timelines = events.filterIsInstance<RingDecodedEvent.SleepTimeline>()
+            .withIndex()
+            .sortedWith(
+                compareBy<IndexedValue<RingDecodedEvent.SleepTimeline>> { it.value.sessionStart }
+                    .thenBy { it.value.sessionEnd }
+                    .thenBy { it.index },
+            )
+            .map { it.value }
+        if (timelines.size < 2) return timelines
+
+        val out = mutableListOf<RingDecodedEvent.SleepTimeline>()
+        var cluster = timelines.first()
+        for (next in timelines.drop(1)) {
+            if (canStitch(cluster, next)) {
+                cluster = RingDecodedEvent.SleepTimeline(
+                    sessionStart = cluster.sessionStart,
+                    sessionEnd = next.sessionEnd,
+                    segments = normalizeSleepSegments(
+                        cluster.sessionStart,
+                        next.sessionEnd,
+                        cluster.segments + next.segments,
+                    ),
+                    completeSession = true,
+                )
+            } else {
+                out += cluster
+                cluster = next
+            }
+        }
+        out += cluster
+        return out
+    }
+
+    private fun canStitch(
+        current: RingDecodedEvent.SleepTimeline,
+        next: RingDecodedEvent.SleepTimeline,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): Boolean {
+        if (!current.completeSession || !next.completeSession) return false
+        if (!isOvernightStart(current.sessionStart, zone) || !isOvernightStart(next.sessionStart, zone)) return false
+        if (TimeUtil.wakingDayLocal(current.sessionStart.toEpochMilli(), zone) !=
+            TimeUtil.wakingDayLocal(next.sessionStart.toEpochMilli(), zone)) return false
+        if (next.sessionStart < current.sessionEnd) return false
+        if (Duration.between(current.sessionEnd, next.sessionStart) > MAX_OVERNIGHT_FRAGMENT_GAP) return false
+        return Duration.between(current.sessionStart, next.sessionEnd) <= MAX_STITCHED_SLEEP_SPAN
+    }
+
+    private fun isOvernightStart(start: Instant, zone: ZoneId): Boolean {
+        val hour = start.atZone(zone).hour
+        return hour >= TimeUtil.SLEEP_EVENING_BOUNDARY_HOUR || hour < 12
+    }
+
+    private fun normalizeSleepSegments(
+        sessionStart: Instant,
+        sessionEnd: Instant,
+        raw: List<SleepStageSegment>,
+    ): List<SleepStageSegment> {
+        if (raw.isEmpty()) return emptyList()
+        val clipped = raw.mapNotNull { segment ->
+            val start = maxOf(segment.start, sessionStart)
+            val end = minOf(segment.end, sessionEnd)
+            if (end <= start) null else segment.copy(start = start, end = end)
+        }.sortedWith(compareBy<SleepStageSegment> { it.start }.thenBy { it.end })
+        if (clipped.isEmpty()) return emptyList()
+
+        val out = mutableListOf<SleepStageSegment>()
+        var cursor = sessionStart
+        for (segment in clipped) {
+            val start = maxOf(segment.start, cursor)
+            if (start >= segment.end) continue
+            if (start > cursor) appendSleepSegment(out, SleepStageSegment(SleepStage.UNKNOWN, cursor, start))
+            appendSleepSegment(out, segment.copy(start = start))
+            cursor = segment.end
+        }
+        if (cursor < sessionEnd) {
+            appendSleepSegment(out, SleepStageSegment(SleepStage.UNKNOWN, cursor, sessionEnd))
+        }
+        return out
+    }
+
+    private fun fallbackSleepSegments(raw: List<SleepStageSegment>): List<SleepStageSegment> {
+        val first = raw.firstOrNull() ?: return emptyList()
+        val limit = first.start.plusSeconds(MAX_SLEEP_SESSION_MINUTES * 60L)
+        val out = mutableListOf<SleepStageSegment>()
+        var cursor = first.start
+        for (segment in raw) {
+            if (cursor >= limit) break
+            val seconds = Duration.between(segment.start, segment.end).seconds
+            if (seconds <= 0) continue
+            val end = minOf(cursor.plusSeconds(seconds), limit)
+            appendSleepSegment(out, SleepStageSegment(segment.stage, cursor, end))
+            cursor = end
+        }
+        return out
+    }
+
+    private fun appendSleepSegment(out: MutableList<SleepStageSegment>, segment: SleepStageSegment) {
+        val previous = out.lastOrNull()
+        if (previous != null && previous.stage == segment.stage && previous.end == segment.start) {
+            out[out.lastIndex] = previous.copy(end = segment.end)
+        } else {
+            out += segment
+        }
     }
 
     private fun sleepStage(tag: Int): SleepStage? {

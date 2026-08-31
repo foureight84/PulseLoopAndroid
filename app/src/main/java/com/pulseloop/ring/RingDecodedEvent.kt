@@ -46,6 +46,28 @@ enum class SleepStage {
     }
 }
 
+data class SleepStageSegment(
+    val stage: SleepStage,
+    val start: Instant,
+    val end: Instant,
+)
+
+internal fun contiguousSleepSegments(start: Instant, stages: List<SleepStage>): List<SleepStageSegment> {
+    if (stages.isEmpty()) return emptyList()
+    val segments = mutableListOf<SleepStageSegment>()
+    var stage = stages.first()
+    var segmentStart = start
+    for (index in 1 until stages.size) {
+        if (stages[index] == stage) continue
+        val segmentEnd = start.plusSeconds(index * 60L)
+        segments += SleepStageSegment(stage, segmentStart, segmentEnd)
+        stage = stages[index]
+        segmentStart = segmentEnd
+    }
+    segments += SleepStageSegment(stage, segmentStart, start.plusSeconds(stages.size * 60L))
+    return segments
+}
+
 /**
  * Ported from [DecodeConfidence] in PulseModels.swift.
  */
@@ -164,11 +186,30 @@ sealed class RingDecodedEvent {
     }
 
     data class SleepTimeline(
-        val _timestamp: Instant,
-        val stages: List<SleepStage>,
+        val sessionStart: Instant,
+        val sessionEnd: Instant,
+        val segments: List<SleepStageSegment>,
         /** True when this event is the ring's complete authoritative session, not one packet. */
         val completeSession: Boolean = false,
     ) : RingDecodedEvent() {
+        constructor(
+            _timestamp: Instant,
+            stages: List<SleepStage>,
+            completeSession: Boolean = false,
+        ) : this(
+            sessionStart = _timestamp,
+            sessionEnd = _timestamp.plusSeconds(stages.size * 60L),
+            segments = contiguousSleepSegments(_timestamp, stages),
+            completeSession = completeSession,
+        )
+
+        val _timestamp: Instant get() = sessionStart
+        val stages: List<SleepStage> get() = segments.flatMap { segment ->
+            val minutes = kotlin.math.round(
+                java.time.Duration.between(segment.start, segment.end).seconds / 60.0
+            ).toInt().coerceAtLeast(0)
+            List(minutes) { segment.stage }
+        }
         override val kind = "sleep_timeline"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = "{}"

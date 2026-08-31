@@ -276,7 +276,12 @@ class EventPersistenceSubscriber(
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.SleepTimeline -> {
-                upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
+                upsertSleepSession(
+                    event.sessionStart.toEpochMilli(),
+                    event.sessionEnd.toEpochMilli(),
+                    event.segments,
+                    event.completeSession,
+                )
             }
             is PulseEvent.SyncProgress -> {
                 if (event.stage == "done") {
@@ -434,21 +439,33 @@ class EventPersistenceSubscriber(
         )
     }
 
-    private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
-        if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
-        db.withTransaction { upsertSleepSessionAtomic(ts, stages, completeSession) }
+    private suspend fun upsertSleepSession(
+        sessionStart: Long,
+        sessionEnd: Long,
+        segments: List<com.pulseloop.ring.SleepStageSegment>,
+        completeSession: Boolean,
+    ) {
+        if (segments.isEmpty() || sessionEnd <= sessionStart ||
+            sessionEnd - sessionStart > MAX_SLEEP_TIMELINE_MILLIS) return
+        db.withTransaction {
+            upsertSleepSessionAtomic(sessionStart, sessionEnd, segments, completeSession)
+        }
     }
 
-    private suspend fun upsertSleepSessionAtomic(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
+    private suspend fun upsertSleepSessionAtomic(
+        sessionStart: Long,
+        sessionEnd: Long,
+        segments: List<com.pulseloop.ring.SleepStageSegment>,
+        completeSession: Boolean,
+    ) {
         // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
         // a night that starts before midnight lands under the morning of waking instead of being
         // split into two sessions at midnight. Matches the iOS reference
         // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
-        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
-        val packetEnd = ts + stages.size * 60_000L
+        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(sessionStart)
         // Include legacy rows keyed to the wrong day if they overlap this packet. Reconciliation
         // re-points their surviving blocks to the correct waking day.
-        val overlapping = db.sleepSessionDao().ringOverlapping(ts, packetEnd)
+        val overlapping = db.sleepSessionDao().ringOverlapping(sessionStart, sessionEnd)
         val existing = (db.sleepSessionDao().ringAllByDay(dayStart) + overlapping).distinctBy { it.id }
         val existingBlocks =
             if (existing.isEmpty()) emptyList()
@@ -457,20 +474,27 @@ class EventPersistenceSubscriber(
         // YCBT complete records are authoritative for their interval, including shortened
         // revisions. Packet-based families replace only the packet interval. In both cases the
         // unaffected blocks remain available for SleepSegmentation to preserve separate naps.
-        val replacements = buildStageBlocks("", ts, stages)
+        val replacements = buildTimestampedStageBlocks("", sessionStart, sessionEnd, segments)
+        if (replacements.isEmpty()) return
+        val replacedSessionIds = if (completeSession) {
+            overlapping.mapTo(mutableSetOf()) { it.id }
+        } else {
+            emptySet()
+        }
         val dayBlocks = replaceOverlappingSleepBlocks(
-            existing = if (completeSession) {
-                val replacedSessionIds = overlapping.mapTo(mutableSetOf()) { it.id }
-                existingBlocks.filterNot { it.sessionId in replacedSessionIds }
-            } else {
-                existingBlocks
-            },
+            existing = existingBlocks,
             replacements = replacements,
-            replacementStart = ts,
-            replacementEnd = packetEnd,
+            replacementStart = sessionStart,
+            replacementEnd = sessionEnd,
+            removeSessionIds = replacedSessionIds,
         )
 
-        reconcileWakingDay(dayStart, existing, dayBlocks)
+        reconcileWakingDay(
+            dayStart,
+            existing,
+            dayBlocks,
+            authoritativeBounds = if (completeSession) sessionStart to sessionEnd else null,
+        )
     }
 
     /**
@@ -500,8 +524,9 @@ class EventPersistenceSubscriber(
         dayStart: Long,
         existing: List<SleepSessionEntity>,
         dayBlocks: List<SleepStageBlockEntity>,
+        authoritativeBounds: Pair<Long, Long>? = null,
     ) = db.withTransaction {
-        val groups = SleepSegmentation.segment(dayBlocks)
+        val groups = buildSleepReconcileGroups(dayBlocks, authoritativeBounds)
 
         // No blocks left on this day — drop the empty rows entirely (their blocks cascade).
         if (groups.isEmpty()) {
@@ -509,38 +534,16 @@ class EventPersistenceSubscriber(
             return@withTransaction
         }
 
-        data class Segment(val blocks: List<SleepStageBlockEntity>, val start: Long, val end: Long)
-        val segments = groups.map { g ->
-            val sorted = g.sortedBy { it.startAt }
-            val start = sorted.first().startAt
-            val end = sorted.maxOf { it.startAt + it.durationMinutes * 60_000L }
-            Segment(sorted, start, end)
-        }
-
-        fun overlap(a0: Long, a1: Long, b0: Long, b1: Long): Long =
-            maxOf(0L, minOf(a1, b1) - maxOf(a0, b0))
-
-        // Greedily match each segment to the best-overlapping unused row; a row also matches when it
-        // contains the segment's start (covers a freshly-created zero-length container row). The
-        // rows' pre-mutation bounds are the match key — `existing` is read before any write below.
-        val available = existing.toMutableList()
-        val matched: List<Pair<Segment, SleepSessionEntity?>> = segments.map { seg ->
-            val best = available.maxByOrNull { overlap(seg.start, seg.end, it.startAt, it.endAt) }
-            if (best != null && (overlap(seg.start, seg.end, best.startAt, best.endAt) > 0L ||
-                    best.startAt in seg.start..seg.end)) {
-                available.remove(best)
-                seg to best
-            } else {
-                seg to null
-            }
-        }
+        val plan = buildSleepReconcilePlan(existing, groups)
 
         // Clear every existing row's blocks up front so re-pointing a block between sessions can't
         // leave a transient duplicate keyed to two sessions at once.
         existing.forEach { db.sleepStageBlockDao().deleteBySession(it.id) }
 
         val now = System.currentTimeMillis()
-        for ((seg, row) in matched) {
+        for (match in plan.matches) {
+            val seg = match.group
+            val row = match.session
             val id = row?.id ?: "sleep-$dayStart-${seg.start}"
             val totalMin = ((seg.end - seg.start) / 60_000L).toInt().coerceAtLeast(0)
             val deepMin = seg.blocks
@@ -560,7 +563,7 @@ class EventPersistenceSubscriber(
                     totalMinutes = totalMin,
                     score = score,
                     syncedAt = now,
-                    updatedAt = now,
+                    updatedAt = row?.let { nextSleepUpdatedAt(now, it.updatedAt) } ?: now,
                 )
             )
             seg.blocks.forEach {
@@ -575,48 +578,7 @@ class EventPersistenceSubscriber(
         }
 
         // Rows not matched to any segment had all their blocks re-pointed away — delete them.
-        available.forEach { db.sleepSessionDao().deleteById(it.id) }
-    }
-
-    /**
-     * Build SleepStageBlockEntity entries with run-length encoding.
-     * Consecutive minutes of the same stage are merged into one block.
-     */
-    private fun buildStageBlocks(sessionId: String, startTs: Long, stages: List<SleepStage>): List<SleepStageBlockEntity> {
-        if (stages.isEmpty()) return emptyList()
-        val blocks = mutableListOf<SleepStageBlockEntity>()
-        var currentStage = stages[0]
-        var blockStart = startTs
-        var blockMinute = 0
-        var duration = 1
-
-        for (i in 1 until stages.size) {
-            val stage = stages[i]
-            if (stage == currentStage) {
-                duration++
-            } else {
-                blocks.add(SleepStageBlockEntity(
-                    sessionId = sessionId,
-                    startAt = blockStart,
-                    startMinute = blockMinute,
-                    durationMinutes = duration,
-                    stageRaw = currentStage.name,
-                ))
-                currentStage = stage
-                blockStart = startTs + i * 60_000L
-                blockMinute = i
-                duration = 1
-            }
-        }
-        // Final block
-        blocks.add(SleepStageBlockEntity(
-            sessionId = sessionId,
-            startAt = blockStart,
-            startMinute = blockMinute,
-            durationMinutes = duration,
-            stageRaw = currentStage.name,
-        ))
-        return blocks
+        plan.deleteSessionIds.forEach { db.sleepSessionDao().deleteById(it) }
     }
 
     /**
@@ -652,12 +614,174 @@ class EventPersistenceSubscriber(
     }
 
     private companion object {
-        const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+        const val MAX_SLEEP_TIMELINE_MILLIS = 24 * 60 * 60_000L
     }
 }
 
 internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
     "history:${kind.key}:$timestamp"
+
+internal fun buildTimestampedStageBlocks(
+    sessionId: String,
+    sessionStart: Long,
+    sessionEnd: Long,
+    segments: List<com.pulseloop.ring.SleepStageSegment>,
+): List<SleepStageBlockEntity> {
+    if (sessionEnd <= sessionStart) return emptyList()
+
+    data class Span(val stage: SleepStage, val durationMillis: Long)
+
+    val normalized = mutableListOf<Span>()
+    var cursor = sessionStart
+    for (segment in segments.sortedWith(compareBy<SleepStageSegment> { it.start }.thenBy { it.end })) {
+        val clippedStart = segment.start.toEpochMilli().coerceIn(sessionStart, sessionEnd)
+        val end = segment.end.toEpochMilli().coerceIn(sessionStart, sessionEnd)
+        val start = maxOf(clippedStart, cursor)
+        if (end <= start) continue
+        if (start > cursor) normalized += Span(SleepStage.UNKNOWN, start - cursor)
+        normalized += Span(segment.stage, end - start)
+        cursor = end
+    }
+    if (cursor < sessionEnd) normalized += Span(SleepStage.UNKNOWN, sessionEnd - cursor)
+    if (normalized.isEmpty()) return emptyList()
+
+    val totalMinutes = (sessionEnd - sessionStart) / 60_000L
+    if (totalMinutes <= 0L) return emptyList()
+
+    // Diffuse each fractional-minute remainder into the following segment. Unlike flooring every
+    // absolute boundary, this preserves the session's cumulative floor exactly (for example three
+    // 90-second spans become 1, 2, 1 minutes rather than losing the middle transition).
+    val minutes = LongArray(normalized.size)
+    var remainder = 0L
+    normalized.forEachIndexed { index, span ->
+        val withRemainder = span.durationMillis + remainder
+        minutes[index] = withRemainder / 60_000L
+        remainder = withRemainder % 60_000L
+    }
+
+    // A short explicit transition is fidelity, not noise. When there is at least one Room minute
+    // available per positive span, reserve one for every span that error diffusion rounded to zero
+    // and take it from the currently most over-represented multi-minute span.
+    if (totalMinutes >= normalized.size) {
+        for (index in minutes.indices) {
+            if (minutes[index] != 0L) continue
+            val donor = minutes.indices
+                .filter { minutes[it] > 1L }
+                .maxWithOrNull(
+                    compareBy<Int> { minutes[it] * 60_000L - normalized[it].durationMillis }
+                        .thenByDescending { it },
+                ) ?: continue
+            minutes[index] = 1L
+            minutes[donor]--
+        }
+    }
+
+    val blocks = mutableListOf<SleepStageBlockEntity>()
+    var startMinute = 0L
+    normalized.forEachIndexed { index, span ->
+        val durationMinutes = minutes[index]
+        if (durationMinutes <= 0L) return@forEachIndexed
+        blocks += SleepStageBlockEntity(
+            sessionId = sessionId,
+            startAt = sessionStart + startMinute * 60_000L,
+            startMinute = startMinute.toInt(),
+            durationMinutes = durationMinutes.toInt(),
+            stageRaw = span.stage.name,
+        )
+        startMinute += durationMinutes
+    }
+    return blocks
+}
+
+internal fun nextSleepUpdatedAt(wallClockNow: Long, existingUpdatedAt: Long): Long {
+    val successor = if (existingUpdatedAt == Long.MAX_VALUE) Long.MAX_VALUE else existingUpdatedAt + 1L
+    return maxOf(wallClockNow, successor)
+}
+
+internal data class SleepReconcileGroup(
+    val blocks: List<SleepStageBlockEntity>,
+    val start: Long,
+    val end: Long,
+)
+
+internal data class SleepReconcileMatch(
+    val group: SleepReconcileGroup,
+    val session: SleepSessionEntity?,
+)
+
+internal data class SleepReconcilePlan(
+    val matches: List<SleepReconcileMatch>,
+    val deleteSessionIds: Set<String>,
+)
+
+internal fun buildSleepReconcilePlan(
+    existing: List<SleepSessionEntity>,
+    groups: List<SleepReconcileGroup>,
+): SleepReconcilePlan {
+    fun overlap(a0: Long, a1: Long, b0: Long, b1: Long): Long =
+        maxOf(0L, minOf(a1, b1) - maxOf(a0, b0))
+
+    // Match against pre-mutation bounds so correcting a malformed parent cannot change later
+    // matches in the same reconciliation pass.
+    val available = existing.toMutableList()
+    val matches = groups.map { group ->
+        val best = available.maxByOrNull { overlap(group.start, group.end, it.startAt, it.endAt) }
+        if (best != null && (overlap(group.start, group.end, best.startAt, best.endAt) > 0L ||
+                best.startAt in group.start..group.end)) {
+            available.remove(best)
+            SleepReconcileMatch(group, best)
+        } else {
+            SleepReconcileMatch(group, null)
+        }
+    }
+    return SleepReconcilePlan(matches, available.mapTo(linkedSetOf()) { it.id })
+}
+
+internal fun buildSleepReconcileGroups(
+    blocks: List<SleepStageBlockEntity>,
+    authoritativeBounds: Pair<Long, Long>? = null,
+): List<SleepReconcileGroup> {
+    fun naturalGroups(input: List<SleepStageBlockEntity>) = SleepSegmentation.segment(input).map { group ->
+        val sorted = group.sortedBy { it.startAt }
+        SleepReconcileGroup(
+            blocks = sorted,
+            start = sorted.first().startAt,
+            end = sorted.maxOf { it.startAt + it.durationMinutes * 60_000L },
+        )
+    }
+
+    val bounds = authoritativeBounds ?: return naturalGroups(blocks)
+    val (explicitStart, explicitEnd) = bounds
+    val before = mutableListOf<SleepStageBlockEntity>()
+    val authoritative = mutableListOf<SleepStageBlockEntity>()
+    val after = mutableListOf<SleepStageBlockEntity>()
+    for (block in blocks) {
+        val blockEnd = block.startAt + block.durationMinutes * 60_000L
+        when {
+            blockEnd <= explicitStart -> before += block
+            block.startAt >= explicitEnd -> after += block
+            else -> {
+                val boundedStart = maxOf(block.startAt, explicitStart)
+                val boundedEnd = minOf(blockEnd, explicitEnd)
+                val boundedMinutes = ((boundedEnd - boundedStart) / 60_000L).toInt()
+                if (boundedMinutes > 0) {
+                    authoritative += block.copy(
+                        startAt = boundedStart,
+                        durationMinutes = boundedMinutes,
+                    )
+                }
+            }
+        }
+    }
+
+    return buildList {
+        addAll(naturalGroups(before))
+        if (authoritative.isNotEmpty()) {
+            add(SleepReconcileGroup(authoritative.sortedBy { it.startAt }, explicitStart, explicitEnd))
+        }
+        addAll(naturalGroups(after))
+    }
+}
 
 /**
  * True when a `DeviceStateChanged(CONNECTED, …)` is a real connection transition rather than a
@@ -730,9 +854,11 @@ internal fun replaceOverlappingSleepBlocks(
     replacements: List<SleepStageBlockEntity>,
     replacementStart: Long,
     replacementEnd: Long,
+    removeSessionIds: Set<String> = emptySet(),
 ): List<SleepStageBlockEntity> {
     val byStart = LinkedHashMap<Long, SleepStageBlockEntity>()
     for (block in existing) {
+        if (block.sessionId in removeSessionIds) continue
         val blockEnd = block.startAt + block.durationMinutes * 60_000L
         if (blockEnd <= replacementStart || block.startAt >= replacementEnd) {
             byStart[block.startAt] = block
