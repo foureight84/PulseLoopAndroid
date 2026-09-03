@@ -260,3 +260,25 @@ data class UserGoalEntity(
         const val DEFAULT_CALORIES = 500
     }
 }
+
+/**
+ * A reading the user deleted (issue #60).
+ *
+ * Removing a row is not enough on its own. History-sourced measurements are keyed by
+ * `history:<kind>:<timestamp>` and written with `upsert`, precisely so a re-sync of a day the ring
+ * still holds is idempotent — which also means the next sync would put a deleted reading straight
+ * back. This table is the memory that says not to: the deletion outlives the row, so the same
+ * reading stays gone across every later sync of the same day.
+ *
+ * Only rows the ring can regenerate need an entry; a live reading's id is a fresh UUID that will
+ * never be written again. [MeasurementDeletionDao.record] applies that rule.
+ */
+@Entity(tableName = "measurement_deletions")
+data class MeasurementDeletionEntity(
+    /** The deleted measurement's primary key — deterministic, or this row would be pointless. */
+    @PrimaryKey val measurementId: String,
+    val kindRaw: String,
+    /** The reading's own timestamp, kept so a future retention sweep can age these out. */
+    val timestamp: Long,
+    val deletedAt: Long = System.currentTimeMillis(),
+)

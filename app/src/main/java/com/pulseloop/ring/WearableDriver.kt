@@ -120,9 +120,30 @@ data class UserProfileValues(
  * Per-device orchestration of command flows.
  */
 interface RingSyncEngine {
+    companion object {
+        /**
+         * Fallback bound on the live-HR leg of a spot measurement, for a family that gives no
+         * other signal that it has finished. Long enough for a settled optical reading, short
+         * enough that a ring which will never produce one doesn't hold the sensor on.
+         */
+        const val DEFAULT_SPOT_HEART_RATE_SECONDS = 30
+    }
+
     /** True only for protocols with one native command that returns a combined vitals packet.
      * Capability bits such as manual BP/glucose do not imply this transport feature. */
     val supportsCombinedMeasurement: Boolean get() = false
+
+    /**
+     * How long the live-HR leg of a spot measurement may run on this family (issue #59).
+     *
+     * A ceiling, not a duration: the leg ends the moment the ring says it is done. Only a family
+     * that never says so actually spends this long, which is why it can be raised for a family
+     * that *does* — the ring in #59 needs ~26 s of warm-up before its PPG converges and ends the
+     * measurement itself at ~35 s, so at the default it was cut off just as its readings became
+     * real, while raising the default for everyone would make every other family's measurement
+     * visibly slower for nothing.
+     */
+    val spotHeartRateSeconds: Int get() = DEFAULT_SPOT_HEART_RATE_SECONDS
 
     fun runStartup()
     fun handle(event: RingDecodedEvent)

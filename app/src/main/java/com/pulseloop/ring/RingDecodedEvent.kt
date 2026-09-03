@@ -72,6 +72,7 @@ sealed class RingDecodedEvent {
         is Spo2Progress -> this._timestamp
         is Spo2Result -> this._timestamp
         is Spo2Complete -> this._timestamp
+        is MeasurementComplete -> this._timestamp
         is SleepTimeline -> this._timestamp
         is HistoryMeasurement -> this._timestamp
         is StressSample -> this._timestamp
@@ -161,6 +162,28 @@ sealed class RingDecodedEvent {
         override val kind = "spo2_complete"
         override val confidence = DecodeConfidence.PARTIAL
         override val debugJSON = "{}"
+    }
+
+    /**
+     * The ring itself ended a spot measurement and said how it went (YCBT `04 0e`, issue #59).
+     *
+     * [mode] is the same measurement-mode byte the start command carried ([YCBTMeasurementMode]),
+     * so a completion can only ever end the measurement it names. [success] is the vendor's
+     * `bArr[1] == 1`; 2 is "failed" and anything else "cancelled", which are both failures here.
+     *
+     * Carries no value on purpose: the vendor app reacts to a success by re-syncing history
+     * (`BaseMeasureActivity.onDataResponse` → `syncData()`), never by reading a reading out of
+     * this frame. Its job is to say *when* the measurement is over, which is exactly what the app
+     * could not tell before — the ring goes quiet and the leg idled out its whole window.
+     */
+    data class MeasurementComplete(
+        val mode: Int,
+        val success: Boolean,
+        val _timestamp: Instant
+    ) : RingDecodedEvent() {
+        override val kind = "measurement_complete"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"mode":$mode,"success":$success}"""
     }
 
     data class SleepTimeline(

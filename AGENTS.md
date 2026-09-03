@@ -228,9 +228,15 @@ supporting evidence as the cause.
 - **Read-backs exist — ask the ring instead of guessing.** `querySupportSpO2Type` (`2/37`) answers
   NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN, and the monitor-state queries `2/6` HR, `2/7` HRV,
   `2/8` SpO2, `2/45` stress, `2/21` temp each report the configured interval (`0` = off). These are
-  how you tell "the monitor is switched off" apart from "this ring lacks the sensor" — the open
-  question for stress (`2/47`) and temperature, both 23-sent/0-answered. Send them
+  how you tell "the monitor is switched off" apart from "this ring lacks the sensor". Send them
   **once per connection**, not per poll pass: `runStartup` is also the ~30-minute background sync.
+  The R100 capture in issue #58 shows what a *useful* answer looks like and what silence means:
+  `2/6` HR, `2/7` HRV, `2/8` SpO2 all replied `05` (5-minute interval, enabled) and `2/21` temp
+  replied `06`, while `2/45` stress and `2/37` SpO2-type answered **nothing across 22 sync passes**
+  — the same ring that also never answers the stress history query `2/47`. On that ring stress is
+  absent, not switched off. Note the app still advertises `STRESS` for it, because
+  `CRPCoordinator.capabilities` is a static family set, not something the ring confirmed — a
+  capability list is not evidence about an individual ring.
 - **Group 7 is Gomore, not device info — an opcode read off a decompiled builder is a guess until
   you check its caller.** Firmware was queried on `7/1` and never answered (23 sends, 0 replies),
   which read like ring firmware ignoring a valid vendor command. It wasn't: every builder in `b1/r`
@@ -248,10 +254,17 @@ supporting evidence as the cause.
   firmware string is not. Sibling group-3 queries confirmed from their callers: `3/0` reset,
   `3/1` shutDown, `3/4` firmware hash, `3/6` real-time battery, `3/7` wear state, `3/14` restart,
   `3/22` binding reminder.
-- **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`
-  (`d1/b.java` line 650); real temp history is `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the
-  same shape as the other timing histories. Its sample layout is still unconfirmed — no non-empty
-  capture yet — so the reply stays an ack.
+- **Temperature history is `2/22`, not `2/48`, and its layout is now CONFIRMED (issue #58).**
+  `q.b(2,48)` is the vendor's `querySleepState` (`d1/b.java` line 650); real temp history is
+  `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the same shape as the other timing histories.
+  The R100 capture attached to issue #58 is the first non-empty temperature reply anyone has sent
+  us, and it matches the vendor parser `e1/m` byte for byte: `[day][frameIndex]` then
+  **little-endian 2-byte tenths of a degree Celsius** per 5-minute slot, 72 slots/frame, terminal
+  index **3** (four frames/day, like HRV), clamp **28.0–50.0 °C** with anything outside meaning "no
+  reading" (`e1/m.a`). Decoded in `CRPDecoder.decodeTimingHistory`. Note what the missing decode
+  cost beyond the samples: with no `TimingHistoryFrame` marker emitted, `CRPSyncEngine` never
+  advanced the cursor, so the ring was asked for frame 0 on every pass and **never** for frames
+  1-3 — 18:00 onward of every day was unreachable.
 - **The multi-frame follow-up is hardware-validated** (was open on rc3): HR asked frames (0,0)+(0,1)
   and got both; HRV asked (0,0)…(0,3) and got all four. HR history decoded 27 readings at 00:10–11:35
   local (46–104 bpm), HRV 11 readings (30–56 ms), sleep 12 records across light/deep/REM — so the
@@ -280,6 +293,88 @@ supporting evidence as the cause.
   connect" premise is false — match the vendor (query state / apply saved config). And the vendor
   sends spot measures on a priority path (`insertNotificationMessage`) distinct from config/history
   (`insertBleMessage`).
+- **The R100 (issue #58) is a second CRP ring, and a more talkative one than the R11.** White-label,
+  ships with the same "Da Rings" app, firmware `MOY-R2E3-*`, catalogued as `WearableModel.R100`. It
+  advertises a usable name (`R100` / `R100_<hex>`) so it matches at scan instead of relying on the
+  post-connect `fdda` re-route. What its capture settles: temperature history decodes (above),
+  all-day HR/HRV return real frames, all-day SpO2 returns almost entirely empty ones (2 frames with
+  data against 44 empty — the ring records little, the decode is fine), and stress is unanswered on
+  both its history and state opcodes. When a CRP question needs a non-empty capture, this ring is
+  now the better source.
 - Whenever you touch CRP measure/sync/all-day behavior, hardware-validate with the ring owner
   (zaggash) — and for a "measure broken" report, first get a capture of **several** Measure presses
   with the ring snug and still, to separate a contact failure from a real code bug.
+
+## Spot measurements: the ring's own verdict beats our window (issue #59)
+
+**Read this before touching `HRSampleWindow`, `SpotMeasurementGate`, or `RingSyncCoordinator`'s
+measure legs.**
+
+A YCBT ring ends a spot measurement itself with **`04 0e [mode, status]`** — `bArr[0]` is the same
+mode byte `03 2f` started with, `bArr[1]` is `1` success / `2` failed / anything else cancelled
+(vendor `BaseMeasureActivity.onDataResponse`, `decompiled-smarthealth/.../BaseMeasureActivity.java:259`).
+The vendor reads **no value** out of that frame; on success it calls `syncData()` and pulls the
+reading from history. We decode it the same way: `RingDecodedEvent.MeasurementComplete` carries the
+mode and the verdict and nothing else, and `SpotMeasurementGate` honours it by token so a
+completion can only end the measurement it names.
+
+Three things the `Ale-Hop2211` capture in #59 established about how these rings actually behave.
+None of them are safe to assume away:
+
+- **Warm-up is not the same as the cached echo.** `HRSampleWindow` drops the first 5 s because the
+  ring answers instantly with its last stored bpm. That ring sent nothing for 14 s, then spent ~12 s
+  on a *pre-converged plateau* (47 47 47, 46 46 46) before stepping to the real rate (84 … 81) at
+  ~26 s. A whole-window median picks the plateau every time: it is both the majority of the window
+  and the most self-consistent thing in it. **The settle therefore looks at the tail**, not the
+  whole window. Don't "simplify" it back to a median over everything collected.
+- **These rings stream in bursts.** Three samples about a second apart, then **4-6 s of silence**.
+  The contact-lost gap was 3 s, so it fired mid-measurement on a ring that was working perfectly and
+  aborted the leg before the sensor had converged at all. It is 8 s now. Size this against the
+  burstiest cadence in a capture, never against the average one.
+- **A window ceiling is per family** (`RingSyncEngine.spotHeartRateSeconds`). YCBT is 45 s because
+  that ring self-terminates at ~35 s; everyone else keeps 30 s. This is only safe *because* the leg
+  ends on `04 0e` — raising the default for families that never send one would make every
+  measurement visibly slower for nothing.
+
+**A spot measurement's output is one reading, not a stream.** While one is settling,
+`RingSyncCoordinator.suppressesLiveHeartRatePersistence` keeps the intermediate samples out of
+Room and the settled value is published once at the end. Before that, every converging PPG estimate
+was stored as its own heart-rate row stamped with the moment it arrived — a failed measurement left
+a whole train of readings that were never the user's heart rate (this is what prompted issue #60).
+A live *workout* is the opposite case: there the stream **is** the data, so a measurement that runs
+during one suppresses nothing.
+
+## Deleting a reading needs a tombstone, not just a DELETE (issue #60)
+
+History measurements are keyed `history:<kind>:<timestamp>` and written with `upsert`, on purpose:
+re-syncing a day the ring still holds must update the same row rather than duplicate it (see the
+measurement-duplicate bug). That idempotence is also what would undo a deletion — delete the row and
+the next sync writes it straight back, with nothing failing anywhere.
+
+So `measurement_deletions` (v24) remembers the deletion, `EventPersistenceSubscriber.upsertUnlessDeleted`
+is the single gate every deterministic-id write goes through, and `MeasurementDeletion` owns the two
+rules callers must not have to remember: tombstone anything regenerable, and delete a blood-pressure
+reading as both of its rows. A live reading's id is a fresh UUID nothing regenerates, so it is
+deleted without a tombstone — `MeasurementDeletionDao.record` applies that split, and
+`MeasurementDeletionTest` guards the id-prefix agreement that makes it work.
+
+Tombstones ride in the archive (`PulseArchive.measurementDeletions`) because a restore wipes every
+table first; without them a backup round trip would forget the deletions while the ring still holds
+the days behind them.
+
+**Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
+there. The export doesn't retain HC record ids, so there is nothing to delete against.
+
+## Diagnostics masking keeps the routing header (issue #58)
+
+`DiagnosticsRedactor.maskPacketHex` masks a health frame's payload but keeps the leading bytes that
+say *which* record it is — 6 for CRP (`FD DA 10 len group cmd`), 4 for YCBT, 1 elsewhere. Masking
+from byte 1 made every health frame in a report indistinguishable, which is why issue #58's capture
+could not answer whether an all-day SpO₂ reply carried samples. Those header bytes are the same ones
+the app writes when it *asks* for the record, and outbound queries are exported unmasked, so keeping
+them costs no privacy.
+
+The inverse failure is worth remembering too: CRP temperature frames were exported **with their
+values intact**, because an undecoded frame fell through to `command_ack`, which isn't in
+`HEALTH_KINDS`. A decode gap silently became a privacy gap. When you add a decoder for a frame that
+carries physiological values, check that its `decodedKind` is one the redactor masks.

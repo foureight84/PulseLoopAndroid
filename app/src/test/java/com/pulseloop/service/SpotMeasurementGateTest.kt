@@ -3,6 +3,7 @@ package com.pulseloop.service
 import com.pulseloop.ring.YCBTMeasurementMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -118,5 +119,51 @@ class SpotMeasurementGateTest {
 
         gate.noteRejected(YCBTMeasurementMode.HEART_RATE)
         assertTrue("HR was still mid-poll when the ring refused it", gate.isRejected(hr))
+    }
+
+    /** Issue #59: the ring ends the measurement itself and says whether it worked. */
+    @Test
+    fun `a completion of the measurement in flight reports the ring's verdict`() {
+        val gate = SpotMeasurementGate()
+        val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
+        assertNull("nothing said yet", gate.completedSuccessfully(hr))
+
+        gate.noteCompleted(YCBTMeasurementMode.HEART_RATE, success = true)
+
+        assertEquals(true, gate.completedSuccessfully(hr))
+        assertFalse("a completion is not a refusal", gate.isRejected(hr))
+    }
+
+    @Test
+    fun `a completion of a different mode cannot end the one in flight`() {
+        val gate = SpotMeasurementGate()
+        val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
+
+        gate.noteCompleted(YCBTMeasurementMode.SPO2, success = true)
+
+        assertNull("only the measurement the ring named may be ended", gate.completedSuccessfully(hr))
+    }
+
+    /** A refusal is a start-time verdict and must survive a stray completion pushed after it —
+     *  otherwise a refused measurement would look like one worth settling samples from. */
+    @Test
+    fun `a refusal is not overwritten by a later completion`() {
+        val gate = SpotMeasurementGate()
+        val hrv = gate.begin(YCBTMeasurementMode.HRV)
+
+        gate.noteRejected(YCBTMeasurementMode.HRV)
+        gate.noteCompleted(YCBTMeasurementMode.HRV, success = true)
+
+        assertTrue(gate.isRejected(hrv))
+        assertNull(gate.completedSuccessfully(hrv))
+    }
+
+    @Test
+    fun `a completion for a mode nothing is running is ignored`() {
+        val gate = SpotMeasurementGate()
+        gate.noteCompleted(YCBTMeasurementMode.HEART_RATE, success = true)
+
+        val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
+        assertNull("a late completion must not end the next measurement", gate.completedSuccessfully(hr))
     }
 }

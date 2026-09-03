@@ -70,9 +70,13 @@ fun PulseLoopApp() {
         val persistence = remember {
             // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
             // mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
-            EventPersistenceSubscriber(context, db) {
-                com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
-            }
+            EventPersistenceSubscriber(
+                context, db,
+                onDataPersisted = {
+                    com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
+                },
+                suppressLiveHeartRate = { coordinator.suppressesLiveHeartRatePersistence },
+            )
         }
         val batteryAlerts = remember { com.pulseloop.service.BatteryAlertMonitor(context) }
         val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }

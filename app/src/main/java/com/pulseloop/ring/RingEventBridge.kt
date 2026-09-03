@@ -97,6 +97,9 @@ object RingEventBridge {
         is RingDecodedEvent.Spo2Complete ->
             listOf(PulseEvent.Spo2Complete(decoded._timestamp))
 
+        is RingDecodedEvent.MeasurementComplete ->
+            listOf(PulseEvent.MeasurementComplete(decoded.mode, decoded.success, decoded._timestamp))
+
         is RingDecodedEvent.Spo2Progress ->
             emptyList() // Phase 1 does not fan these out
 

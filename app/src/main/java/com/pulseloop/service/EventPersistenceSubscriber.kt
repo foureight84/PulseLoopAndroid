@@ -21,6 +21,12 @@ class EventPersistenceSubscriber(
      * (debounced) so home-screen widgets refresh after every ring-sync batch.
      */
     private val onDataPersisted: (() -> Unit)? = null,
+    /**
+     * True while a spot HR measurement is settling and its intermediate samples must not be
+     * stored (issue #60) — see [RingSyncCoordinator.suppressesLiveHeartRatePersistence], which
+     * owns the rule and publishes the one settled reading itself once the leg ends.
+     */
+    private val suppressLiveHeartRate: () -> Boolean = { false },
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
@@ -68,8 +74,24 @@ class EventPersistenceSubscriber(
         else -> false
     }
 
+    /**
+     * Write a measurement the ring can re-supply — unless the user deleted it (issue #60).
+     *
+     * Every caller here uses a deterministic `history:<kind>:<timestamp>` id so that re-syncing a
+     * day the ring still holds updates the same row instead of duplicating it. That idempotence is
+     * exactly what would undo a deletion, so the tombstone is checked on the way in. A reading with
+     * no tombstone is written as before.
+     */
+    private suspend fun upsertUnlessDeleted(measurement: MeasurementEntity) {
+        if (db.measurementDeletionDao().isDeleted(measurement.id)) return
+        db.measurementDao().upsert(measurement)
+    }
+
     private suspend fun persistUnsafe(event: PulseEvent) {
         when (event) {
+            // A start/end verdict for one spot measurement (issue #59) — a control signal for the
+            // coordinator's poll loop, carrying no value of its own. Nothing to store.
+            is PulseEvent.MeasurementComplete -> Unit
             is PulseEvent.DeviceStateChanged -> {
                 // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
                 // device row, the ring's own teardown still emits a late DISCONNECTED — only
@@ -161,6 +183,7 @@ class EventPersistenceSubscriber(
                 recordBatterySample(event.percent, now)
             }
             is PulseEvent.HeartRateSample -> {
+                if (suppressLiveHeartRate()) return
                 db.measurementDao().insert(MeasurementEntity(
                     kindRaw = MeasurementKind.HEART_RATE.name,
                     value = event.bpm.toDouble(), unit = "bpm",
@@ -177,7 +200,7 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.HistoryMeasurement -> {
-                db.measurementDao().upsert(MeasurementEntity(
+                upsertUnlessDeleted(MeasurementEntity(
                     id = historyMeasurementId(event.kind, event.timestamp.toEpochMilli()),
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
@@ -197,7 +220,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "colmi",
                 )
-                if (event.isHistory) db.measurementDao().upsert(measurement)
+                if (event.isHistory) upsertUnlessDeleted(measurement)
                 else db.measurementDao().insert(measurement)
             }
             is PulseEvent.HrvSample -> {
@@ -233,8 +256,8 @@ class EventPersistenceSubscriber(
                         sourceRaw = if (event.isHistory) "history" else "live",
                     )
                     if (event.isHistory) {
-                        db.measurementDao().upsert(systolic)
-                        db.measurementDao().upsert(diastolic)
+                        upsertUnlessDeleted(systolic)
+                        upsertUnlessDeleted(diastolic)
                     } else {
                         db.measurementDao().insert(systolic)
                         db.measurementDao().insert(diastolic)
@@ -262,7 +285,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 )
-                if (event.isHistory) db.measurementDao().upsert(measurement)
+                if (event.isHistory) upsertUnlessDeleted(measurement)
                 else db.measurementDao().insert(measurement)
             }
             is PulseEvent.ActivityUpdate -> {

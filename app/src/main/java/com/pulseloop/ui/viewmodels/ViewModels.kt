@@ -956,6 +956,27 @@ class VitalDetailViewModel(
         val engineZones: List<com.pulseloop.service.MetricZone> = emptyList(),
         val loading: Boolean = true,
         val isBP: Boolean = false,
+        /** The window's individual readings, newest first — the list the user deletes from
+         *  (issue #60). Demo/seeded rows are included: a user clearing seeded noise out of a
+         *  chart is the same gesture as removing a bad measurement. */
+        val readings: List<Reading> = emptyList(),
+    )
+
+    /**
+     * One reading as the detail list shows it (issue #60).
+     *
+     * [ids] is a list because a blood-pressure reading is stored as two rows sharing a timestamp,
+     * and deleting one without the other would leave a systolic charted against no diastolic.
+     * [value]/[secondary] are already in display units, so the list agrees with the chart above it.
+     */
+    data class Reading(
+        val ids: List<String>,
+        val timestamp: Long,
+        val value: Double,
+        val secondary: Double? = null,
+        /** True when the ring supplied this from its own log, so a re-sync could restore it —
+         *  which is why deleting it also writes a tombstone. Shown as provenance in the list. */
+        val fromHistory: Boolean = false,
     )
 
     private val _state = MutableStateFlow(DetailState())
@@ -1152,10 +1173,25 @@ class VitalDetailViewModel(
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val trend = computeTrend(thisAvg, prevAvg, if (allValues.isNotEmpty()) allValues.max() - allValues.min() else 1.0)
 
+            // One list row per reading, pairing each systolic with the diastolic at the same
+            // instant so a delete takes the whole reading.
+            val diaByTime = diaSamples.associateBy { it.timestamp }
+            val bpReadings = sysSamples.map { sys ->
+                val dia = diaByTime[sys.timestamp]
+                Reading(
+                    ids = listOfNotNull(sys.id, dia?.id),
+                    timestamp = sys.timestamp,
+                    value = sys.value,
+                    secondary = dia?.value,
+                    fromHistory = sys.sourceRaw == "history",
+                )
+            }.asReversed()
+
             _state.update { it.copy(
                 anchor = anchor,
                 points = points, secondary = secondary, labels = labels,
                 timestamps = times,
+                readings = bpReadings,
                 // iOS uses the window's last reading, not the global latest.
                 latest = points.lastOrNull(),
                 min = allValues.minOrNull(), avg = thisAvg, max = allValues.maxOrNull(),
@@ -1206,10 +1242,20 @@ class VitalDetailViewModel(
                 com.pulseloop.service.VitalsThresholdEngine.zones(k, physiology, baseline = baseline)
             } ?: emptyList()
 
+            val readings = samples.map {
+                Reading(
+                    ids = listOf(it.id),
+                    timestamp = it.timestamp,
+                    value = convert(it.value),
+                    fromHistory = it.sourceRaw == "history",
+                )
+            }.asReversed()
+
             _state.update { it.copy(
                 anchor = anchor,
                 points = points, secondary = emptyList(), labels = labels,
                 timestamps = times,
+                readings = readings,
                 // iOS uses the window's last reading, not the global latest.
                 latest = points.lastOrNull(),
                 min = points.minOrNull(), avg = thisAvg, max = points.maxOrNull(),
@@ -1218,6 +1264,25 @@ class VitalDetailViewModel(
                 engineZones = engineZones,
                 loading = false,
             ) }
+        }
+    }
+
+    /**
+     * Remove one reading from the record (issue #60).
+     *
+     * Deletion, never editing: a stored health value may be taken out, but never changed into a
+     * different number. [com.pulseloop.data.MeasurementDeletion] owns the two rules that make it
+     * stick — tombstone anything the ring could re-sync, and take a blood-pressure reading's two
+     * rows together — so this only has to refresh the window afterwards.
+     */
+    fun deleteReading(reading: Reading) {
+        viewModelScope.launch {
+            try {
+                com.pulseloop.data.MeasurementDeletion.deleteByIds(db, reading.ids)
+            } catch (_: Exception) {
+                // A failed delete must not take the screen down; the row simply stays.
+            }
+            try { refresh() } catch (_: Exception) {}
         }
     }
 

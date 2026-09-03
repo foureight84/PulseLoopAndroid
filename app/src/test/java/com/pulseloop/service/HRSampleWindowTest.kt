@@ -2,6 +2,7 @@ package com.pulseloop.service
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -75,9 +76,64 @@ class HRSampleWindowTest {
         assertFalse("no samples collected yet during warm-up", f.window.contactLost())
         f.advance(4_000); f.window.collect(70)   // first real sample at t=6s
         f.advance(1_000)
-        assertFalse("within the 3s contact gap", f.window.contactLost())
-        f.advance(3_500)
-        assertTrue("more than 3s since the last sample", f.window.contactLost())
+        assertFalse("within the contact gap", f.window.contactLost())
+        f.advance(8_500)
+        assertTrue("more than 8s since the last sample", f.window.contactLost())
+    }
+
+    @Test
+    fun `collect reports whether the sample was kept`() {
+        val f = Fixture()
+        assertFalse("no measurement running", f.window.collect(70))
+        f.window.begin()
+        f.advance(1_000)
+        assertFalse("inside the warm-up echo", f.window.collect(70))
+        f.advance(5_000)
+        assertTrue("past the warm-up", f.window.collect(70))
+    }
+
+    /**
+     * Issue #59, replayed from the reporter's instrumented capture of an `Ale-Hop2211` YCBT ring.
+     * The PPG spends ~26 s on a pre-converged plateau (47 47 47, 46 46 46) before stepping to the
+     * real rate (84 … 81), and the ring ends the measurement itself at ~35 s. The plateau is both
+     * the majority of the window and the most consistent thing in it, so the old whole-window
+     * median reported 46 — a number that was never this user's heart rate.
+     */
+    @Test
+    fun `the pre-converged plateau does not outvote the converged tail`() {
+        val f = Fixture()
+        f.window.begin()
+        val capture = listOf(
+            14_100L to 47, 15_100L to 47, 16_100L to 47,
+            22_100L to 46, 23_100L to 46, 24_100L to 46,
+            26_100L to 84, 27_100L to 84, 28_100L to 84,
+            32_100L to 82, 33_100L to 81, 34_100L to 81, 35_100L to 81,
+        )
+        for ((at, bpm) in capture) {
+            f.now = at
+            assertTrue("t+${at}ms is past the warm-up", f.window.collect(bpm))
+        }
+        val settled = f.window.stableValue
+        assertNotNull("the capture is a successful measurement", settled)
+        assertTrue("settles on the converged rate, not the 46 bpm plateau: got $settled", settled!! >= 80)
+    }
+
+    /**
+     * The counterpart to the test above: the bursty cadence that produced that capture — three
+     * samples about a second apart, then 4-6 s of silence — must not read as a slipped ring.
+     * At the old 3 s gap this aborted the leg at t+19 s, before the sensor had converged at all.
+     */
+    @Test
+    fun `a bursty ring is not mistaken for lost contact`() {
+        val f = Fixture()
+        f.window.begin()
+        f.now = 14_100; f.window.collect(47)
+        f.now = 15_100; f.window.collect(47)
+        f.now = 16_100; f.window.collect(47)
+        f.now = 21_000
+        assertFalse("still inside the ring's 4-6s burst gap", f.window.contactLost())
+        f.now = 22_100; f.window.collect(46)
+        assertFalse(f.window.contactLost())
     }
 
     @Test

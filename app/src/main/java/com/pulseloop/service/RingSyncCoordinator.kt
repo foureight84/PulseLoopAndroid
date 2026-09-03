@@ -88,31 +88,58 @@ class RingSyncCoordinator(
      *  [latestHRValue] from passing for a fresh reading. */
     val measurementReceivedReading: Boolean get() = hrWindow.receivedReading
 
+    /**
+     * While a spot HR measurement is settling, the live bpm stream is working, not reporting, and
+     * must not be written to history (issue #60).
+     *
+     * A spot measurement's output is **one** reading — the settled value this leg returns. The
+     * samples it settles *from* are a sensor converging: on the #59 ring the PPG spends its first
+     * ~26 s on a plateau tens of bpm below the real rate, and every one of those estimates used to
+     * be stored as its own heart-rate row stamped with the moment it arrived. One failed
+     * measurement therefore left a whole train of readings that were never the user's heart rate,
+     * with no way to remove them, and they drag every average built over that window.
+     *
+     * So the live stream is suppressed for the duration and the settled value is published once at
+     * the end. A live *workout* is the opposite case — there the stream is the data — so a
+     * measurement that runs during one suppresses nothing.
+     */
+    @Volatile
+    var suppressesLiveHeartRatePersistence: Boolean = false
+        private set
+
     val connectionState: RingConnectionState get() = client.state.value.connectionState
     val isConnected: Boolean get() = connectionState == RingConnectionState.CONNECTED
     /** Selects the single-packet Jring measurement flow. YCBT advertises manual BP/glucose
      * capabilities but measures each vital with separate AppStartMeasurement modes. */
     val supportsCombinedMeasurement: Boolean get() = engine?.supportsCombinedMeasurement == true
 
-    private val hrMeasureSeconds = HR_MEASURE_SECONDS.toLong()
+    /** The HR leg's ceiling for the ring that is actually connected (issue #59). */
+    private val hrMeasureSeconds: Long get() = (engine?.spotHeartRateSeconds ?: HR_MEASURE_SECONDS).toLong()
+    /** Upper bound on the whole sequential sweep for the connected ring — what the Vitals
+     *  countdown runs against, so it can't finish while the HR leg is still measuring. */
+    val spotMeasureSeconds: Int
+        get() = hrMeasureSeconds.toInt() + SPO2_MEASURE_SECONDS + BP_MEASURE_SECONDS + HRV_MEASURE_SECONDS + 3
     private val spo2MeasureSeconds = SPO2_MEASURE_SECONDS.toLong()
     private val combinedMeasureSeconds = COMBINED_MEASURE_SECONDS.toLong()
 
     companion object {
         /** Duration of a combined spot measurement (0x23→0x24); also drives the UI countdown. */
         const val COMBINED_MEASURE_SECONDS = 45
-        /** Window for the live-HR leg of a spot measurement. */
-        const val HR_MEASURE_SECONDS = 30
+        /** Default window for the live-HR leg of a spot measurement. A family that ends its own
+         *  measurement may raise its own ceiling — see [RingSyncEngine.spotHeartRateSeconds]. */
+        const val HR_MEASURE_SECONDS = RingSyncEngine.DEFAULT_SPOT_HEART_RATE_SECONDS
         /** Window for the live-SpO₂ leg of a spot measurement. iOS raised this 40 → 60
          *  (`c8969a4`): the R99's successful sweep took 38s while another attempt ran past 41s
          *  with no result — at 40s the outcome is a coin toss where the user watches the ring's
          *  red LED work and gets an error anyway. */
         const val SPO2_MEASURE_SECONDS = 60
-        /** Intentional UX upper bound for sequential HR + SpO₂ + BP + HRV; drives the countdown.
-         *  Derived from the legs so the countdown can't desync when one is tuned. Post-#66 the
-         *  HR leg samples its full window by design, so this is a real bound, not slack. */
         const val BP_MEASURE_SECONDS = 40
         const val HRV_MEASURE_SECONDS = 40
+        /** Intentional UX upper bound for sequential HR + SpO₂ + BP + HRV; drives the countdown.
+         *  Derived from the legs so the countdown can't desync when one is tuned. Post-#66 the
+         *  HR leg samples its full window by design, so this is a real bound, not slack. This is
+         *  the bound for a ring with the default HR window; with one connected, prefer the
+         *  instance's [spotMeasureSeconds], which uses that ring's own HR ceiling (issue #59). */
         const val SPOT_MEASURE_SECONDS =
             HR_MEASURE_SECONDS + SPO2_MEASURE_SECONDS + BP_MEASURE_SECONDS + HRV_MEASURE_SECONDS + 3
         /** Max time to wait for the pre-factory-reset history sync before resetting anyway. */
@@ -430,6 +457,7 @@ class RingSyncCoordinator(
         hrNoReadingReported = false
         measureNotWorn = false
         hrWindow.begin()
+        suppressesLiveHeartRatePersistence = !workoutHRActive
 
         val spotToken = spot.begin(YCBTMeasurementMode.HEART_RATE)
         engine?.measureHeartRateSpot()
@@ -446,6 +474,11 @@ class RingSyncCoordinator(
                 if (hrNoReadingReported || spot.isRejected(spotToken)) { aborted = true; break }
                 // Ring removed / BLE dropped mid-measure → fail rather than settle a truncated window.
                 if (!isConnected) { aborted = true; break }
+                // The ring ended the measurement itself (YCBT `04 0e`, issue #59). Its own verdict
+                // beats our window: on success settle what we have instead of idling out the rest
+                // of a window the ring has already stopped streaming into; on failure, abort.
+                val completed = spot.completedSuccessfully(spotToken)
+                if (completed != null) { aborted = !completed; break }
                 // Contact lost after readings began (ring slipped / hand moved).
                 if (hrWindow.contactLost()) { aborted = true; break }
                 delay(500)
@@ -458,7 +491,17 @@ class RingSyncCoordinator(
             engine?.stopHeartRate()
             // The stop also tears down the workout's realtime stream; bring it straight back.
             restartWorkoutHeartRateIfActive()
+            // Lift the suppression BEFORE publishing, or the one reading worth keeping is the one
+            // reading dropped. The sensor is already stopped, so nothing else is arriving.
+            suppressesLiveHeartRatePersistence = false
             hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
+            // The measurement's actual output, stored once. A failed measurement stores nothing —
+            // "we couldn't read it" is not a heart rate.
+            result?.let { settled ->
+                PulseEventBus.publishBlocking(
+                    PulseEvent.HeartRateSample(bpm = settled, timestamp = java.time.Instant.now())
+                )
+            }
         }
         return result
     }
@@ -476,7 +519,7 @@ class RingSyncCoordinator(
         try {
             // Abort early when the ring reports the run ended with an error (finger off,
             // ring not worn) or refused the start, instead of idling out the full window.
-            result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { spo2NoReadingReported || spot.isRejected(spotToken) })
+            result = pollForValue(spo2MeasureSeconds, { latestSpO2Value }, { spo2NoReadingReported || spot.isRejected(spotToken) || spot.completedSuccessfully(spotToken) != null })
         } finally {
             spot.end(spotToken)
             engine?.stopSpO2()   // stop the sensor even on cancellation (see measureHR)
@@ -499,7 +542,7 @@ class RingSyncCoordinator(
             result = pollForValue(
                 BP_MEASURE_SECONDS.toLong(),
                 { latestBloodPressure },
-                { bloodPressureNoReadingReported || spot.isRejected(spotToken) },
+                { bloodPressureNoReadingReported || spot.isRejected(spotToken) || spot.completedSuccessfully(spotToken) != null },
             )
         } finally {
             spot.end(spotToken)
@@ -523,7 +566,7 @@ class RingSyncCoordinator(
             result = pollForValue(
                 HRV_MEASURE_SECONDS.toLong(),
                 { latestHrvValue },
-                { hrvNoReadingReported || spot.isRejected(spotToken) },
+                { hrvNoReadingReported || spot.isRejected(spotToken) || spot.completedSuccessfully(spotToken) != null },
             )
         } finally {
             spot.end(spotToken)
@@ -573,8 +616,16 @@ class RingSyncCoordinator(
     private fun handle(event: PulseEvent) {
         when (event) {
             is PulseEvent.HeartRateSample -> {
-                latestHRValue = event.bpm
-                if (hrState == MeasureState.MEASURING) hrWindow.collect(event.bpm)
+                // During a spot measure the window decides what counts: a sample it rejects is the
+                // ring's cached echo (a bpm from hours ago, stamped now), so it must not become the
+                // live value either — that echo is exactly the number issue #59 saw on the card
+                // next to a "couldn't get a steady reading" error. Outside a measurement there is
+                // no window to consult and the workout stream's value passes straight through.
+                if (hrState == MeasureState.MEASURING) {
+                    if (hrWindow.collect(event.bpm)) latestHRValue = event.bpm
+                } else {
+                    latestHRValue = event.bpm
+                }
             }
             is PulseEvent.HeartRateComplete -> {
                 if (hrState == MeasureState.MEASURING && !measurementReceivedReading) {
@@ -596,6 +647,12 @@ class RingSyncCoordinator(
                 if (spo2State == MeasureState.MEASURING && latestSpO2Value == null) {
                     spo2NoReadingReported = true
                 }
+            }
+            // The ring ended a spot measurement itself and said how it went (YCBT `04 0e`,
+            // issue #59). Ownership is by token inside the gate, so this can only ever end the
+            // measurement it names, and only while that measurement is actually running.
+            is PulseEvent.MeasurementComplete -> {
+                spot.noteCompleted(event.mode, event.success)
             }
             is PulseEvent.MeasurementRejected -> {
                 spot.noteRejected(event.mode)

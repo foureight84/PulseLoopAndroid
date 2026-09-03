@@ -51,6 +51,9 @@ sealed class PulseEvent {
     data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()
     /** A live measurement command was refused (not worn, sensor busy, unsupported). */
     data class MeasurementRejected(val mode: Int) : PulseEvent()
+    /** The ring ended a spot measurement on its own and reported the verdict (issue #59).
+     *  [mode] names which measurement finished; [success] is the ring's own success byte. */
+    data class MeasurementComplete(val mode: Int, val success: Boolean, val timestamp: java.time.Instant) : PulseEvent()
     data class BloodPressureSample(
         val systolic: Int,
         val diastolic: Int,
