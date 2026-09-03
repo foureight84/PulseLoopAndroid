@@ -145,6 +145,17 @@ interface RingSyncEngine {
      */
     val spotHeartRateSeconds: Int get() = DEFAULT_SPOT_HEART_RATE_SECONDS
 
+    /**
+     * True when this family's ring tells us a spot measurement has ended (issue #59's `04 0e`).
+     *
+     * It gates whether a leg may keep collecting: a leg that waits for a completion signal no
+     * family sends would simply idle out its whole window, which is why the SpO2 leg keeps its
+     * "first plausible value wins" behaviour everywhere else. The CRP R11 in particular answers a
+     * spot SpO2 with one value after ~48 s of silence and nothing further — waiting past it would
+     * turn a working measurement into a minute-long stare at a progress bar for no gain.
+     */
+    val signalsMeasurementCompletion: Boolean get() = false
+
     fun runStartup()
     fun handle(event: RingDecodedEvent)
 

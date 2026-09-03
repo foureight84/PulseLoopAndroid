@@ -27,6 +27,9 @@ class EventPersistenceSubscriber(
      * owns the rule and publishes the one settled reading itself once the leg ends.
      */
     private val suppressLiveHeartRate: () -> Boolean = { false },
+    /** As [suppressLiveHeartRate], for the SpO₂ leg — see
+     *  [RingSyncCoordinator.suppressesLiveSpo2Persistence]. */
+    private val suppressLiveSpo2: () -> Boolean = { false },
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
@@ -192,6 +195,7 @@ class EventPersistenceSubscriber(
                 ))
             }
             is PulseEvent.Spo2Result -> {
+                if (suppressLiveSpo2()) return
                 db.measurementDao().insert(MeasurementEntity(
                     kindRaw = MeasurementKind.SPO2.name,
                     value = event.value.toDouble(), unit = "%",

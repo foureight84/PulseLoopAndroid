@@ -331,14 +331,32 @@ None of them are safe to assume away:
   The contact-lost gap was 3 s, so it fired mid-measurement on a ring that was working perfectly and
   aborted the leg before the sensor had converged at all. It is 8 s now. Size this against the
   burstiest cadence in a capture, never against the average one.
+- **SpO2 is not heart rate, and the HR rules must not be copied onto it.** RC-1 feedback on #59
+  included an instrumented SpO2 capture from the same ring, and every property differs: samples
+  start at t+13 s, there is a **24 s** silence in the middle (against HR's 4-6 s), the run lasts
+  **50 s** (against 35), and the values *rise to a peak of 99 then decline to 94* rather than
+  converging. So: there is no cached echo to discard here, the HR contact-gap would abort it
+  outright if it were ever applied to this leg, and HR's tail rule would report the decline.
+  `Spo2SampleWindow` takes the **median** specifically because one capture cannot say whether the
+  peak or the tail is the honest number, and the median privileges neither. **Revisit it when
+  repeated captures show whether that shape is consistent.** What is already settled is that
+  returning the *first* plausible sample — the old behaviour — was wrong: it answered at t+13 s
+  with nine better samples still to come.
 - **A window ceiling is per family** (`RingSyncEngine.spotHeartRateSeconds`). YCBT is 45 s because
   that ring self-terminates at ~35 s; everyone else keeps 30 s. This is only safe *because* the leg
   ends on `04 0e` — raising the default for families that never send one would make every
   measurement visibly slower for nothing.
 
+**Collecting a whole run is gated on the ring saying when it is done**
+(`RingSyncEngine.signalsMeasurementCompletion`, true only for YCBT). Don't widen it: a leg that
+waits for a completion signal no family sends just idles out its window, and the CRP R11 answers a
+spot SpO2 with one value after ~48 s of silence and nothing further — waiting past it would turn a
+working measurement into a minute-long stare at a progress bar. Families without the signal keep
+"first plausible value wins" for SpO2.
+
 **A spot measurement's output is one reading, not a stream.** While one is settling,
-`RingSyncCoordinator.suppressesLiveHeartRatePersistence` keeps the intermediate samples out of
-Room and the settled value is published once at the end. Before that, every converging PPG estimate
+`RingSyncCoordinator.suppressesLiveHeartRatePersistence` (and its SpO2 twin) keeps the intermediate
+samples out of Room and the settled value is published once at the end. Before that, every converging PPG estimate
 was stored as its own heart-rate row stamped with the moment it arrived — a failed measurement left
 a whole train of readings that were never the user's heart rate (this is what prompted issue #60).
 A live *workout* is the opposite case: there the stream **is** the data, so a measurement that runs
@@ -361,6 +379,14 @@ deleted without a tombstone — `MeasurementDeletionDao.record` applies that spl
 Tombstones ride in the archive (`PulseArchive.measurementDeletions`) because a restore wipes every
 table first; without them a backup round trip would forget the deletions while the ring still holds
 the days behind them.
+
+**Open, from RC-1: a spot measurement can land twice.** A tester saw two HR rows per measurement,
+paired on the same minute and sometimes differing by a few bpm (79/82). The likely mechanism is that
+the ring **logs the spot reading into its own history** — the vendor's whole reaction to a `04 0e`
+success is `syncData()` — so a later history sync imports it as a `history:HEART_RATE:<ts>` row
+alongside the UUID row we publish for our settled value. It is timing-dependent (no second row until
+a history sync runs), which is why it did not reproduce on demand. **Unverified** — confirm it from a
+capture where a history sync follows a spot measurement before deciding who owns the reading.
 
 **Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
 there. The export doesn't retain HC record ids, so there is nothing to delete against.

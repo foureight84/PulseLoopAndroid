@@ -29,6 +29,10 @@ class YCBTSyncEngine(
      */
     override val spotHeartRateSeconds: Int = 45
 
+    /** These rings end a spot measurement with `04 0e` (issue #59), confirmed on hardware for both
+     *  heart rate (`{00 01}`) and SpO2 (`{02 01}`). */
+    override val signalsMeasurementCompletion: Boolean = true
+
     companion object {
         private val HISTORY_TYPES: List<YCBTHistoryType> = listOf(
             YCBTHistoryType.SPORT, YCBTHistoryType.SLEEP, YCBTHistoryType.HEART,
