@@ -23,13 +23,35 @@ object DiagnosticsRedactor {
     private val MAC = Regex("\\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\\b")
 
     /**
-     * For a health-measurement frame, keep the opcode byte and mask the rest (the values live
-     * in the payload). Non-health frames are returned unchanged. [hex] is contiguous lowercase.
+     * How many leading bytes of a frame are routing, not measurement, per protocol family.
+     *
+     * Masking from byte 1 keeps a health frame's values out of a report but also throws away the
+     * bytes that say *which* value it was: on CRP the group and command live at offsets 4 and 5, so
+     * a masked frame could not be told apart from any other health frame, and issue #58 could not
+     * establish from the attached report whether an all-day SpO₂ reply carried samples or not.
+     * These headers carry no physiological data — they are the same bytes the app writes when it
+     * *asks* for the record, and outbound queries are already exported unmasked — so keeping them
+     * costs no privacy and is most of what a protocol report is for.
      */
-    fun maskPacketHex(hex: String, kind: String): String {
+    private fun headerBytes(deviceType: String): Int = when (deviceType) {
+        // `FD DA 10 <len> <group> <cmd>` — CRPProtocol.HEADER_SIZE.
+        "CRP" -> 6
+        // `<group> <cmd> <len-lo> <len-hi>` — YCBTFrame.frame().
+        "TK5", "COLMI_SMART_HEALTH" -> 4
+        // Everything else (Colmi/QRing, jring, LuckRing, RWfit) puts its opcode in byte 0.
+        else -> 1
+    }
+
+    /**
+     * For a health-measurement frame, keep the routing header and mask the rest (the values live
+     * in the payload). Non-health frames are returned unchanged. [hex] is contiguous lowercase;
+     * [deviceType] is the report's `RingDeviceType` name, which decides how long that header is.
+     */
+    fun maskPacketHex(hex: String, kind: String, deviceType: String = ""): String {
         if (kind !in HEALTH_KINDS || hex.length <= 2) return hex
         val byteCount = hex.length / 2
-        return hex.substring(0, 2) + "··".repeat(byteCount - 1)
+        val keep = headerBytes(deviceType).coerceAtMost(byteCount - 1)
+        return hex.substring(0, keep * 2) + "··".repeat(byteCount - keep)
     }
 
     /** Mask BLE MAC addresses anywhere in free text (logcat, log messages, metadata). */

@@ -88,7 +88,9 @@ object DiagnosticsExporter {
                     addJsonObject {
                         put("at", Instant.ofEpochMilli(pkt.timestamp).toString())
                         put("direction", pkt.directionRaw)
-                        put("hex", if (mask) DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind) else pkt.hexPayload)
+                        put("hex", if (mask) {
+                            DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind, device?.deviceTypeRaw ?: "")
+                        } else pkt.hexPayload)
                         put("decoded", kind)
                     }
                 }

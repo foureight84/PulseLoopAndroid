@@ -169,6 +169,10 @@ class PairingMatchingTest {
             "H59_anything" to "h59",
             "R10M FCF4" to "r10m",
             "R10M_FCF4" to "r10m",
+            // Issue #58's CRP ring. Both suffix forms, because the only capture we have is a
+            // redacted report and it strips a `_<hex>` serial.
+            "R100" to "r100",
+            "R100_1A2B" to "r100",
         )
         for ((name, modelID) in expected) {
             assertEquals(name, modelID, WearableModel.modelForAdvertisedName(name)?.id)
@@ -362,5 +366,18 @@ class PairingMatchingTest {
     fun `default capability set is Jring base`() {
         val defaultCaps = WearableCapability.fromCsv("")
         assertTrue(defaultCaps.isEmpty())
+    }
+
+    /** The R100 card must not shadow, or be shadowed by, the neighbours its name sits between:
+     *  the Colmi R10 (`R10_xxxx`) and the space-suffixed SmartHealth convention (issue #58). */
+    @Test
+    fun `the R100 pattern cannot collide with the R10 or the SmartHealth convention`() {
+        assertEquals("yawell-r10", WearableModel.modelForAdvertisedName("R10_DEAD")?.id)
+        assertEquals("colmi-r10", WearableModel.modelForAdvertisedName("COLMI R10_xyz")?.id)
+        assertEquals("r100", WearableModel.modelForAdvertisedName("R100_DEAD")?.id)
+        // A SmartHealth-convention name (space + four hex) still lands on the broad card.
+        assertEquals("colmi-smarthealth", WearableModel.modelForAdvertisedName("Ale-Hop2211 E1C7")?.id)
+        // And the R100 routes to the CRP driver family, not to Colmi's.
+        assertEquals(RingDeviceType.CRP, WearableModel.modelForAdvertisedName("R100")?.family)
     }
 }

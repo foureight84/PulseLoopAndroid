@@ -379,6 +379,59 @@ class CRPDecoderTest {
         assertTrue(samples.any { it.value == 32.0 && it._timestamp == Instant.parse("2026-07-24T00:50:00Z") })
     }
 
+    /**
+     * Real group-2/cmd-22 temperature frame (day 0, frame 0) from the R100 capture attached to
+     * issue #58 — the first non-empty temperature reply we have seen from any CRP ring, and the
+     * evidence that settled a layout `CRPProtocol` had carried as unconfirmed for months.
+     */
+    private val tempHistoryFrame =
+        "fdda10980216000000000000000000006b01000000000000000000000000000000000000660100000000000000006a010000" +
+        "000000000000690100000000000000006b010000000000000000680100000000000000000000000000000000000069010000" +
+        "0000000000006901000000000000000064010000000000000000640100000000000000006601000000000000000000000000" +
+        "0000"
+
+    @Test
+    fun `temperature history frame decodes little-endian tenths of a degree per slot`() {
+        val now = Instant.parse("2026-08-31T12:00:00Z")
+        val samples = CRPDecoder.decode(hexToBytes(tempHistoryFrame), fdd3, now, ZoneId.of("UTC"))
+            .filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+        assertEquals(11, samples.size)
+        assertTrue(samples.all { it.kind_field == MeasurementKind.TEMPERATURE })
+        // Slot 4 (0x016b = 363 tenths) → 36.3 °C at 00:20. 2 bytes/slot, so 72 slots per frame.
+        assertEquals(36.3, samples.first().value, 0.001)
+        assertEquals(Instant.parse("2026-08-31T00:20:00Z"), samples.first()._timestamp)
+        // Slot 64 (0x0166) → 35.8 °C at 05:20 — the last reading in the frame.
+        assertEquals(35.8, samples.last().value, 0.001)
+        assertEquals(Instant.parse("2026-08-31T05:20:00Z"), samples.last()._timestamp)
+        // Every sample is a plausible skin temperature, i.e. nothing decoded as raw tenths.
+        assertTrue(samples.all { it.value in 28.0..50.0 })
+    }
+
+    /** The vendor rejects anything outside 28.0–50.0 °C as "no reading" (`e1/m.a`), which is how a
+     *  slot the ring never filled stays out of the record instead of charting as 0 °C. */
+    @Test
+    fun `temperature slots outside the vendor's plausible range are dropped`() {
+        // day 0, frame 0, then: 0 (empty), 271 (27.1 °C, too low), 501 (50.1 °C, too high), 365.
+        val payload = byteArrayOf(0, 0) +
+            byteArrayOf(0, 0, 0x0F, 0x01, 0xF5.toByte(), 0x01, 0x6D, 0x01)
+        val frame = CRPProtocol.frame(CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_TEMP, payload)
+        val samples = CRPDecoder.decode(frame, fdd3).filterIsInstance<RingDecodedEvent.HistoryMeasurement>()
+        assertEquals(1, samples.size)
+        assertEquals(36.5, samples.single().value, 0.001)
+    }
+
+    /** Temperature frames must drive the next-frame pull like every other timing vital — before
+     *  issue #58 they fell through to a bare ack, so the ring was asked for frame 0 forever. */
+    @Test
+    fun `temperature history frame emits the follow-up marker`() {
+        val frame = CRPProtocol.frame(
+            CRPCommands.GROUP_HISTORY, CRPCommands.CMD_QUERY_HISTORY_TEMP, byteArrayOf(0, 2) + ByteArray(144)
+        )
+        val marker = CRPDecoder.decode(frame, fdd3).filterIsInstance<RingDecodedEvent.TimingHistoryFrame>().single()
+        assertEquals(CRPCommands.CMD_QUERY_HISTORY_TEMP, marker.cmd)
+        assertEquals(2, marker.frameIndex)
+    }
+
     @Test
     fun `an all-zero timing frame yields no samples, only the follow-up marker`() {
         // zaggash's SpO2 timeline came back all-zero (no all-day SpO2 recorded) — decode must not
