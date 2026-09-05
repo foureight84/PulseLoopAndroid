@@ -19,6 +19,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * while that measurement is actually running. Tokens matter because spot measurements really do
  * overlap — the workout poll service fires on its own timer while the user (or the coach's action
  * tools) can start another reading, and nothing serializes those flows against each other.
+ *
+ * Those flows also run on different threads: the ring's verdicts land on the Main collector while
+ * a coach `trigger_measurement` polls from `Dispatchers.IO` under `runBlocking`. Every access to
+ * [inFlight] is therefore synchronised — a `04 0e` iterating the map while another leg's `end()`
+ * removes its token would otherwise throw `ConcurrentModificationException` on the Main collector,
+ * which has no handler and takes the process down with it.
  */
 class SpotMeasurementGate {
     /** A handle to one in-flight spot measurement. Identity is [id], **not** the mode, so two
@@ -35,19 +41,19 @@ class SpotMeasurementGate {
     /** Arm the gate for one measurement and hand back its handle. */
     fun begin(mode: Int): Token {
         val token = Token(nextId.getAndIncrement(), mode)
-        inFlight[token] = Outcome.RUNNING
+        synchronized(inFlight) { inFlight[token] = Outcome.RUNNING }
         return token
     }
 
     /** Disarm [token] — and only [token]. Called on every exit path (success, timeout,
      *  rejection); the measurement that finishes first must not disarm one still running. */
     fun end(token: Token) {
-        inFlight.remove(token)
+        synchronized(inFlight) { inFlight.remove(token) }
     }
 
     /** Has the ring refused **this** measurement? What each poll loop's abort check asks, so a
      *  refusal can only ever end the measurement it actually named. */
-    fun isRejected(token: Token): Boolean = inFlight[token] == Outcome.REJECTED
+    fun isRejected(token: Token): Boolean = synchronized(inFlight) { inFlight[token] == Outcome.REJECTED }
 
     /**
      * Has the ring *ended* **this** measurement, and did it call it a success? `null` while the
@@ -58,17 +64,21 @@ class SpotMeasurementGate {
      * abort path ([isRejected]), and folding the two together would let a refusal look like a
      * finished measurement whose samples are worth settling.
      */
-    fun completedSuccessfully(token: Token): Boolean? = when (inFlight[token]) {
-        Outcome.SUCCEEDED -> true
-        Outcome.FAILED -> false
-        else -> null
+    fun completedSuccessfully(token: Token): Boolean? = synchronized(inFlight) {
+        when (inFlight[token]) {
+            Outcome.SUCCEEDED -> true
+            Outcome.FAILED -> false
+            else -> null
+        }
     }
 
     /** The ring refused [mode]. Honoured only by the in-flight measurement(s) actually running
      *  it — a late reply for a mode nothing is polling is ignored. */
     fun noteRejected(mode: Int) {
-        for (token in inFlight.keys) {
-            if (token.mode == mode) inFlight[token] = Outcome.REJECTED
+        synchronized(inFlight) {
+            for (token in inFlight.keys) {
+                if (token.mode == mode) inFlight[token] = Outcome.REJECTED
+            }
         }
     }
 
@@ -79,14 +89,16 @@ class SpotMeasurementGate {
      * not turn its own refusal into a settled reading.
      */
     fun noteCompleted(mode: Int, success: Boolean) {
-        for (token in inFlight.keys) {
-            if (token.mode == mode && inFlight[token] == Outcome.RUNNING) {
-                inFlight[token] = if (success) Outcome.SUCCEEDED else Outcome.FAILED
+        synchronized(inFlight) {
+            for (token in inFlight.keys) {
+                if (token.mode == mode && inFlight[token] == Outcome.RUNNING) {
+                    inFlight[token] = if (success) Outcome.SUCCEEDED else Outcome.FAILED
+                }
             }
         }
     }
 
     /** The modes currently mid-poll. Read by tests; the coordinator drives everything through
      *  tokens. */
-    val modesInFlight: Set<Int> get() = inFlight.keys.map { it.mode }.toSet()
+    val modesInFlight: Set<Int> get() = synchronized(inFlight) { inFlight.keys.map { it.mode }.toSet() }
 }

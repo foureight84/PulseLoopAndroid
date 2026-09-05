@@ -337,15 +337,25 @@ None of them are safe to assume away:
   **50 s** (against 35), and the values *rise to a peak of 99 then decline to 94* rather than
   converging. So: there is no cached echo to discard here, the HR contact-gap would abort it
   outright if it were ever applied to this leg, and HR's tail rule would report the decline.
-  `Spo2SampleWindow` takes the **median** specifically because one capture cannot say whether the
-  peak or the tail is the honest number, and the median privileges neither. **Revisit it when
-  repeated captures show whether that shape is consistent.** What is already settled is that
-  returning the *first* plausible sample — the old behaviour — was wrong: it answered at t+13 s
-  with nine better samples still to come.
-- **A window ceiling is per family** (`RingSyncEngine.spotHeartRateSeconds`). YCBT is 45 s because
-  that ring self-terminates at ~35 s; everyone else keeps 30 s. This is only safe *because* the leg
-  ends on `04 0e` — raising the default for families that never send one would make every
-  measurement visibly slower for nothing.
+  `Spo2SampleWindow` settles on the **last plausible sample** (vendor band 70–100), because that is
+  what the ring itself logs. Three sources agree (RC-2 feedback on #59): five captures read back
+  against the ring's own history matched the last sample 5/5 (a median matched 4/5); the one run
+  that collapsed 98 → 87 is stored by the ring as 87, so it was a bad measurement, not a rule
+  failure; and the vendor app (`BloodOxygenMeasureActivity.onEvent`) never settles at all — it
+  shows each frame and on `04 0e` re-reads the ring's history. Don't put a median or a tail rule
+  back: anything cleverer than the ring disagrees with the row the ring will later re-supply.
+  There is still no value-based early exit for this leg — the collapsing run's late burst changed
+  the answer, so "a value in hand" is not "done"; only `04 0e` (or the ceiling) is.
+- **A window ceiling is per family** (`RingSyncEngine.spotHeartRateSeconds`,
+  `spotSpo2Seconds`). YCBT HR is 45 s because that ring self-terminates at ~35 s; YCBT SpO2 is
+  75 s because five captures put its `04 0e` at t+63.1 s (the default 60 s timed out just before
+  it); everyone else keeps 30 s / 60 s. This is only safe *because* the leg ends on `04 0e` —
+  raising the default for families that never send one would make every measurement visibly slower
+  for nothing.
+- **`04 0e` success is not an abort for BP and HRV.** Those legs read no value out of the push
+  (the vendor re-syncs history), and HRV has no live-value frame at all, so treating success as
+  "stop polling" turned a measurement the ring called successful into a failure. Only the ring's
+  *failure* verdict ends them early (`pollForValue`'s abort predicate tests `== false`).
 
 **Collecting a whole run is gated on the ring saying when it is done**
 (`RingSyncEngine.signalsMeasurementCompletion`, true only for YCBT). Don't widen it: a leg that
@@ -354,13 +364,16 @@ spot SpO2 with one value after ~48 s of silence and nothing further — waiting 
 working measurement into a minute-long stare at a progress bar. Families without the signal keep
 "first plausible value wins" for SpO2.
 
-**A spot measurement's output is one reading, not a stream.** While one is settling,
-`RingSyncCoordinator.suppressesLiveHeartRatePersistence` (and its SpO2 twin) keeps the intermediate
-samples out of Room and the settled value is published once at the end. Before that, every converging PPG estimate
-was stored as its own heart-rate row stamped with the moment it arrived — a failed measurement left
-a whole train of readings that were never the user's heart rate (this is what prompted issue #60).
-A live *workout* is the opposite case: there the stream **is** the data, so a measurement that runs
-during one suppresses nothing.
+**A spot measurement's output is one reading, not a stream.** While one is settling, the
+coordinator closes a gate on that kind's live samples and reopens it before publishing the settled
+value once, `spot = true`. The gate is a **bus event** (`PulseEvent.LiveSampleGate`), not a shared
+flag: `EventPersistenceSubscriber` collects behind the ring on its own dispatcher, so a flag read at
+write time let every sample already queued in the bus through the moment it flipped — the event is
+ordered against the samples it governs. Before any of this, every converging PPG estimate was stored
+as its own heart-rate row stamped with the moment it arrived — a failed measurement left a whole
+train of readings that were never the user's heart rate (this is what prompted issue #60). A live
+*workout* is the opposite case: there the stream **is** the data, so a measurement that runs during
+one neither closes the gate nor publishes a second row for a reading the stream already stored.
 
 ## Deleting a reading needs a tombstone, not just a DELETE (issue #60)
 
@@ -380,13 +393,15 @@ Tombstones ride in the archive (`PulseArchive.measurementDeletions`) because a r
 table first; without them a backup round trip would forget the deletions while the ring still holds
 the days behind them.
 
-**Open, from RC-1: a spot measurement can land twice.** A tester saw two HR rows per measurement,
-paired on the same minute and sometimes differing by a few bpm (79/82). The likely mechanism is that
-the ring **logs the spot reading into its own history** — the vendor's whole reaction to a `04 0e`
-success is `syncData()` — so a later history sync imports it as a `history:HEART_RATE:<ts>` row
-alongside the UUID row we publish for our settled value. It is timing-dependent (no second row until
-a history sync runs), which is why it did not reproduce on demand. **Unverified** — confirm it from a
-capture where a history sync follows a spot measurement before deciding who owns the reading.
+**The ring owns a spot reading it logged itself.** RC-1's doubled rows (two HR rows per
+measurement, same minute, 79/82) are the ring **logging the spot reading into its own history** —
+confirmed on RC-2 by reading five SpO2 runs back out of the ring's memory at the exact times they
+were taken — which a later history sync imports as a `history:<kind>:<ts>` row next to the UUID row
+we stored for our settled value. Our row is stored with `sourceRaw = "spot"`, and
+`EventPersistenceSubscriber.adoptRingsCopy` deletes it when a history sample of the same kind lands
+within 90 s: the ring's row wins because it is the one that regenerates on every sync (so it is the
+one a tombstone can hold down). Rings that never log spot readings produce no such neighbour, and
+the ring's all-day samples are five minutes apart, so the window can't reach them.
 
 **Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
 there. The export doesn't retain HC record ids, so there is nothing to delete against.

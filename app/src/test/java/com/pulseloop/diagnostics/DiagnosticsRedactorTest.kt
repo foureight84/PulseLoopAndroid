@@ -32,6 +32,18 @@ class DiagnosticsRedactorTest {
         assertTrue(masked.drop(8).all { it == '·' })
     }
 
+    /** Every family behind a YCBTDriver shares the frame — the R10M path (`YCBT`) and TK5 must not
+     *  fall to the one-byte rule, or their health frames export as an anonymous `04··…`. */
+    @Test
+    fun `every YCBT-driven family keeps the four-byte header`() {
+        val frame = "041300" + "48".repeat(9)
+        for (family in listOf("YCBT", "TK5", "COLMI_SMART_HEALTH")) {
+            val masked = DiagnosticsRedactor.maskPacketHex(frame, "hr_sample", family)
+            assertEquals(family, "04130048", masked.take(8))
+            assertTrue(family, masked.drop(8).all { it == '·' })
+        }
+    }
+
     /** Families whose opcode is byte 0 keep exactly that, as before — and so does an unknown one. */
     @Test
     fun `other families keep only the opcode byte`() {

@@ -75,8 +75,6 @@ fun PulseLoopApp() {
                 onDataPersisted = {
                     com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
                 },
-                suppressLiveHeartRate = { coordinator.suppressesLiveHeartRatePersistence },
-                suppressLiveSpo2 = { coordinator.suppressesLiveSpo2Persistence },
             )
         }
         val batteryAlerts = remember { com.pulseloop.service.BatteryAlertMonitor(context) }

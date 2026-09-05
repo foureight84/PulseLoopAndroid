@@ -21,16 +21,25 @@ class EventPersistenceSubscriber(
      * (debounced) so home-screen widgets refresh after every ring-sync batch.
      */
     private val onDataPersisted: (() -> Unit)? = null,
-    /**
-     * True while a spot HR measurement is settling and its intermediate samples must not be
-     * stored (issue #60) — see [RingSyncCoordinator.suppressesLiveHeartRatePersistence], which
-     * owns the rule and publishes the one settled reading itself once the leg ends.
-     */
-    private val suppressLiveHeartRate: () -> Boolean = { false },
-    /** As [suppressLiveHeartRate], for the SpO₂ leg — see
-     *  [RingSyncCoordinator.suppressesLiveSpo2Persistence]. */
-    private val suppressLiveSpo2: () -> Boolean = { false },
 ) {
+    /**
+     * The kinds whose live samples are currently *not* stored, because a spot measurement is
+     * settling them (issue #60). Driven by [PulseEvent.LiveSampleGate], which the coordinator
+     * sends through the same bus as the samples, so this collector sees the gate close before the
+     * samples it must drop and reopen before the settled reading it must keep — whatever its lag
+     * behind the ring. Only touched from the collector, so it needs no lock.
+     */
+    private val closedGates = mutableSetOf<MeasurementKind>()
+
+    /**
+     * Timestamps of the spot readings this app stored itself, per kind — the rows a ring that
+     * logs its own spot measurements will later re-supply from history (issue #60, RC-1: two HR
+     * rows per measurement, same minute, values a few bpm apart). Loaded lazily from the table
+     * and kept current here so the history path can answer "is this the ring's copy of one of
+     * ours?" without a query per history sample. See [adoptRingsCopy].
+     */
+    private val spotReadings = mutableMapOf<MeasurementKind, MutableList<Long>>()
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
@@ -88,6 +97,46 @@ class EventPersistenceSubscriber(
     private suspend fun upsertUnlessDeleted(measurement: MeasurementEntity) {
         if (db.measurementDeletionDao().isDeleted(measurement.id)) return
         db.measurementDao().upsert(measurement)
+    }
+
+    /** A live reading of [kind]: the ring's stream, or ([spot]) the one settled value a spot
+     *  measurement publishes for itself, which is marked so a later history sync can recognise the
+     *  ring's own copy of it ([adoptRingsCopy]). */
+    private suspend fun storeLiveReading(kind: MeasurementKind, value: Double, unit: String, at: Long, spot: Boolean) {
+        db.measurementDao().insert(MeasurementEntity(
+            kindRaw = kind.name, value = value, unit = unit, timestamp = at,
+            sourceRaw = if (spot) SOURCE_SPOT else "live",
+        ))
+        if (spot) spotReadingsOf(kind).add(at)
+    }
+
+    private suspend fun spotReadingsOf(kind: MeasurementKind): MutableList<Long> =
+        spotReadings.getOrPut(kind) {
+            db.measurementDao().timestampsBySource(kind.name, SOURCE_SPOT, System.currentTimeMillis() - SPOT_LOOKBACK_MS)
+                .toMutableList()
+        }
+
+    /**
+     * The ring's copy of a spot reading replaces ours (issue #60, confirmed on RC-2).
+     *
+     * The YCBT ring logs every spot measurement into its own history — verified by reading five
+     * SpO₂ runs back out of the ring's memory at the exact times they were taken — and the vendor
+     * app's whole reaction to a `04 0e` success is to re-sync that history: the ring decides the
+     * number, the app re-reads it. So when a history sample of the same kind lands within
+     * [SPOT_MATCH_MS] of a reading we stored for our own settled value, it is that measurement
+     * seen from the ring's side, and keeping both is the doubled row the tester saw. The ring's
+     * row wins because it is the one that regenerates on every sync (and so the one a tombstone
+     * can hold down); ours is deleted outright. A ring that does not log spot readings never
+     * produces such a neighbour, so this costs nothing anywhere else.
+     */
+    private suspend fun adoptRingsCopy(kind: MeasurementKind, historyAt: Long) {
+        if (kind != MeasurementKind.HEART_RATE && kind != MeasurementKind.SPO2) return
+        val ours = spotReadingsOf(kind)
+        if (ours.isEmpty()) return
+        val matched = spotReadingsMatching(ours, historyAt)
+        if (matched.isEmpty()) return
+        db.measurementDao().deleteBySourceBetween(kind.name, SOURCE_SPOT, historyAt - SPOT_MATCH_MS, historyAt + SPOT_MATCH_MS)
+        ours.removeAll(matched)
     }
 
     private suspend fun persistUnsafe(event: PulseEvent) {
@@ -185,32 +234,27 @@ class EventPersistenceSubscriber(
                 ))
                 recordBatterySample(event.percent, now)
             }
+            is PulseEvent.LiveSampleGate -> {
+                if (event.closed) closedGates.add(event.kind) else closedGates.remove(event.kind)
+            }
             is PulseEvent.HeartRateSample -> {
-                if (suppressLiveHeartRate()) return
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.HEART_RATE.name,
-                    value = event.bpm.toDouble(), unit = "bpm",
-                    timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
-                ))
+                if (!event.spot && MeasurementKind.HEART_RATE in closedGates) return
+                storeLiveReading(MeasurementKind.HEART_RATE, event.bpm.toDouble(), "bpm", event.timestamp.toEpochMilli(), event.spot)
             }
             is PulseEvent.Spo2Result -> {
-                if (suppressLiveSpo2()) return
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.SPO2.name,
-                    value = event.value.toDouble(), unit = "%",
-                    timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
-                ))
+                if (!event.spot && MeasurementKind.SPO2 in closedGates) return
+                storeLiveReading(MeasurementKind.SPO2, event.value.toDouble(), "%", event.timestamp.toEpochMilli(), event.spot)
             }
             is PulseEvent.HistoryMeasurement -> {
+                val at = event.timestamp.toEpochMilli()
                 upsertUnlessDeleted(MeasurementEntity(
-                    id = historyMeasurementId(event.kind, event.timestamp.toEpochMilli()),
+                    id = historyMeasurementId(event.kind, at),
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
-                    timestamp = event.timestamp.toEpochMilli(),
+                    timestamp = at,
                     sourceRaw = "history",
                 ))
+                adoptRingsCopy(event.kind, at)
             }
             is PulseEvent.StressSample -> {
                 val measurement = MeasurementEntity(
@@ -678,10 +722,32 @@ class EventPersistenceSubscriber(
         }
     }
 
-    private companion object {
-        const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+    companion object {
+        /** `sourceRaw` of the one reading a spot measurement stores for itself (issue #60). Reads
+         *  alongside `"live"` everywhere a source is filtered — nothing treats the two apart except
+         *  [adoptRingsCopy]. */
+        const val SOURCE_SPOT = "spot"
+        /** How far a ring-history sample may sit from one of our spot readings and still be the
+         *  ring's copy of it. The measurement itself runs 35–63 s and the ring stamps its log to
+         *  the minute, so 90 s covers a stamp at either end of the run without reaching the ring's
+         *  own all-day samples five minutes apart. */
+        const val SPOT_MATCH_MS = 90_000L
+        /** How far back [spotReadings] is primed from the table on first use. */
+        const val SPOT_LOOKBACK_MS = 7L * 24 * 60 * 60_000
+        private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
     }
 }
+
+/**
+ * Which of our spot readings ([ours], epoch millis) a ring-history sample stamped [historyAt] is
+ * the ring's own copy of — the pure half of [EventPersistenceSubscriber.adoptRingsCopy]
+ * (issue #60): within [window] either side, and nothing else.
+ */
+internal fun spotReadingsMatching(
+    ours: List<Long>,
+    historyAt: Long,
+    window: Long = EventPersistenceSubscriber.SPOT_MATCH_MS,
+): List<Long> = ours.filter { kotlin.math.abs(it - historyAt) <= window }
 
 internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
     "history:${kind.key}:$timestamp"

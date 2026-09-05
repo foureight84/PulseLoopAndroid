@@ -156,4 +156,22 @@ class EventPersistenceIdentityTest {
             durationMinutes = duration,
             stageRaw = stage,
         )
+
+    /**
+     * Issue #60, RC-2: the ring logs each spot reading into its own history, and a later sync
+     * imports it next to the row we stored for our settled value. The match rule that lets the
+     * ring's copy replace ours must reach a stamp at either end of a 35–63 s measurement and must
+     * not reach the ring's own all-day samples five minutes apart.
+     */
+    @Test
+    fun `a history sample adopts only the spot reading it is the ring's copy of`() {
+        val ours = listOf(1_000_000L, 1_300_000L)   // two spot readings, five minutes apart
+        // The ring stamps to the minute, so its copy may sit up to a measurement's length away.
+        assertEquals(listOf(1_000_000L), spotReadingsMatching(ours, 1_000_000L + 60_000))
+        assertEquals(listOf(1_000_000L), spotReadingsMatching(ours, 1_000_000L - 60_000))
+        // An all-day sample two and a half minutes from either is nobody's copy.
+        assertTrue(spotReadingsMatching(ours, 1_150_000L).isEmpty())
+        // Nothing of ours: nothing to adopt, whatever the ring sends.
+        assertTrue(spotReadingsMatching(emptyList(), 1_000_000L).isEmpty())
+    }
 }

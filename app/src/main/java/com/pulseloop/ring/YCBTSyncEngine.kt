@@ -29,6 +29,14 @@ class YCBTSyncEngine(
      */
     override val spotHeartRateSeconds: Int = 45
 
+    /**
+     * Five instrumented SpO₂ captures on the #59 ring all ended with `04 0e` at **t+63.1 s**, to
+     * the tenth of a second, regardless of when samples arrived or stopped (the RC-1 capture ended
+     * at t+50 s, so it is per-session, not a constant). At the 60 s default the leg timed out three
+     * seconds before the ring's own verdict and settled on the fallback; this leaves room for it.
+     */
+    override val spotSpo2Seconds: Int = 75
+
     /** These rings end a spot measurement with `04 0e` (issue #59), confirmed on hardware for both
      *  heart rate (`{00 01}`) and SpO2 (`{02 01}`). */
     override val signalsMeasurementCompletion: Boolean = true

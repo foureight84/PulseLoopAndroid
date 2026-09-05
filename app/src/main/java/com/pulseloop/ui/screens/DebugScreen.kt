@@ -254,6 +254,7 @@ private fun labelFor(event: PulseEvent): String = when (event) {
     is PulseEvent.Spo2Complete -> "SpO₂ Done"
     is PulseEvent.MeasurementRejected -> "Measure Rejected"
     is PulseEvent.MeasurementComplete -> if (event.success) "Measure Done" else "Measure Failed"
+    is PulseEvent.LiveSampleGate -> if (event.closed) "Live Samples Held" else "Live Samples Stored"
     is PulseEvent.BloodPressureSample -> "Blood Pressure"
     is PulseEvent.BloodSugarSample -> "Glucose"
     is PulseEvent.WearState -> if (event.worn) "Worn" else "Not Worn"

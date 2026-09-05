@@ -29,6 +29,10 @@ import kotlin.math.abs
  * earlier ones on an optical sensor that is still converging, and this is the cheapest rule that
  * says so without guessing where convergence happened. It costs nothing on a ring that streams a
  * steady rate for the whole window — its tail agrees with its head.
+ *
+ * Samples are appended by the Main collector and judged from whichever thread runs the measuring
+ * coroutine (the coach's tools poll from IO), so every member that touches [samples] is
+ * synchronised.
  */
 class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) {
     /** Discard window for the cached echo described above. */
@@ -59,11 +63,13 @@ class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) 
      * True once a *real* (post-warm-up) reading has landed — which is what distinguishes a fresh
      * measurement from the stale live value still on screen from the last one.
      */
-    val receivedReading: Boolean get() = samples.isNotEmpty()
+    val receivedReading: Boolean get() = synchronized(samples) { samples.isNotEmpty() }
 
     fun begin(now: Long = clock()) {
-        startedAt = now
-        samples.clear()
+        synchronized(samples) {
+            startedAt = now
+            samples.clear()
+        }
     }
 
     /**
@@ -72,10 +78,12 @@ class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) 
      * out of the live value on screen as well as out of the settle.
      */
     fun collect(bpm: Int, now: Long = clock()): Boolean {
-        val started = startedAt ?: return false
-        if (now - started < warmupMs) return false
-        samples.add(Sample(bpm, now))
-        return true
+        synchronized(samples) {
+            val started = startedAt ?: return false
+            if (now - started < warmupMs) return false
+            samples.add(Sample(bpm, now))
+            return true
+        }
     }
 
     /**
@@ -83,7 +91,7 @@ class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) 
      * since nothing has been collected yet.
      */
     fun contactLost(now: Long = clock()): Boolean {
-        val last = samples.lastOrNull() ?: return false
+        val last = synchronized(samples) { samples.lastOrNull() } ?: return false
         return now - last.at > contactGapMs
     }
 
@@ -93,8 +101,10 @@ class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) 
      */
     val stableValue: Int?
         get() {
-            if (samples.size < minSamples) return null
-            val considered = tail()
+            val considered = synchronized(samples) {
+                if (samples.size < minSamples) return null
+                tail()
+            }
             val sorted = considered.sorted()
             val median = sorted[sorted.size / 2]
             val cluster = sorted.filter { abs(it - median) <= band }   // stays sorted
@@ -102,7 +112,8 @@ class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) 
             return cluster[cluster.size / 2]
         }
 
-    /** The samples the settle judges: the last [settleTailMs] of them, floored at [minSamples]. */
+    /** The samples the settle judges: the last [settleTailMs] of them, floored at [minSamples].
+     *  Callers hold the [samples] lock. */
     private fun tail(): List<Int> {
         val newest = samples.last().at
         val byTime = samples.count { newest - it.at <= settleTailMs }

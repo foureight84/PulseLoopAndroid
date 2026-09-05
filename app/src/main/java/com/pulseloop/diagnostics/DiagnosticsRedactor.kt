@@ -36,8 +36,9 @@ object DiagnosticsRedactor {
     private fun headerBytes(deviceType: String): Int = when (deviceType) {
         // `FD DA 10 <len> <group> <cmd>` — CRPProtocol.HEADER_SIZE.
         "CRP" -> 6
-        // `<group> <cmd> <len-lo> <len-hi>` — YCBTFrame.frame().
-        "TK5", "COLMI_SMART_HEALTH" -> 4
+        // `<group> <cmd> <len-lo> <len-hi>` — YCBTFrame.frame(). Every family that drives a
+        // YCBTDriver, including the hardware-validated R10M path (`RingDeviceType.YCBT`).
+        "YCBT", "TK5", "COLMI_SMART_HEALTH" -> 4
         // Everything else (Colmi/QRing, jring, LuckRing, RWfit) puts its opcode in byte 0.
         else -> 1
     }

@@ -7,9 +7,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The SpO₂ settle (issue #59, RC-1 feedback). The rule is deliberately non-committal about the
- * shape of the run — see [Spo2SampleWindow] — so these tests pin what it must *not* do as much as
- * what it returns.
+ * The SpO₂ settle (issue #59, RC-2 feedback): the reading is the last plausible sample, because
+ * that is what the ring itself logs — see [Spo2SampleWindow] for the three sources behind that.
+ * The five captures below are @Albabit's, each lined up against the value read back out of the
+ * ring's own history for that run.
  */
 class Spo2SampleWindowTest {
 
@@ -25,48 +26,64 @@ class Spo2SampleWindowTest {
     fun `a single sample is its own reading`() {
         val w = Spo2SampleWindow()
         w.begin()
-        w.collect(97)
+        assertTrue(w.collect(97))
         assertTrue(w.receivedReading)
         assertEquals(97, w.settled)
     }
 
+    /** Captures 1–3: one tight burst. Ring stored 98. */
+    @Test
+    fun `a tight burst settles on its last sample`() {
+        val w = Spo2SampleWindow()
+        w.begin()
+        listOf(99, 98, 98, 98).forEach { w.collect(it) }
+        assertEquals(98, w.settled)
+    }
+
     /**
-     * Replayed from @Albabit's instrumented capture: a first burst at 96, a 24 s silence, a peak of
-     * 99, then a decline to 94 before the ring ends the run itself at t+50 s.
-     *
-     * The old leg returned 96 — the first sample, handed back at t+13 s with nine more still to
-     * come. The settle must not simply agree with it by accident of ordering, and must sit inside
-     * the run rather than at either extreme, since which end is honest is still unknown.
+     * Capture 4: the late burst collapses from 98 to 86–87. The ring stored **87** — that run was
+     * simply bad, and the reading must say so rather than rescue it from the earlier burst.
      */
     @Test
-    fun `the captured run settles between the peak and the declining tail`() {
+    fun `a collapsing run settles on the collapse, as the ring does`() {
+        val w = Spo2SampleWindow()
+        w.begin()
+        listOf(98, 98, 98, 86, 86, 86, 87, 87, 87).forEach { w.collect(it) }
+        assertEquals(87, w.settled)
+    }
+
+    /** Capture 5: the one run where the median (98) disagreed with what the ring stored (99). */
+    @Test
+    fun `the run that split median from ring settles with the ring`() {
+        val w = Spo2SampleWindow()
+        w.begin()
+        listOf(97, 97, 97, 99, 99, 98, 98, 98, 99).forEach { w.collect(it) }
+        assertEquals(99, w.settled)
+    }
+
+    /** The original RC-1 capture: rises to 99 then declines to 94 before `04 0e`. Ring behaviour
+     *  says the last sample is the reading; the old first-sample leg would have said 96. */
+    @Test
+    fun `the RC-1 capture settles on its tail, not its first sample`() {
         val w = Spo2SampleWindow()
         w.begin()
         listOf(96, 96, 96, 99, 98, 98, 98, 96, 96, 95, 94, 94).forEach { w.collect(it) }
-
-        val settled = w.settled!!
-        assertTrue("must not chase the 99 peak: got $settled", settled < 99)
-        assertTrue("must not settle on the 94 tail: got $settled", settled > 94)
-        assertEquals(96, settled)
+        assertEquals(94, w.settled)
     }
 
-    /** Order must not matter: the same run collected backwards settles identically. A rule that
-     *  depended on arrival order is exactly what the first-sample-wins behaviour was. */
+    /** The vendor's plausibility band (70..100): a zero or a dropout is neither the reading nor
+     *  evidence that the ring has read anything yet. */
     @Test
-    fun `the settle is independent of arrival order`() {
-        val run = listOf(96, 96, 96, 99, 98, 98, 98, 96, 96, 95, 94, 94)
-        val forward = Spo2SampleWindow().apply { begin(); run.forEach { collect(it) } }
-        val backward = Spo2SampleWindow().apply { begin(); run.reversed().forEach { collect(it) } }
-
-        assertEquals(forward.settled, backward.settled)
-    }
-
-    /** A single outlier — one motion artifact in an otherwise steady run — must not move it. */
-    @Test
-    fun `an outlier does not drag the reading`() {
+    fun `implausible samples are dropped and do not count as a reading`() {
         val w = Spo2SampleWindow()
         w.begin()
-        listOf(97, 97, 98, 97, 97, 70).forEach { w.collect(it) }
+        assertFalse(w.collect(0))
+        assertFalse(w.collect(69))
+        assertFalse(w.collect(101))
+        assertFalse(w.receivedReading)
+        assertNull(w.settled)
+        assertTrue(w.collect(97))
+        assertFalse(w.collect(0))
         assertEquals(97, w.settled)
     }
 

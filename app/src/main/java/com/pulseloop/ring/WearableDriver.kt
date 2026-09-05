@@ -127,6 +127,9 @@ interface RingSyncEngine {
          * enough that a ring which will never produce one doesn't hold the sensor on.
          */
         const val DEFAULT_SPOT_HEART_RATE_SECONDS = 30
+        /** Default ceiling on the SpO₂ leg. iOS raised this 40 → 60 (`c8969a4`): the R99's
+         *  successful sweep took 38 s while another ran past 41 s with no result. */
+        const val DEFAULT_SPOT_SPO2_SECONDS = 60
     }
 
     /** True only for protocols with one native command that returns a combined vitals packet.
@@ -144,6 +147,14 @@ interface RingSyncEngine {
      * visibly slower for nothing.
      */
     val spotHeartRateSeconds: Int get() = DEFAULT_SPOT_HEART_RATE_SECONDS
+
+    /**
+     * Ceiling on the SpO₂ leg of a spot measurement, in seconds. The same reasoning as
+     * [spotHeartRateSeconds]: a family whose ring ends the measurement itself may need a longer
+     * fallback bound than the default, because the ring's own `04 0e` is what actually ends the
+     * leg and the window must be long enough for it to arrive.
+     */
+    val spotSpo2Seconds: Int get() = DEFAULT_SPOT_SPO2_SECONDS
 
     /**
      * True when this family's ring tells us a spot measurement has ended (issue #59's `04 0e`).

@@ -73,6 +73,16 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
+    /** Timestamps of one kind's rows from one source since [since] — primes the persistence
+     *  subscriber's memory of the spot readings it stored (issue #60). */
+    @Query("SELECT timestamp FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp >= :since")
+    suspend fun timestampsBySource(kind: String, source: String, since: Long): List<Long>
+
+    /** Remove one kind's rows from one source inside a window — how a spot reading yields to the
+     *  ring's own copy of it once history supplies that (issue #60). */
+    @Query("DELETE FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp BETWEEN :start AND :end")
+    suspend fun deleteBySourceBetween(kind: String, source: String, start: Long, end: Long): Int
+
     @Upsert
     suspend fun upsert(measurement: MeasurementEntity)
 

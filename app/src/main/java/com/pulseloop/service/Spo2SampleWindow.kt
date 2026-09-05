@@ -2,7 +2,7 @@ package com.pulseloop.service
 
 /**
  * The SpO₂ samples of one spot measurement, and the rule for turning them into a reading
- * (issue #59, RC-1 feedback).
+ * (issue #59, RC-1 and RC-2 feedback).
  *
  * ## Why this exists at all
  *
@@ -16,41 +16,58 @@ package com.pulseloop.service
  * to discard. That ring sends nothing at all for the first 13 s, so a time-based warm-up window
  * would drop nothing and inventing one would be guessing.
  *
- * ## Why the median, and why that is provisional
+ * ## Why the last plausible sample
  *
- * The capture rises to a peak of 99 and then *declines* to 94 — so unlike heart rate, later samples
- * are not obviously better evidence, and the tail rule that fixed HR would land on 94-95 while the
- * sensor's strongest signal was several points higher. Which of those is the honest number is an
- * open question that one capture cannot answer.
+ * RC-2 shipped a median because one capture could not say whether the peak or the tail of a run
+ * was the honest number. Three independent sources then agreed on the answer (issue #59, RC-2
+ * feedback):
  *
- * The median is chosen precisely because it refuses to answer it: it privileges neither the peak
- * nor the tail, and it is robust to the scatter either end contributes. **Revisit this once
- * repeated captures show whether the peak-then-decline shape is consistent or was one attempt.**
- * That is the whole reason this is a separate, tested class rather than three lines inline.
+ *  * **The ring's own log.** These rings write each spot reading into their history. Read back
+ *    against the raw streams of five captures, the stored value equalled the **last** streamed
+ *    sample five times out of five; the median matched four (it parted company on a run ending
+ *    97×3, 99, 99, 98×3, 99 — ring 99, median 98).
+ *  * **A collapsing run is a bad measurement, not a rule failure.** The one run whose late burst
+ *    fell from 98 to 86–87 is stored by the ring as 87. There was no eleven-point error for a
+ *    settle rule to avoid; the ring itself calls that run 87.
+ *  * **The vendor app does not settle at all.** `BloodOxygenMeasureActivity.onEvent`
+ *    (`com.zhuoting.healthyucheng` 1.27.96) overwrites the on-screen value with every realtime
+ *    frame, dropping only zero and anything outside `BLOOD_OXYGEN_VISIBLE_MIN..MAX` (70..100), and
+ *    on `04 0e` success re-reads the ring's history rather than deciding a number itself.
+ *
+ * So the ring decides, and the app's job is to agree with it: the reading is the last sample the
+ * ring streamed, filtered by the vendor's plausibility band and nothing else. Anything cleverer
+ * disagrees with what the ring will log — which is exactly the doubled, slightly-different
+ * readings issue #60's tester saw.
  */
 class Spo2SampleWindow {
     private val samples = mutableListOf<Int>()
 
-    /** True once any reading has landed — distinguishes a fresh measurement from a stale value. */
-    val receivedReading: Boolean get() = samples.isNotEmpty()
+    /** True once any plausible reading has landed — distinguishes a fresh measurement from a stale
+     *  value. */
+    val receivedReading: Boolean get() = synchronized(samples) { samples.isNotEmpty() }
 
     fun begin() {
-        samples.clear()
-    }
-
-    fun collect(percent: Int) {
-        samples.add(percent)
+        synchronized(samples) { samples.clear() }
     }
 
     /**
-     * The settled reading: the median of everything collected, or null if nothing was. Even
-     * ties break low (`size / 2` on a sorted even-length list), which is the conservative
-     * direction for a saturation reading.
+     * Collect a sample. Returns false — and keeps nothing — when it is outside the vendor's
+     * plausibility band, so a zero or a dropout can neither become the reading nor mark the
+     * measurement as having read something.
      */
+    fun collect(percent: Int): Boolean {
+        if (percent !in PLAUSIBLE) return false
+        synchronized(samples) { samples.add(percent) }
+        return true
+    }
+
+    /** The settled reading: the last plausible sample the ring streamed, or null if there was none. */
     val settled: Int?
-        get() {
-            if (samples.isEmpty()) return null
-            val sorted = samples.sorted()
-            return sorted[(sorted.size - 1) / 2]
-        }
+        get() = synchronized(samples) { samples.lastOrNull() }
+
+    companion object {
+        /** The vendor's `BLOOD_OXYGEN_VISIBLE_MIN..MAX`; also the band every other decoder in this
+         *  app already applies to a live SpO₂ value. */
+        val PLAUSIBLE: IntRange = 70..100
+    }
 }
