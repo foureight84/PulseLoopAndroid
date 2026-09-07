@@ -114,6 +114,45 @@ class EventPersistenceIdentityTest {
         assertEquals(listOf("LIGHT", "DEEP", "LIGHT"), merged.map { it.stageRaw })
     }
 
+    /**
+     * Issue #63: the ring split one night into two sessions three minutes apart (00:12–03:18 and
+     * 03:21–07:24). Once stored, SleepSegmentation has merged them into one row, so on the next
+     * sync pass the second record overlaps a row that also holds the first record's blocks. It
+     * must retire only its own stale copy — never the first session across the gap.
+     */
+    @Test
+    fun `a complete record does not retire the other session of the same night`() {
+        val a = 1_725_408_720_000L                    // 00:12
+        val b = a + (3 * 60 + 9) * 60_000L           // 03:21 — three minutes after 03:18
+        val existing = listOf(
+            block("a-1", a, 124, "LIGHT"),
+            block("a-2", a + 124 * 60_000L, 62, "DEEP"),          // ends 03:18
+            block("b-1", b, 119, "LIGHT"),
+            block("b-2", b + 119 * 60_000L, 124, "DEEP"),         // ends 07:24
+        )
+
+        val survivors = completeSessionSurvivors(existing, b, b + 243 * 60_000L)
+
+        assertEquals(listOf("a-1", "a-2"), survivors.map { it.id })
+    }
+
+    /** The rule the old block wipe was there for: a shortened re-send of the *same* session must
+     *  still retire its stale tail, which abuts the revised interval without a gap. */
+    @Test
+    fun `a shortened complete record still retires its own stale tail and head`() {
+        val start = 1_725_408_720_000L
+        val existing = listOf(
+            block("head", start, 10, "AWAKE"),                    // revision now starts 10 min later
+            block("mid", start + 10 * 60_000L, 100, "LIGHT"),
+            block("tail", start + 110 * 60_000L, 20, "LIGHT"),    // revision now ends 20 min earlier
+            block("nap", start + 131 * 60_000L, 30, "LIGHT"),     // one-minute gap: a different session
+        )
+
+        val survivors = completeSessionSurvivors(existing, start + 10 * 60_000L, start + 110 * 60_000L)
+
+        assertEquals(listOf("nap"), survivors.map { it.id })
+    }
+
     @Test
     fun `short nap cannot replace a longer night on the same waking day`() {
         val nightStart = 1_721_234_000_000L
@@ -156,4 +195,38 @@ class EventPersistenceIdentityTest {
             durationMinutes = duration,
             stageRaw = stage,
         )
+
+    /**
+     * Issue #60: only a ring that logs its own spot measurements leaves a second copy to reconcile.
+     * A CRP or Colmi ring does not, and its all-day history sits on a five-minute grid — so a spot
+     * reading there must never be marked as awaiting a ring copy, or the next unrelated grid
+     * sample within the match window would delete a reading the user asked for.
+     */
+    @Test
+    fun `only a spot reading from a ring that logs it awaits the ring's copy`() {
+        assertTrue(awaitsRingsCopy(spot = true, ringWillLogIt = true))
+        assertFalse("a CRP/Colmi spot reading has no second copy coming",
+            awaitsRingsCopy(spot = true, ringWillLogIt = false))
+        assertFalse("a streamed sample is not a spot reading",
+            awaitsRingsCopy(spot = false, ringWillLogIt = true))
+        assertFalse(awaitsRingsCopy(spot = false, ringWillLogIt = false))
+    }
+
+    /**
+     * Issue #60, RC-2: the ring logs each spot reading into its own history, and a later sync
+     * imports it next to the row we stored for our settled value. The match rule that lets the
+     * ring's copy replace ours must reach a stamp at either end of a 35–63 s measurement and must
+     * not reach the ring's own all-day samples five minutes apart.
+     */
+    @Test
+    fun `a history sample adopts only the spot reading it is the ring's copy of`() {
+        val ours = listOf(1_000_000L, 1_300_000L)   // two spot readings, five minutes apart
+        // The ring stamps to the minute, so its copy may sit up to a measurement's length away.
+        assertEquals(listOf(1_000_000L), spotReadingsMatching(ours, 1_000_000L + 60_000))
+        assertEquals(listOf(1_000_000L), spotReadingsMatching(ours, 1_000_000L - 60_000))
+        // An all-day sample two and a half minutes from either is nobody's copy.
+        assertTrue(spotReadingsMatching(ours, 1_150_000L).isEmpty())
+        // Nothing of ours: nothing to adopt, whatever the ring sends.
+        assertTrue(spotReadingsMatching(emptyList(), 1_000_000L).isEmpty())
+    }
 }

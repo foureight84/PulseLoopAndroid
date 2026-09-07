@@ -122,6 +122,37 @@ class YCBTHealthRecordsTest {
         assertEquals(2, timelines.size)
     }
 
+    /**
+     * Issue #63: the night the ring split in two — the second record must decode as its own
+     * session with its own start, not be folded into or lost behind the first.
+     */
+    @Test
+    fun `two adjacent sessions decode as two timelines with their own starts`() {
+        val firstStart = 0x31def01c
+        val secondStart = firstStart + (3 * 60 + 9) * 60          // 03:21, three minutes after 03:18
+        val first = sleepSession(listOf(0xf2 to 124 * 60, 0xf1 to 62 * 60), baseStart = firstStart)
+        val second = sleepSession(listOf(0xf2 to 119 * 60, 0xf1 to 124 * 60), baseStart = secondStart)
+        val timelines = YCBTHealthRecords.sleep(first + second).filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(2, timelines.size)
+        assertEquals(186, timelines[0].stages.size)
+        assertEquals(243, timelines[1].stages.size)
+        assertEquals(YCBTBytes.date(firstStart), timelines[0]._timestamp)
+        assertEquals(YCBTBytes.date(secondStart), timelines[1]._timestamp)
+    }
+
+    /** A record whose declared length lies must not take the following session down with it:
+     *  the parser resynchronises on the next `af fa`. */
+    @Test
+    fun `a record with a wrong declared length does not swallow the next session`() {
+        val bad = sleepSession(listOf(0xf2 to 60 * 60)).also { it[2] = 12 }   // claims 12 bytes: no segments
+        val good = sleepSession(listOf(0xf1 to 30 * 60))
+        val timelines = YCBTHealthRecords.sleep(bad + good).filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(1, timelines.size)
+        assertEquals(30, timelines.single().stages.size)
+    }
+
     @Test
     fun `nap segment does not truncate the night`() {
         val session = sleepSession(listOf(
@@ -269,7 +300,7 @@ class YCBTHealthRecordsTest {
         assertFalse(YCBTHealthRecords.decode(capturedHeartRecords, YCBTHistoryType.HEART).isEmpty())
     }
 
-    private fun sleepSession(segments: List<Pair<Int, Int>>): ByteArray {
+    private fun sleepSession(segments: List<Pair<Int, Int>>, baseStart: Int = 0x31def01c): ByteArray {
         val recordLength = 20 + segments.size * 8
         val out = mutableListOf<Byte>()
         out.add(0xaf.toByte())
@@ -278,7 +309,7 @@ class YCBTHealthRecordsTest {
         out.add((recordLength shr 8).toByte())
         repeat(16) { out.add(0) }
         for ((index, segment) in segments.withIndex()) {
-            val start = 0x31def01c + index * 3600
+            val start = baseStart + index * 3600
             out.add(segment.first.toByte())
             out.add((start and 0xFF).toByte())
             out.add(((start shr 8) and 0xFF).toByte())

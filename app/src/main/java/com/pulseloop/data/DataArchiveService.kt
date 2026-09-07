@@ -310,6 +310,12 @@ object DataArchiveService {
                     lastUsedAt = c.long("lastUsedAt"), useCount = c.int_("useCount"),
                 )
             },
+            measurementDeletions = collect("measurement_deletions") { c ->
+                MeasurementDeletionDTO(
+                    measurementId = c.str("measurementId"), kindRaw = c.str("kindRaw"),
+                    timestamp = c.long("timestamp"), deletedAt = c.long("deletedAt"),
+                )
+            },
         )
     }
 
@@ -368,6 +374,18 @@ object DataArchiveService {
                     confidenceRaw = m.confidenceRaw, activitySessionId = m.activitySessionId,
                     rawPacketId = m.rawPacketId, createdAt = m.createdAt,
                 ))
+            }
+            // Restore the tombstones BEFORE anything can sync against them (issue #60): a restored
+            // history reading the user had deleted must not survive the round trip.
+            if (archive.measurementDeletions.isNotEmpty()) {
+                db.measurementDeletionDao().insertAll(
+                    archive.measurementDeletions.map {
+                        MeasurementDeletionEntity(
+                            measurementId = it.measurementId, kindRaw = it.kindRaw,
+                            timestamp = it.timestamp, deletedAt = it.deletedAt,
+                        )
+                    }
+                )
             }
             for (a in archive.activityDaily) {
                 db.activityDailyDao().upsert(ActivityDailyEntity(

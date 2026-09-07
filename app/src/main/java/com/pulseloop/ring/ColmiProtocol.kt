@@ -42,6 +42,32 @@ object ColmiCommandID {
     const val FIND_DEVICE: UByte = 0x50u
     const val MANUAL_HEART_RATE: UByte = 0x69u   // CMD_START_REAL_TIME (105)
     const val REALTIME_STOP: UByte = 0x6Au       // CMD_STOP_REAL_TIME (106)
+    /**
+     * Phone-driven sport session (`PhoneSportReq`, opcode 119): `[0x77, status, sportType]`. This
+     * is how the QRing app runs a live activity — it never touches the realtime-HR commands there.
+     * While the session is on, the ring pushes [SPORT_NOTIFY] on its own cadence (issue #64).
+     * Command channel only; [BIG_DATA_INTERVAL_TEMPERATURE] is a big-data *action* that happens
+     * to share the number on the other characteristic.
+     */
+    const val PHONE_SPORT: UByte = 0x77u
+    /** Sport telemetry pushed by the ring during a [PHONE_SPORT] session (`DeviceNotifyRsp`,
+     *  opcode 120): `[0x78, dataType, status, durMinHi, durMinLo, bpm, steps×3, metres×3, cal×3]`
+     *  (`SportRunningActivity.MyDeviceNotifyListener`). */
+    const val SPORT_NOTIFY: UByte = 0x78u
+    // PhoneSportReq statuses (SportRunningActivity / SportPrepareActivity).
+    const val SPORT_START: UByte = 0x01u
+    const val SPORT_PAUSE: UByte = 0x02u
+    const val SPORT_RESUME: UByte = 0x03u
+    const val SPORT_STOP: UByte = 0x04u
+    /** Status byte the ring reports in [SPORT_NOTIFY] when it ended the session itself. */
+    const val SPORT_ENDED_BY_RING: UByte = 0x03u
+    // PhoneSportReq sport types (SportRunningActivity.sportMap → strings.xml).
+    const val SPORT_TYPE_WALK: UByte = 0x04u
+    const val SPORT_TYPE_RUN: UByte = 0x07u
+    const val SPORT_TYPE_HIKE: UByte = 0x08u
+    const val SPORT_TYPE_CYCLE: UByte = 0x09u
+    const val SPORT_TYPE_OTHER: UByte = 0x0Au
+    const val SPORT_TYPE_YOGA: UByte = 0x16u
     const val NOTIFICATION: UByte = 0x73u
     const val BIG_DATA_V2: UByte = 0xBCu
     const val FACTORY_RESET: UByte = 0xFFu

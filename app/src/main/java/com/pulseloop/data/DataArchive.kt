@@ -35,6 +35,12 @@ data class PulseArchive(
     /** iOS #96 nutrition. Not in iOS's own `DataArchive.swift` — see the note on [MealEntryDTO]. */
     val mealEntries: List<MealEntryDTO> = emptyList(),
     val foodProducts: List<CachedFoodProductDTO> = emptyList(),
+    /**
+     * Issue #60: readings the user deleted. Carried in the archive because a restore wipes every
+     * table first — without these, a restore would forget the deletions while the ring still holds
+     * the days behind them, and the next sync would put every deleted reading back.
+     */
+    val measurementDeletions: List<MeasurementDeletionDTO> = emptyList(),
 )
 
 @Serializable data class DeviceDTO(
@@ -52,6 +58,10 @@ data class PulseArchive(
     val timestamp: Long, val sourceRaw: String, val confidenceRaw: String = "known",
     val activitySessionId: String? = null, val rawPacketId: String? = null,
     val createdAt: Long,
+)
+
+@Serializable data class MeasurementDeletionDTO(
+    val measurementId: String, val kindRaw: String, val timestamp: Long, val deletedAt: Long,
 )
 
 @Serializable data class ActivityDailyDTO(

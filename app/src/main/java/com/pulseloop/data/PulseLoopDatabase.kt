@@ -42,13 +42,16 @@ import com.pulseloop.data.entity.*
         CoachNotificationRecordEntity::class,
         MealEntryEntity::class,
         CachedFoodProductEntity::class,
+        MeasurementDeletionEntity::class,
     ],
-    version = 23,
+    version = 24,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun measurementDao(): MeasurementDao
+    /** Issue #60: the tombstones that keep a deleted reading deleted across re-syncs. */
+    abstract fun measurementDeletionDao(): MeasurementDeletionDao
     abstract fun activityDailyDao(): ActivityDailyDao
     abstract fun activityBucketDao(): ActivityBucketDao
     abstract fun deviceMeasurementConfigDao(): DeviceMeasurementConfigDao
@@ -107,7 +110,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             "coach_tool_calls", "user_profiles", "user_goals",
             "raw_packets", "derived_updates", "coach_summaries",
             "wearable_logs", "coach_notification_records",
-            "meal_entries", "food_products",
+            "meal_entries", "food_products", "measurement_deletions",
         )
 
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
@@ -442,6 +445,27 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v23 → v24: the deleted-reading tombstones (issue #60). Deleting a history-sourced
+         * measurement only sticks if the deletion outlives the row — see
+         * [com.pulseloop.data.entity.MeasurementDeletionEntity].
+         */
+        private val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `measurement_deletions` (
+                        `measurementId` TEXT NOT NULL,
+                        `kindRaw` TEXT NOT NULL,
+                        `timestamp` INTEGER NOT NULL,
+                        `deletedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`measurementId`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -531,6 +555,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_20_21,
                         MIGRATION_21_22,
                         MIGRATION_22_23,
+                        MIGRATION_23_24,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

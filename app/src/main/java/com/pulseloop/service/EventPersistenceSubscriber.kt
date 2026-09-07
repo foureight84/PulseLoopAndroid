@@ -22,6 +22,24 @@ class EventPersistenceSubscriber(
      */
     private val onDataPersisted: (() -> Unit)? = null,
 ) {
+    /**
+     * The kinds whose live samples are currently *not* stored, because a spot measurement is
+     * settling them (issue #60). Driven by [PulseEvent.LiveSampleGate], which the coordinator
+     * sends through the same bus as the samples, so this collector sees the gate close before the
+     * samples it must drop and reopen before the settled reading it must keep — whatever its lag
+     * behind the ring. Only touched from the collector, so it needs no lock.
+     */
+    private val closedGates = mutableSetOf<MeasurementKind>()
+
+    /**
+     * Timestamps of the spot readings this app stored itself, per kind — the rows a ring that
+     * logs its own spot measurements will later re-supply from history (issue #60, RC-1: two HR
+     * rows per measurement, same minute, values a few bpm apart). Loaded lazily from the table
+     * and kept current here so the history path can answer "is this the ring's copy of one of
+     * ours?" without a query per history sample. See [adoptRingsCopy].
+     */
+    private val spotReadings = mutableMapOf<MeasurementKind, MutableList<Long>>()
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
@@ -68,8 +86,79 @@ class EventPersistenceSubscriber(
         else -> false
     }
 
+    /**
+     * Write a measurement the ring can re-supply — unless the user deleted it (issue #60).
+     *
+     * Every caller here uses a deterministic `history:<kind>:<timestamp>` id so that re-syncing a
+     * day the ring still holds updates the same row instead of duplicating it. That idempotence is
+     * exactly what would undo a deletion, so the tombstone is checked on the way in. A reading with
+     * no tombstone is written as before.
+     */
+    private suspend fun upsertUnlessDeleted(measurement: MeasurementEntity) {
+        if (db.measurementDeletionDao().isDeleted(measurement.id)) return
+        db.measurementDao().upsert(measurement)
+    }
+
+    /**
+     * A live reading of [kind]: the ring's stream, or a spot measurement's settled value.
+     *
+     * [awaitingRingsCopy] marks the second case *on a ring that logs its own spot measurements*,
+     * so a later history sync can recognise the ring's copy and replace ours ([adoptRingsCopy]).
+     * A spot reading from a ring that does not log one is stored exactly as before — a plain live
+     * row, with no pending reconciliation and nothing that could delete it.
+     */
+    private suspend fun storeLiveReading(
+        kind: MeasurementKind,
+        value: Double,
+        unit: String,
+        at: Long,
+        awaitingRingsCopy: Boolean,
+    ) {
+        db.measurementDao().insert(MeasurementEntity(
+            kindRaw = kind.name, value = value, unit = unit, timestamp = at,
+            sourceRaw = if (awaitingRingsCopy) SOURCE_SPOT else "live",
+        ))
+        if (awaitingRingsCopy) spotReadingsOf(kind).add(at)
+    }
+
+    private suspend fun spotReadingsOf(kind: MeasurementKind): MutableList<Long> =
+        spotReadings.getOrPut(kind) {
+            db.measurementDao().timestampsBySource(kind.name, SOURCE_SPOT, System.currentTimeMillis() - SPOT_LOOKBACK_MS)
+                .toMutableList()
+        }
+
+    /**
+     * The ring's copy of a spot reading replaces ours (issue #60, confirmed on RC-2).
+     *
+     * The YCBT ring logs every spot measurement into its own history — verified by reading five
+     * SpO₂ runs back out of the ring's memory at the exact times they were taken — and the vendor
+     * app's whole reaction to a `04 0e` success is to re-sync that history: the ring decides the
+     * number, the app re-reads it. So when a history sample of the same kind lands within
+     * [SPOT_MATCH_MS] of a reading we stored for our own settled value, it is that measurement
+     * seen from the ring's side, and keeping both is the doubled row the tester saw. The ring's
+     * row wins because it is the one that regenerates on every sync (and so the one a tombstone
+     * can hold down); ours is deleted outright.
+     *
+     * **Only rings that actually log spot readings take part.** A row is marked [SOURCE_SPOT] at
+     * write time only when the ring reported its own completion, so this can never fire on a CRP
+     * or Colmi ring — where the nearest history sample is an unrelated point on the five-minute
+     * all-day grid and would land inside [SPOT_MATCH_MS] of most measurements.
+     */
+    private suspend fun adoptRingsCopy(kind: MeasurementKind, historyAt: Long) {
+        if (kind != MeasurementKind.HEART_RATE && kind != MeasurementKind.SPO2) return
+        val ours = spotReadingsOf(kind)
+        if (ours.isEmpty()) return
+        val matched = spotReadingsMatching(ours, historyAt)
+        if (matched.isEmpty()) return
+        db.measurementDao().deleteBySourceBetween(kind.name, SOURCE_SPOT, historyAt - SPOT_MATCH_MS, historyAt + SPOT_MATCH_MS)
+        ours.removeAll(matched)
+    }
+
     private suspend fun persistUnsafe(event: PulseEvent) {
         when (event) {
+            // A start/end verdict for one spot measurement (issue #59) — a control signal for the
+            // coordinator's poll loop, carrying no value of its own. Nothing to store.
+            is PulseEvent.MeasurementComplete -> Unit
             is PulseEvent.DeviceStateChanged -> {
                 // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
                 // device row, the ring's own teardown still emits a late DISCONNECTED — only
@@ -160,30 +249,33 @@ class EventPersistenceSubscriber(
                 ))
                 recordBatterySample(event.percent, now)
             }
+            is PulseEvent.LiveSampleGate -> {
+                if (event.closed) closedGates.add(event.kind) else closedGates.remove(event.kind)
+            }
             is PulseEvent.HeartRateSample -> {
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.HEART_RATE.name,
-                    value = event.bpm.toDouble(), unit = "bpm",
-                    timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
-                ))
+                if (!event.spot && MeasurementKind.HEART_RATE in closedGates) return
+                storeLiveReading(
+                    MeasurementKind.HEART_RATE, event.bpm.toDouble(), "bpm",
+                    event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                )
             }
             is PulseEvent.Spo2Result -> {
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.SPO2.name,
-                    value = event.value.toDouble(), unit = "%",
-                    timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
-                ))
+                if (!event.spot && MeasurementKind.SPO2 in closedGates) return
+                storeLiveReading(
+                    MeasurementKind.SPO2, event.value.toDouble(), "%",
+                    event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                )
             }
             is PulseEvent.HistoryMeasurement -> {
-                db.measurementDao().upsert(MeasurementEntity(
-                    id = historyMeasurementId(event.kind, event.timestamp.toEpochMilli()),
+                val at = event.timestamp.toEpochMilli()
+                upsertUnlessDeleted(MeasurementEntity(
+                    id = historyMeasurementId(event.kind, at),
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
-                    timestamp = event.timestamp.toEpochMilli(),
+                    timestamp = at,
                     sourceRaw = "history",
                 ))
+                adoptRingsCopy(event.kind, at)
             }
             is PulseEvent.StressSample -> {
                 val measurement = MeasurementEntity(
@@ -197,7 +289,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "colmi",
                 )
-                if (event.isHistory) db.measurementDao().upsert(measurement)
+                if (event.isHistory) upsertUnlessDeleted(measurement)
                 else db.measurementDao().insert(measurement)
             }
             is PulseEvent.HrvSample -> {
@@ -233,8 +325,8 @@ class EventPersistenceSubscriber(
                         sourceRaw = if (event.isHistory) "history" else "live",
                     )
                     if (event.isHistory) {
-                        db.measurementDao().upsert(systolic)
-                        db.measurementDao().upsert(diastolic)
+                        upsertUnlessDeleted(systolic)
+                        upsertUnlessDeleted(diastolic)
                     } else {
                         db.measurementDao().insert(systolic)
                         db.measurementDao().insert(diastolic)
@@ -262,7 +354,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 )
-                if (event.isHistory) db.measurementDao().upsert(measurement)
+                if (event.isHistory) upsertUnlessDeleted(measurement)
                 else db.measurementDao().insert(measurement)
             }
             is PulseEvent.ActivityUpdate -> {
@@ -454,14 +546,16 @@ class EventPersistenceSubscriber(
             if (existing.isEmpty()) emptyList()
             else db.sleepStageBlockDao().forSessions(existing.map { it.id })
 
-        // YCBT complete records are authoritative for their interval, including shortened
-        // revisions. Packet-based families replace only the packet interval. In both cases the
-        // unaffected blocks remain available for SleepSegmentation to preserve separate naps.
+        // YCBT complete records are authoritative for the ring session they describe, including
+        // shortened revisions. Packet-based families replace only the packet interval. In both
+        // cases the unaffected blocks remain available for SleepSegmentation to preserve
+        // separate naps — and, for a complete record, the *other* ring sessions of the same night
+        // (issue #63): see [completeSessionSurvivors] for why "the session it describes" is a
+        // contiguous run of blocks and not every block of every row the packet touches.
         val replacements = buildStageBlocks("", ts, stages)
         val dayBlocks = replaceOverlappingSleepBlocks(
             existing = if (completeSession) {
-                val replacedSessionIds = overlapping.mapTo(mutableSetOf()) { it.id }
-                existingBlocks.filterNot { it.sessionId in replacedSessionIds }
+                completeSessionSurvivors(existingBlocks, ts, packetEnd)
             } else {
                 existingBlocks
             },
@@ -651,10 +745,43 @@ class EventPersistenceSubscriber(
         }
     }
 
-    private companion object {
-        const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+    companion object {
+        /** `sourceRaw` of a spot measurement's settled reading **on a ring that will also log it
+         *  itself** (issue #60) — i.e. a row still awaiting reconciliation with the ring's copy.
+         *  Reads alongside `"live"` everywhere a source is filtered; nothing treats the two apart
+         *  except [adoptRingsCopy]. */
+        const val SOURCE_SPOT = "spot"
+        /** How far a ring-history sample may sit from one of our spot readings and still be the
+         *  ring's copy of it. The measurement itself runs 35–63 s and the ring stamps its log to
+         *  the minute, so 90 s covers a stamp at either end of the run without reaching the ring's
+         *  own all-day samples five minutes apart. */
+        const val SPOT_MATCH_MS = 90_000L
+        /** How far back [spotReadings] is primed from the table on first use. */
+        const val SPOT_LOOKBACK_MS = 7L * 24 * 60 * 60_000
+        private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
     }
 }
+
+/**
+ * Is this reading one the ring will hand back from its own history, so that the two copies have to
+ * be reconciled later ([EventPersistenceSubscriber.adoptRingsCopy])? Both halves are required:
+ * a streamed sample is not a spot reading, and a spot reading from a ring that keeps no log of it
+ * has no second copy coming. Getting the second half wrong is not cosmetic — on a CRP or Colmi
+ * ring the nearest history sample is an unrelated point on the five-minute all-day grid, so the
+ * reconciliation would delete readings the user deliberately took (issue #60).
+ */
+internal fun awaitsRingsCopy(spot: Boolean, ringWillLogIt: Boolean): Boolean = spot && ringWillLogIt
+
+/**
+ * Which of our spot readings ([ours], epoch millis) a ring-history sample stamped [historyAt] is
+ * the ring's own copy of — the pure half of [EventPersistenceSubscriber.adoptRingsCopy]
+ * (issue #60): within [window] either side, and nothing else.
+ */
+internal fun spotReadingsMatching(
+    ours: List<Long>,
+    historyAt: Long,
+    window: Long = EventPersistenceSubscriber.SPOT_MATCH_MS,
+): List<Long> = ours.filter { kotlin.math.abs(it - historyAt) <= window }
 
 internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
     "history:${kind.key}:$timestamp"
@@ -724,6 +851,52 @@ internal fun shouldReplaceCompleteSleep(
     incomingStart: Long,
     incomingMinutes: Int,
 ): Boolean = existingStart == incomingStart || incomingMinutes > existingMinutes
+
+/**
+ * The stored stage blocks a *complete* ring session leaves standing (issue #63).
+ *
+ * A YCBT ring closes a sleep session when it sees the wearer get up and opens a new one when they
+ * settle again, so one night can be two `af fa` records three minutes apart. SleepSegmentation
+ * (60-minute gap) rightly merges those into one stored row. The old rule then treated a complete
+ * record as authoritative for **every block of every row it overlapped** — so on the next sync
+ * pass, when the second record arrived on top of the merged row, it wiped the first record's
+ * three hours along with its own stale copy, and the night read 4 h 06 instead of 6 h 08. The
+ * vendor app keeps every record as its own session and never lets one displace another.
+ *
+ * What a complete record *is* authoritative for is the ring session it describes, which in the
+ * stored blocks is the contiguous run the packet's interval sits in: blocks that overlap the
+ * interval, and any block that abuts that run end-to-start without a gap, in either direction.
+ * That still lets a shortened revision retire its own stale head or tail (those abut the new
+ * interval), while a neighbouring session on the far side of even a one-minute gap is untouched.
+ * Blocks overlapping the interval itself are dropped here as well; the caller's interval replace
+ * would only trim them, and a complete record has no use for what it trimmed off.
+ */
+internal fun completeSessionSurvivors(
+    existing: List<SleepStageBlockEntity>,
+    replacementStart: Long,
+    replacementEnd: Long,
+): List<SleepStageBlockEntity> {
+    fun end(block: SleepStageBlockEntity) = block.startAt + block.durationMinutes * 60_000L
+    var runStart = replacementStart
+    var runEnd = replacementEnd
+    val retired = mutableSetOf<String>()
+    var grew = true
+    while (grew) {
+        grew = false
+        for (block in existing) {
+            if (block.id in retired) continue
+            val overlaps = block.startAt < runEnd && end(block) > runStart
+            val abuts = block.startAt == runEnd || end(block) == runStart
+            if (overlaps || abuts) {
+                retired.add(block.id)
+                runStart = minOf(runStart, block.startAt)
+                runEnd = maxOf(runEnd, end(block))
+                grew = true
+            }
+        }
+    }
+    return existing.filterNot { it.id in retired }
+}
 
 internal fun replaceOverlappingSleepBlocks(
     existing: List<SleepStageBlockEntity>,

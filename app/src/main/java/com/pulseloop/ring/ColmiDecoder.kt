@@ -66,6 +66,7 @@ object ColmiDecoder {
             }
             ColmiCommandID.REALTIME_HEART_RATE_ERROR ->
                 listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
+            ColmiCommandID.SPORT_NOTIFY -> decodeSportNotify(v, now)
             ColmiCommandID.NOTIFICATION -> decodeNotification(v, now)
             ColmiCommandID.BP_READ -> decodeBpResponse(v, now)
             else -> listOf(RingDecodedEvent.CommandAck(commandId = v[0]))
@@ -95,6 +96,20 @@ object ColmiDecoder {
                 value = dia.toDouble(), _timestamp = instant
             ),
         )
+    }
+
+    /**
+     * Sport telemetry the ring pushes during a phone-driven sport session (issue #64). Byte layout
+     * after the opcode is `DeviceNotifyRsp.loadData` as `SportRunningActivity` reads it:
+     * `[dataType][status][durMin hi][durMin lo][bpm][steps×3][metres×3][cal×1000 ×3]`. Only the
+     * bpm is consumed here — the workout's steps and distance come from the phone and the ring's
+     * own activity history — and QRing shows it only when positive, so zero is a warm-up frame.
+     */
+    private fun decodeSportNotify(v: List<UByte>, now: Instant): List<RingDecodedEvent> {
+        if (v.size < 6) return emptyList()
+        val bpm = v[5].toInt()
+        return if (bpm in 30..220) listOf(RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
+        else emptyList()
     }
 
     private fun decodeNotification(v: List<UByte>, now: Instant): List<RingDecodedEvent> = when (v[1]) {

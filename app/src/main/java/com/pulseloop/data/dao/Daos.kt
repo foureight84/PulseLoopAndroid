@@ -73,8 +73,28 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
+    /** Timestamps of one kind's rows from one source since [since] — primes the persistence
+     *  subscriber's memory of the spot readings it stored (issue #60). */
+    @Query("SELECT timestamp FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp >= :since")
+    suspend fun timestampsBySource(kind: String, source: String, since: Long): List<Long>
+
+    /** Remove one kind's rows from one source inside a window — how a spot reading yields to the
+     *  ring's own copy of it once history supplies that (issue #60). */
+    @Query("DELETE FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp BETWEEN :start AND :end")
+    suspend fun deleteBySourceBetween(kind: String, source: String, start: Long, end: Long): Int
+
     @Upsert
     suspend fun upsert(measurement: MeasurementEntity)
+
+    /** The rows behind a set of ids — how the readings list resolves a user's pick back into the
+     *  entities [com.pulseloop.data.MeasurementDeletion] needs to tombstone (issue #60). */
+    @Query("SELECT * FROM measurements WHERE id IN (:ids)")
+    suspend fun byIds(ids: List<String>): List<MeasurementEntity>
+
+    /** Delete one reading (issue #60). Pair with [MeasurementDeletionDao.record] for anything the
+     *  ring could re-sync, or the next history pass writes it back. */
+    @Query("DELETE FROM measurements WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
 
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
@@ -597,4 +617,36 @@ interface FoodProductDao {
 
     @Query("DELETE FROM food_products")
     suspend fun clear()
+}
+
+/**
+ * The tombstones behind "delete this reading" (issue #60) — see [MeasurementDeletionEntity] for
+ * why a delete needs a memory at all.
+ */
+@Dao
+interface MeasurementDeletionDao {
+    /** Asked on every history write, so a re-sync can't restore a reading the user removed. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurement_deletions WHERE measurementId = :id)")
+    suspend fun isDeleted(id: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(rows: List<MeasurementDeletionEntity>)
+
+    /**
+     * Remember [measurements] as deleted — but only the ones a later sync could actually rewrite.
+     * A live reading is stored under a fresh UUID that nothing regenerates, so tombstoning it would
+     * grow this table for no benefit.
+     */
+    suspend fun record(measurements: List<MeasurementEntity>) {
+        val regenerable = measurements
+            .filter { it.id.startsWith(HISTORY_ID_PREFIX) }
+            .map { MeasurementDeletionEntity(measurementId = it.id, kindRaw = it.kindRaw, timestamp = it.timestamp) }
+        if (regenerable.isNotEmpty()) insertAll(regenerable)
+    }
+
+    companion object {
+        /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
+         *  A measurement whose id starts with this is one the ring can hand us again. */
+        const val HISTORY_ID_PREFIX = "history:"
+    }
 }

@@ -44,13 +44,42 @@ sealed class PulseEvent {
     data class ActivityUpdate(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double, val calories: Double) : PulseEvent()
     data class ActivityBucket(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double) : PulseEvent()
     data object ActivitySyncReset : PulseEvent()
-    data class HeartRateSample(val bpm: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /**
+     * [spot] marks the one settled reading a spot measurement publishes for itself (issue #60);
+     * false for the ring's live stream. [ringWillLogIt] additionally says this ring writes that
+     * measurement into its **own** history, so a later sync will hand the same reading back and
+     * the two copies have to be reconciled — true only for a family whose ring reports its own
+     * completion (`RingSyncEngine.signalsMeasurementCompletion`), which is the same property:
+     * the ring decides the number and the vendor app re-reads it. Meaningless unless [spot].
+     */
+    data class HeartRateSample(
+        val bpm: Int,
+        val timestamp: java.time.Instant,
+        val spot: Boolean = false,
+        val ringWillLogIt: Boolean = false,
+    ) : PulseEvent()
     data class HeartRateComplete(val timestamp: java.time.Instant) : PulseEvent()
-    data class Spo2Result(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /** [spot] and [ringWillLogIt] as on [HeartRateSample]. */
+    data class Spo2Result(
+        val value: Int,
+        val timestamp: java.time.Instant,
+        val spot: Boolean = false,
+        val ringWillLogIt: Boolean = false,
+    ) : PulseEvent()
     /** The ring ended a live-SpO₂ run (error or natural finish) — no more results coming. */
     data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()
     /** A live measurement command was refused (not worn, sensor busy, unsupported). */
     data class MeasurementRejected(val mode: Int) : PulseEvent()
+    /** The ring ended a spot measurement on its own and reported the verdict (issue #59).
+     *  [mode] names which measurement finished; [success] is the ring's own success byte. */
+    data class MeasurementComplete(val mode: Int, val success: Boolean, val timestamp: java.time.Instant) : PulseEvent()
+    /**
+     * The coordinator opening or closing the gate on storing [kind]'s live samples (issue #60).
+     * Travels through the bus rather than a shared flag so it is ordered against the samples it
+     * governs: everything the ring streamed before the gate reopened is dropped, whatever the
+     * persistence collector's lag, and the settled reading published after it is stored.
+     */
+    data class LiveSampleGate(val kind: MeasurementKind, val closed: Boolean) : PulseEvent()
     data class BloodPressureSample(
         val systolic: Int,
         val diastolic: Int,

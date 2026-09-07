@@ -20,6 +20,27 @@ class YCBTSyncEngine(
     private var requestActivityAfterStartupHistory = false
     private var historyCapabilities = profile.baselineCapabilities
 
+    /**
+     * 45 s, not the family default (issue #59). A captured YCBT run shows the PPG spending its
+     * first ~26 s on a flat pre-converged plateau and the ring ending the measurement itself at
+     * ~35 s with `04 0e`; at 30 s the leg was cut off within a few samples of the real reading and
+     * reported that it never steadied. The measurement still ends on `04 0e` — this only raises
+     * the fallback ceiling far enough that the ring gets to send it.
+     */
+    override val spotHeartRateSeconds: Int = 45
+
+    /**
+     * Five instrumented SpO₂ captures on the #59 ring all ended with `04 0e` at **t+63.1 s**, to
+     * the tenth of a second, regardless of when samples arrived or stopped (the RC-1 capture ended
+     * at t+50 s, so it is per-session, not a constant). At the 60 s default the leg timed out three
+     * seconds before the ring's own verdict and settled on the fallback; this leaves room for it.
+     */
+    override val spotSpo2Seconds: Int = 75
+
+    /** These rings end a spot measurement with `04 0e` (issue #59), confirmed on hardware for both
+     *  heart rate (`{00 01}`) and SpO2 (`{02 01}`). */
+    override val signalsMeasurementCompletion: Boolean = true
+
     companion object {
         private val HISTORY_TYPES: List<YCBTHistoryType> = listOf(
             YCBTHistoryType.SPORT, YCBTHistoryType.SLEEP, YCBTHistoryType.HEART,

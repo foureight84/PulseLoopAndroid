@@ -118,6 +118,30 @@ data class WearableModel(
             imageRes = R.drawable.ring_yawell_r11,
         )
 
+        /**
+         * The **R100** (issue #58) — a white-label CRP ring that ships with the same Moyoung
+         * "Da Rings" app as [COLMI_R11_CRP], firmware `MOY-R2E3-*`. Its reporter had to know to
+         * pick the R11 card for it; this card is so they don't.
+         *
+         * Unlike the R11 it advertises a usable name, so it can be matched at scan instead of
+         * relying on the post-connect `fdda` re-route. The pattern is deliberately loose about the
+         * suffix because the only capture we have is a redacted diagnostics report, which strips a
+         * `_<hex>` serial — the raw name is `R100` or `R100_<hex>`. The underscore is what keeps
+         * this off [SMARTHEALTH_NAME_PATTERN], whose serial is **space**-separated: an earlier
+         * `^R100([ _-].*)?$` also matched `R100 1A2B`, and because this entry precedes
+         * [COLMI_SMARTHEALTH] in [CATALOG] it would have taken a SmartHealth-firmware ring onto the
+         * CRP driver, which connects and then never syncs. It cannot collide with the Colmi
+         * `^R10_[0-9A-F]{4}$` either.
+         *
+         * Blurb omits stress: the R100 answers neither the stress-history query (`2/47`) nor the
+         * stress monitor-state read-back (`2/45`) — 22 sends, 0 replies in the #58 capture.
+         */
+        val R100 = WearableModel(
+            id = "r100", displayName = "R100", brand = "Da Rings", family = RingDeviceType.CRP,
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Temp · Sleep",
+            advertisedNamePatterns = listOf("^R100(_[0-9A-Fa-f]+)?$"),
+        )
+
         // Yawell-branded variants
         val YAWELL_R05 = colmi("yawell-r05", "Yawell R05", "Yawell", "^R05_[0-9A-F]{4}$", R.drawable.ring_yawell_r05)
         val YAWELL_R10 = colmi("yawell-r10", "Yawell R10", "Yawell", "^R10_[0-9A-F]{4}$", R.drawable.ring_yawell_r10)
@@ -205,7 +229,7 @@ data class WearableModel(
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
             COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP, RWFIT,
+            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP, R100, RWFIT,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
             COLMI_SMARTHEALTH,
