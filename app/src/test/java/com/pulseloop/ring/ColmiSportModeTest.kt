@@ -145,4 +145,44 @@ class ColmiSportModeTest {
         assertEquals(listOf(0x1E), writer.opcodes())
         engine.destroy()
     }
+
+    /**
+     * Status 3 is the vendor's "this session finished" push — its running screen answers by
+     * closing the screen, not by concluding the ring cannot do sport sessions. A ring timeout or
+     * the user stopping on the ring must not cost every later workout on the connection the
+     * protocol this issue is about.
+     */
+    @Test
+    fun `a session the ring ended does not disable sport mode for the next workout`() {
+        val writer = RecordingWriter()
+        val engine = engineWith(writer)
+        engine.startWorkoutHeartRate("cycle")
+        engine.handleRawNotify(sportFrame(bpm = 0, status = 3))
+        engine.stopWorkoutHeartRate()
+        writer.clear()
+
+        engine.startWorkoutHeartRate("cycle")
+
+        assertArrayEquals(
+            "the next workout starts a fresh sport session",
+            byteArrayOf(0x77, 0x01, 0x09), writer.commands.first(),
+        )
+        engine.destroy()
+    }
+
+    /** …but the rest of *that* workout stays on the plain stream: re-sending the start after a
+     *  spot measure would ask a ring that just ended its session to open another one. */
+    @Test
+    fun `after the ring ends a session the same workout does not reopen it`() {
+        val writer = RecordingWriter()
+        val engine = engineWith(writer)
+        engine.startWorkoutHeartRate("cycle")
+        engine.handleRawNotify(sportFrame(bpm = 0, status = 3))
+        writer.clear()
+
+        engine.startWorkoutHeartRate("cycle")   // the coordinator's post-spot-measure restart
+
+        assertTrue("no 0x77 mid-workout: got ${writer.opcodes()}", 0x77 !in writer.opcodes())
+        engine.destroy()
+    }
 }

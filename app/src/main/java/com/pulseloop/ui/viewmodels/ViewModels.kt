@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.Bucket
+import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
 import com.pulseloop.coach.summaries.CoachSummaryKind
@@ -1183,7 +1184,7 @@ class VitalDetailViewModel(
                     timestamp = sys.timestamp,
                     value = sys.value,
                     secondary = dia?.value,
-                    fromHistory = sys.sourceRaw == "history",
+                    fromHistory = sys.id.startsWith(MeasurementDeletionDao.HISTORY_ID_PREFIX),
                 )
             }.asReversed()
 
@@ -1247,7 +1248,7 @@ class VitalDetailViewModel(
                     ids = listOf(it.id),
                     timestamp = it.timestamp,
                     value = convert(it.value),
-                    fromHistory = it.sourceRaw == "history",
+                    fromHistory = it.id.startsWith(MeasurementDeletionDao.HISTORY_ID_PREFIX),
                 )
             }.asReversed()
 

@@ -375,6 +375,13 @@ class PairingMatchingTest {
         assertEquals("yawell-r10", WearableModel.modelForAdvertisedName("R10_DEAD")?.id)
         assertEquals("colmi-r10", WearableModel.modelForAdvertisedName("COLMI R10_xyz")?.id)
         assertEquals("r100", WearableModel.modelForAdvertisedName("R100_DEAD")?.id)
+        // A space-separated 4-hex suffix is the SmartHealth convention, not an R100 serial — and
+        // the R100 card precedes the SmartHealth one, so a loose pattern here would take a
+        // SmartHealth ring onto the CRP driver, which connects and then never syncs.
+        assertEquals(
+            "colmi-smarthealth",
+            WearableModel.modelForAdvertisedName("R100 1A2B")?.id,
+        )
         // A SmartHealth-convention name (space + four hex) still lands on the broad card.
         assertEquals("colmi-smarthealth", WearableModel.modelForAdvertisedName("Ale-Hop2211 E1C7")?.id)
         // And the R100 routes to the CRP driver family, not to Colmi's.

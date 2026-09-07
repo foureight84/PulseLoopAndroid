@@ -402,9 +402,14 @@ drives the cadence, which is the near-constant LED and ~10 s readings the report
 - **Don't re-send the start mid-workout.** The coordinator restarts the stream after every spot
   measure; on this path that must be a no-op or the ring's own sport record resets.
 - **Silence gets one resume (`0x77 03`), then the session is given up** for the plain HR stream
-  (`sportWatchdogTick`), as is a ring that rejects `0x77` or reports it ended the session itself
-  (`0x78` status 3). Both are sticky for the engine's life (`sportRejected`), like the `0x1E`
-  refusal. The old `0x1E` → `0x69` path is unchanged underneath and is what a fallback lands on.
+  (`sportWatchdogTick`), as it is when the ring rejects `0x77` outright (the error-flag reply).
+  Those two are sticky for the engine's life (`sportRejected`), like the `0x1E` refusal — the ring
+  has shown it will not run a sport session at all. **A `0x78` status 3 is not one of them**: it is
+  the vendor's own "this session finished" push, which its running screen answers by closing the
+  screen. It ends the session for the rest of that workout (`sportEndedByRing`) and the next
+  workout starts a fresh one; making it sticky would let one ring-side timeout cost every later
+  workout the protocol this issue exists to add. The old `0x1E` → `0x69` path is unchanged
+  underneath and is what a fallback lands on.
 - `0x77` on the command channel is `PhoneSportReq`; the same number as a big-data *action* is
   interval temperature on the other characteristic. They are unrelated.
 - Untested on hardware as of this note: the reporter (issue #64, Colmi R09) has the ring.
@@ -434,8 +439,16 @@ were taken — which a later history sync imports as a `history:<kind>:<ts>` row
 we stored for our settled value. Our row is stored with `sourceRaw = "spot"`, and
 `EventPersistenceSubscriber.adoptRingsCopy` deletes it when a history sample of the same kind lands
 within 90 s: the ring's row wins because it is the one that regenerates on every sync (so it is the
-one a tombstone can hold down). Rings that never log spot readings produce no such neighbour, and
-the ring's all-day samples are five minutes apart, so the window can't reach them.
+one a tombstone can hold down).
+
+**Only rings that log their spot readings may take part, and the gate is at write time.** A row is
+marked `"spot"` only when the ring reported its own completion
+(`RingSyncEngine.signalsMeasurementCompletion`, carried on the event as `ringWillLogIt` — the same
+property, since a ring that ends a measurement with its own verdict is one whose vendor app reads
+the value back out of history). Everything else stores a plain `"live"` row exactly as before, with
+nothing that could delete it. Do not widen this to all families: CRP and Colmi record all-day
+HR/SpO2 on a **five-minute grid**, so with a ±90 s match window most spot measurements would have an
+unrelated grid sample within reach and the user's own reading would be deleted in favour of it.
 
 **Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
 there. The export doesn't retain HC record ids, so there is nothing to delete against.

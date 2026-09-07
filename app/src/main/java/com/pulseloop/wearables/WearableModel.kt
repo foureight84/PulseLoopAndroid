@@ -126,8 +126,12 @@ data class WearableModel(
          * Unlike the R11 it advertises a usable name, so it can be matched at scan instead of
          * relying on the post-connect `fdda` re-route. The pattern is deliberately loose about the
          * suffix because the only capture we have is a redacted diagnostics report, which strips a
-         * `_<hex>` serial — the raw name is `R100` or `R100_<hex>`, and neither can collide with a
-         * Colmi `^R10_[0-9A-F]{4}$` or with [SMARTHEALTH_NAME_PATTERN], which requires a space.
+         * `_<hex>` serial — the raw name is `R100` or `R100_<hex>`. The underscore is what keeps
+         * this off [SMARTHEALTH_NAME_PATTERN], whose serial is **space**-separated: an earlier
+         * `^R100([ _-].*)?$` also matched `R100 1A2B`, and because this entry precedes
+         * [COLMI_SMARTHEALTH] in [CATALOG] it would have taken a SmartHealth-firmware ring onto the
+         * CRP driver, which connects and then never syncs. It cannot collide with the Colmi
+         * `^R10_[0-9A-F]{4}$` either.
          *
          * Blurb omits stress: the R100 answers neither the stress-history query (`2/47`) nor the
          * stress monitor-state read-back (`2/45`) — 22 sends, 0 replies in the #58 capture.
@@ -135,7 +139,7 @@ data class WearableModel(
         val R100 = WearableModel(
             id = "r100", displayName = "R100", brand = "Da Rings", family = RingDeviceType.CRP,
             tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Temp · Sleep",
-            advertisedNamePatterns = listOf("^R100([ _-].*)?$"),
+            advertisedNamePatterns = listOf("^R100(_[0-9A-Fa-f]+)?$"),
         )
 
         // Yawell-branded variants

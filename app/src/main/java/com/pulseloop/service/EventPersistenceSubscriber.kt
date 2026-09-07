@@ -99,15 +99,26 @@ class EventPersistenceSubscriber(
         db.measurementDao().upsert(measurement)
     }
 
-    /** A live reading of [kind]: the ring's stream, or ([spot]) the one settled value a spot
-     *  measurement publishes for itself, which is marked so a later history sync can recognise the
-     *  ring's own copy of it ([adoptRingsCopy]). */
-    private suspend fun storeLiveReading(kind: MeasurementKind, value: Double, unit: String, at: Long, spot: Boolean) {
+    /**
+     * A live reading of [kind]: the ring's stream, or a spot measurement's settled value.
+     *
+     * [awaitingRingsCopy] marks the second case *on a ring that logs its own spot measurements*,
+     * so a later history sync can recognise the ring's copy and replace ours ([adoptRingsCopy]).
+     * A spot reading from a ring that does not log one is stored exactly as before — a plain live
+     * row, with no pending reconciliation and nothing that could delete it.
+     */
+    private suspend fun storeLiveReading(
+        kind: MeasurementKind,
+        value: Double,
+        unit: String,
+        at: Long,
+        awaitingRingsCopy: Boolean,
+    ) {
         db.measurementDao().insert(MeasurementEntity(
             kindRaw = kind.name, value = value, unit = unit, timestamp = at,
-            sourceRaw = if (spot) SOURCE_SPOT else "live",
+            sourceRaw = if (awaitingRingsCopy) SOURCE_SPOT else "live",
         ))
-        if (spot) spotReadingsOf(kind).add(at)
+        if (awaitingRingsCopy) spotReadingsOf(kind).add(at)
     }
 
     private suspend fun spotReadingsOf(kind: MeasurementKind): MutableList<Long> =
@@ -126,8 +137,12 @@ class EventPersistenceSubscriber(
      * [SPOT_MATCH_MS] of a reading we stored for our own settled value, it is that measurement
      * seen from the ring's side, and keeping both is the doubled row the tester saw. The ring's
      * row wins because it is the one that regenerates on every sync (and so the one a tombstone
-     * can hold down); ours is deleted outright. A ring that does not log spot readings never
-     * produces such a neighbour, so this costs nothing anywhere else.
+     * can hold down); ours is deleted outright.
+     *
+     * **Only rings that actually log spot readings take part.** A row is marked [SOURCE_SPOT] at
+     * write time only when the ring reported its own completion, so this can never fire on a CRP
+     * or Colmi ring — where the nearest history sample is an unrelated point on the five-minute
+     * all-day grid and would land inside [SPOT_MATCH_MS] of most measurements.
      */
     private suspend fun adoptRingsCopy(kind: MeasurementKind, historyAt: Long) {
         if (kind != MeasurementKind.HEART_RATE && kind != MeasurementKind.SPO2) return
@@ -239,11 +254,17 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.HeartRateSample -> {
                 if (!event.spot && MeasurementKind.HEART_RATE in closedGates) return
-                storeLiveReading(MeasurementKind.HEART_RATE, event.bpm.toDouble(), "bpm", event.timestamp.toEpochMilli(), event.spot)
+                storeLiveReading(
+                    MeasurementKind.HEART_RATE, event.bpm.toDouble(), "bpm",
+                    event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                )
             }
             is PulseEvent.Spo2Result -> {
                 if (!event.spot && MeasurementKind.SPO2 in closedGates) return
-                storeLiveReading(MeasurementKind.SPO2, event.value.toDouble(), "%", event.timestamp.toEpochMilli(), event.spot)
+                storeLiveReading(
+                    MeasurementKind.SPO2, event.value.toDouble(), "%",
+                    event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                )
             }
             is PulseEvent.HistoryMeasurement -> {
                 val at = event.timestamp.toEpochMilli()
@@ -725,9 +746,10 @@ class EventPersistenceSubscriber(
     }
 
     companion object {
-        /** `sourceRaw` of the one reading a spot measurement stores for itself (issue #60). Reads
-         *  alongside `"live"` everywhere a source is filtered — nothing treats the two apart except
-         *  [adoptRingsCopy]. */
+        /** `sourceRaw` of a spot measurement's settled reading **on a ring that will also log it
+         *  itself** (issue #60) — i.e. a row still awaiting reconciliation with the ring's copy.
+         *  Reads alongside `"live"` everywhere a source is filtered; nothing treats the two apart
+         *  except [adoptRingsCopy]. */
         const val SOURCE_SPOT = "spot"
         /** How far a ring-history sample may sit from one of our spot readings and still be the
          *  ring's copy of it. The measurement itself runs 35–63 s and the ring stamps its log to
@@ -739,6 +761,16 @@ class EventPersistenceSubscriber(
         private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
     }
 }
+
+/**
+ * Is this reading one the ring will hand back from its own history, so that the two copies have to
+ * be reconciled later ([EventPersistenceSubscriber.adoptRingsCopy])? Both halves are required:
+ * a streamed sample is not a spot reading, and a spot reading from a ring that keeps no log of it
+ * has no second copy coming. Getting the second half wrong is not cosmetic — on a CRP or Colmi
+ * ring the nearest history sample is an unrelated point on the five-minute all-day grid, so the
+ * reconciliation would delete readings the user deliberately took (issue #60).
+ */
+internal fun awaitsRingsCopy(spot: Boolean, ringWillLogIt: Boolean): Boolean = spot && ringWillLogIt
 
 /**
  * Which of our spot readings ([ours], epoch millis) a ring-history sample stamped [historyAt] is

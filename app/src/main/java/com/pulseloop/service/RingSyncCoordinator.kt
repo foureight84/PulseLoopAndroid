@@ -340,6 +340,18 @@ class RingSyncCoordinator(
 
     // MARK: - Workout HR streaming
 
+    /**
+     * Does the connected ring write its own spot measurements into its history (issue #60)?
+     *
+     * The same property as [RingSyncEngine.signalsMeasurementCompletion], and for the same reason:
+     * a ring that ends a measurement with its own verdict is one whose vendor app reads the value
+     * back out of history rather than deciding it. Only those rings produce the second row that
+     * `EventPersistenceSubscriber.adoptRingsCopy` reconciles — on a CRP or Colmi ring the nearest
+     * history sample is an unrelated point on the five-minute all-day grid, which must never
+     * displace a reading the user asked for.
+     */
+    private val ringLogsSpotReadings: Boolean get() = engine?.signalsMeasurementCompletion == true
+
     /** The activity type of the workout whose stream is running — what a restart re-sends. */
     private var workoutActivityType: String = "other"
 
@@ -531,7 +543,10 @@ class RingSyncCoordinator(
                 // would only add a duplicate row stamped with a made-up time.
                 result?.let { settled ->
                     PulseEventBus.publishBlocking(
-                        PulseEvent.HeartRateSample(bpm = settled, timestamp = java.time.Instant.now(), spot = true)
+                        PulseEvent.HeartRateSample(
+                            bpm = settled, timestamp = java.time.Instant.now(),
+                            spot = true, ringWillLogIt = ringLogsSpotReadings,
+                        )
                     )
                 }
             }
@@ -574,7 +589,10 @@ class RingSyncCoordinator(
             // settled value is on screen rather than whichever sample happened to arrive last.
             result?.let { settled ->
                 PulseEventBus.publishBlocking(
-                    PulseEvent.Spo2Result(value = settled, timestamp = java.time.Instant.now(), spot = true)
+                    PulseEvent.Spo2Result(
+                        value = settled, timestamp = java.time.Instant.now(),
+                        spot = true, ringWillLogIt = ringLogsSpotReadings,
+                    )
                 )
             }
         }

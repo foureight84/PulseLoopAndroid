@@ -197,6 +197,22 @@ class EventPersistenceIdentityTest {
         )
 
     /**
+     * Issue #60: only a ring that logs its own spot measurements leaves a second copy to reconcile.
+     * A CRP or Colmi ring does not, and its all-day history sits on a five-minute grid — so a spot
+     * reading there must never be marked as awaiting a ring copy, or the next unrelated grid
+     * sample within the match window would delete a reading the user asked for.
+     */
+    @Test
+    fun `only a spot reading from a ring that logs it awaits the ring's copy`() {
+        assertTrue(awaitsRingsCopy(spot = true, ringWillLogIt = true))
+        assertFalse("a CRP/Colmi spot reading has no second copy coming",
+            awaitsRingsCopy(spot = true, ringWillLogIt = false))
+        assertFalse("a streamed sample is not a spot reading",
+            awaitsRingsCopy(spot = false, ringWillLogIt = true))
+        assertFalse(awaitsRingsCopy(spot = false, ringWillLogIt = false))
+    }
+
+    /**
      * Issue #60, RC-2: the ring logs each spot reading into its own history, and a later sync
      * imports it next to the row we stored for our settled value. The match rule that lets the
      * ring's copy replace ours must reach a stamp at either end of a 35–63 s measurement and must

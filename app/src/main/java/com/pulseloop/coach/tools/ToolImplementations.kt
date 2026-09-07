@@ -635,16 +635,17 @@ object ActionTools {
         if (coordinator == null || !coordinator.isConnected) {
             ToolResult("""{"status":"unavailable","note":"Ring is not connected — cannot take a live reading."}""")
         } else {
-            kotlinx.coroutines.runBlocking {
+            // The leg's return value is the measurement's only output (issue #59/#60): the
+            // settled reading, or null when it failed. The live mirrors are deliberately NOT it —
+            // they hold the last raw sample the ring streamed, which on a converging sensor is the
+            // pre-converged plateau, and they are not cleared when a measurement fails. Reading
+            // them here reported a stale 46 bpm as a completed measurement.
+            val value = kotlinx.coroutines.runBlocking {
                 when (kind) {
                     "hr" -> coordinator.measureHR()
                     "spo2" -> coordinator.measureSpO2()
+                    else -> null
                 }
-            }
-            val value = when (kind) {
-                "hr" -> coordinator.latestHRValue
-                "spo2" -> coordinator.latestSpO2Value
-                else -> null
             }
             if (value != null) {
                 ToolResult("""{"status":"completed","kind":"$kind","value":$value,"unit":"${if (kind == "hr") "bpm" else "%"}"}""")
