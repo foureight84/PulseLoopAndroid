@@ -375,6 +375,40 @@ train of readings that were never the user's heart rate (this is what prompted i
 *workout* is the opposite case: there the stream **is** the data, so a measurement that runs during
 one neither closes the gate nor publishes a second row for a reading the stream already stored.
 
+## A complete sleep record retires only its own run (issue #63)
+
+A YCBT ring closes a sleep session when the wearer gets up and opens a new one when they settle,
+so one night can be two `af fa` records minutes apart (00:12–03:18 and 03:21–07:24 in the report).
+`SleepSegmentation` merges those into one stored row, which is right. What was wrong: a complete
+record used to be treated as authoritative for **every block of every row it overlapped**, so on the
+next sync pass the second record landed on the merged row and wiped the first record's three hours
+with its own stale copy — the night read 4 h 06. `completeSessionSurvivors` now retires only the
+contiguous run of blocks the packet's interval sits in (overlapping blocks, plus anything abutting
+end-to-start with no gap, in both directions). A shortened re-send still retires its own stale head
+or tail; a neighbouring session across even a one-minute gap is untouched. The vendor
+(`DataUnpack` case 4 → one `Sleep` row per `af fa` block, `queryByYearToDay` returns a list) never
+lets one record displace another. `YCBTHealthRecords.sleep` also resynchronises on the `af fa` magic
+now, so a record with a wrong declared length can't swallow the sessions after it.
+
+## Live workout HR on Colmi is a sport session, not an HR stream (issue #64)
+
+The QRing app never touches the realtime-HR commands during an activity. `SportRunningActivity`
+sends `PhoneSportReq.getSportStatus(1, sportType)` = `0x77 01 <type>` on entry and consumes the
+ring's own unsolicited `0x78` telemetry (`DeviceNotifyRsp`: `[dataType][status][durMin×2][bpm]
+[steps×3][metres×3][cal×3]` after the opcode) until `0x77 04`. No timer, no keepalive — the ring
+drives the cadence, which is the near-constant LED and ~10 s readings the reporter sees there.
+`ColmiSyncEngine.startWorkoutHeartRate` does the same. Rules that matter:
+
+- **Don't re-send the start mid-workout.** The coordinator restarts the stream after every spot
+  measure; on this path that must be a no-op or the ring's own sport record resets.
+- **Silence gets one resume (`0x77 03`), then the session is given up** for the plain HR stream
+  (`sportWatchdogTick`), as is a ring that rejects `0x77` or reports it ended the session itself
+  (`0x78` status 3). Both are sticky for the engine's life (`sportRejected`), like the `0x1E`
+  refusal. The old `0x1E` → `0x69` path is unchanged underneath and is what a fallback lands on.
+- `0x77` on the command channel is `PhoneSportReq`; the same number as a big-data *action* is
+  interval temperature on the other characteristic. They are unrelated.
+- Untested on hardware as of this note: the reporter (issue #64, Colmi R09) has the ring.
+
 ## Deleting a reading needs a tombstone, not just a DELETE (issue #60)
 
 History measurements are keyed `history:<kind>:<timestamp>` and written with `upsert`, on purpose:

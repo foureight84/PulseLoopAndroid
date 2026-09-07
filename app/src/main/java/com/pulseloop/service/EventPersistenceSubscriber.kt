@@ -525,14 +525,16 @@ class EventPersistenceSubscriber(
             if (existing.isEmpty()) emptyList()
             else db.sleepStageBlockDao().forSessions(existing.map { it.id })
 
-        // YCBT complete records are authoritative for their interval, including shortened
-        // revisions. Packet-based families replace only the packet interval. In both cases the
-        // unaffected blocks remain available for SleepSegmentation to preserve separate naps.
+        // YCBT complete records are authoritative for the ring session they describe, including
+        // shortened revisions. Packet-based families replace only the packet interval. In both
+        // cases the unaffected blocks remain available for SleepSegmentation to preserve
+        // separate naps — and, for a complete record, the *other* ring sessions of the same night
+        // (issue #63): see [completeSessionSurvivors] for why "the session it describes" is a
+        // contiguous run of blocks and not every block of every row the packet touches.
         val replacements = buildStageBlocks("", ts, stages)
         val dayBlocks = replaceOverlappingSleepBlocks(
             existing = if (completeSession) {
-                val replacedSessionIds = overlapping.mapTo(mutableSetOf()) { it.id }
-                existingBlocks.filterNot { it.sessionId in replacedSessionIds }
+                completeSessionSurvivors(existingBlocks, ts, packetEnd)
             } else {
                 existingBlocks
             },
@@ -817,6 +819,52 @@ internal fun shouldReplaceCompleteSleep(
     incomingStart: Long,
     incomingMinutes: Int,
 ): Boolean = existingStart == incomingStart || incomingMinutes > existingMinutes
+
+/**
+ * The stored stage blocks a *complete* ring session leaves standing (issue #63).
+ *
+ * A YCBT ring closes a sleep session when it sees the wearer get up and opens a new one when they
+ * settle again, so one night can be two `af fa` records three minutes apart. SleepSegmentation
+ * (60-minute gap) rightly merges those into one stored row. The old rule then treated a complete
+ * record as authoritative for **every block of every row it overlapped** — so on the next sync
+ * pass, when the second record arrived on top of the merged row, it wiped the first record's
+ * three hours along with its own stale copy, and the night read 4 h 06 instead of 6 h 08. The
+ * vendor app keeps every record as its own session and never lets one displace another.
+ *
+ * What a complete record *is* authoritative for is the ring session it describes, which in the
+ * stored blocks is the contiguous run the packet's interval sits in: blocks that overlap the
+ * interval, and any block that abuts that run end-to-start without a gap, in either direction.
+ * That still lets a shortened revision retire its own stale head or tail (those abut the new
+ * interval), while a neighbouring session on the far side of even a one-minute gap is untouched.
+ * Blocks overlapping the interval itself are dropped here as well; the caller's interval replace
+ * would only trim them, and a complete record has no use for what it trimmed off.
+ */
+internal fun completeSessionSurvivors(
+    existing: List<SleepStageBlockEntity>,
+    replacementStart: Long,
+    replacementEnd: Long,
+): List<SleepStageBlockEntity> {
+    fun end(block: SleepStageBlockEntity) = block.startAt + block.durationMinutes * 60_000L
+    var runStart = replacementStart
+    var runEnd = replacementEnd
+    val retired = mutableSetOf<String>()
+    var grew = true
+    while (grew) {
+        grew = false
+        for (block in existing) {
+            if (block.id in retired) continue
+            val overlaps = block.startAt < runEnd && end(block) > runStart
+            val abuts = block.startAt == runEnd || end(block) == runStart
+            if (overlaps || abuts) {
+                retired.add(block.id)
+                runStart = minOf(runStart, block.startAt)
+                runEnd = maxOf(runEnd, end(block))
+                grew = true
+            }
+        }
+    }
+    return existing.filterNot { it.id in retired }
+}
 
 internal fun replaceOverlappingSleepBlocks(
     existing: List<SleepStageBlockEntity>,

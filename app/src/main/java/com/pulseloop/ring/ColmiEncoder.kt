@@ -128,6 +128,26 @@ object ColmiEncoder {
         )
     }
 
+    /**
+     * `PhoneSportReq.getSportStatus(status, sportType)` = `[0x77, status, sportType]` — the QRing
+     * app's whole live-activity protocol (issue #64). Start on entering the running screen, pause /
+     * resume from its buttons, stop on finish. The ring answers each with an `AppSportRsp` echo and,
+     * between start and stop, pushes `0x78` telemetry on its own.
+     */
+    fun phoneSport(status: UByte, sportType: UByte): ByteArray =
+        byteArrayOf(ColmiCommandID.PHONE_SPORT.toByte(), status.toByte(), sportType.toByte())
+
+    /** The QRing sport type for one of this app's activity types (`ActivityMeta.ORDER`). Anything
+     *  without a vendor counterpart is "Other sports", which is a real entry in QRing's list. */
+    fun sportType(activityType: String): UByte = when (activityType) {
+        "walk" -> ColmiCommandID.SPORT_TYPE_WALK
+        "run" -> ColmiCommandID.SPORT_TYPE_RUN
+        "cycle" -> ColmiCommandID.SPORT_TYPE_CYCLE
+        "hike" -> ColmiCommandID.SPORT_TYPE_HIKE
+        "yoga" -> ColmiCommandID.SPORT_TYPE_YOGA
+        else -> ColmiCommandID.SPORT_TYPE_OTHER
+    }
+
     fun realtimeHeartRate(enable: Boolean): ByteArray =
         byteArrayOf(ColmiCommandID.REALTIME_HEART_RATE.toByte(), if (enable) 0x01 else 0x02)
 

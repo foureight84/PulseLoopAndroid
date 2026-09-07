@@ -170,6 +170,15 @@ object YCBTHealthRecords {
         val events = mutableListOf<RingDecodedEvent>()
         var cursor = 0
         while (cursor + headerLength <= buffer.size) {
+            // Every session opens with `af fa` (DataUnpack case 4 reads and discards both bytes).
+            // A record whose declared length disagrees with its real one would otherwise leave
+            // the cursor mid-record and silently mis-parse every later session of the night
+            // (issue #63 is exactly a multi-session night), so resynchronise on the magic.
+            if (!isSleepSessionHeader(buffer, cursor)) {
+                val next = nextSleepSessionHeader(buffer, cursor + 1) ?: break
+                cursor = next
+                continue
+            }
             val recordLength = YCBTBytes.u16(buffer, cursor + 2)
             val segmentsStart = cursor + headerLength
             val declared = maxOf(0, recordLength - headerLength) / segmentLength
@@ -203,6 +212,18 @@ object YCBTHealthRecords {
             cursor = segmentsStart + segmentCount * segmentLength
         }
         return events
+    }
+
+    private fun isSleepSessionHeader(buffer: ByteArray, at: Int): Boolean =
+        at + 1 < buffer.size && buffer[at] == 0xAF.toByte() && buffer[at + 1] == 0xFA.toByte()
+
+    private fun nextSleepSessionHeader(buffer: ByteArray, from: Int): Int? {
+        var i = from
+        while (i + 1 < buffer.size) {
+            if (isSleepSessionHeader(buffer, i)) return i
+            i++
+        }
+        return null
     }
 
     private fun sleepStage(tag: Int): SleepStage? {

@@ -114,6 +114,45 @@ class EventPersistenceIdentityTest {
         assertEquals(listOf("LIGHT", "DEEP", "LIGHT"), merged.map { it.stageRaw })
     }
 
+    /**
+     * Issue #63: the ring split one night into two sessions three minutes apart (00:12–03:18 and
+     * 03:21–07:24). Once stored, SleepSegmentation has merged them into one row, so on the next
+     * sync pass the second record overlaps a row that also holds the first record's blocks. It
+     * must retire only its own stale copy — never the first session across the gap.
+     */
+    @Test
+    fun `a complete record does not retire the other session of the same night`() {
+        val a = 1_725_408_720_000L                    // 00:12
+        val b = a + (3 * 60 + 9) * 60_000L           // 03:21 — three minutes after 03:18
+        val existing = listOf(
+            block("a-1", a, 124, "LIGHT"),
+            block("a-2", a + 124 * 60_000L, 62, "DEEP"),          // ends 03:18
+            block("b-1", b, 119, "LIGHT"),
+            block("b-2", b + 119 * 60_000L, 124, "DEEP"),         // ends 07:24
+        )
+
+        val survivors = completeSessionSurvivors(existing, b, b + 243 * 60_000L)
+
+        assertEquals(listOf("a-1", "a-2"), survivors.map { it.id })
+    }
+
+    /** The rule the old block wipe was there for: a shortened re-send of the *same* session must
+     *  still retire its stale tail, which abuts the revised interval without a gap. */
+    @Test
+    fun `a shortened complete record still retires its own stale tail and head`() {
+        val start = 1_725_408_720_000L
+        val existing = listOf(
+            block("head", start, 10, "AWAKE"),                    // revision now starts 10 min later
+            block("mid", start + 10 * 60_000L, 100, "LIGHT"),
+            block("tail", start + 110 * 60_000L, 20, "LIGHT"),    // revision now ends 20 min earlier
+            block("nap", start + 131 * 60_000L, 30, "LIGHT"),     // one-minute gap: a different session
+        )
+
+        val survivors = completeSessionSurvivors(existing, start + 10 * 60_000L, start + 110 * 60_000L)
+
+        assertEquals(listOf("nap"), survivors.map { it.id })
+    }
+
     @Test
     fun `short nap cannot replace a longer night on the same waking day`() {
         val nightStart = 1_721_234_000_000L

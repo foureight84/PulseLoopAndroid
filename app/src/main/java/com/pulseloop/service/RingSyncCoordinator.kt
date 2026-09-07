@@ -340,15 +340,19 @@ class RingSyncCoordinator(
 
     // MARK: - Workout HR streaming
 
-    fun startWorkoutHeartRate() {
+    /** The activity type of the workout whose stream is running — what a restart re-sends. */
+    private var workoutActivityType: String = "other"
+
+    fun startWorkoutHeartRate(activityType: String = "other") {
         if (!isConnected) return
-        engine?.startHeartRate()
+        workoutActivityType = activityType
+        engine?.startWorkoutHeartRate(activityType)
         workoutHRActive = true
     }
 
     fun stopWorkoutHeartRate() {
         if (!workoutHRActive) return
-        engine?.stopHeartRate()
+        engine?.stopWorkoutHeartRate()
         workoutHRActive = false
         engine?.syncVitalsHistory()
     }
@@ -365,7 +369,7 @@ class RingSyncCoordinator(
      */
     fun restartWorkoutHeartRateIfActive() {
         if (!workoutHRActive || !isConnected) return
-        engine?.startHeartRate()
+        engine?.startWorkoutHeartRate(workoutActivityType)
     }
 
     fun querySleep() {

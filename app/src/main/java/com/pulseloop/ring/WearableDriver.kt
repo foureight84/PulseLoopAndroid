@@ -187,6 +187,16 @@ interface RingSyncEngine {
     fun syncSleepNow() {}
     fun startHeartRate()
     fun stopHeartRate()
+    /**
+     * Begin the live-HR stream for a workout of [activityType] (`ActivityMeta.ORDER`). Defaults to
+     * the plain stream; a family whose vendor app runs a live activity as a ring-side *sport
+     * session* rather than a bare HR stream overrides this (Colmi, issue #64). Idempotent: the
+     * coordinator calls it again after every interruption to bring the stream back.
+     */
+    fun startWorkoutHeartRate(activityType: String) { startHeartRate() }
+    /** End what [startWorkoutHeartRate] began. Distinct from [stopHeartRate] so a spot measure's
+     *  stop mid-workout cannot end the ring's sport session. */
+    fun stopWorkoutHeartRate() { stopHeartRate() }
     fun measureHeartRateSpot() { startHeartRate() }
     fun startSpO2()
     fun stopSpO2()

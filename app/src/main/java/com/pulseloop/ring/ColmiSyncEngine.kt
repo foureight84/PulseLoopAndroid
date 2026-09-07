@@ -107,6 +107,22 @@ class ColmiSyncEngine(
      *  frame so the ring's own measurement log records the reading (0 = cancelled). */
     private var lastManualBpm = 0
 
+    // Phone-driven sport session (issue #64). See [startWorkoutHeartRate].
+    @Volatile private var sportActive = false
+    private var sportType: UByte = ColmiCommandID.SPORT_TYPE_OTHER
+    private var sportWatchdogJob: Job? = null
+    /** Wall-clock of the last `0x78` telemetry frame — the sport watchdog's only evidence that the
+     *  ring is actually in the session it was asked to start. */
+    @Volatile private var lastSportFrameAt = 0L
+    /** One resume is tried per silence before giving the session up; see [sportWatchdogTick]. */
+    @Volatile private var sportResumeSent = false
+    /**
+     * This ring refused, or never fed, a phone sport session, so workouts run on the plain HR
+     * stream ([startHeartRate]) instead. Sticky for the engine's life like [realtimeRejected] and
+     * for the same reason: a family-wide protocol is either there or it isn't.
+     */
+    @Volatile private var sportRejected = false
+
     companion object {
         fun isHistoryOpcode(op: UByte): Boolean =
             op == ColmiCommandID.SYNC_ACTIVITY ||
@@ -121,6 +137,11 @@ class ColmiSyncEngine(
          *  Generous on purpose: the R09's SpO2 twin streamed warm-up frames for ~25 s before its
          *  first reading, so a shorter window would restart a measurement that was working. */
         private const val FALLBACK_STREAM_IDLE_MS = 30_000L
+
+        /** How long a sport session may go without a `0x78` push before the watchdog acts. Wider
+         *  than the ring's ~10 s cadence by a margin for the optical warm-up (~25 s on the R09's
+         *  SpO2 twin) and one missed push. */
+        internal const val SPORT_TELEMETRY_IDLE_MS = 45_000L
     }
 
     override fun runStartup() {
@@ -205,6 +226,21 @@ class ColmiSyncEngine(
         if (frame?.get(0)?.toUByte() == ColmiCommandID.REALTIME_HEART_RATE_ERROR) {
             onRealtimeHeartRateRejected()
             return
+        }
+        // Sport telemetry (0x78) is proof the ring is in the session we asked for; the ring
+        // refusing the start (0x77 with the error flag) or reporting that it ended the session
+        // itself (status 3) means it isn't, and the workout moves onto the plain HR stream.
+        when (frame?.get(0)?.toUByte()) {
+            ColmiCommandID.SPORT_NOTIFY -> {
+                if (frame.size > 2 && frame[2].toUByte() == ColmiCommandID.SPORT_ENDED_BY_RING) {
+                    if (sportActive) fallBackFromSport(sendStop = false)
+                } else {
+                    lastSportFrameAt = System.currentTimeMillis()
+                    sportResumeSent = false
+                }
+            }
+            (ColmiCommandID.PHONE_SPORT or 0x80u) -> if (sportActive) fallBackFromSport(sendStop = false)
+            else -> Unit
         }
         // Any 0x69 *heart-rate* frame is proof the fallback stream is alive. Reading type matters:
         // a concurrent 0x69/3 SpO2 measure shares the opcode and must not stand in for HR traffic.
@@ -654,6 +690,76 @@ class ColmiSyncEngine(
                 }
             }
         }
+    }
+
+    /**
+     * A live workout is a **ring-side sport session**, not a bare HR stream (issue #64).
+     *
+     * The QRing app never uses the realtime-HR commands during an activity. Its running screen
+     * sends `PhoneSportReq.getSportStatus(1, sportType)` = `0x77 01 <type>` on entry, and from
+     * then on the ring pushes `0x78` telemetry — duration, **bpm**, steps, distance, calories —
+     * on its own cadence until `0x77 04`. There is no app-side timer and no keepalive. That is
+     * the near-constant green LED and ~10 s readings the reporter sees in QRing; PulseLoop's
+     * chain of one-shot `0x69` measurements re-armed after 30 s of silence is the once-a-minute
+     * flash he sees here.
+     *
+     * Idempotent in the way the coordinator relies on: a restart after a spot measure must not
+     * re-send the start, which would reset the ring's own sport record mid-workout. If the ring
+     * has stopped pushing, the watchdog re-issues a *resume* first and only then gives up on the
+     * session ([sportWatchdogTick]). A ring that rejects `0x77`, or never pushes `0x78`, is moved
+     * onto [startHeartRate] and stays there ([sportRejected]).
+     */
+    override fun startWorkoutHeartRate(activityType: String) {
+        if (sportRejected) { startHeartRate(); return }
+        if (sportActive) return
+        sportActive = true
+        sportType = encoder.sportType(activityType)
+        lastSportFrameAt = System.currentTimeMillis()
+        sportResumeSent = false
+        writer?.enqueue(encoder.phoneSport(ColmiCommandID.SPORT_START, sportType))
+        sportWatchdogJob?.cancel()
+        sportWatchdogJob = scope.launch {
+            while (isActive) {
+                delay(REALTIME_KEEPALIVE_MS)
+                sportWatchdogTick(System.currentTimeMillis())
+            }
+        }
+    }
+
+    /**
+     * One pass of the sport watchdog. Silence past [SPORT_TELEMETRY_IDLE_MS] gets a single
+     * `0x77 03` (resume — QRing's own answer to a paused session, and harmless to a running one);
+     * silence that outlasts that as well means this ring is not going to feed the session, and
+     * the workout falls back to the plain HR stream rather than spending the rest of it blind.
+     */
+    internal fun sportWatchdogTick(now: Long) {
+        if (!sportActive) return
+        if (now - lastSportFrameAt < SPORT_TELEMETRY_IDLE_MS) return
+        if (!sportResumeSent) {
+            sportResumeSent = true
+            lastSportFrameAt = now
+            writer?.enqueue(encoder.phoneSport(ColmiCommandID.SPORT_RESUME, sportType))
+            return
+        }
+        fallBackFromSport(sendStop = true)
+    }
+
+    private fun fallBackFromSport(sendStop: Boolean) {
+        sportWatchdogJob?.cancel(); sportWatchdogJob = null
+        sportActive = false
+        sportRejected = true
+        if (sendStop) writer?.enqueue(encoder.phoneSport(ColmiCommandID.SPORT_STOP, sportType))
+        startHeartRate()
+    }
+
+    override fun stopWorkoutHeartRate() {
+        sportWatchdogJob?.cancel(); sportWatchdogJob = null
+        if (sportActive) {
+            sportActive = false
+            writer?.enqueue(encoder.phoneSport(ColmiCommandID.SPORT_STOP, sportType))
+        }
+        // Tear down the plain stream too, for a workout that fell back onto it.
+        stopHeartRate()
     }
 
     override fun stopHeartRate() {
