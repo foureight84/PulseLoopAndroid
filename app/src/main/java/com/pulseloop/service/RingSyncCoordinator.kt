@@ -340,18 +340,6 @@ class RingSyncCoordinator(
 
     // MARK: - Workout HR streaming
 
-    /**
-     * Does the connected ring write its own spot measurements into its history (issue #60)?
-     *
-     * The same property as [RingSyncEngine.signalsMeasurementCompletion], and for the same reason:
-     * a ring that ends a measurement with its own verdict is one whose vendor app reads the value
-     * back out of history rather than deciding it. Only those rings produce the second row that
-     * `EventPersistenceSubscriber.adoptRingsCopy` reconciles — on a CRP or Colmi ring the nearest
-     * history sample is an unrelated point on the five-minute all-day grid, which must never
-     * displace a reading the user asked for.
-     */
-    private val ringLogsSpotReadings: Boolean get() = engine?.signalsMeasurementCompletion == true
-
     /** The activity type of the workout whose stream is running — what a restart re-sends. */
     private var workoutActivityType: String = "other"
 
@@ -503,6 +491,12 @@ class RingSyncCoordinator(
         val spotToken = spot.begin(YCBTMeasurementMode.HEART_RATE)
         engine?.measureHeartRateSpot()
         var result: Int? = null
+        // True only when the ring itself called this run a success. That — not the family's
+        // ability to do so — is what makes its last sample the reading and its history the owner
+        // of the row: a run that hits our ceiling without a `04 0e` is one the ring never finished
+        // and never logged, so storing it as "spot" would let the next sync delete it in favour of
+        // an unrelated all-day grid sample.
+        var completedByRing = false
         try {
             // Sample the full window in 0.5s steps: handle() drops everything inside the 5s warm-up
             // (the ring's cached-echo bpm) and collects the rest. We break out early only where
@@ -519,15 +513,16 @@ class RingSyncCoordinator(
                 // beats our window: on success settle what we have instead of idling out the rest
                 // of a window the ring has already stopped streaming into; on failure, abort.
                 val completed = spot.completedSuccessfully(spotToken)
-                if (completed != null) { aborted = !completed; break }
+                if (completed != null) { aborted = !completed; completedByRing = completed; break }
                 // Contact lost after readings began (ring slipped / hand moved).
                 if (hrWindow.contactLost()) { aborted = true; break }
                 delay(500)
             }
-            // Which sample is the reading depends on whether the ring chose one: a family that
-            // ends its own measurement logs the value it displayed last, and ours has to be that
-            // same value or the ring's copy will simply replace it on the next sync (issue #59).
-            result = if (aborted) null else hrWindow.settled(ringChoosesLastSample = ringLogsSpotReadings)
+            // Which sample is the reading depends on whether the ring chose one: a ring that
+            // ended this run logs the value it displayed last, and ours has to be that same value
+            // or the ring's copy will simply replace it on the next sync (issue #59). A run the
+            // ring did not end falls back to the consistency gate, whatever the family.
+            result = if (aborted) null else hrWindow.settled(ringChoosesLastSample = completedByRing)
         } finally {
             spot.end(spotToken)
             // Always switch the optical sensor off — even if the caller's coroutine is
@@ -548,7 +543,7 @@ class RingSyncCoordinator(
                     PulseEventBus.publishBlocking(
                         PulseEvent.HeartRateSample(
                             bpm = settled, timestamp = java.time.Instant.now(),
-                            spot = true, ringWillLogIt = ringLogsSpotReadings,
+                            spot = true, ringWillLogIt = completedByRing,
                         )
                     )
                 }
@@ -569,12 +564,13 @@ class RingSyncCoordinator(
         val spotToken = spot.begin(YCBTMeasurementMode.SPO2)
         engine?.startSpO2()
         var result: Int? = null
+        var completedByRing = false   // see measureHR — the ring's verdict on THIS run owns the row
         try {
             result = if (engine?.signalsMeasurementCompletion == true) {
                 // The ring will say when it is done, so collect the whole run and settle it
                 // (issue #59 RC-1). Returning the first plausible sample handed back a reading
                 // taken 37 s before the ring finished, with nine better ones still to come.
-                settleSpO2(spotToken)
+                settleSpO2(spotToken).also { completedByRing = it.completedByRing }.value
             } else {
                 // No completion signal: the first plausible value is all we will ever be sure of,
                 // and waiting out the window past it buys nothing. Abort early when the ring
@@ -594,7 +590,7 @@ class RingSyncCoordinator(
                 PulseEventBus.publishBlocking(
                     PulseEvent.Spo2Result(
                         value = settled, timestamp = java.time.Instant.now(),
-                        spot = true, ringWillLogIt = ringLogsSpotReadings,
+                        spot = true, ringWillLogIt = completedByRing,
                     )
                 )
             }
@@ -677,18 +673,23 @@ class RingSyncCoordinator(
      * Mirrors the HR leg's structure: sample the window in 0.5 s steps, break out only where
      * continuing is pointless, and report a value only when the leg was not aborted.
      */
-    private suspend fun settleSpO2(spotToken: SpotMeasurementGate.Token): Int? {
+    private suspend fun settleSpO2(spotToken: SpotMeasurementGate.Token): SettledRun {
         var aborted = false
+        var completedByRing = false
         val steps = (spo2MeasureSeconds * 2).toInt()   // 0.5s granularity
         for (i in 0 until steps) {
             if (spo2NoReadingReported || spot.isRejected(spotToken)) { aborted = true; break }
             if (!isConnected) { aborted = true; break }
             val completed = spot.completedSuccessfully(spotToken)
-            if (completed != null) { aborted = !completed; break }
+            if (completed != null) { aborted = !completed; completedByRing = completed; break }
             delay(500)
         }
-        return if (aborted) null else spo2Window.settled
+        return SettledRun(if (aborted) null else spo2Window.settled, completedByRing)
     }
+
+    /** A leg's outcome: the reading, and whether the ring itself ended the run successfully —
+     *  which is what decides whether the ring's history will carry its own copy of it. */
+    private data class SettledRun(val value: Int?, val completedByRing: Boolean)
 
     /**
      * Poll for the first value, giving up early when [abort] says continuing is pointless.

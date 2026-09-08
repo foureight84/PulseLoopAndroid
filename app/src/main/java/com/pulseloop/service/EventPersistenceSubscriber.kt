@@ -94,9 +94,10 @@ class EventPersistenceSubscriber(
      * exactly what would undo a deletion, so the tombstone is checked on the way in. A reading with
      * no tombstone is written as before.
      */
-    private suspend fun upsertUnlessDeleted(measurement: MeasurementEntity) {
-        if (db.measurementDeletionDao().isDeleted(measurement.id)) return
+    private suspend fun upsertUnlessDeleted(measurement: MeasurementEntity): Boolean {
+        if (db.measurementDeletionDao().isDeleted(measurement.id)) return false
         db.measurementDao().upsert(measurement)
+        return true
     }
 
     /**
@@ -268,14 +269,17 @@ class EventPersistenceSubscriber(
             }
             is PulseEvent.HistoryMeasurement -> {
                 val at = event.timestamp.toEpochMilli()
-                upsertUnlessDeleted(MeasurementEntity(
+                val written = upsertUnlessDeleted(MeasurementEntity(
                     id = historyMeasurementId(event.kind, at),
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
                     timestamp = at,
                     sourceRaw = "history",
                 ))
-                adoptRingsCopy(event.kind, at)
+                // A sample the user deleted adopts nothing: it is re-sent on every sync, and
+                // letting it retire our spot rows within ±90 s would delete a retaken reading
+                // each time the ring re-supplied the one that was already deleted.
+                if (written) adoptRingsCopy(event.kind, at)
             }
             is PulseEvent.StressSample -> {
                 val measurement = MeasurementEntity(

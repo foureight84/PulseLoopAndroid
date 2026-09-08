@@ -69,6 +69,7 @@ sealed class RingDecodedEvent {
         is ActivityBucket -> this._timestamp
         is HeartRateSample -> this._timestamp
         is HeartRateComplete -> this._timestamp
+        is SportTelemetry -> this._timestamp
         is Spo2Progress -> this._timestamp
         is Spo2Result -> this._timestamp
         is Spo2Complete -> this._timestamp
@@ -128,6 +129,21 @@ sealed class RingDecodedEvent {
         override val kind = "hr_sample"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"bpm":$bpm,"error":$isError}"""
+    }
+
+    /**
+     * A Colmi `0x78` sport-session telemetry push (issue #64), emitted for *every* such frame so
+     * the diagnostics redactor has a health kind to mask. The bpm rides separately as a
+     * [HeartRateSample] when it is plausible; a warm-up frame carries bpm 0 but still carries the
+     * workout's live step count, distance and calories, which must not reach a report in clear.
+     */
+    data class SportTelemetry(
+        val bpm: Int,
+        val _timestamp: Instant
+    ) : RingDecodedEvent() {
+        override val kind = "sport_telemetry"
+        override val confidence = DecodeConfidence.PARTIAL
+        override val debugJSON = """{"bpm":$bpm}"""
     }
 
     data class HeartRateComplete(

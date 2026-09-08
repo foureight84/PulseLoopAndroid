@@ -68,7 +68,15 @@ object SleepScore {
         session: SleepSessionEntity,
         blocks: List<SleepStageBlockEntity>,
     ): SleepScoreResult {
+        // Two denominators, because since issue #63 a session carries two numbers. `total` is
+        // time asleep: stage shares and the duration band are judged against it, as sleep-stage
+        // percentages conventionally are (of total sleep time, not time in bed) and as the headline
+        // the user sees. `span` is first block to last: the awake share and the "does this ring
+        // label awake at all" heuristic are judged against it, since both are about time in bed —
+        // and judged against asleep time the coverage test below would be true for every ring,
+        // handing a ring that never labels awake the full awake sub-score for nothing.
         val total = if (session.totalMinutes > 0) session.totalMinutes.toDouble() else 0.0
+        val span = session.spanMinutes.toDouble().takeIf { it > 0 } ?: total
         // stageRaw is persisted as the SleepStage enum name (uppercase) — match it exactly.
         // Some rings report REM in big-data sleep; the score model has no REM band, so fold
         // REM into deep (both are restorative sleep the deep band rewards).
@@ -79,12 +87,12 @@ object SleepScore {
         val awake = minutesFor(SleepStage.AWAKE)
         val coveredStageMin = blocks.sumOf { it.durationMinutes.toDouble() }
         val hasAwakeSignal = blocks.any { it.stageRaw == SleepStage.AWAKE.name } ||
-            awake > 0 || (total > 0 && coveredStageMin >= total * 0.95)
+            awake > 0 || (span > 0 && coveredStageMin >= span * 0.95)
 
         val totalHours = total / 60
         val deepPct = if (total > 0) (deep / total) * 100 else 0.0
         val lightPct = if (total > 0) (light / total) * 100 else 0.0
-        val awakePct: Double? = if (total > 0 && hasAwakeSignal) (awake / total) * 100 else null
+        val awakePct: Double? = if (span > 0 && hasAwakeSignal) (awake / span) * 100 else null
 
         val duration = bandScore(totalHours, 7.5, 8.5, 6.0, 9.5, 3.0, 12.0, 35.0)
         val deepScore = bandScore(deepPct, 13.0, 23.0, 5.0, 35.0, 0.0, 45.0, 30.0)

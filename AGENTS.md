@@ -326,10 +326,11 @@ it is safe to assume away:
   on a *pre-converged plateau* (47 47 47, 46 46 46) before stepping to the real rate (84 … 81) at
   ~26 s. A whole-window median picks the plateau every time: it is both the majority of the window
   and the most self-consistent thing in it. **Never settle a median over everything collected.**
-- **Which settle rule a ring gets is decided by whether the ring chose a sample**
-  (`HRSampleWindow.settled(ringChoosesLastSample)`, wired to
-  `RingSyncEngine.signalsMeasurementCompletion` — the same property as everything else in this
-  file that distinguishes the two). A ring that ends its own measurement **logs the last plausible
+- **Which settle rule a run gets is decided by whether the ring ended it**
+  (`HRSampleWindow.settled(ringChoosesLastSample)`, wired to the ring's `04 0e` success verdict on
+  *this run*, not to the family's ability to send one). A run that hits our ceiling without a
+  `04 0e` is one the ring never finished, so it falls back to the consistency gate whatever the
+  family. A ring that ends its own measurement **logs the last plausible
   sample of the run** (vendor band `HEART_RATE_VISIBLE_MIN..MAX` = 40..220), so the app reports
   that. RC-3 feedback on #59 established it directly: three spot measurements captured with no stop
   command, each read back out of the ring's memory before any app touched it, stored value ==
@@ -454,6 +455,11 @@ drives the cadence, which is the near-constant LED and ~10 s readings the report
   underneath and is what a fallback lands on.
 - `0x77` on the command channel is `PhoneSportReq`; the same number as a big-data *action* is
   interval temperature on the other characteristic. They are unrelated.
+- **Every `0x78` frame decodes to a `SportTelemetry` event first** (kind `sport_telemetry`, in the
+  redactor's masked set), with the bpm as a separate `HeartRateSample` only when plausible. A
+  warm-up frame has bpm 0 but still carries live steps, distance and calories; returning nothing
+  for it made it `unknown` and exported it in clear — the decode-gap-becomes-privacy-gap failure
+  the diagnostics section below warns about.
 - Untested on hardware as of this note: the reporter (issue #64, Colmi R09) has the ring.
 
 ## Deleting a reading needs a tombstone, not just a DELETE (issue #60)
@@ -483,12 +489,15 @@ we stored for our settled value. Our row is stored with `sourceRaw = "spot"`, an
 within 90 s: the ring's row wins because it is the one that regenerates on every sync (so it is the
 one a tombstone can hold down).
 
-**Only rings that log their spot readings may take part, and the gate is at write time.** A row is
-marked `"spot"` only when the ring reported its own completion
-(`RingSyncEngine.signalsMeasurementCompletion`, carried on the event as `ringWillLogIt` — the same
-property, since a ring that ends a measurement with its own verdict is one whose vendor app reads
-the value back out of history). Everything else stores a plain `"live"` row exactly as before, with
-nothing that could delete it. Do not widen this to all families: CRP and Colmi record all-day
+**Only a reading the ring itself completed may take part, and the gate is at write time.** A row is
+marked `"spot"` only when the ring reported *that run's* success (`04 0e`, carried on the event as
+`ringWillLogIt`, which `RingSyncCoordinator` sets from the run's own verdict — a ring that ends a
+measurement with its own verdict is one whose vendor app reads the value back out of history).
+Everything else stores a plain `"live"` row exactly as before, with nothing that could delete it.
+This is per run, not per family: a YCBT run that times out at our ceiling with no `04 0e` was
+never logged by the ring, and marking it `"spot"` would let the next sync delete it in favour of an
+unrelated all-day grid sample. A history sample the user has tombstoned adopts nothing either — it
+is re-sent on every sync, and letting it retire spot rows would delete a retaken reading each time. Do not widen this to all families: CRP and Colmi record all-day
 HR/SpO2 on a **five-minute grid**, so with a ±90 s match window most spot measurements would have an
 unrelated grid sample within reach and the user's own reading would be deleted in favour of it.
 

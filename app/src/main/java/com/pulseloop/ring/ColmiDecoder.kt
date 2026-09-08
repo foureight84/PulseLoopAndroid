@@ -108,8 +108,11 @@ object ColmiDecoder {
     private fun decodeSportNotify(v: List<UByte>, now: Instant): List<RingDecodedEvent> {
         if (v.size < 6) return emptyList()
         val bpm = v[5].toInt()
-        return if (bpm in 30..220) listOf(RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
-        else emptyList()
+        // The telemetry event comes first so it is the frame's diagnostic kind (and masked) even
+        // on a warm-up frame whose bpm is zero — those still carry steps, distance and calories.
+        val telemetry = RingDecodedEvent.SportTelemetry(bpm = bpm, _timestamp = now)
+        return if (bpm in 30..220) listOf(telemetry, RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
+        else listOf(telemetry)
     }
 
     private fun decodeNotification(v: List<UByte>, now: Instant): List<RingDecodedEvent> = when (v[1]) {

@@ -18,6 +18,7 @@ object DiagnosticsRedactor {
     private val HEALTH_KINDS = setOf(
         "activity", "activity_bucket", "hr_sample", "spo2_progress", "spo2_result",
         "sleep_timeline", "history_measurement", "stress_sample", "hrv_sample", "temperature_sample",
+        "sport_telemetry",
     )
 
     private val MAC = Regex("\\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\\b")

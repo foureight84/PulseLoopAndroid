@@ -83,6 +83,9 @@ object RingEventBridge {
         is RingDecodedEvent.Status ->
             listOf(PulseEvent.DeviceStateChanged(RingConnectionState.CONNECTED, decoded.address, decoded.firmware))
 
+        // Sport telemetry is a diagnostics marker; its bpm arrives as its own HeartRateSample.
+        is RingDecodedEvent.SportTelemetry -> emptyList()
+
         is RingDecodedEvent.TimeSyncAck, is RingDecodedEvent.CommandAck, is RingDecodedEvent.Unknown ->
             emptyList()
 

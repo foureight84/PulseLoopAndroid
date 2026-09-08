@@ -55,6 +55,19 @@ class DiagnosticsRedactorTest {
         }
     }
 
+    /**
+     * A Colmi `0x78` sport push with bpm 0 (warm-up, contact lost) still carries the workout's
+     * live steps, distance and calories. It used to decode to nothing, fall through to `unknown`,
+     * and export in clear while the neighbouring frames with a bpm were masked.
+     */
+    @Test
+    fun `a sport telemetry frame is masked even when it carried no heart rate`() {
+        val frame = "7801" + "0000" + "00" + "0007d0" + "0005dc" + "00c350"
+        val masked = DiagnosticsRedactor.maskPacketHex(frame, "sport_telemetry", "COLMI")
+        assertEquals("78", masked.take(2))
+        assertTrue("steps, distance and calories do not survive", masked.drop(2).all { it == '·' })
+    }
+
     @Test
     fun `control frames are never masked`() {
         val frame = "fdda100603030102"

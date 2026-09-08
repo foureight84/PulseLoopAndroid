@@ -466,20 +466,32 @@ object DataArchiveService {
                     sp.errorMessage?.let { put("errorMessage", it) }
                 })
             }
-            for (ss in archive.sleepSessions) {
-                db.sleepSessionDao().upsert(SleepSessionEntity(
-                    id = ss.id, date = ss.date, startAt = ss.startAt, endAt = ss.endAt,
-                    totalMinutes = ss.totalMinutes, score = ss.score, syncedAt = ss.syncedAt,
-                    sourceRaw = ss.sourceRaw, createdAt = ss.createdAt, updatedAt = ss.updatedAt,
-                ))
-            }
-            for (block in archive.sleepStageBlocks) {
-                db.sleepStageBlockDao().insert(SleepStageBlockEntity(
+            // A backup written before issue #63 stores each night's span as its duration, and the
+            // one-time repair has already run (and will not again) on the install restoring it —
+            // so restate every restored night from its own blocks here, exactly as the repair
+            // does, rather than carry the archived number through verbatim. A session with no
+            // blocks in the archive keeps what it had; there is nothing to recompute from.
+            val restoredBlocks = archive.sleepStageBlocks.map { block ->
+                SleepStageBlockEntity(
                     id = block.id, sessionId = block.sessionId, startAt = block.startAt,
                     startMinute = block.startMinute, durationMinutes = block.durationMinutes,
                     stageRaw = block.stageRaw,
-                ))
+                )
+            }.groupBy { it.sessionId }
+            for (ss in archive.sleepSessions) {
+                val archived = SleepSessionEntity(
+                    id = ss.id, date = ss.date, startAt = ss.startAt, endAt = ss.endAt,
+                    totalMinutes = ss.totalMinutes, score = ss.score, syncedAt = ss.syncedAt,
+                    sourceRaw = ss.sourceRaw, createdAt = ss.createdAt, updatedAt = ss.updatedAt,
+                )
+                val blocks = restoredBlocks[ss.id].orEmpty()
+                val restated = if (blocks.isEmpty()) archived else {
+                    val asleep = archived.copy(totalMinutes = com.pulseloop.service.asleepMinutes(blocks))
+                    asleep.copy(score = com.pulseloop.service.SleepScore.calculate(asleep, blocks).score)
+                }
+                db.sleepSessionDao().upsert(restated)
             }
+            restoredBlocks.values.flatten().forEach { db.sleepStageBlockDao().insert(it) }
             for (conv in archive.coachConversations) {
                 db.coachConversationDao().upsert(CoachConversationEntity(
                     id = conv.id, title = conv.title, createdAt = conv.createdAt,
