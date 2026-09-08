@@ -524,7 +524,10 @@ class RingSyncCoordinator(
                 if (hrWindow.contactLost()) { aborted = true; break }
                 delay(500)
             }
-            result = if (aborted) null else hrWindow.stableValue
+            // Which sample is the reading depends on whether the ring chose one: a family that
+            // ends its own measurement logs the value it displayed last, and ours has to be that
+            // same value or the ring's copy will simply replace it on the next sync (issue #59).
+            result = if (aborted) null else hrWindow.settled(ringChoosesLastSample = ringLogsSpotReadings)
         } finally {
             spot.end(spotToken)
             // Always switch the optical sensor off — even if the caller's coroutine is

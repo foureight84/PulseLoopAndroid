@@ -16,19 +16,42 @@ import kotlin.math.abs
  *    report nothing: a heart rate the user has no reason to doubt, but shouldn't trust, is worse than
  *    an honest retry.
  *
- * ## Why the settle looks at the tail, not the whole window (issue #59)
+ * ## Two settle rules, and which ring gets which (issue #59)
  *
- * A dropped warm-up echo is not the same thing as a converged sensor. On the YCBT ring in #59 the
- * PPG takes ~26 s to converge, and everything before that sits on a *flat* pre-converged plateau —
- * 47 47 47, then 46 46 46, against a real rate of 81. Judged over the whole window that plateau is
- * both the majority and the most consistent thing in it, so a whole-window median returns it and
- * the user is shown a confident number that was never their heart rate.
+ * **A ring that says when it has finished decides the reading itself.** On the YCBT family the
+ * ring ends the measurement with `04 0e`, and the vendor app's reaction to that is `syncData()` —
+ * it re-reads the value out of the ring's history rather than computing one. Its measure screen
+ * (`HeartRateMeasureActivity.onEvent`, `com.yucheng.smarthealthpro`) never settles either: it
+ * overwrites the displayed bpm with every realtime frame, dropping only values outside
+ * `HEART_RATE_VISIBLE_MIN..MAX` (40..220). So what the user is shown, and what the ring logs, is
+ * the **last plausible sample of the run**.
  *
- * So the settle considers only the tail of the window: samples within [settleTailMs] of the last
- * one, and never fewer than [minSamples] of them. Later samples are strictly better evidence than
- * earlier ones on an optical sensor that is still converging, and this is the cheapest rule that
- * says so without guessing where convergence happened. It costs nothing on a ring that streams a
- * steady rate for the whole window — its tail agrees with its head.
+ * The reporter on #59 established that directly rather than by inference: three spot measurements
+ * captured with no stop command, each read back out of the ring's own memory before any app
+ * touched it, and the stored value equalled the last streamed sample three times out of three
+ * (65, 58, 72). It is a discriminating test on this ring, unlike SpO2 where tail and last coincide
+ * — the rate is still climbing when the ring stops, so every tail-weighted rule lands *below* the
+ * ring's answer, by as much as 18 bpm on those runs. Disagreeing with the ring is not a better
+ * number, it is a second number: the ring's copy arrives on the next sync and ours yields to it
+ * (issue #60), so a settle that disagrees only shows the user one value and then stores another.
+ *
+ * Note what this rule does *not* claim. The ring stops while the value is still rising, so its
+ * stored sample is the honest answer to "which sample did the firmware choose" and not to "has
+ * this converged". The second question is the firmware's to answer, and inventing a better number
+ * app-side would be worse than reporting the ring's.
+ *
+ * **A ring that never says it is done gets the tail rule instead**, because nothing else can end
+ * its window: the leg simply runs out, and "whichever sample happened to arrive as the timer
+ * expired" is a coincidence rather than a choice. There, [stableValue] still judges the tail of
+ * the window with a consistency gate. Judging the *whole* window is what issue #59 opened on: that
+ * ring's PPG spends its first ~26 s on a flat pre-converged plateau — 47 47 47, then 46 46 46,
+ * against a real rate of 81 — which is both the majority of the window and the most self-consistent
+ * thing in it, so a whole-window median returned it and the user was shown a confident number that
+ * was never their heart rate. The tail costs nothing on a ring that streams a steady rate
+ * throughout: its tail agrees with its head.
+ *
+ * Widening the last-sample rule to every family would repeat the mistake rc5 had to correct for
+ * the ring-copy rule — evidence gathered on one ring, generalised to rings it was never taken from.
  *
  * Samples are appended by the Main collector and judged from whichever thread runs the measuring
  * coroutine (the coach's tools poll from IO), so every member that touches [samples] is
@@ -96,8 +119,28 @@ class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) 
     }
 
     /**
-     * The settled reading: the median of the tail samples that agree with each other — or null if
-     * they never did.
+     * The reading this measurement settled on. [ringChoosesLastSample] is
+     * `RingSyncEngine.signalsMeasurementCompletion` — a ring that ends its own measurement is one
+     * whose vendor app reads the value back out of history rather than deciding it. See the class
+     * note for why those are different questions.
+     */
+    fun settled(ringChoosesLastSample: Boolean): Int? =
+        if (ringChoosesLastSample) lastPlausible else stableValue
+
+    /**
+     * The last sample inside the vendor's visible band — what its measure screen leaves on the
+     * display, and what the ring logs for itself. Null when the run produced no plausible sample
+     * at all, which is a failed measurement rather than a reading of zero.
+     *
+     * The band is the only filter, deliberately: it keeps a trailing dropout frame from becoming
+     * the reading without second-guessing a ring that is reporting a real, if unconverged, rate.
+     */
+    val lastPlausible: Int?
+        get() = synchronized(samples) { samples.lastOrNull { it.bpm in PLAUSIBLE }?.bpm }
+
+    /**
+     * The settled reading for a ring with no completion signal: the median of the tail samples
+     * that agree with each other — or null if they never did.
      */
     val stableValue: Int?
         get() {
@@ -119,5 +162,11 @@ class HRSampleWindow(private val clock: () -> Long = System::currentTimeMillis) 
         val byTime = samples.count { newest - it.at <= settleTailMs }
         val take = maxOf(byTime, minSamples).coerceAtMost(samples.size)
         return samples.takeLast(take).map { it.bpm }
+    }
+
+    companion object {
+        /** The vendor's `TransUtils.HEART_RATE_VISIBLE_MIN..MAX` — the band its measure screen
+         *  applies to every realtime frame before displaying it. */
+        val PLAUSIBLE: IntRange = 40..220
     }
 }

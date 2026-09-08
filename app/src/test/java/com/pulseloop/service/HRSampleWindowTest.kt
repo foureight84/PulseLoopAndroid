@@ -136,6 +136,110 @@ class HRSampleWindowTest {
         assertFalse(f.window.contactLost())
     }
 
+    // MARK: - The ring's own choice (issue #59, RC-3 read-back)
+
+    /**
+     * The three spot measurements the reporter captured with no stop command and then read back
+     * out of the ring's own memory before letting any app near it. The ring stored the **last**
+     * streamed sample all three times, and the run is still climbing when the ring stops — so this
+     * is a discriminating test, unlike SpO2 where the tail and the last sample coincide.
+     *
+     * The elided middle of capture 2 is written out as the groups the report named; what matters
+     * to the rule is the shape of the tail, which is quoted verbatim there.
+     */
+    private val readBackCaptures = listOf(
+        Triple(
+            "capture 1 (08:14:28)",
+            listOf(47, 47, 47, 46, 46, 45, 45, 45, 46, 46, 47, 55, 65, 65),
+            65,
+        ),
+        Triple(
+            "capture 2 (08:18:18)",
+            listOf(47, 47, 47, 44, 44, 44, 49, 49, 49, 51, 51, 53, 53, 54, 55, 57, 58, 58),
+            58,
+        ),
+        Triple(
+            "capture 3 (08:21:44)",
+            listOf(47, 47, 47, 46, 46, 46, 47, 47, 55, 66, 72, 72),
+            72,
+        ),
+    )
+
+    /** Replays a whole run past the warm-up at the ring's ~1 s burst cadence. */
+    private fun Fixture.replay(stream: List<Int>) {
+        window.begin()
+        now = 14_000
+        for (bpm in stream) {
+            now += 1_000
+            window.collect(bpm)
+        }
+    }
+
+    @Test
+    fun `a ring that ends its own measurement settles on the value it will log`() {
+        for ((name, stream, ringStored) in readBackCaptures) {
+            val f = Fixture()
+            f.replay(stream)
+            assertEquals(
+                "$name: the app must report what the ring stored",
+                ringStored,
+                f.window.settled(ringChoosesLastSample = true),
+            )
+        }
+    }
+
+    /**
+     * The point of the previous test: a tail-weighted rule lands *below* the ring's answer on a
+     * climbing run, which is how the app came to show 94 against the ring's 93. Kept as a test so
+     * that "just use the tail everywhere" reads as a deliberate regression rather than a tidy-up.
+     */
+    @Test
+    fun `the tail rule disagrees with the ring on a climbing run`() {
+        for ((name, stream, ringStored) in readBackCaptures) {
+            val f = Fixture()
+            f.replay(stream)
+            val tail = f.window.settled(ringChoosesLastSample = false)
+            assertNotNull("$name: the tail rule still produces a reading", tail)
+            assertTrue(
+                "$name: tail $tail should sit below the ring's $ringStored",
+                tail!! < ringStored,
+            )
+        }
+    }
+
+    /**
+     * A ring with no completion signal keeps the tail rule, because nothing chose its last sample
+     * — the leg simply ran out of window. Its steady stream settles where it always did.
+     */
+    @Test
+    fun `a ring with no completion signal still gets the consistency gate`() {
+        val f = Fixture()
+        f.replay(listOf(30, 200, 60, 150, 40, 190, 55, 170))   // scattered: no majority agrees
+        assertNull(f.window.settled(ringChoosesLastSample = false))
+    }
+
+    @Test
+    fun `a trailing dropout frame cannot become the reading`() {
+        val f = Fixture()
+        f.replay(listOf(47, 55, 65, 72, 0))          // ring drops out on the last frame
+        assertEquals(72, f.window.settled(ringChoosesLastSample = true))
+    }
+
+    @Test
+    fun `a run with no plausible sample is a failed measurement`() {
+        val f = Fixture()
+        f.replay(listOf(0, 0, 255, 0))
+        assertNull(f.window.settled(ringChoosesLastSample = true))
+    }
+
+    @Test
+    fun `one plausible sample is enough when the ring chose it`() {
+        val f = Fixture()
+        f.replay(listOf(0, 88))                       // below stableValue's 6-sample floor
+        assertEquals(88, f.window.settled(ringChoosesLastSample = true))
+        assertNull("the tail rule still needs a run to judge", f.window.settled(ringChoosesLastSample = false))
+    }
+
     @Test
     fun `begin resets a prior window`() {
         val f = Fixture()

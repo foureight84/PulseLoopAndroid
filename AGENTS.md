@@ -318,15 +318,34 @@ reading from history. We decode it the same way: `RingDecodedEvent.MeasurementCo
 mode and the verdict and nothing else, and `SpotMeasurementGate` honours it by token so a
 completion can only end the measurement it names.
 
-Three things the `Ale-Hop2211` capture in #59 established about how these rings actually behave.
-None of them are safe to assume away:
+What the `Ale-Hop2211` captures in #59 established about how these rings actually behave. None of
+it is safe to assume away:
 
 - **Warm-up is not the same as the cached echo.** `HRSampleWindow` drops the first 5 s because the
   ring answers instantly with its last stored bpm. That ring sent nothing for 14 s, then spent ~12 s
   on a *pre-converged plateau* (47 47 47, 46 46 46) before stepping to the real rate (84 … 81) at
   ~26 s. A whole-window median picks the plateau every time: it is both the majority of the window
-  and the most self-consistent thing in it. **The settle therefore looks at the tail**, not the
-  whole window. Don't "simplify" it back to a median over everything collected.
+  and the most self-consistent thing in it. **Never settle a median over everything collected.**
+- **Which settle rule a ring gets is decided by whether the ring chose a sample**
+  (`HRSampleWindow.settled(ringChoosesLastSample)`, wired to
+  `RingSyncEngine.signalsMeasurementCompletion` — the same property as everything else in this
+  file that distinguishes the two). A ring that ends its own measurement **logs the last plausible
+  sample of the run** (vendor band `HEART_RATE_VISIBLE_MIN..MAX` = 40..220), so the app reports
+  that. RC-3 feedback on #59 established it directly: three spot measurements captured with no stop
+  command, each read back out of the ring's memory before any app touched it, stored value ==
+  last streamed sample **3/3** (65, 58, 72). It is a discriminating test here, unlike SpO2 where
+  tail and last coincide — the rate is still **climbing** when the ring stops, so every
+  tail-weighted rule lands below the ring's answer (94 against the ring's 93 on rc5, and up to
+  18 bpm out on those captures). Disagreeing with the ring is not a better number, it is a second
+  number: the ring's copy arrives on the next sync and ours yields to it (issue #60). A ring with
+  **no** completion signal keeps the tail rule, because nothing chose its last sample — the leg
+  just ran out of window. Don't widen the last-sample rule to every family; that is the same
+  over-generalisation rc5 had to correct for the ring-copy rule.
+- **The ring's stored sample is not a converged reading, and that is not ours to fix.** It stops
+  while the value is still rising (34.2 s, 49.2 s, 34.2 s across those three runs), so "which
+  sample did the firmware choose" and "is that sample any good" have different answers and only the
+  first is the app's. The reporter raised this himself and argued against correcting for it:
+  inventing a better number app-side would disagree with the row the ring re-supplies.
 - **These rings stream in bursts.** Three samples about a second apart, then **4-6 s of silence**.
   The contact-lost gap was 3 s, so it fired mid-measurement on a ring that was working perfectly and
   aborted the leg before the sensor had converged at all. It is 8 s now. Size this against the
