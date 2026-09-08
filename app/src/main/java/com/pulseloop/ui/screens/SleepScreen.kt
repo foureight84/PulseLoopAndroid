@@ -47,6 +47,7 @@ import com.pulseloop.service.SleepFormat
 import com.pulseloop.service.SleepInsights
 import com.pulseloop.service.SleepQualityLabel
 import com.pulseloop.service.SleepRangeKey
+import com.pulseloop.service.spanMinutes
 import com.pulseloop.ui.components.CoachMessageCard
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.SleepViewModel
@@ -149,7 +150,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     item { SessionHero(session, blocks) }
     item {
         VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
-            SleepHypnogram(blocks = blocks, totalMin = session.totalMinutes, startTs = session.startAt)
+            SleepHypnogram(blocks = blocks, spanMin = session.spanMinutes, startTs = session.startAt)
         }
     }
     item {
@@ -203,7 +204,7 @@ private fun SleepCarousel(
                 )
                 SessionHero(s, blocks)
                 VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
-                    SleepHypnogram(blocks = blocks, totalMin = s.totalMinutes, startTs = s.startAt)
+                    SleepHypnogram(blocks = blocks, spanMin = s.spanMinutes, startTs = s.startAt)
                 }
                 val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
                 SleepStageSummaryCards(
@@ -441,7 +442,7 @@ private fun LegendItem(label: String, color: Color) {
 @Composable
 private fun SleepHypnogram(
     blocks: List<SleepStageBlockEntity>,
-    totalMin: Int,
+    spanMin: Int,
     startTs: Long,
     height: androidx.compose.ui.unit.Dp = 210.dp,
 ) {
@@ -457,7 +458,11 @@ private fun SleepHypnogram(
     val sorted = remember(blocks) {
         blocks.filter { it.durationMinutes > 0 && it.stageRaw != "UNKNOWN" }.sortedBy { it.startMinute }
     }
-    val safeTotal = if (totalMin > 0) totalMin else 1
+    // The x axis is wall-clock time, so it is scaled by the session's SPAN, never by its duration.
+    // Since issue #63 those are different numbers — `totalMinutes` is time asleep and excludes the
+    // awake stretches and the gap between a split night's two records, so scaling by it would
+    // compress the plot and mislabel every tick.
+    val safeTotal = if (spanMin > 0) spanMin else 1
     val ticks = listOf(0, safeTotal / 3, safeTotal * 2 / 3, safeTotal).map { offset ->
         clockTime(startTs + offset * 60_000L)
     }

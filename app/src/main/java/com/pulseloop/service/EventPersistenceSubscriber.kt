@@ -636,7 +636,7 @@ class EventPersistenceSubscriber(
         val now = System.currentTimeMillis()
         for ((seg, row) in matched) {
             val id = row?.id ?: "sleep-$dayStart-${seg.start}"
-            val totalMin = ((seg.end - seg.start) / 60_000L).toInt().coerceAtLeast(0)
+            val totalMin = asleepMinutes(seg.blocks)
             val deepMin = seg.blocks
                 .filter { it.stageRaw == SleepStage.DEEP.name }
                 .sumOf { it.durationMinutes }

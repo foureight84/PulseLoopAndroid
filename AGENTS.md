@@ -409,6 +409,29 @@ or tail; a neighbouring session across even a one-minute gap is untouched. The v
 lets one record displace another. `YCBTHealthRecords.sleep` also resynchronises on the `af fa` magic
 now, so a record with a wrong declared length can't swallow the sessions after it.
 
+**A session's `totalMinutes` is time asleep, not the span from its start to its end.** Merging is
+what made the two diverge: one row covering both records also covers the minutes between them, so
+the reporter's night read 8 h 10 (23:51–08:02) against the 268 + 140 minutes its two records
+declared, 6 h 48. The vendor draws the same distinction and the reporter found where —
+`SleepActivity:695` builds each history entry as `deepSleepTotal + lightSleepTotal + remTotal`,
+carries `wakeDuration` separately, and takes `startTime` from the first record of the day and
+`endTime` from the last, never conflating the two. `asleepMinutes(blocks)` (SleepInsights.kt) is
+the single definition; `spanMinutes` is the other number. Three things to keep straight:
+
+- It is **"every stage except AWAKE"**, not "DEEP + LIGHT + REM". Same sum on a ring that labels
+  its stages (YCBT's sleep tag 4 *is* AWAKE), but `SleepStage.UNKNOWN` is the `else` branch of
+  every decoder here — an unrecognised stage byte *inside* a sleep record. Naming three stages
+  would drop minutes that were slept, and could zero a night on a ring we decode only partly.
+- **Anything positioning against wall-clock time scales by `spanMinutes`.** The hypnogram's x axis
+  did use `totalMinutes` and would silently compress and mislabel every tick otherwise.
+- **Stored rows were repaired once** (`DataRepairs.repairSleepDurationsIfNeeded`, prefs key
+  `sleepAsleepMinutesRepair.v1`), because ring history only reaches back about a week and a
+  re-sync would leave older nights reading the old way forever. It recomputes from each session's
+  own blocks and skips a session with none rather than zeroing it — `byDay` and `earliestDay` both
+  filter `totalMinutes > 0`, so a zero hides the night.
+
+Still open, and a fair ask: showing a split night's two records **separately** as well as merged.
+
 ## Live workout HR on Colmi is a sport session, not an HR stream (issue #64)
 
 The QRing app never touches the realtime-HR commands during an activity. `SportRunningActivity`

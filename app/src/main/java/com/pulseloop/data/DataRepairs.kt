@@ -1,6 +1,7 @@
 package com.pulseloop.data
 
 import android.content.Context
+import com.pulseloop.service.asleepMinutes
 import com.pulseloop.util.TimeUtil
 
 /**
@@ -42,6 +43,39 @@ object DataRepairs {
                 source = "ring_history",
                 updatedAt = System.currentTimeMillis(),
             ))
+        }
+        prefs.edit().putBoolean(key, true).apply()
+    }
+
+    /**
+     * Restate every stored night's `totalMinutes` as time asleep rather than the span from its
+     * start to its end (issue #63). Ring history only reaches back about a week, so a re-sync
+     * would leave every older night reading the old way indefinitely — and the two numbers differ
+     * by the awake stretches plus, on a night the ring split into two records, the gap between
+     * them: 8 h 10 against 6 h 48 on the reporter's night.
+     *
+     * Recomputed from each session's own stage blocks, which are exact — they are a run-length
+     * encoding of a per-minute stage list and are de-overlapped on merge. A session with no blocks
+     * left is skipped rather than zeroed: there is nothing to recompute from, and a zero would
+     * hide the night entirely (`byDay` and `earliestDay` both filter on `totalMinutes > 0`).
+     * Demo rows are repaired too, so a seeded night and a real one report the same kind of number.
+     */
+    suspend fun repairSleepDurationsIfNeeded(
+        context: Context,
+        db: PulseLoopDatabase = PulseLoopDatabase.getInstance(context),
+    ) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val key = "sleepAsleepMinutesRepair.v1"
+        if (prefs.getBoolean(key, false)) return
+        val now = System.currentTimeMillis()
+        for (session in db.sleepSessionDao().all()) {
+            val blocks = db.sleepStageBlockDao().forSession(session.id)
+            if (blocks.isEmpty()) continue
+            val asleep = asleepMinutes(blocks)
+            if (asleep == session.totalMinutes) continue
+            db.sleepSessionDao().upsert(
+                session.copy(totalMinutes = asleep, updatedAt = now)
+            )
         }
         prefs.edit().putBoolean(key, true).apply()
     }

@@ -368,6 +368,10 @@ interface SleepSessionDao {
     @Query("SELECT MIN(date) FROM sleep_sessions WHERE totalMinutes > 0")
     suspend fun earliestDay(): Long?
 
+    /** Every stored session, for the one-time repairs in `DataRepairs`. */
+    @Query("SELECT * FROM sleep_sessions")
+    suspend fun all(): List<SleepSessionEntity>
+
     @Upsert
     suspend fun upsert(session: SleepSessionEntity)
 
