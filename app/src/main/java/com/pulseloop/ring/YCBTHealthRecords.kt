@@ -164,6 +164,9 @@ object YCBTHealthRecords {
 
     // MARK: Sleep (variable-length sessions)
 
+    /** One `af fa` record's stage segment, kept with its own start (issue #63). */
+    private data class SleepSegment(val stage: SleepStage, val startSeconds: Int, val seconds: Int)
+
     fun sleep(buffer: ByteArray): List<RingDecodedEvent> {
         val headerLength = 20
         val segmentLength = 8
@@ -180,30 +183,32 @@ object YCBTHealthRecords {
                 continue
             }
             val recordLength = YCBTBytes.u16(buffer, cursor + 2)
+            // The vendor reads the session's own bounds out of the header (DataUnpack's
+            // `startTime` at +4, `endTime` at +8) rather than inferring them from the segments.
+            val headerStart = YCBTBytes.u32(buffer, cursor + 4)
+            val headerEnd = YCBTBytes.u32(buffer, cursor + 8)
             val segmentsStart = cursor + headerLength
             val declared = maxOf(0, recordLength - headerLength) / segmentLength
             val available = (buffer.size - segmentsStart) / segmentLength
             val segmentCount = minOf(declared, available)
 
-            val stages = mutableListOf<SleepStage>()
-            var sessionStart: Instant? = null
+            val segments = mutableListOf<SleepSegment>()
             val seenStarts = mutableSetOf<Int>()
             for (index in 0 until segmentCount) {
                 val offset = segmentsStart + index * segmentLength
                 val stage = sleepStage(buffer[offset].toInt() and 0xFF) ?: continue
                 val segmentStart = YCBTBytes.u32(buffer, offset + 1)
+                // The vendor de-duplicates on the segment's start time (`sleepStartTime`).
                 if (!seenStarts.add(segmentStart)) continue
-                val segmentSeconds = YCBTBytes.u24(buffer, offset + 5)
-                if (sessionStart == null) sessionStart = YCBTBytes.date(segmentStart)
-                val remaining = MAX_SLEEP_SESSION_MINUTES - stages.size
-                if (remaining <= 0) break
-                val minutes = kotlin.math.round(segmentSeconds / 60.0).toInt().coerceIn(1, remaining)
-                repeat(minutes) { stages.add(stage) }
+                segments.add(SleepSegment(stage, segmentStart, YCBTBytes.u24(buffer, offset + 5)))
             }
-            if (sessionStart != null && stages.isNotEmpty()) {
+            val stages = placeStages(segments, headerStart, headerEnd)
+            if (segments.isNotEmpty() && stages.isNotEmpty()) {
+                val start = if (usableHeaderBounds(headerStart, headerEnd)) headerStart
+                            else segments.first().startSeconds
                 events.add(
                     RingDecodedEvent.SleepTimeline(
-                        _timestamp = sessionStart,
+                        _timestamp = YCBTBytes.date(start),
                         stages = stages,
                         completeSession = true,
                     )
@@ -212,6 +217,61 @@ object YCBTHealthRecords {
             cursor = segmentsStart + segmentCount * segmentLength
         }
         return events
+    }
+
+    private fun usableHeaderBounds(startSeconds: Int, endSeconds: Int): Boolean =
+        startSeconds > 0 && endSeconds > startSeconds &&
+            (endSeconds - startSeconds) / 60 <= MAX_SLEEP_SESSION_MINUTES
+
+    /**
+     * A record's minute-by-minute stage timeline (issue #63).
+     *
+     * The stored run has to end where the ring says the session ended, because
+     * `completeSessionSurvivors` grows its retirement run across blocks that abut end-to-start.
+     * Concatenating `round(seconds / 60)` per segment from the first segment's start does not:
+     * segments carry a one-second gap between each pair and each rounds independently, so a
+     * night's derived end drifts from its real one — 470 minutes against a declared 474 on the
+     * captured night in `YCBTHealthRecordsTest`. A single minute of drift in the other direction
+     * is enough to make one record of a split night abut the next, and the whole of the earlier
+     * session is then retired in favour of the later one: 5 h 22 of a two-record night vanished
+     * that way.
+     *
+     * So each segment is placed at its own `sleepStartTime` for its own `sleepLen`, and the run
+     * spans exactly the header's `startTime`..`endTime`. The one-second gaps round away against
+     * the minute grid; a gap the ring really left reads as wake, which is what it is.
+     *
+     * A record with unusable header bounds (a synthetic or truncated one) keeps the old
+     * concatenation, since there is nothing better to place against.
+     */
+    private fun placeStages(
+        segments: List<SleepSegment>,
+        headerStart: Int,
+        headerEnd: Int,
+    ): List<SleepStage> {
+        if (segments.isEmpty()) return emptyList()
+        if (!usableHeaderBounds(headerStart, headerEnd)) {
+            val stages = mutableListOf<SleepStage>()
+            for (segment in segments) {
+                val remaining = MAX_SLEEP_SESSION_MINUTES - stages.size
+                if (remaining <= 0) break
+                val minutes = kotlin.math.round(segment.seconds / 60.0).toInt().coerceIn(1, remaining)
+                repeat(minutes) { stages.add(segment.stage) }
+            }
+            return stages
+        }
+        val total = kotlin.math.round((headerEnd - headerStart) / 60.0).toInt()
+            .coerceIn(1, MAX_SLEEP_SESSION_MINUTES)
+        // AWAKE is the honest filler: the ring reports wake as its own segment type (0xf4), so a
+        // minute no segment claims is one the ring did not call sleep.
+        val timeline = MutableList(total) { SleepStage.AWAKE }
+        for (segment in segments) {
+            val from = kotlin.math.round((segment.startSeconds - headerStart) / 60.0).toInt()
+            val until = kotlin.math.round(
+                (segment.startSeconds.toLong() + segment.seconds - headerStart) / 60.0
+            ).toInt()
+            for (minute in maxOf(0, from) until minOf(total, until)) timeline[minute] = segment.stage
+        }
+        return timeline
     }
 
     private fun isSleepSessionHeader(buffer: ByteArray, at: Int): Boolean =
