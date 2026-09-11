@@ -88,8 +88,13 @@ object DiagnosticsExporter {
                     addJsonObject {
                         put("at", Instant.ofEpochMilli(pkt.timestamp).toString())
                         put("direction", pkt.directionRaw)
+                        // The family that captured the packet, not the one connected now: a report
+                        // exported after switching rings would otherwise mask each frame with the
+                        // wrong header length, and the family with the longest header (CRP, 6
+                        // bytes) would keep five bytes of another family's samples. A row from
+                        // before the family was recorded has none, and masks from byte 1.
                         put("hex", if (mask) {
-                            DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind, device?.deviceTypeRaw ?: "")
+                            DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind, pkt.deviceTypeRaw ?: "")
                         } else pkt.hexPayload)
                         put("decoded", kind)
                     }

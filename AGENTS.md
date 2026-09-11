@@ -395,6 +395,16 @@ train of readings that were never the user's heart rate (this is what prompted i
 *workout* is the opposite case: there the stream **is** the data, so a measurement that runs during
 one neither closes the gate nor publishes a second row for a reading the stream already stored.
 
+**A spot HR measurement is refused while a workout is running.** The live-sample gate is one switch
+per kind, so whichever of the two closed it decides whether the other's samples are stored, and the
+leg sampled that decision once at the start. Running both meant either the workout's samples were
+dropped for the length of the leg, or — if the workout started inside it — the leg's converging
+samples were stored as workout rows and its settled value never published. A workout starting mid-leg
+now aborts the leg, and the gate is reopened unconditionally in the `finally` because the leg is what
+closed it; leaving it closed would silently drop that workout's samples for the rest of the session.
+The workout screen is already showing live bpm, so refusing costs nothing. No unit test:
+`RingSyncCoordinator` needs a BLE client and has no harness.
+
 ## A complete sleep record retires only its own run (issue #63)
 
 A YCBT ring closes a sleep session when the wearer gets up and opens a new one when they settle,
@@ -451,6 +461,17 @@ count to within a minute on 12 of 13. So the counted timeline is sound; if a hea
 be independent of placement and rounding, the declared totals are there. Note the record length at
 +2 is **bytes, not minutes** — it reads plausibly as a minute count (244, 164, 268, 140) and was
 misread that way for several rounds of this issue.
+
+**A complete record retires only what its interval overlaps — abutting blocks are left alone.** The
+rule used to grow its run across any block meeting it end-to-start, so that a shortened re-send could
+retire its own stale tail. But a block carries no record identity — `sessionId` is the *merged* row,
+shared by every record of the night — so "my stale tail" and "the neighbouring record" are the same
+shape from the same side, and two records meeting with no gap read as one run: the second wiped the
+first. The reporter's ring closes one record and opens the next 33 seconds later, so whether the two
+round to the same minute is a coin toss, and losing it costs a whole session. The trade is a stale
+tail surviving a genuine shortening, which is minutes rather than hours and rarer than it was now
+that a re-send reproduces the record's declared bounds instead of a drifted end. Carrying the
+originating record's start on each block would allow both, and is the fix if the tail ever bites.
 
 Still open, and a fair ask: showing a split night's two records **separately** as well as merged.
 
@@ -522,6 +543,18 @@ is re-sent on every sync, and letting it retire spot rows would delete a retaken
 HR/SpO2 on a **five-minute grid**, so with a ±90 s match window most spot measurements would have an
 unrelated grid sample within reach and the user's own reading would be deleted in favour of it.
 
+**A deleted `spot` row needs a range tombstone, because its id is a UUID.** The split above —
+tombstone the regenerable ids, delete the UUIDs outright — is right for a `"live"` row and wrong for
+a `"spot"` one: a `"spot"` row exists *precisely because* the ring logged that measurement itself and
+will hand it back under a `history:` id on the next sync. Tombstoning by id alone let the ring's copy
+walk straight in, so the reading came back and had to be deleted twice. The ring stamps its log to
+the minute rather than to our settled instant, so the tombstone cannot name the id it must suppress:
+`MeasurementDeletionDao.record` writes a `spot:<kind>:<ts>` row instead and `isSpotDeleted` matches
+it the way `adoptRingsCopy` matches the pair it reconciles — same kind, within ±90 s. A measurement
+retaken inside that window inherits the suppression: it is stored and displayed (it is our own row,
+not a history write) but never adopts the ring's copy. That is the same ±90 s ambiguity
+`adoptRingsCopy` already carries, and it fails towards keeping a reading the user asked for.
+
 **Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
 there. The export doesn't retain HC record ids, so there is nothing to delete against.
 
@@ -538,3 +571,19 @@ The inverse failure is worth remembering too: CRP temperature frames were export
 values intact**, because an undecoded frame fell through to `command_ack`, which isn't in
 `HEALTH_KINDS`. A decode gap silently became a privacy gap. When you add a decoder for a frame that
 carries physiological values, check that its `decodedKind` is one the redactor masks.
+
+**The header length must come from the packet's own family, and a half-assembled frame has no header
+at all.** Two further shapes of the same failure, fixed together:
+
+- Masking used to use the **connected** ring's family for every stored packet, so a report exported
+  after switching rings masked the old family's frames with the wrong header length — and CRP's is the
+  longest, so a Colmi frame masked as CRP kept five bytes of samples. `raw_packets.deviceTypeRaw`
+  (v25) records the family at capture time (`PulseEvent.RawPacket.deviceType`), and a row from before
+  it existed masks from byte 1: less useful, never wrong in the direction that leaks.
+- A CRP reply spanning several notifications only decodes when its last chunk lands, so every chunk
+  before that reached the log as `unknown` — which is deliberately exported **whole**, because control
+  and pairing frames decode to nothing and are what most connection reports are taken for. Half an
+  all-day health reply left in clear that way. `RingDecodedEvent.FramePending` names a chunk instead,
+  and the two cases mask differently: `frame_start` keeps its family's header (it is there, and it is
+  what identifies the reply), `frame_chunk` keeps byte 0 and nothing else, because the middle of a
+  frame is payload from byte 0 on.

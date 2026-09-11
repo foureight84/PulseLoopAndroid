@@ -242,6 +242,7 @@ object DataArchiveService {
                     directionRaw = c.str("directionRaw"), commandId = c.int_("commandId"),
                     hexPayload = c.str("hexPayload"), decodedKind = c.strOrNull("decodedKind"),
                     decodedJSON = c.strOrNull("decodedJSON"), confidenceRaw = c.str("confidenceRaw"),
+                    deviceTypeRaw = c.strOrNull("deviceTypeRaw"),
                     createdAt = c.long("createdAt"),
                 )
             },
@@ -560,7 +561,8 @@ object DataArchiveService {
                     id = rp.id, timestamp = rp.timestamp, directionRaw = rp.directionRaw,
                     commandId = rp.commandId, hexPayload = rp.hexPayload,
                     decodedKind = rp.decodedKind, decodedJSON = rp.decodedJSON,
-                    confidenceRaw = rp.confidenceRaw, createdAt = rp.createdAt,
+                    confidenceRaw = rp.confidenceRaw, deviceTypeRaw = rp.deviceTypeRaw,
+                    createdAt = rp.createdAt,
                 ))
             }
             for (du in archive.derivedUpdates) {

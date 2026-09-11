@@ -96,6 +96,18 @@ class EventPersistenceSubscriber(
      */
     private suspend fun upsertUnlessDeleted(measurement: MeasurementEntity): Boolean {
         if (db.measurementDeletionDao().isDeleted(measurement.id)) return false
+        // The same reading deleted from the other side. A spot reading the user removed before the
+        // ring's copy of it arrived has no `history:` tombstone to find — its row was a UUID — so
+        // without this the ring's copy is written under an id nothing suppresses and the reading
+        // comes back, needing a second delete. Only kinds `adoptRingsCopy` reconciles can produce
+        // such a tombstone, so no other write pays for the lookup.
+        if (measurement.kindRaw in SPOT_RECONCILED_KINDS &&
+            db.measurementDeletionDao().isSpotDeleted(
+                measurement.kindRaw,
+                measurement.timestamp - SPOT_MATCH_MS,
+                measurement.timestamp + SPOT_MATCH_MS,
+            )
+        ) return false
         db.measurementDao().upsert(measurement)
         return true
     }
@@ -402,6 +414,7 @@ class EventPersistenceSubscriber(
                     commandId = event.data.getOrNull(0)?.toInt()?.and(0xFF) ?: 0,
                     hexPayload = event.data.joinToString("") { "%02x".format(it) },
                     decodedKind = event.decoded.kind,
+                    deviceTypeRaw = event.deviceType?.name,
                 ))
             }
             is PulseEvent.ActivitySyncReset -> {}
@@ -760,6 +773,9 @@ class EventPersistenceSubscriber(
          *  the minute, so 90 s covers a stamp at either end of the run without reaching the ring's
          *  own all-day samples five minutes apart. */
         const val SPOT_MATCH_MS = 90_000L
+        /** The kinds [adoptRingsCopy] reconciles, and so the only ones a `spot:` range tombstone
+         *  can exist for. Kept as the raw names the measurement rows carry. */
+        val SPOT_RECONCILED_KINDS = setOf(MeasurementKind.HEART_RATE.name, MeasurementKind.SPO2.name)
         /** How far back [spotReadings] is primed from the table on first use. */
         const val SPOT_LOOKBACK_MS = 7L * 24 * 60 * 60_000
         private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
@@ -867,13 +883,24 @@ internal fun shouldReplaceCompleteSleep(
  * three hours along with its own stale copy, and the night read 4 h 06 instead of 6 h 08. The
  * vendor app keeps every record as its own session and never lets one displace another.
  *
- * What a complete record *is* authoritative for is the ring session it describes, which in the
- * stored blocks is the contiguous run the packet's interval sits in: blocks that overlap the
- * interval, and any block that abuts that run end-to-start without a gap, in either direction.
- * That still lets a shortened revision retire its own stale head or tail (those abut the new
- * interval), while a neighbouring session on the far side of even a one-minute gap is untouched.
- * Blocks overlapping the interval itself are dropped here as well; the caller's interval replace
- * would only trim them, and a complete record has no use for what it trimmed off.
+ * What a complete record *is* authoritative for is the ring session it describes: the blocks its
+ * own interval overlaps, and nothing else. Blocks overlapping the interval are dropped here rather
+ * than trimmed; the caller's interval replace would only trim them, and a complete record has no
+ * use for what it trimmed off.
+ *
+ * **Abutting blocks are left standing, and that is a correction.** This rule used to grow the run
+ * across any block meeting it end-to-start, so a shortened re-send could retire its own stale tail.
+ * But a block has no record identity — `sessionId` is the *merged* row, shared by every record of
+ * the night — so "my stale tail" and "the neighbouring record" are the same shape seen from the
+ * same side, and the rule could not tell them apart. Two records meeting with no gap therefore read
+ * as one run and the second wiped the first: on the reporter's ring the records sit 33 seconds
+ * apart, which is a coin toss on whether they round to the same minute, and losing that toss costs
+ * a whole session. The shortened-re-send case is also much weaker than it was — since a record's
+ * timeline is placed against its own declared header bounds, a re-send of the same record produces
+ * the same end rather than one that drifted — so the trade is a stale tail surviving until the
+ * record is re-sent shorter *again* against a session that could vanish outright. Carrying the
+ * originating record's start on each block would allow both, and is the fix if the tail ever
+ * actually bites.
  */
 internal fun completeSessionSurvivors(
     existing: List<SleepStageBlockEntity>,
@@ -881,25 +908,9 @@ internal fun completeSessionSurvivors(
     replacementEnd: Long,
 ): List<SleepStageBlockEntity> {
     fun end(block: SleepStageBlockEntity) = block.startAt + block.durationMinutes * 60_000L
-    var runStart = replacementStart
-    var runEnd = replacementEnd
-    val retired = mutableSetOf<String>()
-    var grew = true
-    while (grew) {
-        grew = false
-        for (block in existing) {
-            if (block.id in retired) continue
-            val overlaps = block.startAt < runEnd && end(block) > runStart
-            val abuts = block.startAt == runEnd || end(block) == runStart
-            if (overlaps || abuts) {
-                retired.add(block.id)
-                runStart = minOf(runStart, block.startAt)
-                runEnd = maxOf(runEnd, end(block))
-                grew = true
-            }
-        }
+    return existing.filterNot { block ->
+        block.startAt < replacementEnd && end(block) > replacementStart
     }
-    return existing.filterNot { it.id in retired }
 }
 
 internal fun replaceOverlappingSleepBlocks(

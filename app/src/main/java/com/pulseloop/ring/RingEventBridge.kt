@@ -145,6 +145,9 @@ object RingEventBridge {
             if (decoded.mgdl in bloodSugarRange) listOf(PulseEvent.BloodSugarSample(decoded.mgdl, decoded._timestamp))
             else emptyList()
         }
+
+        // Half a frame carries nothing to act on; it exists only so the raw-packet log can mask it.
+        is RingDecodedEvent.FramePending -> emptyList()
     }
 
     private fun isPlausibleHistoryMeasurement(kind: MeasurementKind, value: Double): Boolean {

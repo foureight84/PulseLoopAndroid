@@ -33,13 +33,29 @@ sealed class PulseEvent {
     /** Emitted when the user forgets the ring, so persistence clears the stored model identity. */
     data object DeviceForgotten : PulseEvent()
     data class BatteryLevel(val percent: Int) : PulseEvent()
-    data class RawPacket(val direction: PacketDirection, val data: ByteArray, val decoded: RingDecodedEvent) : PulseEvent() {
+    /**
+     * One BLE frame as it went over the wire, for the debug log and the diagnostics report.
+     *
+     * [deviceType] is the family that sent or received it, captured here rather than looked up at
+     * export time: the report masks a health frame by keeping its routing header, how long that
+     * header is depends on the family, and the ring connected when a report is exported is not
+     * necessarily the one that produced the packets in it.
+     */
+    data class RawPacket(
+        val direction: PacketDirection,
+        val data: ByteArray,
+        val decoded: RingDecodedEvent,
+        val deviceType: RingDeviceType? = null,
+    ) : PulseEvent() {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (other !is RawPacket) return false
-            return direction == other.direction && data.contentEquals(other.data) && decoded == other.decoded
+            return direction == other.direction && data.contentEquals(other.data) &&
+                decoded == other.decoded && deviceType == other.deviceType
         }
-        override fun hashCode(): Int = 31 * (31 * direction.hashCode() + data.contentHashCode()) + decoded.hashCode()
+        override fun hashCode(): Int =
+            31 * (31 * (31 * direction.hashCode() + data.contentHashCode()) + decoded.hashCode()) +
+                (deviceType?.hashCode() ?: 0)
     }
     data class ActivityUpdate(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double, val calories: Double) : PulseEvent()
     data class ActivityBucket(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double) : PulseEvent()

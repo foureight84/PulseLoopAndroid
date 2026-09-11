@@ -44,7 +44,7 @@ import com.pulseloop.data.entity.*
         CachedFoodProductEntity::class,
         MeasurementDeletionEntity::class,
     ],
-    version = 24,
+    version = 25,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -466,6 +466,21 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v24 -> v25: `raw_packets.deviceTypeRaw`, so the diagnostics report masks each captured
+         * frame against the family that sent it rather than against whichever ring is connected
+         * when the report is exported (a Colmi frame masked with CRP's six-byte header exports five
+         * bytes of samples). Nullable with no backfill on purpose — the family of an already
+         * captured packet is not recoverable, and the redactor masks a row with no family from
+         * byte 1, which is the conservative reading. `raw_packets` is a 1000-row debug ring buffer,
+         * so existing rows age out within a session or two of use.
+         */
+        private val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `raw_packets` ADD COLUMN `deviceTypeRaw` TEXT")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -556,6 +571,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_21_22,
                         MIGRATION_22_23,
                         MIGRATION_23_24,
+                        MIGRATION_24_25,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

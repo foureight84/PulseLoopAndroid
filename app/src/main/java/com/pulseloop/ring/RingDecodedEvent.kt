@@ -97,6 +97,7 @@ sealed class RingDecodedEvent {
         is BloodPressureSample -> this._timestamp
         is BloodSugarSample -> this._timestamp
         is Unknown -> Instant.EPOCH
+        is FramePending -> Instant.EPOCH
     }
 
     data class ActivityUpdate(
@@ -438,6 +439,37 @@ sealed class RingDecodedEvent {
         override val kind = "blood_sugar_sample"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"mgdl":$mgdl}"""
+    }
+
+    /**
+     * One notification of a logical frame that is still being reassembled — no decode yet, and
+     * possibly never one of its own (the frame decodes as a whole).
+     *
+     * It exists for the diagnostics report. A mid-frame chunk used to reach the raw-packet log as
+     * [Unknown], and `unknown` is deliberately *not* masked on export — control and pairing frames
+     * are the data most connection bugs need, and they decode to nothing. But an intermediate chunk
+     * of a multi-frame **health** reply carries samples in exactly the same shape, so those were
+     * exported whole: the same class of defect as issue #58's undecoded temperature frames, where a
+     * decode gap had quietly become a privacy gap. A chunk is now named for what it is, and the
+     * redactor masks it because it cannot know what the assembled frame will turn out to be.
+     */
+    data class FramePending(val raw: ByteArray, val startsFrame: Boolean) : RingDecodedEvent() {
+        /**
+         * The two cases are named apart because they mask differently: only the opening chunk holds
+         * the frame's routing header, so a continuation chunk keeping six bytes "of header" would be
+         * keeping six bytes of samples.
+         */
+        override val kind = if (startsFrame) "frame_start" else "frame_chunk"
+        override val confidence = DecodeConfidence.UNKNOWN
+        override val debugJSON = "{}"
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is FramePending) return false
+            return raw.contentEquals(other.raw) && startsFrame == other.startsFrame
+        }
+
+        override fun hashCode(): Int = 31 * raw.contentHashCode() + startsFrame.hashCode()
     }
 
     data class Unknown(

@@ -198,6 +198,7 @@ data class PulseArchive(
     val id: String, val timestamp: Long, val directionRaw: String,
     val commandId: Int, val hexPayload: String, val decodedKind: String? = null,
     val decodedJSON: String? = null, val confidenceRaw: String = "unknown",
+    val deviceTypeRaw: String? = null,
     val createdAt: Long,
 )
 

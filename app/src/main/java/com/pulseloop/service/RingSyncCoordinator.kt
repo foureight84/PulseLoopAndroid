@@ -478,15 +478,22 @@ class RingSyncCoordinator(
     suspend fun measureHR(): Int? {
         if (hrState == MeasureState.MEASURING) return null
         if (!isConnected) { hrState = MeasureState.FAILED; return null }
+        // A workout owns the bpm stream for its whole duration, and this leg cannot share it: the
+        // live-sample gate is one switch per kind, so whichever of the two closed it decides
+        // whether the other's samples are stored. Running anyway used to mean the workout's
+        // samples were dropped for the length of the leg, or — if the workout started inside it —
+        // the leg's converging samples were stored as workout rows and its settled value never
+        // published. The workout screen is already showing live bpm, so refusing costs nothing.
+        if (workoutHRActive) return null
         hrState = MeasureState.MEASURING
         // Do NOT clear latestHRValue — it's the live value the workout UI shows, so a new
         // measurement keeps the last reading on screen until a fresh one replaces it.
         hrNoReadingReported = false
         measureNotWorn = false
         hrWindow.begin()
-        // A streaming workout owns the bpm stream; otherwise this leg does (see gateLiveSamples).
-        val ownsStream = !workoutHRActive
-        if (ownsStream) gateLiveSamples(MeasurementKind.HEART_RATE, closed = true)
+        // This leg owns the bpm stream: a workout cannot have been running (refused above), and one
+        // that starts mid-leg aborts it rather than taking the gate out from under us.
+        gateLiveSamples(MeasurementKind.HEART_RATE, closed = true)
 
         val spotToken = spot.begin(YCBTMeasurementMode.HEART_RATE)
         engine?.measureHeartRateSpot()
@@ -509,6 +516,10 @@ class RingSyncCoordinator(
                 if (hrNoReadingReported || spot.isRejected(spotToken)) { aborted = true; break }
                 // Ring removed / BLE dropped mid-measure → fail rather than settle a truncated window.
                 if (!isConnected) { aborted = true; break }
+                // A workout started inside the leg and now owns the stream. Abort: from here the
+                // samples arriving are the workout's, and settling them would both publish a
+                // reading built from someone else's stream and leave the gate closed against it.
+                if (workoutHRActive) { aborted = true; break }
                 // The ring ended the measurement itself (YCBT `04 0e`, issue #59). Its own verdict
                 // beats our window: on success settle what we have instead of idling out the rest
                 // of a window the ring has already stopped streaming into; on failure, abort.
@@ -531,22 +542,21 @@ class RingSyncCoordinator(
             // The stop also tears down the workout's realtime stream; bring it straight back.
             restartWorkoutHeartRateIfActive()
             hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
-            if (ownsStream) {
-                // Reopen the gate BEFORE publishing, or the one reading worth keeping is the one
-                // reading dropped; both travel the bus in this order.
-                gateLiveSamples(MeasurementKind.HEART_RATE, closed = false)
-                // The measurement's actual output, stored once. A failed measurement stores
-                // nothing — "we couldn't read it" is not a heart rate. During a streaming workout
-                // the stream already stored every sample, so publishing the settled value there
-                // would only add a duplicate row stamped with a made-up time.
-                result?.let { settled ->
-                    PulseEventBus.publishBlocking(
-                        PulseEvent.HeartRateSample(
-                            bpm = settled, timestamp = java.time.Instant.now(),
-                            spot = true, ringWillLogIt = completedByRing,
-                        )
+            // Reopen the gate BEFORE publishing, or the one reading worth keeping is the one
+            // reading dropped; both travel the bus in this order. Unconditional: this leg closed
+            // the gate, so it owes the reopen even where a workout started underneath it — leaving
+            // it closed would silently drop that workout's samples for the rest of the session.
+            gateLiveSamples(MeasurementKind.HEART_RATE, closed = false)
+            // The measurement's actual output, stored once. A failed measurement stores
+            // nothing — "we couldn't read it" is not a heart rate. An aborted leg has no result,
+            // so a workout that interrupted this one publishes nothing here either.
+            result?.let { settled ->
+                PulseEventBus.publishBlocking(
+                    PulseEvent.HeartRateSample(
+                        bpm = settled, timestamp = java.time.Instant.now(),
+                        spot = true, ringWillLogIt = completedByRing,
                     )
-                }
+                )
             }
         }
         return result

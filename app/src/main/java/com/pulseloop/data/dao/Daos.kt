@@ -637,14 +637,51 @@ interface MeasurementDeletionDao {
     suspend fun insertAll(rows: List<MeasurementDeletionEntity>)
 
     /**
+     * Is the ring's own copy of a deleted spot reading due back? A `spot` row's id is a fresh UUID,
+     * so it cannot be tombstoned by id — but the reading it holds *is* regenerable, under the
+     * `history:` id the ring's copy arrives with up to
+     * [EventPersistenceSubscriber.SPOT_MATCH_MS][com.pulseloop.service.EventPersistenceSubscriber.Companion.SPOT_MATCH_MS]
+     * away. Matched the way `adoptRingsCopy` matches the pair it reconciles: same kind, within the
+     * window either side.
+     */
+    @Query("""
+        SELECT EXISTS(SELECT 1 FROM measurement_deletions
+        WHERE kindRaw = :kind AND measurementId LIKE 'spot:%' AND timestamp BETWEEN :from AND :to)
+    """)
+    suspend fun isSpotDeleted(kind: String, from: Long, to: Long): Boolean
+
+    /**
      * Remember [measurements] as deleted — but only the ones a later sync could actually rewrite.
      * A live reading is stored under a fresh UUID that nothing regenerates, so tombstoning it would
      * grow this table for no benefit.
+     *
+     * **A `spot` row is the exception, and it needs a range.** It carries a UUID like any live row,
+     * but it exists precisely because the ring logs that measurement itself and will hand it back
+     * under a `history:` id on the next sync ([isSpotDeleted]) — so tombstoning by id alone let the
+     * ring's copy walk straight back in, and the reading had to be deleted twice. The ring stamps
+     * its log to the minute rather than to our settled instant, so the tombstone cannot name the id
+     * it has to suppress; it records the kind and our timestamp instead, under a deterministic
+     * `spot:` key so re-deleting the same reading replaces the row rather than growing the table.
+     *
+     * A measurement retaken inside that window inherits the suppression: the retake itself is
+     * stored and displayed (it is our own row, not a history write), it simply never adopts the
+     * ring's copy and stays marked `spot`. That is the same ±90 s ambiguity `adoptRingsCopy`
+     * already carries, and it fails in the direction that keeps a reading the user asked for.
      */
     suspend fun record(measurements: List<MeasurementEntity>) {
-        val regenerable = measurements
-            .filter { it.id.startsWith(HISTORY_ID_PREFIX) }
-            .map { MeasurementDeletionEntity(measurementId = it.id, kindRaw = it.kindRaw, timestamp = it.timestamp) }
+        val regenerable = measurements.mapNotNull { row ->
+            when {
+                row.id.startsWith(HISTORY_ID_PREFIX) ->
+                    MeasurementDeletionEntity(measurementId = row.id, kindRaw = row.kindRaw, timestamp = row.timestamp)
+                row.sourceRaw == SPOT_SOURCE ->
+                    MeasurementDeletionEntity(
+                        measurementId = "$SPOT_ID_PREFIX${row.kindRaw}:${row.timestamp}",
+                        kindRaw = row.kindRaw,
+                        timestamp = row.timestamp,
+                    )
+                else -> null
+            }
+        }
         if (regenerable.isNotEmpty()) insertAll(regenerable)
     }
 
@@ -652,5 +689,11 @@ interface MeasurementDeletionDao {
         /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
          *  A measurement whose id starts with this is one the ring can hand us again. */
         const val HISTORY_ID_PREFIX = "history:"
+        /** Key prefix for a range tombstone standing in for a deleted `spot` row — see [record].
+         *  Distinct from [HISTORY_ID_PREFIX] so `isDeleted`'s id lookup can never match one. */
+        const val SPOT_ID_PREFIX = "spot:"
+        /** `EventPersistenceSubscriber.SOURCE_SPOT`, duplicated to keep this DAO off the service
+         *  layer. Asserted equal in `MeasurementDeletionTest`. */
+        const val SPOT_SOURCE = "spot"
     }
 }

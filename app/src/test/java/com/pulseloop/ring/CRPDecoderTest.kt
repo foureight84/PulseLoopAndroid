@@ -217,9 +217,13 @@ class CRPDecoderTest {
         val steps = driver.ingest(byteArrayOf(0x05, 0x00, 0x00), fdd1)
         assertTrue(steps.single() is RingDecodedEvent.ActivityUpdate)
 
-        // A framed reply split across two fdd3 notifications yields exactly one decoded event.
+        // A framed reply split across two fdd3 notifications decodes once, when it completes. The
+        // incomplete half reports itself as a pending chunk rather than as nothing: the diagnostics
+        // log masks by decoded kind, and an unnamed chunk of a health reply exports in clear.
         val full = CRPProtocol.frame(1, 9, byteArrayOf(0x50))
-        assertTrue(driver.ingest(full.copyOfRange(0, 4), fdd3).isEmpty())
+        val firstHalf = driver.ingest(full.copyOfRange(0, 4), fdd3).single()
+        assertTrue(firstHalf is RingDecodedEvent.FramePending)
+        assertTrue("the opening chunk carries the frame header", (firstHalf as RingDecodedEvent.FramePending).startsFrame)
         assertEquals(1, driver.ingest(full.copyOfRange(4, full.size), fdd3).size)
     }
 

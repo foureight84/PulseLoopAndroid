@@ -136,6 +136,10 @@ data class RawPacketEntity(
     val decodedKind: String? = null,
     val decodedJSON: String? = null,
     val confidenceRaw: String = "unknown",
+    /** The protocol family that produced this frame, for the diagnostics report's masking — see
+     *  [com.pulseloop.ring.PulseEvent.RawPacket.deviceType]. Null on rows captured before it was
+     *  recorded, which the redactor masks conservatively. */
+    val deviceTypeRaw: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 

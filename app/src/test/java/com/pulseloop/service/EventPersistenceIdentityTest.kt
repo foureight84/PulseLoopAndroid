@@ -136,10 +136,18 @@ class EventPersistenceIdentityTest {
         assertEquals(listOf("a-1", "a-2"), survivors.map { it.id })
     }
 
-    /** The rule the old block wipe was there for: a shortened re-send of the *same* session must
-     *  still retire its stale tail, which abuts the revised interval without a gap. */
+    /**
+     * A complete record retires what its interval overlaps and leaves what merely touches it.
+     *
+     * The rule used to grow across abutting blocks so a shortened re-send could retire its own
+     * stale head and tail — but a block carries no record identity, so that is indistinguishable
+     * from the neighbouring record of a split night, and it cost a whole session (see the
+     * zero-gap case below). The stale tail survives instead: a re-send now reproduces the record's
+     * declared bounds rather than a drifted end, so a record shortening itself is the rarer event
+     * of the two, and it costs minutes rather than hours.
+     */
     @Test
-    fun `a shortened complete record still retires its own stale tail and head`() {
+    fun `a shortened complete record leaves the blocks that only abut it`() {
         val start = 1_725_408_720_000L
         val existing = listOf(
             block("head", start, 10, "AWAKE"),                    // revision now starts 10 min later
@@ -150,7 +158,28 @@ class EventPersistenceIdentityTest {
 
         val survivors = completeSessionSurvivors(existing, start + 10 * 60_000L, start + 110 * 60_000L)
 
-        assertEquals(listOf("nap"), survivors.map { it.id })
+        assertEquals(listOf("head", "tail", "nap"), survivors.map { it.id })
+    }
+
+    /**
+     * Issue #63, the case the three-minute gap in the original report hid: two records of one night
+     * that meet with **no** gap. The reporter's ring closes one record and opens the next 33 seconds
+     * later, so whether the two round to the same minute is a coin toss — and when they did, the
+     * abut rule read them as one run and the second record's re-send wiped the first's five hours.
+     */
+    @Test
+    fun `a complete record does not retire the session it meets with no gap`() {
+        val a = 1_725_408_720_000L
+        val b = a + 322 * 60_000L                     // the first record's blocks end exactly here
+        val existing = listOf(
+            block("a-1", a, 200, "LIGHT"),
+            block("a-2", a + 200 * 60_000L, 122, "DEEP"),         // ends exactly at b
+            block("b-1", b, 151, "LIGHT"),
+        )
+
+        val survivors = completeSessionSurvivors(existing, b, b + 151 * 60_000L)
+
+        assertEquals(listOf("a-1", "a-2"), survivors.map { it.id })
     }
 
     @Test

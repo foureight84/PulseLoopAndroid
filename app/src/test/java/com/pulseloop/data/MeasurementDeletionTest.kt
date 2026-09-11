@@ -20,6 +20,11 @@ class MeasurementDeletionTest {
     private class FakeDeletionDao : MeasurementDeletionDao {
         val rows = mutableMapOf<String, MeasurementDeletionEntity>()
         override suspend fun isDeleted(id: String) = id in rows
+        override suspend fun isSpotDeleted(kind: String, from: Long, to: Long) = rows.values.any {
+            it.kindRaw == kind &&
+                it.measurementId.startsWith(MeasurementDeletionDao.SPOT_ID_PREFIX) &&
+                it.timestamp in from..to
+        }
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }
@@ -75,6 +80,58 @@ class MeasurementDeletionTest {
 
         assertEquals(1, dao.rows.size)
         assertTrue(dao.isDeleted(historyId))
+    }
+
+    /**
+     * A `spot` row is a UUID like any live row, but the reading in it *is* regenerable: the ring
+     * logged that measurement itself and hands it back under a `history:` id on the next sync. With
+     * only an id tombstone the ring's copy walked straight back in and the reading had to be deleted
+     * twice. The tombstone records a range instead, because the ring stamps its log to the minute
+     * rather than to our settled instant.
+     */
+    @Test
+    fun `a deleted spot reading suppresses the ring's copy of it`() = runTest {
+        val dao = FakeDeletionDao()
+        val at = 1_700_000_000_000L
+
+        dao.record(listOf(measurement(java.util.UUID.randomUUID().toString(), MeasurementKind.HEART_RATE, at, "spot")))
+
+        assertEquals(1, dao.rows.size)
+        assertTrue("the ring's copy 40 s later", dao.isSpotDeleted(MeasurementKind.HEART_RATE.name, at - 50_000, at + 50_000))
+        assertEquals(
+            "a different kind at the same moment is a different reading",
+            false, dao.isSpotDeleted(MeasurementKind.SPO2.name, at - 50_000, at + 50_000),
+        )
+        assertEquals(
+            "an all-day sample an hour away is not that measurement",
+            false, dao.isSpotDeleted(MeasurementKind.HEART_RATE.name, at + 3_600_000, at + 3_700_000),
+        )
+    }
+
+    /** Re-deleting the same spot reading must replace its tombstone, not add one. */
+    @Test
+    fun `a spot tombstone is keyed deterministically`() = runTest {
+        val dao = FakeDeletionDao()
+        val at = 1_700_000_000_000L
+
+        repeat(3) {
+            dao.record(listOf(measurement(java.util.UUID.randomUUID().toString(), MeasurementKind.SPO2, at, "spot")))
+        }
+
+        assertEquals(1, dao.rows.size)
+    }
+
+    /**
+     * `record` matches the source string the service layer writes. The two constants are declared
+     * apart so the DAO does not depend on the service package, which makes this the tripwire: if
+     * they drift, a deleted spot reading silently comes back on the next sync.
+     */
+    @Test
+    fun `the spot source the DAO matches is the one the service writes`() {
+        assertEquals(
+            com.pulseloop.service.EventPersistenceSubscriber.SOURCE_SPOT,
+            MeasurementDeletionDao.SPOT_SOURCE,
+        )
     }
 
     /**
