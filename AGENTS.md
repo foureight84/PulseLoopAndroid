@@ -405,6 +405,36 @@ closed it; leaving it closed would silently drop that workout's samples for the 
 The workout screen is already showing live bpm, so refusing costs nothing. No unit test:
 `RingSyncCoordinator` needs a BLE client and has no harness.
 
+## The terminal block is the authority on a history transfer, not the header (issue #69)
+
+`YCBTHistoryTransfer.handleTerminal` used to require the terminal block's packet count to equal the
+one the header declared. **The ring contradicts its own estimate one frame later, so that check threw
+away whole record types.** On the reporter's `Ale-Hop2211` (COLMI_SMART_HEALTH, firmware 2.04) the
+`05 09` header declared **5** packets for 840 bytes and the ring then sent **6** — it packs whole
+20-byte records into each frame (7 × 20 = 140) instead of filling it, so the header's
+`ceil(bytes / frame)` estimate is one short. Bytes and CRC were correct on every transfer; we
+nacked, retried once, and skipped the type.
+
+What that cost: the composite `05 18` record is the **only** source of SpO₂ history on this family —
+the dedicated `05 1a` query was sent ten times in one session and never answered once — so hourly
+SpO₂ vanished while HR survived from `05 15`. Respiratory rate, HRV, BP, temperature and blood sugar
+ride in the same record. It only bites above one packet, which is why the record imported while the
+day was young and stopped once it grew, and why it looked like a regression introduced by a release
+that had touched nothing nearby.
+
+The vendor doesn't check the count either: at `Sync_Block_Verify` (128) `DataUnpack` reads the two
+count bytes into locals it never compares, sizes its buffer from the **terminal's** length, and
+accepts on `crc16_compute(...) == crc` alone. So: size the buffer from the header if you like, but
+validate against the terminal's byte count and the CRC. The CRC is the integrity check; a packet
+count is an estimate, and this firmware proves it can be wrong.
+
+**The general lesson, because this shape recurs here.** A silent "reject and skip" on a
+self-consistency check is much harder to see than a decode bug: the frames arrive, the log shows
+them as `unknown` (which is what *every* accumulating history frame looks like — 427 sleep frames in
+the same export say `unknown` and sleep imports fine), and nothing fails anywhere. When a whole
+metric is missing but its neighbours are not, check what the transfer did with the block before
+suspecting the parser.
+
 ## A complete sleep record retires only its own run (issue #63)
 
 A YCBT ring closes a sleep session when the wearer gets up and opens a new one when they settle,
