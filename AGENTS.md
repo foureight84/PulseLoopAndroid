@@ -431,6 +431,27 @@ the single definition; `spanMinutes` is the other number. Three things to keep s
   own blocks and skips a session with none rather than zeroing it — `byDay` and `earliestDay` both
   filter `totalMinutes > 0`, so a zero hides the night.
 
+**A zero-length segment must not shadow a real one.** The vendor de-duplicates segments on
+`sleepStartTime` (`DataUnpack` case 4 keeps the first it sees) and the ring emits zero-length
+segments, so a zero-length segment sharing a start with a real one used to take its place and drop
+it. All four duplicate starts in the reporter's thirteen-record night dump are exactly that — a
+zero-length LIGHT ahead of a real 76–105 s segment — and since `placeStages` reads an unclaimed
+minute as wake, the dropped minutes surfaced as wake instead. The vendor has the same de-duplication
+and does not care, because its headline comes from the header's own totals rather than from the
+segment array; ours is counted off the timeline, so it does. Zero-length segments are skipped before
+the de-duplication now.
+
+**The record's header declares its own time asleep, and it agrees with the timeline.** When
+`deepSleepCount` (+12) reads `0xffff`, the three following `u16`s are **seconds**, in the order
+`rapidEyeMovementTotal` (+14), `deepSleepTotal` (+16), `lightSleepTotal` (+18) — REM first, not
+deep — and `wakeDuration` is the summed length of the `0xf4` segments (`DataUnpack.java:1736-1805`).
+Otherwise +14 is `lightSleepCount`, deep/light are minutes×60, and REM is absent. On the reporter's
+dump `deepSleepCount` is `0xffff` on 13/13 records and deep+light+rem agrees with the timeline we
+count to within a minute on 12 of 13. So the counted timeline is sound; if a headline ever needs to
+be independent of placement and rounding, the declared totals are there. Note the record length at
++2 is **bytes, not minutes** — it reads plausibly as a minute count (244, 164, 268, 140) and was
+misread that way for several rounds of this issue.
+
 Still open, and a fair ask: showing a split night's two records **separately** as well as merged.
 
 ## Live workout HR on Colmi is a sport session, not an HR stream (issue #64)

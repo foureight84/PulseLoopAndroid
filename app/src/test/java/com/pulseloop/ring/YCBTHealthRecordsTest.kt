@@ -355,6 +355,28 @@ class YCBTHealthRecordsTest {
         assertTrue(event.stages.take(30).all { it == SleepStage.LIGHT })
     }
 
+    /**
+     * Issue #63: the ring emits zero-length segments, and one that shares a start time with a
+     * real segment used to take its place in the de-duplication — the real segment was dropped
+     * and the minutes it claimed read as wake instead. All four duplicate starts in the
+     * reporter's thirteen-record night dump are this shape: a zero-length LIGHT immediately
+     * ahead of a real 76–105 s segment.
+     */
+    @Test
+    fun `a zero-length segment does not shadow a real segment sharing its start`() {
+        val start = 0x31def01c
+        val record = sleepRecord(start, start + 10 * 60, listOf(
+            0xf2 to 5 * 60,     // LIGHT, 00:00–05:00
+            0xf1 to 0,          // zero-length DEEP at 05:00 — claims no minute
+            0xf3 to 5 * 60,     // REM, 05:00–10:00, sharing the zero-length segment's start
+        ))
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+
+        assertEquals(5, event.stages.count { it == SleepStage.LIGHT })
+        assertEquals(5, event.stages.count { it == SleepStage.REM })
+        assertFalse(event.stages.contains(SleepStage.AWAKE))
+    }
+
     /** A record whose header carries no bounds keeps the segment-concatenation reading. */
     @Test
     fun `a record with no header bounds falls back to concatenated segments`() {

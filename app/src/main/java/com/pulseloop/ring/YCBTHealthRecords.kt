@@ -198,9 +198,20 @@ object YCBTHealthRecords {
                 val offset = segmentsStart + index * segmentLength
                 val stage = sleepStage(buffer[offset].toInt() and 0xFF) ?: continue
                 val segmentStart = YCBTBytes.u32(buffer, offset + 1)
+                val segmentSeconds = YCBTBytes.u24(buffer, offset + 5)
+                // A zero-length segment claims no minute of the timeline, so it must not take the
+                // start time's place in the de-duplication and shadow a real segment sharing it.
+                // The ring emits both: in the night dump on issue #63, all four duplicate starts
+                // across thirteen records are a zero-length LIGHT ahead of a real 76–105 s
+                // segment, and dropping the real one leaves those minutes unclaimed — which
+                // `placeStages` then reads as wake. The vendor drops them too
+                // (`DataUnpack` case 4 keeps the first `sleepStartTime` it sees) and gets away
+                // with it because its headline comes from the header's own totals rather than
+                // from the segment array; ours is counted off the timeline, so it cannot.
+                if (segmentSeconds <= 0) continue
                 // The vendor de-duplicates on the segment's start time (`sleepStartTime`).
                 if (!seenStarts.add(segmentStart)) continue
-                segments.add(SleepSegment(stage, segmentStart, YCBTBytes.u24(buffer, offset + 5)))
+                segments.add(SleepSegment(stage, segmentStart, segmentSeconds))
             }
             val stages = placeStages(segments, headerStart, headerEnd)
             if (segments.isNotEmpty() && stages.isNotEmpty()) {
