@@ -44,7 +44,7 @@ import com.pulseloop.data.entity.*
         CachedFoodProductEntity::class,
         MeasurementDeletionEntity::class,
     ],
-    version = 25,
+    version = 26,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -481,6 +481,17 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v25 -> v26: `device_measurement_configs.spo2IntervalMinutes` (issue #66). 0 means "follow
+         * the heart-rate interval", which is exactly what every existing row did implicitly, so the
+         * default backfills losslessly.
+         */
+        private val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `device_measurement_configs` ADD COLUMN `spo2IntervalMinutes` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -572,6 +583,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_22_23,
                         MIGRATION_23_24,
                         MIGRATION_24_25,
+                        MIGRATION_25_26,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

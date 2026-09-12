@@ -942,6 +942,7 @@ internal suspend fun loadPersistedMeasurementSettings(db: PulseLoopDatabase): Me
         hrEnabled = config.hrEnabled,
         hrIntervalMinutes = config.hrIntervalMinutes,
         spo2Enabled = config.spo2Enabled,
+        spo2IntervalMinutes = config.spo2IntervalMinutes,
         stressEnabled = config.stressEnabled,
         hrvEnabled = config.hrvEnabled,
         temperatureEnabled = config.temperatureEnabled,
