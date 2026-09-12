@@ -14,10 +14,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -217,6 +221,17 @@ fun ActivityScreen(
         }
 
         item { WeeklyGoalCard(state, days, onTap = { goalsOpen = true }) }
+        // The blocks behind today's total, each removable (issue #70). Under the summary rather
+        // than beside it: it answers "why is that number wrong", which is a question you only ask
+        // after reading the number.
+        item {
+            ActivityRecordsCard(
+                viewModel = viewModel,
+                units = units,
+                dayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal(),
+                dayLabel = "today",
+            )
+        }
         item { Spacer(Modifier.height(64.dp)) }
     }
 
@@ -648,3 +663,146 @@ private fun GoalSlider(label: String, valueText: String, value: Float, range: Cl
         Slider(value = value, onValueChange = onChange, valueRange = range)
     }
 }
+
+/**
+ * The individual activity records behind a day's total, each deletable (issue #70).
+ *
+ * The counterpart to the vitals READINGS list from #60, and asked for by the same reporter for the
+ * same reason: a ring logs activity in intraday blocks, so a day's steps are a couple of dozen rows
+ * rather than one figure, and a single block inflated by carrying the ring rather than wearing it
+ * is otherwise stuck in the total for good. Deletion only, like #60 — a recorded value can be
+ * removed, never edited into a different one.
+ *
+ * Collapsed by default and paged, because a day is a couple of dozen rows and a week is not.
+ */
+@Composable
+private fun ActivityRecordsCard(
+    viewModel: ActivityViewModel?,
+    units: UnitSystem,
+    dayStart: Long,
+    dayLabel: String,
+) {
+    val scope = rememberCoroutineScope()
+    var expanded by remember { mutableStateOf(false) }
+    var buckets by remember(dayStart) { mutableStateOf<List<com.pulseloop.data.entity.ActivityBucketEntity>?>(null) }
+    var pending by remember { mutableStateOf<com.pulseloop.data.entity.ActivityBucketEntity?>(null) }
+    var visibleCount by remember(dayStart) { mutableStateOf(ACTIVITY_RECORDS_PAGE_SIZE) }
+    val shape = RoundedCornerShape(20.dp)
+
+    // Loaded only when opened: the list is a query per day and most visits never expand it.
+    LaunchedEffect(expanded, dayStart) {
+        if (expanded && buckets == null) buckets = viewModel?.bucketsForDay(dayStart) ?: emptyList()
+    }
+
+    fun timeOf(startEpoch: Long): String =
+        DateTimeFormatter.ofPattern("h:mm a")
+            .format(Instant.ofEpochMilli(startEpoch).atZone(ZoneId.systemDefault()))
+
+    Column(
+        Modifier.fillMaxWidth().clip(shape).background(PulseColors.card).border(1.dp, PulseColors.borderSubtle, shape),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "RECORDS",
+                fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.sp, color = PulseColors.textMuted,
+            )
+            Spacer(Modifier.weight(1f))
+            buckets?.let {
+                Text(it.size.toString(), fontSize = 12.sp, color = PulseColors.textMuted, modifier = Modifier.padding(end = 6.dp))
+            }
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Hide activity records" else "Show activity records",
+                tint = PulseColors.textMuted,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+
+        if (expanded) {
+            val rows = buckets
+            when {
+                rows == null -> Text(
+                    "Loading…",
+                    fontSize = 13.sp, color = PulseColors.textMuted,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 12.dp),
+                )
+                rows.isEmpty() -> Text(
+                    "No activity records synced for $dayLabel yet.",
+                    fontSize = 13.sp, color = PulseColors.textMuted,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                )
+                else -> {
+                    // Not a nested LazyColumn — this card already sits inside one.
+                    rows.take(visibleCount).forEach { bucket ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                timeOf(bucket.startEpoch),
+                                fontSize = 13.sp, color = PulseColors.textSecondary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "${Formats.count(bucket.steps)} steps",
+                                fontSize = 13.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary,
+                            )
+                            if (bucket.distanceMeters > 0) {
+                                Text(
+                                    " · %.2f %s".format(UnitConverter.distance(bucket.distanceMeters, units), UnitConverter.distanceUnit(units)),
+                                    fontSize = 11.sp, color = PulseColors.textMuted,
+                                )
+                            }
+                            IconButton(onClick = { pending = bucket }, modifier = Modifier.size(36.dp)) {
+                                Icon(
+                                    Icons.Filled.DeleteOutline,
+                                    contentDescription = "Delete this activity record",
+                                    tint = PulseColors.textMuted,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    }
+                    if (rows.size > visibleCount) {
+                        TextButton(
+                            onClick = { visibleCount += ACTIVITY_RECORDS_PAGE_SIZE },
+                            modifier = Modifier.padding(start = 8.dp),
+                        ) {
+                            Text("Show ${minOf(ACTIVITY_RECORDS_PAGE_SIZE, rows.size - visibleCount)} more", fontSize = 13.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        }
+    }
+
+    pending?.let { bucket ->
+        AlertDialog(
+            onDismissRequest = { pending = null },
+            title = { Text("Delete this activity record?") },
+            text = {
+                Text(
+                    "${Formats.count(bucket.steps)} steps at ${timeOf(bucket.startEpoch)}." +
+                        "\n\nThe day's total drops by that much. This can't be undone, and the record " +
+                        "stays deleted the next time this day syncs.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = bucket
+                    pending = null
+                    scope.launch { buckets = viewModel?.deleteBucket(target.startEpoch) ?: buckets }
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pending = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** How many activity records the list shows before asking (issue #70). */
+private const val ACTIVITY_RECORDS_PAGE_SIZE = 50

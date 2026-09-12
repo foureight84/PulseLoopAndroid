@@ -511,6 +511,14 @@ class EventPersistenceSubscriber(
 
     private suspend fun applyActivityBucketAtomic(ts: Long, steps: Int, distanceM: Double) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        // A bucket the user deleted (issue #70). Buckets upsert by start time so the day's total is
+        // the sum of distinct buckets rather than an accumulation — which is also what would write
+        // a deleted one straight back on the next sync of that day, exactly as it would have for a
+        // deleted reading in #60.
+        if (db.measurementDeletionDao().isActivityBucketDeleted(
+                com.pulseloop.data.ActivityBucketDeletion.tombstoneId(ts)
+            )
+        ) return
         db.activityBucketDao().upsert(ActivityBucketEntity(
             startEpoch = ts,
             date = dayStart,

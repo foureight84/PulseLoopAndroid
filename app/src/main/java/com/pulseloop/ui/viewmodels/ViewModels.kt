@@ -2,6 +2,7 @@ package com.pulseloop.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.pulseloop.data.ActivityBucketDeletion
 import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.Bucket
@@ -445,6 +446,25 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
                 db.userGoalDao().getFlow().collect { if (it != null) reloadGoals() }
             } catch (_: Exception) {}
         }
+    }
+
+    /**
+     * The individual buckets behind one day's total, newest first (issue #70).
+     *
+     * A ring logs activity in intraday blocks, so a day's steps are a couple of dozen rows rather
+     * than one figure — which is what makes a single inflated block (the ring carried rather than
+     * worn, a rough car journey) removable at all.
+     */
+    suspend fun bucketsForDay(day: Long): List<ActivityBucketEntity> =
+        try { db.activityBucketDao().byDay(day).sortedByDescending { it.startEpoch } }
+        catch (_: Exception) { emptyList() }
+
+    /** Delete one bucket and restate its day. Returns the day's remaining buckets. */
+    suspend fun deleteBucket(startEpoch: Long): List<ActivityBucketEntity> {
+        val day = TimeUtil.startOfDayLocal(startEpoch)
+        try { ActivityBucketDeletion.delete(db, startEpoch) } catch (_: Exception) {}
+        refreshCurrentDay()
+        return bucketsForDay(day)
     }
 
     suspend fun reloadGoals() {

@@ -25,6 +25,7 @@ class MeasurementDeletionTest {
                 it.measurementId.startsWith(MeasurementDeletionDao.SPOT_ID_PREFIX) &&
                 it.timestamp in from..to
         }
+        override suspend fun isActivityBucketDeleted(id: String) = id in rows
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }
@@ -131,6 +132,57 @@ class MeasurementDeletionTest {
         assertEquals(
             com.pulseloop.service.EventPersistenceSubscriber.SOURCE_SPOT,
             MeasurementDeletionDao.SPOT_SOURCE,
+        )
+    }
+
+    /**
+     * Issue #70: an activity bucket is keyed by its own start time and upserted, for the same
+     * reason a history reading is — so the next sync of that day writes a deleted one straight
+     * back unless it is remembered.
+     */
+    @Test
+    fun `a deleted activity bucket is remembered and suppresses its rewrite`() = runTest {
+        val dao = FakeDeletionDao()
+        val start = 1_700_000_000_000L
+
+        dao.recordActivity(listOf(start))
+
+        assertEquals(1, dao.rows.size)
+        assertTrue(dao.isActivityBucketDeleted(MeasurementDeletionDao.activityBucketId(start)))
+        assertEquals(
+            "a neighbouring block is a different record",
+            false, dao.isActivityBucketDeleted(MeasurementDeletionDao.activityBucketId(start + 1_800_000L)),
+        )
+    }
+
+    /** Re-deleting the same bucket replaces its tombstone rather than adding one. */
+    @Test
+    fun `an activity tombstone is keyed deterministically`() = runTest {
+        val dao = FakeDeletionDao()
+        val start = 1_700_000_000_000L
+
+        repeat(3) { dao.recordActivity(listOf(start)) }
+
+        assertEquals(1, dao.rows.size)
+    }
+
+    /** An activity tombstone must not be mistaken for a measurement one, in either direction. */
+    @Test
+    fun `activity and measurement tombstones cannot collide`() = runTest {
+        val dao = FakeDeletionDao()
+        val at = 1_700_000_000_000L
+        dao.recordActivity(listOf(at))
+
+        assertEquals(
+            "a history reading at the same instant is untouched",
+            false, dao.isDeleted(historyMeasurementId(MeasurementKind.HEART_RATE, at)),
+        )
+        assertEquals(
+            "and it is not a spot range tombstone either",
+            false, dao.isSpotDeleted(MeasurementKind.HEART_RATE.name, at - 90_000, at + 90_000),
+        )
+        assertTrue(
+            MeasurementDeletionDao.activityBucketId(at).startsWith(MeasurementDeletionDao.ACTIVITY_ID_PREFIX),
         )
     }
 
