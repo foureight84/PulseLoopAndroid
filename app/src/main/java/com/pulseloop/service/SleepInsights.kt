@@ -152,6 +152,60 @@ fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
 val SleepSessionEntity.spanMinutes: Int
     get() = ((endAt - startAt) / 60_000L).toInt().coerceAtLeast(0)
 
+/**
+ * One ring sleep record inside a stored session (issue #68).
+ *
+ * A ring closes a session when the wearer gets up and opens a new one when they settle, so one
+ * night can arrive as two or three records minutes apart. The app merges those into a single stored
+ * session — that is the night, and the merge is what #63 fixed — but the individual records are real
+ * information the merge then hides, and the vendor app shows them. This is that, recovered from
+ * stored data rather than re-parsed: since #63 each record's blocks are placed against its own
+ * declared bounds, so a record boundary is a stretch of the session's timeline that no block claims.
+ */
+data class SleepRecordRun(
+    val startAt: Long,
+    val endAt: Long,
+    val blocks: List<SleepStageBlockEntity>,
+) {
+    val asleepMinutes: Int get() = asleepMinutes(blocks)
+    val spanMinutes: Int get() = ((endAt - startAt) / 60_000L).toInt().coerceAtLeast(0)
+}
+
+/**
+ * Split [blocks] into the ring records they came from.
+ *
+ * The boundary is a gap no block covers. [minGapMinutes] is what separates "the ring closed one
+ * record and opened another" from the ordinary one-minute seam left by rounding each block onto the
+ * minute grid — a night that was never split must come back as a single run, or every night grows a
+ * spurious second record.
+ *
+ * Returns one run for an unsplit night, which is the common case and the reason a caller can show
+ * this unconditionally.
+ */
+fun sleepRecordRuns(
+    blocks: List<SleepStageBlockEntity>,
+    minGapMinutes: Int = 2,
+): List<SleepRecordRun> {
+    if (blocks.isEmpty()) return emptyList()
+    val ordered = blocks.sortedBy { it.startAt }
+    val runs = mutableListOf<SleepRecordRun>()
+    var current = mutableListOf(ordered.first())
+
+    fun endOf(b: SleepStageBlockEntity) = b.startAt + b.durationMinutes * 60_000L
+
+    for (block in ordered.drop(1)) {
+        val gapMs = block.startAt - current.maxOf { endOf(it) }
+        if (gapMs >= minGapMinutes * 60_000L) {
+            runs += SleepRecordRun(current.first().startAt, current.maxOf { endOf(it) }, current.toList())
+            current = mutableListOf(block)
+        } else {
+            current += block
+        }
+    }
+    runs += SleepRecordRun(current.first().startAt, current.maxOf { endOf(it) }, current.toList())
+    return runs
+}
+
 object SleepFormat {
     fun duration(minutes: Int?): String {
         if (minutes == null || minutes < 0) return "—"

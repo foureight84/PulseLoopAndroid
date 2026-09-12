@@ -153,6 +153,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
             SleepHypnogram(blocks = blocks, spanMin = session.spanMinutes, startTs = session.startAt)
         }
     }
+    // The individual ring records behind the merged night (issue #68). Only when there is more
+    // than one — on an unsplit night the session *is* the record and a second card saying so is
+    // noise.
+    item {
+        val runs = remember(session.id, blocks) { com.pulseloop.service.sleepRecordRuns(blocks) }
+        if (runs.size > 1) SleepRecordsCard(runs)
+    }
     item {
         val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
         SleepStageSummaryCards(
@@ -961,3 +968,54 @@ private const val LABEL_GUTTER_DP = 32f
 private const val LABEL_BASELINE_NUDGE_DP = 7f
 /** Clearance between the scrubbed lane and the readout pill. */
 private const val PILL_OFFSET_ABOVE_LANE_DP = 30f
+
+/**
+ * The ring's own sleep records behind a merged night (issue #68).
+ *
+ * A ring closes a session when the wearer gets up and opens a new one when they settle, so one
+ * night can arrive as two or three records minutes apart. Merging them is right — that is the night,
+ * and the headline stays the merged figure — but the records are real information the merge hides,
+ * and the vendor app keeps each as its own row. Shown underneath rather than instead.
+ */
+@Composable
+private fun SleepRecordsCard(runs: List<com.pulseloop.service.SleepRecordRun>) {
+    VisualizationCard(
+        eyebrow = "Records",
+        title = "The ring recorded this night in ${runs.size} parts",
+        legend = false,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            runs.forEachIndexed { index, run ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${index + 1}",
+                        fontSize = 11.sp,
+                        color = PulseColors.textMuted,
+                        modifier = Modifier.width(18.dp),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "${SleepFormat.clockTime(run.startAt)} – ${SleepFormat.clockTime(run.endAt)}",
+                            fontSize = 14.sp,
+                            color = PulseColors.textPrimary,
+                        )
+                        Text(
+                            "Asleep ${SleepFormat.duration(run.asleepMinutes)}",
+                            fontSize = 12.sp,
+                            color = PulseColors.textMuted,
+                        )
+                    }
+                }
+                if (index < runs.lastIndex) {
+                    val gapMinutes = ((runs[index + 1].startAt - run.endAt) / 60_000L).toInt()
+                    Text(
+                        "Awake ${SleepFormat.duration(gapMinutes)} between",
+                        fontSize = 12.sp,
+                        color = PulseColors.textMuted,
+                        modifier = Modifier.padding(start = 18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
