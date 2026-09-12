@@ -500,10 +500,39 @@ shape from the same side, and two records meeting with no gap read as one run: t
 first. The reporter's ring closes one record and opens the next 33 seconds later, so whether the two
 round to the same minute is a coin toss, and losing it costs a whole session. The trade is a stale
 tail surviving a genuine shortening, which is minutes rather than hours and rarer than it was now
-that a re-send reproduces the record's declared bounds instead of a drifted end. Carrying the
-originating record's start on each block would allow both, and is the fix if the tail ever bites.
+that a re-send reproduces the record's declared bounds instead of a drifted end.
 
-Still open, and a fair ask: showing a split night's two records **separately** as well as merged.
+**The block now carries its record's start, so the identity that was missing above exists**
+(`SleepStageBlockEntity.recordStartAt`, v28, stamped by `buildStageBlocks` — see #68 below). It is
+the fix this section predicted for the stale-tail trade, and `completeSessionSurvivors` can take it
+whenever the tail actually bites.
+
+## A record boundary is stored, never inferred from a gap (issue #68)
+
+Showing a split night's individual records was the fair ask left open by #63. The card itself is
+easy; the boundary is the whole problem, and it is the **third** time this one gap has cost a
+feature.
+
+**This firmware reopens a record roughly a minute after closing one** — 33 seconds on the #63
+capture, `05:57 → 05:58` on the #68 reporter's Sept 9 — and blocks *within* one record are rounded
+onto the same minute grid, so an ordinary rounding seam between two blocks of one record is the same
+width as a genuine record boundary. That is not a threshold problem, it is the absence of the
+information: `sessionId` names the *merged* row, shared by every record of the night, so from stored
+data alone "next record" and "next block" are indistinguishable. `sleepRecordRuns` shipped with
+`minGapMinutes = 2` and merged a genuinely split night (no card at all); 1 minute would have grown a
+spurious second record on every unsplit night instead. Both answers are wrong because the question
+was unanswerable.
+
+So the import stamps it. `buildStageBlocks` is the one place that knows — it is handed the record's
+declared start — and `sleepRecordRuns` groups by `recordStartAt` rather than measuring gaps. The gap
+rule survives only as the fallback for rows written before the column, and it is **all-or-nothing
+per night**: one stamped record beside a legacy block would read as two records whatever the truth.
+`SleepRecordRunsTest` keeps the discriminating pair — the same one-minute gap asserted as a boundary
+in one test and as a seam in the other — because that pair is what no threshold can satisfy and what
+a future "simplify this to a gap check" would break.
+
+**The general lesson:** when a merge destroys provenance, recover it at the point of the merge, not
+at the point of display. Three separate fixes here tried to re-derive a record boundary downstream.
 
 ## Live workout HR on Colmi is a sport session, not an HR stream (issue #64)
 

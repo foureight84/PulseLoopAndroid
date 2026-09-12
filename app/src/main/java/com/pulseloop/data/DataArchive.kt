@@ -142,6 +142,9 @@ data class PulseArchive(
 @Serializable data class SleepStageBlockDTO(
     val id: String, val sessionId: String, val startAt: Long, val startMinute: Int,
     val durationMinutes: Int, val stageRaw: String,
+    /** Issue #68. 0 in an archive written before the column existed, which is the same "unknown"
+     *  the migration backfills — [com.pulseloop.service.sleepRecordRuns] falls back for those. */
+    val recordStartAt: Long = 0L,
 )
 
 @Serializable data class CoachConversationDTO(

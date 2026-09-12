@@ -714,6 +714,13 @@ class EventPersistenceSubscriber(
     /**
      * Build SleepStageBlockEntity entries with run-length encoding.
      * Consecutive minutes of the same stage are merged into one block.
+     *
+     * Every block carries [startTs] as its `recordStartAt` — the declared start of the ring record
+     * these stages arrived in (issue #68). This is the only point at which that is known: the night
+     * is merged into one session immediately afterwards, and the record boundary is not recoverable
+     * from the stored timeline, because this ring reopens a record a single minute after closing
+     * one and that is the same width as the minute-grid rounding seam between two blocks of the
+     * same record.
      */
     private fun buildStageBlocks(sessionId: String, startTs: Long, stages: List<SleepStage>): List<SleepStageBlockEntity> {
         if (stages.isEmpty()) return emptyList()
@@ -734,6 +741,7 @@ class EventPersistenceSubscriber(
                     startMinute = blockMinute,
                     durationMinutes = duration,
                     stageRaw = currentStage.name,
+                    recordStartAt = startTs,
                 ))
                 currentStage = stage
                 blockStart = startTs + i * 60_000L
@@ -748,6 +756,7 @@ class EventPersistenceSubscriber(
             startMinute = blockMinute,
             durationMinutes = duration,
             stageRaw = currentStage.name,
+            recordStartAt = startTs,
         ))
         return blocks
     }

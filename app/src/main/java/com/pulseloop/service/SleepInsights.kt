@@ -174,10 +174,17 @@ data class SleepRecordRun(
 /**
  * Split [blocks] into the ring records they came from.
  *
- * The boundary is a gap no block covers. [minGapMinutes] is what separates "the ring closed one
- * record and opened another" from the ordinary one-minute seam left by rounding each block onto the
- * minute grid — a night that was never split must come back as a single run, or every night grows a
- * spurious second record.
+ * **The boundary is read, not inferred.** Each block carries the declared start of the record it
+ * arrived in ([SleepStageBlockEntity.recordStartAt], stamped by `buildStageBlocks`), so records are
+ * grouped by that. The gap between two records is *not* a usable substitute: this ring closes one
+ * record and opens the next a single minute later (05:57 → 05:58 on the reporter's Sept 9), which
+ * is exactly the width of the seam left by rounding each block onto the minute grid *within* one
+ * record. No threshold separates those two cases — 2 minutes merged a genuinely split night, and
+ * 1 minute would grow a spurious second record on every unsplit one. The same one-minute boundary
+ * broke the #63 merge itself, so it is a real property of this firmware rather than one night.
+ *
+ * [minGapMinutes] is the fallback for rows written before that column existed, where the gap is
+ * all there is. Those nights keep the old behaviour rather than being claimed as unsplit.
  *
  * Returns one run for an unsplit night, which is the common case and the reason a caller can show
  * this unconditionally.
@@ -188,21 +195,32 @@ fun sleepRecordRuns(
 ): List<SleepRecordRun> {
     if (blocks.isEmpty()) return emptyList()
     val ordered = blocks.sortedBy { it.startAt }
-    val runs = mutableListOf<SleepRecordRun>()
-    var current = mutableListOf(ordered.first())
 
     fun endOf(b: SleepStageBlockEntity) = b.startAt + b.durationMinutes * 60_000L
+    fun runOf(group: List<SleepStageBlockEntity>) =
+        SleepRecordRun(group.first().startAt, group.maxOf { endOf(it) }, group)
 
+    // Every block knows its record: group by it and we are done. All-or-nothing, because a night
+    // that is part migrated and part not has no consistent boundary to read — one stamped record
+    // plus a legacy block would look like a two-record night whatever the truth.
+    if (ordered.all { it.recordStartAt > 0L }) {
+        return ordered.groupBy { it.recordStartAt }
+            .entries.sortedBy { it.key }
+            .map { (_, group) -> runOf(group.sortedBy { it.startAt }) }
+    }
+
+    val runs = mutableListOf<SleepRecordRun>()
+    var current = mutableListOf(ordered.first())
     for (block in ordered.drop(1)) {
         val gapMs = block.startAt - current.maxOf { endOf(it) }
         if (gapMs >= minGapMinutes * 60_000L) {
-            runs += SleepRecordRun(current.first().startAt, current.maxOf { endOf(it) }, current.toList())
+            runs += runOf(current.toList())
             current = mutableListOf(block)
         } else {
             current += block
         }
     }
-    runs += SleepRecordRun(current.first().startAt, current.maxOf { endOf(it) }, current.toList())
+    runs += runOf(current.toList())
     return runs
 }
 

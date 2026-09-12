@@ -44,7 +44,7 @@ import com.pulseloop.data.entity.*
         CachedFoodProductEntity::class,
         MeasurementDeletionEntity::class,
     ],
-    version = 27,
+    version = 28,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -508,6 +508,20 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v27 -> v28: `sleep_stage_blocks.recordStartAt` (issue #68).
+         *
+         * Which ring record a block came from, so a split night's records can be listed without
+         * guessing the boundary from gaps — this ring reopens a record one minute later, the same
+         * width as the minute-grid rounding seam. 0 backfills every existing row as "unknown",
+         * which keeps those nights on the gap heuristic instead of silently calling them unsplit.
+         */
+        private val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `sleep_stage_blocks` ADD COLUMN `recordStartAt` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -601,6 +615,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_24_25,
                         MIGRATION_25_26,
                         MIGRATION_26_27,
+                        MIGRATION_27_28,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

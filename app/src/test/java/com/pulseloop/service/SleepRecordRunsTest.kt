@@ -12,6 +12,7 @@ class SleepRecordRunsTest {
 
     private val base = 1_725_408_720_000L   // 00:12
 
+    /** A block with no record stamp — a row written before the column existed (the gap fallback). */
     private fun block(startMinute: Int, minutes: Int, stage: SleepStage = SleepStage.LIGHT) =
         SleepStageBlockEntity(
             id = "b$startMinute",
@@ -21,6 +22,14 @@ class SleepRecordRunsTest {
             durationMinutes = minutes,
             stageRaw = stage.name,
         )
+
+    /** A block that knows which ring record it arrived in, named by that record's start minute. */
+    private fun stamped(
+        startMinute: Int,
+        minutes: Int,
+        recordStartMinute: Int,
+        stage: SleepStage = SleepStage.LIGHT,
+    ) = block(startMinute, minutes, stage).copy(recordStartAt = base + recordStartMinute * 60_000L)
 
     /** The reporter's night: two records nine minutes apart, merged into one stored session. */
     @Test
@@ -77,5 +86,68 @@ class SleepRecordRunsTest {
             listOf(block(0, 60), block(80, 60), block(160, 60)),
         )
         assertEquals(3, runs.size)
+    }
+
+    // ── The stored record boundary (issue #68, rc1 feedback) ────────────────────────────────
+    //
+    // These two are the pair that no gap threshold can satisfy at once: the same one-minute gap
+    // means "next record" in the first and "rounding seam" in the second. Only the stamp tells
+    // them apart, which is why the boundary is stored at import rather than inferred here.
+
+    /**
+     * The reporter's Sept 9: `00:35 → 05:57` then `05:58 → 08:29`. One minute apart, and genuinely
+     * two records. The gap heuristic merged it and the card disappeared.
+     */
+    @Test
+    fun `two records one minute apart are two records`() {
+        val first = listOf(stamped(0, 200, recordStartMinute = 0), stamped(200, 122, 0, SleepStage.DEEP))
+        val second = listOf(stamped(323, 151, recordStartMinute = 323))
+
+        val runs = sleepRecordRuns(first + second)
+
+        assertEquals(2, runs.size)
+        assertEquals(base, runs[0].startAt)
+        assertEquals(322, runs[0].spanMinutes)
+        assertEquals(base + 323 * 60_000L, runs[1].startAt)
+        assertEquals(151, runs[1].spanMinutes)
+    }
+
+    /** The same one-minute gap inside a single record stays one record. */
+    @Test
+    fun `a one-minute seam within one record is still one record`() {
+        val blocks = listOf(
+            stamped(0, 60, recordStartMinute = 0),
+            stamped(61, 60, recordStartMinute = 0),
+            stamped(122, 60, recordStartMinute = 0),
+        )
+
+        val runs = sleepRecordRuns(blocks)
+
+        assertEquals(1, runs.size)
+        assertEquals(3, runs.single().blocks.size)
+    }
+
+    @Test
+    fun `records come back in time order however the blocks arrive`() {
+        val runs = sleepRecordRuns(
+            listOf(stamped(323, 151, 323), stamped(0, 200, 0)),
+        )
+
+        assertEquals(2, runs.size)
+        assertEquals(base, runs[0].startAt)
+    }
+
+    /**
+     * A night half-written before the column existed has no consistent boundary to read: one
+     * stamped record beside a legacy block would look like two records whatever the truth, so the
+     * whole night falls back to the gap rule.
+     */
+    @Test
+    fun `a night with any unstamped block falls back to the gap rule`() {
+        val blocks = listOf(stamped(0, 60, recordStartMinute = 0), block(61, 60))
+
+        val runs = sleepRecordRuns(blocks)
+
+        assertEquals("the one-minute seam does not split under the fallback", 1, runs.size)
     }
 }
