@@ -145,6 +145,30 @@ class RingSyncCoordinator(
         }
     /** The SpO₂ leg's ceiling for the ring that is actually connected (issue #59 RC-2). */
     private val spo2MeasureSeconds: Long get() = (engine?.spotSpo2Seconds ?: SPO2_MEASURE_SECONDS).toLong()
+
+    /**
+     * The countdown for one leg run on its own (issue #66).
+     *
+     * The two legs have almost nothing in common on a YCBT ring — heart rate runs to 45 s and the
+     * ring self-terminates around 35, blood oxygen runs to 75 s and produces its first sample at
+     * t+13 — so a single number for both is a promise the app can't keep either way. Each is this
+     * ring's own ceiling plus the same one-off start-up allowance [spotMeasureSeconds] adds.
+     */
+    val heartRateMeasureSeconds: Int get() = hrMeasureSeconds.toInt() + 3
+    val spo2OnlyMeasureSeconds: Int get() = spo2MeasureSeconds.toInt() + 3
+
+    /**
+     * True while any spot leg holds the optical sensor.
+     *
+     * The legs were only ever run in sequence by [measureSpot], so "am I already measuring?" was a
+     * per-leg question. With separate controls a user can reach for the second leg while the first
+     * is still running, and the two cannot share the sensor — the ring serves one at a time and the
+     * live-sample gate is one switch per kind. Each leg still guards its own state; this is what
+     * the UI disables against so the answer is visible rather than a silent no-op.
+     */
+    val spotMeasureInProgress: Boolean
+        get() = hrState == MeasureState.MEASURING || spo2State == MeasureState.MEASURING ||
+            hrvState == MeasureState.MEASURING || bloodPressureState == MeasureState.MEASURING
     private val combinedMeasureSeconds = COMBINED_MEASURE_SECONDS.toLong()
 
     companion object {
@@ -474,6 +498,33 @@ class RingSyncCoordinator(
         if (caps.contains(WearableCapability.MANUAL_BLOOD_PRESSURE)) measureBloodPressure()
         if (caps.contains(WearableCapability.MANUAL_HRV)) measureHRV()
     }
+
+    /**
+     * One leg on its own (issue #66).
+     *
+     * The Vitals screen ran every capability-gated leg in sequence behind a single button, so a
+     * user who wanted a heart rate waited out a minute of blood-oxygen sampling they never asked
+     * for — on one tester's ring the sweep started at 123 s and heart rate landed with 85 s still
+     * on the clock. These are what the separate controls call. Refused while another leg holds the
+     * sensor, because the ring serves one at a time.
+     */
+    suspend fun measureHeartRateOnly(): Int? {
+        if (!isConnected || spotMeasureInProgress) return null
+        if (!client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_HEART_RATE)) return null
+        return measureHR()
+    }
+
+    suspend fun measureSpO2Only(): Int? {
+        if (!isConnected || spotMeasureInProgress) return null
+        if (!client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_SPO2)) return null
+        return measureSpO2()
+    }
+
+    /** Whether each separate control should be offered at all, for the connected ring. */
+    val canMeasureHeartRate: Boolean
+        get() = client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_HEART_RATE)
+    val canMeasureSpO2: Boolean
+        get() = client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_SPO2)
 
     suspend fun measureHR(): Int? {
         if (hrState == MeasureState.MEASURING) return null

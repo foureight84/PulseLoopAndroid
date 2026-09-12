@@ -61,6 +61,8 @@ fun VitalsScreen(
     val scope = rememberCoroutineScope()
     var measuring by remember { mutableStateOf(false) }
     var remaining by remember { mutableStateOf(0) }
+    /** Which control is counting down, so only that button shows the timer (issue #66). */
+    var measuringLabel by remember { mutableStateOf("") }
     // Set when a spot measurement finishes with every leg FAILED — iOS #66's "an honest retry":
     // the refusal gate keeps bad values off screen, and this surfaces the failure with iOS's
     // per-kind copy instead of silently re-enabling the button (second-pass finding #30).
@@ -263,32 +265,76 @@ fun VitalsScreen(
                 // Measure button: combined (0x23) for 56ff/Jring, or sequential live
                 // HR + SpO₂ (0x69) for Colmi. Hidden for rings that support neither.
                 if (coordinator != null && (combinedMode || spotMode)) {
+                    /** Run one measurement, whatever its shape, with its own countdown. */
+                    fun runMeasurement(seconds: Int, label: String, leg: suspend () -> Unit) {
+                        measuring = true
+                        measuringLabel = label
+                        measureFailed = false
+                        measureNotWornHint = false
+                        remaining = seconds
+                        scope.launch {
+                            val ticker = launch {
+                                while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
+                            }
+                            try {
+                                leg()
+                            } finally {
+                                ticker.cancel()
+                                remaining = 0
+                                measuring = false
+                                if (!combinedMode &&
+                                    (coordinator.hrState == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED ||
+                                        coordinator.spo2State == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED)
+                                ) {
+                                    measureFailed = true
+                                    measureNotWornHint = coordinator.measureNotWorn
+                                }
+                                viewModel?.refreshNow()  // show the new reading immediately
+                            }
+                        }
+                    }
+
+                    // Issue #66: heart rate and blood oxygen are separate measurements on a ring
+                    // that runs them sequentially — 45 s against 75 s, with completely different
+                    // sample spacing — so a user after one should not be held for the other. The
+                    // combined flow keeps its single button: there it really is one packet.
+                    val separateLegs = !combinedMode &&
+                        coordinator.canMeasureHeartRate && coordinator.canMeasureSpO2
+                    if (separateLegs) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                enabled = !measuring,
+                                onClick = {
+                                    runMeasurement(
+                                        coordinator.heartRateMeasureSeconds, "HR",
+                                    ) { coordinator.measureHeartRateOnly() }
+                                },
+                            ) {
+                                Text(
+                                    if (measuring && measuringLabel == "HR") "HR ${remaining}s" else "HR",
+                                    color = androidx.compose.ui.graphics.Color.White,
+                                )
+                            }
+                            Button(
+                                enabled = !measuring,
+                                onClick = {
+                                    runMeasurement(
+                                        coordinator.spo2OnlyMeasureSeconds, "SpO₂",
+                                    ) { coordinator.measureSpO2Only() }
+                                },
+                            ) {
+                                Text(
+                                    if (measuring && measuringLabel == "SpO₂") "SpO₂ ${remaining}s" else "SpO₂",
+                                    color = androidx.compose.ui.graphics.Color.White,
+                                )
+                            }
+                        }
+                    } else {
                     Button(
                         enabled = !measuring,
                         onClick = {
-                            measuring = true
-                            measureFailed = false
-                            measureNotWornHint = false
-                            remaining = measureSeconds
-                            scope.launch {
-                                val ticker = launch {
-                                    while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
-                                }
-                                try {
-                                    if (combinedMode) coordinator.measureCombined() else coordinator.measureSpot()
-                                } finally {
-                                    ticker.cancel()
-                                    remaining = 0
-                                    measuring = false
-                                    if (!combinedMode &&
-                                        (coordinator.hrState == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED ||
-                                            coordinator.spo2State == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED)
-                                    ) {
-                                        measureFailed = true
-                                        measureNotWornHint = coordinator.measureNotWorn
-                                    }
-                                    viewModel?.refreshNow()  // show the new reading immediately
-                                }
+                            runMeasurement(measureSeconds, "all") {
+                                if (combinedMode) coordinator.measureCombined() else coordinator.measureSpot()
                             }
                         },
                     ) {
@@ -296,6 +342,7 @@ fun VitalsScreen(
                             if (measuring) "Measuring… ${remaining}s" else "Measure",
                             color = androidx.compose.ui.graphics.Color.White,
                         )
+                    }
                     }
                 }
             }
