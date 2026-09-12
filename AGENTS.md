@@ -588,6 +588,33 @@ not a history write) but never adopts the ring's copy. That is the same ±90 s a
 **Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
 there. The export doesn't retain HC record ids, so there is nothing to delete against.
 
+## Deleting an activity bucket needs the tombstone *and* the day's deficit (issue #70)
+
+`ActivityBucketDeletion` is the tombstone rule applied to intraday step blocks, and it has one more
+thing to get right than `MeasurementDeletion` does. **A tombstone guards the history path; today's
+number does not come from the history path.** The ring also pushes `PulseEvent.ActivityUpdate`
+carrying its own *cumulative* count for the day — seconds apart, and again on every reconnect — and
+`EventPersistenceSubscriber.upsertActivityDaily` ratchets the day up against it with `maxOf`. That
+counter still includes the deleted block, so a restated 7,000 went back to 8,000 on the next frame:
+the delete looked like it worked and then silently undid itself, which is the exact failure the
+restate-without-the-ratchet rule exists to prevent.
+
+So the day remembers what it removed. `ActivityDailyEntity.deletedSteps` / `deletedDistanceMeters`
+(v27) are subtracted from every later cumulative reading before the ratchet
+(`ActivityBucketDeletion.ratchetAgainstRing`, which lives with the deletion rules rather than in the
+write path — a reader looking at the ratchet has no reason to suspect a deletion changed what the
+ring's counter *means*). They ride the archive for the same reason the measurement tombstones do.
+This is also why the feature is only offered on today: it is the only day whose counter is still
+moving.
+
+**Calories are dropped, not corrected.** A bucket carries steps and distance and no calorie field,
+so there is nothing to subtract from the ring's own daily figure — and that figure demonstrably
+counted the block the user removed. The day's `calories` is cleared instead, which makes
+`DailyCalorieEstimator.deviceReportedCalories` fall through to the app's own estimate, recomputed
+from the surviving buckets at deletion time rather than at the next completed sync. An estimate
+consistent with the restated day beats a device figure known to be wrong. `activeMinutes` is not
+touched: it is credited by `ActivityRollup` from workouts, not from step buckets.
+
 ## A derived metric must say it is derived (issue #67)
 
 `DerivedStress` computes a stress figure from HRV for rings whose hardware never reports one — the
@@ -611,6 +638,23 @@ below twelve baseline readings rather than a default, for the same reason the ba
 
 Derived stress only fills in where the ring returned **no** stress at all. It never overwrites or
 blends with hardware readings.
+
+**"No stress at all" is a question about the ring, so ask it of the whole history.** Gating on the
+24 h chart window instead meant an empty window decided it, and windows go empty for ordinary
+reasons — the monitor switched off for a day, a ring re-paired this morning, a quiet night. A ring
+that does measure stress then showed a derived number captioned "your ring doesn't measure stress",
+which is a false statement about that user's hardware. The gate is
+`measurementDao().hasReal(STRESS)`.
+
+**Labelled wherever it is shown means the chart too.** The figure reaches three surfaces — the
+Vitals card, the Today tile, and the `vitals/stress` detail chart — and the detail screen builds its
+own series straight from Room rather than from `VitalsState`, so it needs the derivation wired in
+separately (`VitalDetailViewModel.derivedStressIn`) and carries `DetailState.isDerived` into the
+same amber disclaimer card BP and glucose use. Two related traps: a derived score has no "0 means
+nothing measured" sentinel, so the card's `>= 10` floor must not be applied to it (a genuinely calm
+day scores below 10), and the scores skip the first readings for want of a baseline — so they
+cannot be zipped positionally onto the HRV series. `DerivedStress.scored` returns each score with
+the index of the reading behind it for exactly that reason.
 
 ## Diagnostics masking keeps the routing header (issue #58)
 

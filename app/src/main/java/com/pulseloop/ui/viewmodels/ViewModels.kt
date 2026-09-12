@@ -640,9 +640,21 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         // constant rather than something that ring confirmed, and the user gets a card that can
         // never fill. Where the ring returns HRV but no stress at all, derive one — labelled as
         // derived everywhere it is shown, because the ring did not measure it.
+        //
+        // "No stress at all" is a question about the ring, so it is asked of the whole history and
+        // not of this 24 h window. An empty window happens for ordinary reasons — the monitor
+        // switched off for a day, a ring re-paired this morning, a quiet night — and on a ring that
+        // *does* measure stress the card would then show a derived number under the footnote "your
+        // ring doesn't measure stress", which is simply false about that ring.
         val hrvValues = hrv.map { it.value }
-        val derivedStress = if (stress.isEmpty() && hrvValues.isNotEmpty())
-            DerivedStress.series(hrvValues).map { it.toDouble() } else emptyList()
+        val ringEverReportedStress = db.measurementDao().hasReal(MeasurementKind.STRESS.name)
+        val derived = if (stress.isEmpty() && !ringEverReportedStress && hrvValues.isNotEmpty())
+            DerivedStress.scored(hrvValues) else emptyList()
+        // Scores carry the timestamp of the HRV reading each was derived from — the chart, the
+        // card's headline value and its gauge all read the series, so a value list on its own left
+        // every one of them empty under a footnote saying where the number came from.
+        val derivedStressSeries = derived.map { (i, score) -> VitalSample(hrv[i].timestamp, score.toDouble()) }
+        val derivedStress = derivedStressSeries.map { it.value }
 
         return VitalsState(
             hrSamples = hr.map { it.value },
@@ -674,7 +686,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             hrSeries = hr.map { VitalSample(it.timestamp, it.value) },
             spo2Series = spo2.map { VitalSample(it.timestamp, it.value) },
             hrvSeries = hrv.map { VitalSample(it.timestamp, it.value) },
-            stressSeries = stress.map { VitalSample(it.timestamp, it.value) },
+            stressSeries = stress.map { VitalSample(it.timestamp, it.value) }.ifEmpty { derivedStressSeries },
             fatigueSeries = fatigue.map { VitalSample(it.timestamp, it.value) },
             tempSeries = temp.map { VitalSample(it.timestamp, it.value) },
             bpSysSeries = bpSys.map { VitalSample(it.timestamp, it.value) },
@@ -994,6 +1006,10 @@ class VitalDetailViewModel(
          *  (issue #60). Demo/seeded rows are included: a user clearing seeded noise out of a
          *  chart is the same gesture as removing a bad measurement. */
         val readings: List<Reading> = emptyList(),
+        /** This chart is derived rather than measured (issue #67) — carried so the screen says so.
+         *  A derived figure shown as a measurement would be worse than the empty chart it replaces,
+         *  which is why it travels with the data instead of being re-inferred at the display layer. */
+        val isDerived: Boolean = false,
     )
 
     /**
@@ -1252,12 +1268,23 @@ class VitalDetailViewModel(
 
             // Every reading, at its real timestamp — no averaging.
             val samples = dao.range(kindName, windowStart, windowEnd)
-            val times = samples.map { it.timestamp }
-            val points = samples.map { convert(it.value) }
+            // Issue #67: the Vitals card derives stress from HRV for a ring whose hardware reports
+            // none, so the detail it opens has to show the same series — a filled card over an
+            // empty chart reads as a bug in the card. Same gate as the card: only where the ring
+            // has never returned a stress reading at all, never blended with hardware values.
+            val derived = if (kind == MeasurementKind.STRESS && samples.isEmpty() && !dao.hasReal(kindName))
+                derivedStressIn(windowStart, windowEnd) else emptyList()
+            val times = if (derived.isNotEmpty()) derived.map { it.timestampMs } else samples.map { it.timestamp }
+            val points = if (derived.isNotEmpty()) derived.map { it.value } else samples.map { convert(it.value) }
             val labels = buildLabels(times, period)
 
             val prevSamples = dao.range(kindName, prevStart, prevEnd)
-            val prevAvg = if (prevSamples.isNotEmpty()) convert(prevSamples.map { it.value }.average()) else null
+            val prevDerived = if (derived.isNotEmpty()) derivedStressIn(prevStart, prevEnd) else emptyList()
+            val prevAvg = when {
+                prevDerived.isNotEmpty() -> prevDerived.map { it.value }.average()
+                prevSamples.isNotEmpty() -> convert(prevSamples.map { it.value }.average())
+                else -> null
+            }
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val range = if (points.isNotEmpty()) points.max() - points.min() else 1.0
             val trend = computeTrend(thisAvg, prevAvg, range)
@@ -1296,9 +1323,24 @@ class VitalDetailViewModel(
                 resting = resting,
                 trend = trend,
                 engineZones = engineZones,
+                isDerived = derived.isNotEmpty(),
                 loading = false,
             ) }
         }
+    }
+
+    /**
+     * The derived stress series across one window (issue #67), timestamped by the HRV reading each
+     * score came from.
+     *
+     * These are not rows: nothing stored them and [deleteReading] has nothing to remove, which is
+     * why the readings list below stays empty on a derived chart.
+     */
+    private suspend fun derivedStressIn(from: Long, to: Long): List<VitalSample> {
+        val hrv = db.measurementDao().range(MeasurementKind.HRV.name, from, to)
+        if (hrv.isEmpty()) return emptyList()
+        return com.pulseloop.service.DerivedStress.scored(hrv.map { it.value })
+            .map { (i, score) -> VitalSample(hrv[i].timestamp, score.toDouble()) }
     }
 
     /**

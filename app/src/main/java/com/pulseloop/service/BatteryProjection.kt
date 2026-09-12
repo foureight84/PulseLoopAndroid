@@ -52,6 +52,18 @@ object BatteryProjection {
     private const val MIN_FALL_POINTS = 2.0
 
     /**
+     * Below this the slope is reporting granularity, not a discharge rate.
+     *
+     * The three gates above are all about the *shape* of the run and none of them bounds how slow
+     * it may be: firmware that reports in 5 % steps, read over the 7 d window, satisfies every one
+     * of them with 80 → 75 across a week — 0.03 %/h, which projects "about 104d 4h left" and prints
+     * it beside "0.0 %/h". No ring lasts that long, and the number carries exactly the authority
+     * this module exists to withhold. 0.2 %/h is ~21 days from full: past anything a ring claims,
+     * so a real slow drain still gets an answer.
+     */
+    private const val MIN_DRAIN_PERCENT_PER_HOUR = 0.2
+
+    /**
      * The samples since the ring was last charged, oldest first.
      *
      * Returns the whole list when no charge is visible in it — which is the common case for a 24 h
@@ -100,6 +112,7 @@ object BatteryProjection {
         if (slope >= 0) return null      // flat or rising: no depletion to project
 
         val drainPerHour = -slope
+        if (drainPerHour < MIN_DRAIN_PERCENT_PER_HOUR) return null
         val current = run.last().percent
         if (current <= 0) return null
         return Estimate(

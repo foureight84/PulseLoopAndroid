@@ -85,4 +85,20 @@ class DerivedStressTest {
 
         assertEquals(20 - DerivedStress.MIN_BASELINE_SAMPLES, series.size)
     }
+
+    /**
+     * Because the first readings are skipped, a caller cannot zip the scores back onto the HRV
+     * series positionally — the index has to travel with the score or every point on the chart
+     * lands at the wrong time.
+     */
+    @Test
+    fun `scored names the reading each score came from`() {
+        val hrv = List(20) { 40.0 }
+
+        val scored = DerivedStress.scored(hrv)
+
+        assertEquals(DerivedStress.MIN_BASELINE_SAMPLES, scored.first().first)
+        assertEquals(hrv.lastIndex, scored.last().first)
+        assertEquals(DerivedStress.series(hrv), scored.map { it.second })
+    }
 }

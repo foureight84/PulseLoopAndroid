@@ -63,6 +63,10 @@ fun VitalsScreen(
     var remaining by remember { mutableStateOf(0) }
     /** Which control is counting down, so only that button shows the timer (issue #66). */
     var measuringLabel by remember { mutableStateOf("") }
+    /** The running leg's own window, so the progress bar measures the run and not the full sweep. */
+    var measureTotal by remember { mutableStateOf(0) }
+    /** What the running leg is actually measuring — "heart rate & SpO₂" is wrong for a single leg. */
+    var measureCaption by remember { mutableStateOf("") }
     // Set when a spot measurement finishes with every leg FAILED — iOS #66's "an honest retry":
     // the refusal gate keeps bad values off screen, and this surfaces the failure with iOS's
     // per-kind copy instead of silently re-enabling the button (second-pass finding #30).
@@ -211,7 +215,11 @@ fun VitalsScreen(
             }
             DashboardCard.STRESS -> VitalGaugeCardItem(
                 card = cards.getValue(MetricKind.STRESS),
-                hasReading = state.stressSamples.isNotEmpty() && (state.latestStress?.toInt() ?: 0) >= 10,
+                // The `>= 10` floor reads a ring's 0 as "nothing measured". A derived score has no
+                // such sentinel — its whole 0–100 range is meaningful, and a genuinely calm day
+                // scores below 10 — so the floor would hide exactly the reading it was asked for.
+                hasReading = state.stressSamples.isNotEmpty() &&
+                    (state.stressIsDerived || (state.latestStress?.toInt() ?: 0) >= 10),
                 emptyText = "No stress data yet — take a measurement.",
                 // Issue #67: say so on the card itself. A derived figure presented as a measurement
                 // would be worse than the empty card it replaces.
@@ -268,13 +276,30 @@ fun VitalsScreen(
                 // Measure button: combined (0x23) for 56ff/Jring, or sequential live
                 // HR + SpO₂ (0x69) for Colmi. Hidden for rings that support neither.
                 if (coordinator != null && (combinedMode || spotMode)) {
-                    /** Run one measurement, whatever its shape, with its own countdown. */
-                    fun runMeasurement(seconds: Int, label: String, leg: suspend () -> Unit) {
+                    val failedState = com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED
+
+                    /**
+                     * Run one measurement, whatever its shape, with its own countdown.
+                     *
+                     * [failed] is asked only about the legs *this* run started. The leg states
+                     * persist as DONE/FAILED after a run, so a blanket "did HR or SpO₂ fail?" read
+                     * a previous run's verdict — a failed SpO₂ attempt made the next successful
+                     * heart-rate reading report failure.
+                     */
+                    fun runMeasurement(
+                        seconds: Int,
+                        label: String,
+                        caption: String,
+                        failed: () -> Boolean,
+                        leg: suspend () -> Unit,
+                    ) {
                         measuring = true
                         measuringLabel = label
                         measureFailed = false
                         measureNotWornHint = false
                         remaining = seconds
+                        measureTotal = seconds
+                        measureCaption = caption
                         scope.launch {
                             val ticker = launch {
                                 while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
@@ -285,10 +310,7 @@ fun VitalsScreen(
                                 ticker.cancel()
                                 remaining = 0
                                 measuring = false
-                                if (!combinedMode &&
-                                    (coordinator.hrState == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED ||
-                                        coordinator.spo2State == com.pulseloop.service.RingSyncCoordinator.MeasureState.FAILED)
-                                ) {
+                                if (failed()) {
                                     measureFailed = true
                                     measureNotWornHint = coordinator.measureNotWorn
                                 }
@@ -303,6 +325,16 @@ fun VitalsScreen(
                     // combined flow keeps its single button: there it really is one packet.
                     val separateLegs = !combinedMode &&
                         coordinator.canMeasureHeartRate && coordinator.canMeasureSpO2
+                    // The legs the two separate controls don't cover. `measureSpot()` was the only
+                    // caller of the BP and HRV legs in the app, so replacing it with HR + SpO₂
+                    // buttons took manual BP and HRV away from a ring that advertises them — they
+                    // get their own control rather than disappearing.
+                    val remainingLegsLabel = when {
+                        coordinator.canMeasureBloodPressure && coordinator.canMeasureHrv -> "BP & HRV"
+                        coordinator.canMeasureBloodPressure -> "BP"
+                        coordinator.canMeasureHrv -> "HRV"
+                        else -> null
+                    }
                     if (separateLegs) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
@@ -310,6 +342,8 @@ fun VitalsScreen(
                                 onClick = {
                                     runMeasurement(
                                         coordinator.heartRateMeasureSeconds, "HR",
+                                        caption = "Keep still — measuring heart rate…",
+                                        failed = { coordinator.hrState == failedState },
                                     ) { coordinator.measureHeartRateOnly() }
                                 },
                             ) {
@@ -323,6 +357,8 @@ fun VitalsScreen(
                                 onClick = {
                                     runMeasurement(
                                         coordinator.spo2OnlyMeasureSeconds, "SpO₂",
+                                        caption = "Keep still — measuring blood oxygen…",
+                                        failed = { coordinator.spo2State == failedState },
                                     ) { coordinator.measureSpO2Only() }
                                 },
                             ) {
@@ -331,12 +367,44 @@ fun VitalsScreen(
                                     color = androidx.compose.ui.graphics.Color.White,
                                 )
                             }
+                            if (remainingLegsLabel != null) {
+                                Button(
+                                    enabled = !measuring,
+                                    onClick = {
+                                        runMeasurement(
+                                            coordinator.remainingLegsMeasureSeconds, remainingLegsLabel,
+                                            caption = "Keep still — measuring $remainingLegsLabel…",
+                                            failed = {
+                                                (coordinator.canMeasureBloodPressure &&
+                                                    coordinator.bloodPressureState == failedState) ||
+                                                    (coordinator.canMeasureHrv && coordinator.hrvState == failedState)
+                                            },
+                                        ) { coordinator.measureRemainingLegs() }
+                                    },
+                                ) {
+                                    Text(
+                                        if (measuring && measuringLabel == remainingLegsLabel)
+                                            "$remainingLegsLabel ${remaining}s" else remainingLegsLabel,
+                                        color = androidx.compose.ui.graphics.Color.White,
+                                    )
+                                }
+                            }
                         }
                     } else {
                     Button(
                         enabled = !measuring,
                         onClick = {
-                            runMeasurement(measureSeconds, "all") {
+                            runMeasurement(
+                                measureSeconds, "all",
+                                caption = if (combinedMode)
+                                    "Keep still — measuring blood pressure, SpO₂, stress, fatigue & blood sugar…"
+                                else
+                                    "Keep still — measuring heart rate & SpO₂…",
+                                failed = {
+                                    !combinedMode &&
+                                        (coordinator.hrState == failedState || coordinator.spo2State == failedState)
+                                },
+                            ) {
                                 if (combinedMode) coordinator.measureCombined() else coordinator.measureSpot()
                             }
                         },
@@ -352,14 +420,17 @@ fun VitalsScreen(
             if (measuring) {
                 Spacer(Modifier.height(8.dp))
                 LinearProgressIndicator(
-                    progress = { ((measureSeconds - remaining).toFloat() / measureSeconds).coerceIn(0f, 1f) },
+                    // Against the *running* leg's own window, not the whole sweep's: an HR-only run
+                    // counts down from 48 s while the sweep bound is 123 s, so the shared divisor
+                    // started the bar 61 % full and it never described the run.
+                    progress = {
+                        val total = measureTotal.coerceAtLeast(1)
+                        ((total - remaining).toFloat() / total).coerceIn(0f, 1f)
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    if (combinedMode)
-                        "Keep still — measuring blood pressure, SpO₂, stress, fatigue & blood sugar…"
-                    else
-                        "Keep still — measuring heart rate & SpO₂…",
+                    measureCaption,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
@@ -753,8 +824,10 @@ fun VitalDetailScreen(
                     }
                 }
 
-                // 7. Estimated-metric disclaimer (BP + glucose only, iOS warning card).
-                metricDisclaimer(metric)?.let { disclaimer ->
+                // 7. Estimated-metric disclaimer (BP + glucose, iOS warning card; plus derived
+                // stress, issue #67 — the card that opened this chart labels its number, and this
+                // chart shows the same number, so it says the same thing here).
+                metricDisclaimer(metric, state.isDerived)?.let { disclaimer ->
                     item {
                         val cardShape = RoundedCornerShape(20.dp)
                         Row(
@@ -1034,12 +1107,22 @@ private fun zoneRangeText(
     }
 }
 
-/** Warning-card copy for estimated metrics (iOS `disclaimerText`); null hides the card. */
-private fun metricDisclaimer(metric: String): String? = when (metric) {
-    "glucose" ->
+/**
+ * Warning-card copy for estimated metrics (iOS `disclaimerText`); null hides the card.
+ *
+ * [isDerived] is the issue #67 case: a stress chart computed from HRV because the ring reports no
+ * stress at all. It gets the card for the same reason BP and glucose do — the number on screen is
+ * an inference, and the user is entitled to know that without leaving the chart.
+ */
+private fun metricDisclaimer(metric: String, isDerived: Boolean): String? = when {
+    metric == "stress" && isDerived ->
+        "Estimated from HRV — your ring doesn't measure stress. Scored against your own recent " +
+        "HRV readings, so it says how this reading compares with your normal, not how you compare " +
+        "with anyone else."
+    metric == "glucose" ->
         "Estimated wellness metric — not for dosing or diabetes decisions. No smart ring or watch is " +
         "FDA-authorized to measure or estimate glucose on its own."
-    "bp" ->
+    metric == "bp" ->
         "Ring blood pressure is an estimate. Calibrate against a validated cuff in Settings → Calibration, " +
         "and talk to a clinician about persistent high or low readings."
     else -> null

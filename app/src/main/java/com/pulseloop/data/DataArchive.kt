@@ -69,6 +69,10 @@ data class PulseArchive(
     val distanceMeters: Double = 0.0, val activeMinutes: Int = 0,
     val source: String = "mock", val syncedAt: Long? = null,
     val createdAt: Long, val updatedAt: Long,
+    /** Issue #70. Rides the archive for the same reason the tombstones do: a restore wipes every
+     *  table first, and without the deficit the ring's cumulative counter would walk the deleted
+     *  buckets back into the day. */
+    val deletedSteps: Int = 0, val deletedDistanceMeters: Double = 0.0,
     val estimatedActiveCalories: Double? = null,
 )
 

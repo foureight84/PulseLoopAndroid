@@ -155,11 +155,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     }
     // The individual ring records behind the merged night (issue #68). Only when there is more
     // than one — on an unsplit night the session *is* the record and a second card saying so is
-    // noise.
-    item {
-        val runs = remember(session.id, blocks) { com.pulseloop.service.sleepRecordRuns(blocks) }
-        if (runs.size > 1) SleepRecordsCard(runs)
-    }
+    // noise. The guard is on the `item` rather than inside it: an item that emits nothing still
+    // takes its share of the list's 16 dp spacing, which put a 32 dp hole in every single-record
+    // night.
+    val runs = com.pulseloop.service.sleepRecordRuns(blocks)
+    if (runs.size > 1) item { SleepRecordsCard(runs) }
     item {
         val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
         SleepStageSummaryCards(

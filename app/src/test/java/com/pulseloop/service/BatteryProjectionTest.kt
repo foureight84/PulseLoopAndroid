@@ -72,6 +72,21 @@ class BatteryProjectionTest {
         assertNull("a flat line has nothing to project", BatteryProjection.estimate(flat))
     }
 
+    /**
+     * The sample/span/fall gates are all about the run's shape and none of them bounds how *slow*
+     * it may be. Firmware that reports in 5 % steps clears every one of them over a 7 d window and
+     * projects a runtime no ring has.
+     */
+    @Test
+    fun `no estimate from a drain too slow to be one`() {
+        // 80 → 75 across a week: 4 samples, 168 h, a 5-point fall — and 0.03 %/h.
+        val coarse = listOf(80.0, 79.0, 77.0, 75.0).mapIndexed { i, percent ->
+            BatteryProjection.Sample(hours(i * 56.0), percent)
+        }
+
+        assertNull("104 days of runtime is not an estimate", BatteryProjection.estimate(coarse))
+    }
+
     /** While charging there is no depletion to project, and guessing one would be a lie. */
     @Test
     fun `no estimate while the battery is rising`() {

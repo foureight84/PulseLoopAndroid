@@ -87,6 +87,19 @@ data class ActivityDailyEntity(
     /** Ported from iOS #98: net active calories estimated from all-day HR + step buckets when the
      *  ring does not report device-side calories. Read through [effectiveActiveCalories]. */
     val estimatedActiveCalories: Double? = null,
+    /**
+     * What this day's deleted activity buckets contributed, kept so the ring's own cumulative
+     * counter can be corrected for them (issue #70).
+     *
+     * `activity_buckets` holds only the buckets that survive, so a sum over them restates the day
+     * — but the live `ActivityUpdate` total the ring pushes all day is a *cumulative* figure that
+     * still includes the deleted block, and the live path ratchets the day up against it. Without
+     * this the deletion was undone by the next frame, seconds later.
+     *
+     * See [com.pulseloop.data.ActivityBucketDeletion].
+     */
+    val deletedSteps: Int = 0,
+    val deletedDistanceMeters: Double = 0.0,
 )
 
 /**

@@ -1449,6 +1449,14 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val capabilities = device?.capabilities.orEmpty()
     val minimumInterval = if (device?.deviceType == RingDeviceType.YCBT) 30 else 5
     val intervalSteps = ((60 - minimumInterval) / 5 - 1).coerceAtLeast(0)
+    // Only offered where the ring's protocol actually carries a separate blood-oxygen interval —
+    // elsewhere the slider moved, the value saved, and "Saved & sent to ring ✓" appeared over a
+    // setting nothing on the wire could express (issue #66).
+    val supportsSpo2Interval = device?.deviceType?.supportsSeparateSpo2Interval == true
+    // The SpO₂ slider runs five minutes lower than the HR one (its floor is "follow heart rate"),
+    // so it needs its own step count: reusing the HR one put ticks 5.45 min apart, none of which
+    // the 5-minute snap could land on.
+    val spo2IntervalSteps = ((60 - (minimumInterval - 5)) / 5 - 1).coerceAtLeast(0)
     val supportsStressSetting = WearableCapability.STRESS in capabilities &&
         device?.deviceType != RingDeviceType.YCBT
 
@@ -1528,7 +1536,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                         // (`01 <key> {enable, interval}`), so blood oxygen always had an interval —
                         // it just wasn't surfaced and silently followed heart rate. On a ring
                         // running both monitors hourly that is most of the battery (issue #66).
-                        if (cfgSpo2) {
+                        if (cfgSpo2 && supportsSpo2Interval) {
                             Text(
                                 if (cfgSpo2Interval <= 0) "Same as heart rate" else "Every $cfgSpo2Interval min",
                                 style = MaterialTheme.typography.labelMedium,
@@ -1545,7 +1553,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                     cfgSavedMsg = null
                                 },
                                 valueRange = (minimumInterval - 5).toFloat()..60f,
-                                steps = intervalSteps,
+                                steps = spo2IntervalSteps,
                             )
                         }
                     }
@@ -1570,7 +1578,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                         hrIntervalMinutes = cfgHrInterval.coerceIn(minimumInterval, 60),
                                         hrEnabled = cfgHrEnabled,
                                         spo2Enabled = cfgSpo2 && WearableCapability.SPO2 in capabilities,
-                                        spo2IntervalMinutes = if (cfgSpo2Interval <= 0) 0
+                                        spo2IntervalMinutes = if (!supportsSpo2Interval || cfgSpo2Interval <= 0) 0
                                             else cfgSpo2Interval.coerceIn(minimumInterval, 60),
                                         stressEnabled = cfgStress && supportsStressSetting,
                                         hrvEnabled = cfgHrv && WearableCapability.HRV in capabilities,

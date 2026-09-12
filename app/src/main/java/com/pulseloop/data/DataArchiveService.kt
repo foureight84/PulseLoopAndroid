@@ -80,6 +80,8 @@ object DataArchiveService {
                     syncedAt = c.longOrNull("syncedAt"), createdAt = c.long("createdAt"),
                     updatedAt = c.long("updatedAt"),
                     estimatedActiveCalories = c.dblOrNull("estimatedActiveCalories"),
+                    deletedSteps = c.int_("deletedSteps"),
+                    deletedDistanceMeters = c.dbl("deletedDistanceMeters"),
                 )
             },
             activityBuckets = collect("activity_buckets") { c ->
@@ -395,6 +397,8 @@ object DataArchiveService {
                     source = a.source, syncedAt = a.syncedAt, createdAt = a.createdAt,
                     updatedAt = a.updatedAt,
                     estimatedActiveCalories = a.estimatedActiveCalories,
+                    deletedSteps = a.deletedSteps,
+                    deletedDistanceMeters = a.deletedDistanceMeters,
                 ))
             }
             for (b in archive.activityBuckets) {

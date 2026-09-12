@@ -509,15 +509,40 @@ class RingSyncCoordinator(
      * sensor, because the ring serves one at a time.
      */
     suspend fun measureHeartRateOnly(): Int? {
-        if (!isConnected || spotMeasureInProgress) return null
-        if (!client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_HEART_RATE)) return null
+        if (spotMeasureInProgress) return null
+        if (!canMeasureHeartRate) return null
+        // A refusal clears the leg's state instead of just returning. The states persist as
+        // DONE/FAILED after a run, so leaving one behind had the caller report the *previous*
+        // run's verdict as this one's — [measureSpot] refuses the same way when disconnected.
+        if (!isConnected) { hrState = MeasureState.IDLE; return null }
         return measureHR()
     }
 
     suspend fun measureSpO2Only(): Int? {
-        if (!isConnected || spotMeasureInProgress) return null
-        if (!client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_SPO2)) return null
+        if (spotMeasureInProgress) return null
+        if (!canMeasureSpO2) return null
+        if (!isConnected) { spo2State = MeasureState.IDLE; return null }
         return measureSpO2()
+    }
+
+    /**
+     * The legs the separate HR and SpO₂ controls don't cover, run in sequence (issue #66).
+     *
+     * [measureSpot] is the only caller of [measureBloodPressure] and [measureHRV] in the app, so a
+     * ring that advertises both manual HR and manual SpO₂ — and therefore gets the separate
+     * controls instead of the single "Measure" button — had no way left to run those two at all.
+     * A ring advertising neither capability gets no control and this is never called.
+     */
+    suspend fun measureRemainingLegs() {
+        if (spotMeasureInProgress) return
+        if (!isConnected) {
+            // Same refusal rule as the two legs above, applied to both states this run would set.
+            bloodPressureState = MeasureState.IDLE
+            hrvState = MeasureState.IDLE
+            return
+        }
+        if (canMeasureBloodPressure) measureBloodPressure()
+        if (canMeasureHrv) measureHRV()
     }
 
     /** Whether each separate control should be offered at all, for the connected ring. */
@@ -525,9 +550,25 @@ class RingSyncCoordinator(
         get() = client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_HEART_RATE)
     val canMeasureSpO2: Boolean
         get() = client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_SPO2)
+    val canMeasureBloodPressure: Boolean
+        get() = client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_BLOOD_PRESSURE)
+    val canMeasureHrv: Boolean
+        get() = client.state.value.activeCapabilities.contains(WearableCapability.MANUAL_HRV)
+
+    /** Countdown for [measureRemainingLegs] — the sum of the legs it will actually run. */
+    val remainingLegsMeasureSeconds: Int
+        get() {
+            var total = 3
+            if (canMeasureBloodPressure) total += BP_MEASURE_SECONDS
+            if (canMeasureHrv) total += HRV_MEASURE_SECONDS
+            return total
+        }
 
     suspend fun measureHR(): Int? {
         if (hrState == MeasureState.MEASURING) return null
+        // Clear last run's verdict before any path that can return without reaching MEASURING (the
+        // workout refusal below), so the caller never reads an old DONE/FAILED as this run's.
+        hrState = MeasureState.IDLE
         if (!isConnected) { hrState = MeasureState.FAILED; return null }
         // A workout owns the bpm stream for its whole duration, and this leg cannot share it: the
         // live-sample gate is one switch per kind, so whichever of the two closed it decides

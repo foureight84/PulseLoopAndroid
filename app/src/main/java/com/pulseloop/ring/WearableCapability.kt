@@ -79,4 +79,29 @@ enum class RingDeviceType(val displayName: String) {
     // RWfit family (`com.rw.revivalfit`) — one A00A GATT, two wire framings chosen post-connect.
     // Sold under many badges including "Colmi", which is why recognition is advertisement-only.
     RWFIT("RWfit ring");
+
+    /**
+     * Whether this family's wire protocol carries a blood-oxygen interval of its own (issue #66).
+     *
+     * The answer is a property of the protocol, not of [WearableCapability.MEASUREMENT_INTERVAL],
+     * and the two disagree — which is why this lives here rather than being inferred at the call
+     * site. Kept in one place because it gates both the settings control and what is sent:
+     *
+     *  * **YCBT** takes `{enable, interval}` per monitor, so blood oxygen has always had its own
+     *    interval byte — it simply inherited heart rate's ([YCBTEncoder.monitorCommands]).
+     *  * **CRP** takes one interval byte per `enableTiming*` command, same shape
+     *    ([CRPSyncEngine.applyTimingSettings]).
+     *  * **Colmi** declares MEASUREMENT_INTERVAL but its blood-oxygen pref (`0x2C`) is a bare
+     *    on/off: QRing's `BloodOxygenSettingReq` has a three-byte overload carrying an interval,
+     *    and the vendor app never once calls it — every call site sends `getWriteInstance(boolean)`.
+     *    Offering the control here would print "Saved & sent to ring ✓" over a frame we'd be
+     *    inventing.
+     *  * **LuckRing** packs all-day monitoring into a single `HEART_AUTO_SWITCH` frame with one
+     *    interval field and an on/off flag for blood oxygen ([LuckRingEncoder.autoMonitoring]).
+     */
+    val supportsSeparateSpo2Interval: Boolean
+        get() = when (this) {
+            YCBT, TK5, COLMI_SMART_HEALTH, CRP -> true
+            JRING, COLMI_R02, LUCK_RING, RWFIT -> false
+        }
 }

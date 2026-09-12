@@ -484,10 +484,24 @@ class EventPersistenceSubscriber(
             // live-activity decode before this fix — overwrite it so the day self-heals instead
             // of staying stuck at a garbage number until midnight.
             val stale = existing.steps > 200_000
+            // The ring's counter is cumulative for the day, so it still contains any bucket the
+            // user deleted (issue #70) — ratcheting against it raw restored the deleted block
+            // within seconds, and again on every reconnect. See [ActivityBucketDeletion].
+            val deletion = com.pulseloop.data.ActivityBucketDeletion
+            val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
-                steps = if (stale) steps else maxOf(existing.steps, steps),
-                calories = if (stale) calories else maxOf(existing.calories, calories),
-                distanceMeters = if (stale) distanceM else maxOf(existing.distanceMeters, distanceM),
+                steps = if (stale) steps
+                    else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
+                // A bucket carries no calorie field, so there is nothing to subtract from the
+                // ring's own figure — the deletion drops it and the app's estimate takes over
+                // (see [com.pulseloop.data.ActivityBucketDeletion]). Ratcheting here would put it
+                // straight back.
+                calories = if (stale) calories
+                    else if (hasDeletion) existing.calories
+                    else maxOf(existing.calories, calories),
+                distanceMeters = if (stale) distanceM else deletion.ratchetAgainstRing(
+                    existing.distanceMeters, distanceM, existing.deletedDistanceMeters,
+                ),
                 updatedAt = System.currentTimeMillis(),
             ))
         } else {

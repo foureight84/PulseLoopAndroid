@@ -73,11 +73,21 @@ object DerivedStress {
      * The series a chart can show: each HRV reading scored against the baseline of the readings
      * before it, so the line is what the app could have said at the time rather than hindsight.
      */
-    fun series(hrv: List<Double>): List<Int> {
-        val out = mutableListOf<Int>()
+    fun series(hrv: List<Double>): List<Int> = scored(hrv).map { it.second }
+
+    /**
+     * [series], but each score paired with the index of the HRV reading it came from.
+     *
+     * The first readings score null (too thin a baseline), so the output is shorter than the input
+     * and a positional zip against the HRV series would silently shift every point. A chart needs
+     * the *time* of each score, and the only timestamp a derived score has is that of the HRV
+     * reading behind it — so the index has to travel with the score rather than be inferred.
+     */
+    fun scored(hrv: List<Double>): List<Pair<Int, Int>> {
+        val out = mutableListOf<Pair<Int, Int>>()
         for (i in hrv.indices) {
             val baseline = hrv.subList(0, i)
-            score(hrv[i], baseline)?.let { out += it.score }
+            score(hrv[i], baseline)?.let { out += i to it.score }
         }
         return out
     }
