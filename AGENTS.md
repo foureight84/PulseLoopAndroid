@@ -588,6 +588,30 @@ not a history write) but never adopts the ring's copy. That is the same ±90 s a
 **Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
 there. The export doesn't retain HC record ids, so there is nothing to delete against.
 
+## A derived metric must say it is derived (issue #67)
+
+`DerivedStress` computes a stress figure from HRV for rings whose hardware never reports one — the
+R100 answers neither the stress history query nor its monitor-state read-back (22 sends, 0 replies,
+while every other state query on that ring answered), so stress there is absent rather than switched
+off. The app advertised it anyway, because a capability list is a static per-family constant and not
+something an individual ring confirmed, and the user got a card that could never fill.
+
+**The rule that matters more than the formula: it is labelled wherever it is shown.** The card reads
+"Estimated from HRV — your ring doesn't measure stress", and `VitalsState.stressIsDerived` carries
+the fact so no future surface can render it as a measurement by accident. A derived figure presented
+as measured would be worse than the empty card it replaces — a user comparing it against the vendor
+app's number is entitled to know which of the two they are looking at.
+
+It is scored **against that user's own recent HRV**, not a population: HRV varies several-fold
+between individuals, so an absolute cutoff labels whole people permanently stressed or permanently
+calm. Median and median-absolute-deviation rather than mean and standard deviation, because ring
+HRV history is full of obvious outliers and one of them must not redefine the scale. It returns null
+below twelve baseline readings rather than a default, for the same reason the battery estimate in
+#65 refuses to answer: an unearned number on a health screen is read as a measurement.
+
+Derived stress only fills in where the ring returned **no** stress at all. It never overwrites or
+blends with hardware readings.
+
 ## Diagnostics masking keeps the routing header (issue #58)
 
 `DiagnosticsRedactor.maskPacketHex` masks a health frame's payload but keeps the leading bytes that

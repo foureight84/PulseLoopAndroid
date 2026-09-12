@@ -213,6 +213,9 @@ fun VitalsScreen(
                 card = cards.getValue(MetricKind.STRESS),
                 hasReading = state.stressSamples.isNotEmpty() && (state.latestStress?.toInt() ?: 0) >= 10,
                 emptyText = "No stress data yet — take a measurement.",
+                // Issue #67: say so on the card itself. A derived figure presented as a measurement
+                // would be worse than the empty card it replaces.
+                footnote = if (state.stressIsDerived) "Estimated from HRV — your ring doesn't measure stress" else null,
                 onTap = { navController?.navigate("vitals/stress") },
             )
             DashboardCard.FATIGUE -> VitalGaugeCardItem(
@@ -422,9 +425,16 @@ private fun VitalGaugeCardItem(
     hasReading: Boolean,
     emptyText: String,
     measuring: Boolean = false,
+    /** Replaces the usual footer when the value isn't a measurement — see issue #67. */
+    footnote: String? = null,
     onTap: () -> Unit,
 ) {
-    VitalCard(state = card, showsValueRow = false, footerOverride = gaugeFooter(card), onTap = onTap) {
+    VitalCard(
+        state = card,
+        showsValueRow = false,
+        footerOverride = footnote ?: gaugeFooter(card),
+        onTap = onTap,
+    ) {
         if (hasReading) {
             Box(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp),

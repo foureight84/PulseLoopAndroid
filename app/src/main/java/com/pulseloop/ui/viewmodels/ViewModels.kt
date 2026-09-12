@@ -11,6 +11,7 @@ import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
 import com.pulseloop.coach.summaries.CoachSummaryKind
 import com.pulseloop.service.DailyCalorieEstimator
+import com.pulseloop.service.DerivedStress
 import com.pulseloop.service.HeartRateZones
 import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepInsights
@@ -509,6 +510,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val spo2Samples: List<Double> = emptyList(),
         val hrvSamples: List<Double> = emptyList(),
         val stressSamples: List<Double> = emptyList(),
+        /** The stress series came from HRV, not from the ring (issue #67). Never shown unlabelled. */
+        val stressIsDerived: Boolean = false,
         val fatigueSamples: List<Double> = emptyList(),
         val tempSamples: List<Double> = emptyList(),
         val latestHr: Int? = null,
@@ -632,18 +635,28 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val gluc = if (caps.contains(WearableCapability.BLOOD_SUGAR)) series(MeasurementKind.BLOOD_SUGAR) else emptyList()
         val userProfile = db.userProfileDao().get()
 
+        // Issue #67: a ring whose hardware never answers a stress query (the R100 — 22 sends, 0
+        // replies) advertises STRESS anyway, because the capability list is a static per-family
+        // constant rather than something that ring confirmed, and the user gets a card that can
+        // never fill. Where the ring returns HRV but no stress at all, derive one — labelled as
+        // derived everywhere it is shown, because the ring did not measure it.
+        val hrvValues = hrv.map { it.value }
+        val derivedStress = if (stress.isEmpty() && hrvValues.isNotEmpty())
+            DerivedStress.series(hrvValues).map { it.toDouble() } else emptyList()
+
         return VitalsState(
             hrSamples = hr.map { it.value },
             spo2Samples = spo2.map { it.value },
             hrvSamples = hrv.map { it.value },
-            stressSamples = stress.map { it.value },
+            stressSamples = stress.map { it.value }.ifEmpty { derivedStress },
+            stressIsDerived = stress.isEmpty() && derivedStress.isNotEmpty(),
             fatigueSamples = fatigue.map { it.value },
             tempSamples = temp.map { it.value },
             latestHr = hr.lastOrNull()?.value?.toInt(),
             restingHr = HeartRateZones.restingHeartRate(hr.map { it.value }),
             latestSpo2 = spo2.lastOrNull()?.value?.toInt(),
             latestHrv = hrv.lastOrNull()?.value,
-            latestStress = stress.lastOrNull()?.value,
+            latestStress = stress.lastOrNull()?.value ?: derivedStress.lastOrNull(),
             latestFatigue = fatigue.lastOrNull()?.value,
             latestTemp = temp.lastOrNull()?.value,
             // Latest = the series' last sample (iOS `inputs.systolic.last`) — demo seeds today's
