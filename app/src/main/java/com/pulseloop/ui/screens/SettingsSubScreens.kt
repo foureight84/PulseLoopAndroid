@@ -1888,7 +1888,14 @@ private fun BatteryHistorySection(db: PulseLoopDatabase) {
                     yDomain = 0.0..100.0,
                     accent = PulseColors.success,
                     height = 160.dp,
+                    // Day boundaries on the 7 d view, six-hour marks on 24 h (issue #65).
+                    verticalGridlines = com.pulseloop.service.BatteryProjection.gridlines(
+                        startMs = samples.first().timestampMs,
+                        endMs = samples.last().timestampMs,
+                    ),
                 )
+                Spacer(Modifier.height(10.dp))
+                BatteryRuntimeEstimate(samples)
             }
         }
     }
@@ -3190,3 +3197,40 @@ private fun openHealthConnectPlayStore(context: Context) {
     }
 }
 
+
+/**
+ * "About 1d 16h left — draining 2.4 %/h", or an honest silence (issue #65).
+ *
+ * Fitted over the current discharge run rather than the whole window, because a week of history
+ * almost always contains a charge — see [com.pulseloop.service.BatteryProjection]. Shown as an
+ * estimate, in those words, because that is what it is: a straight line through past drain, which
+ * says nothing about a day spent measuring more often than the last one.
+ */
+@Composable
+private fun BatteryRuntimeEstimate(samples: List<VitalSample>) {
+    val estimate = remember(samples) {
+        com.pulseloop.service.BatteryProjection.estimate(
+            samples.map { com.pulseloop.service.BatteryProjection.Sample(it.timestampMs, it.value) }
+        )
+    }
+    if (estimate == null) {
+        Text(
+            "Not enough of a trend to estimate runtime yet — it appears after a few hours of discharge.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Column {
+        Text(
+            "About ${estimate.label} left",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Estimated from the current discharge at %.1f %%/h.".format(estimate.percentPerHour),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
