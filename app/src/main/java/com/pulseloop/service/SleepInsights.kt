@@ -68,7 +68,15 @@ object SleepScore {
         session: SleepSessionEntity,
         blocks: List<SleepStageBlockEntity>,
     ): SleepScoreResult {
+        // Two denominators, because since issue #63 a session carries two numbers. `total` is
+        // time asleep: stage shares and the duration band are judged against it, as sleep-stage
+        // percentages conventionally are (of total sleep time, not time in bed) and as the headline
+        // the user sees. `span` is first block to last: the awake share and the "does this ring
+        // label awake at all" heuristic are judged against it, since both are about time in bed —
+        // and judged against asleep time the coverage test below would be true for every ring,
+        // handing a ring that never labels awake the full awake sub-score for nothing.
         val total = if (session.totalMinutes > 0) session.totalMinutes.toDouble() else 0.0
+        val span = session.spanMinutes.toDouble().takeIf { it > 0 } ?: total
         // stageRaw is persisted as the SleepStage enum name (uppercase) — match it exactly.
         // Some rings report REM in big-data sleep; the score model has no REM band, so fold
         // REM into deep (both are restorative sleep the deep band rewards).
@@ -79,12 +87,12 @@ object SleepScore {
         val awake = minutesFor(SleepStage.AWAKE)
         val coveredStageMin = blocks.sumOf { it.durationMinutes.toDouble() }
         val hasAwakeSignal = blocks.any { it.stageRaw == SleepStage.AWAKE.name } ||
-            awake > 0 || (total > 0 && coveredStageMin >= total * 0.95)
+            awake > 0 || (span > 0 && coveredStageMin >= span * 0.95)
 
         val totalHours = total / 60
         val deepPct = if (total > 0) (deep / total) * 100 else 0.0
         val lightPct = if (total > 0) (light / total) * 100 else 0.0
-        val awakePct: Double? = if (total > 0 && hasAwakeSignal) (awake / total) * 100 else null
+        val awakePct: Double? = if (span > 0 && hasAwakeSignal) (awake / span) * 100 else null
 
         val duration = bandScore(totalHours, 7.5, 8.5, 6.0, 9.5, 3.0, 12.0, 35.0)
         val deepScore = bandScore(deepPct, 13.0, 23.0, 5.0, 35.0, 0.0, 45.0, 30.0)
@@ -103,6 +111,46 @@ object SleepScore {
 }
 
 // ── Formatting ────────────────────────────────────────────────────────────
+
+/**
+ * How long the wearer was **asleep** across these stage blocks — every stage the ring recorded,
+ * less the ones it marked awake (issue #63).
+ *
+ * This is a session's `totalMinutes`, and it is deliberately not the span from its start to its
+ * end. A night the ring splits into two records is stored as one row covering both, so the span
+ * also counts the minutes between them: on the reporter's night the app said 8 h 10 (23:51 to
+ * 08:02) for a night whose two records declared 268 and 140 minutes, 6 h 48. Neither figure is
+ * wrong, but only one of them is a duration — the other is a range, and the sleep card already
+ * shows the range on its own line underneath. See [spanMinutes] for that one.
+ *
+ * The vendor app draws the same distinction, and the reporter found where (`SleepActivity:695`,
+ * `com.yucheng.smarthealthpro`): each history entry is built as
+ * `deepSleepTotal + lightSleepTotal + remTotal`, with `wakeDuration` carried separately and
+ * excluded, while `startTime` comes from the first record of the day and `endTime` from the last.
+ * It never conflates the two either.
+ *
+ * Implemented as "every stage except AWAKE" rather than "DEEP + LIGHT + REM" on purpose. The two
+ * are the same sum on any ring that labels its stages — YCBT's sleep tag 4 *is* AWAKE — but
+ * `SleepStage.UNKNOWN` is the `else` branch of every decoder in this app, an unrecognised stage
+ * byte *inside* a sleep record. Those minutes were slept; naming three stages explicitly would
+ * silently drop them, and on a ring whose stage codes we don't fully decode it could zero out a
+ * whole night.
+ */
+fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
+    blocks.filter { it.stageRaw != SleepStage.AWAKE.name }
+        .sumOf { it.durationMinutes }
+        .coerceAtLeast(0)
+
+/**
+ * How long the session covers on the clock, first stage block to last — which since issue #63 is a
+ * different number from [SleepSessionEntity.totalMinutes], the time actually asleep.
+ *
+ * Use this wherever wall-clock position matters (a hypnogram's x axis, a timeline); use
+ * `totalMinutes` wherever a duration is being reported. The sleep card shows both, as the vendor
+ * app does: the duration as the headline, the span as the range underneath it.
+ */
+val SleepSessionEntity.spanMinutes: Int
+    get() = ((endAt - startAt) / 60_000L).toInt().coerceAtLeast(0)
 
 object SleepFormat {
     fun duration(minutes: Int?): String {

@@ -270,10 +270,11 @@ object CRPDecoder {
 
     /**
      * Decode a CRP all-day "timing" vital-history reply (group 2). Returns null for a non-timing
-     * group-2 cmd (e.g. temp cmd 48) so the caller falls back to an ack. Layout, confirmed against
-     * zaggash's R11 rc2 capture and the vendor parsers `e1/{f,g,d,l}.java`:
+     * group-2 cmd so the caller falls back to an ack. Layout, confirmed against zaggash's R11 rc2
+     * capture and the vendor parsers `e1/{f,g,d,l,m}.java`:
      *   `[day][frameIndex][slot samples…]` — one 5-minute slot per sample, `0` = no reading.
-     * HR/SpO2/stress use one byte per slot; HRV uses a little-endian 2-byte value per slot. Each
+     * HR/SpO2/stress use one byte per slot; HRV and temperature use a little-endian 2-byte value
+     * per slot (temperature in tenths of a degree Celsius — `e1/m.a`). Each
      * slot's absolute time is `localMidnight(today − day) + (frameIndex*slotsPerFrame + slot)*5min`,
      * matching the vendor's `w0.b.a()/5` slot indexing. Emits a [RingDecodedEvent.HistoryMeasurement]
      * per valid slot (invalid/zero slots dropped, per the vendor's per-vital clamp) plus a trailing
@@ -286,11 +287,25 @@ object CRPDecoder {
         val kind: MeasurementKind
         val twoByte: Boolean
         val valid: (Int) -> Boolean
+        // Raw slot value → the unit the app stores. Only temperature is scaled; the rest are
+        // already in their own units.
+        var scale = 1.0
         when (cmd) {
             CRPCommands.CMD_QUERY_TIMING_HR -> { kind = MeasurementKind.HEART_RATE; twoByte = false; valid = { it in 40..200 } }
             CRPCommands.CMD_QUERY_TIMING_SPO2 -> { kind = MeasurementKind.SPO2; twoByte = false; valid = { it in 1..100 } }
             CRPCommands.CMD_QUERY_TIMING_HRV -> { kind = MeasurementKind.HRV; twoByte = true; valid = { it in 1..300 } }
             CRPCommands.CMD_QUERY_TIMING_STRESS -> { kind = MeasurementKind.STRESS; twoByte = false; valid = { it in 1..100 } }
+            // Temperature history (issue #58). Same `[day][frameIndex][slots…]` shape as the
+            // others, little-endian 2-byte tenths of a degree, clamped by the vendor to 28.0–50.0 °C
+            // with anything outside meaning "no reading" (`e1/m.a`). The layout was unconfirmed for
+            // months because every R11 capture came back empty; the R100 capture attached to #58 is
+            // the first non-empty one (`fdda 10 98 02 16 …` with slots reading 36.3/35.8/36.2 °C),
+            // and it matches the vendor parser byte for byte. Until it landed these frames fell
+            // through to a bare ack, so the samples were dropped *and* no next-frame pull was ever
+            // triggered — the ring was asked for frame 0 forever and never for the rest of the day.
+            CRPCommands.CMD_QUERY_HISTORY_TEMP -> {
+                kind = MeasurementKind.TEMPERATURE; twoByte = true; valid = { it in 280..500 }; scale = 0.1
+            }
             else -> return null
         }
         // [day][frameIndex] header; anything shorter is malformed.
@@ -317,7 +332,7 @@ object CRPDecoder {
             if (valid(value)) {
                 val globalSlot = frameIndex * slotsPerFrame + slot
                 val ts = midnight.plusSeconds(globalSlot.toLong() * TIMING_SLOT_MINUTES * 60)
-                events.add(RingDecodedEvent.HistoryMeasurement(kind, value.toDouble(), ts))
+                events.add(RingDecodedEvent.HistoryMeasurement(kind, value * scale, ts))
             }
             i += step
             slot++

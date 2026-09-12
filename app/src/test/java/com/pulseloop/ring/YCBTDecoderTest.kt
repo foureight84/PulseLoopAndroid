@@ -117,11 +117,36 @@ class YCBTDecoderTest {
         assertTrue(decodeStatus(byteArrayOf(0x03, 0x01, 16)) is RingDecodedEvent.CommandAck)
     }
 
+    /**
+     * `04 0e [mode, status]` — the ring ending a spot measurement itself (issue #59). Layout from
+     * the vendor app: `BaseMeasureActivity.onDataResponse` matches `bArr[0]` against the screen's
+     * own measurement type and switches on `bArr[1]` (1 success, 2 failed, else cancelled).
+     */
     @Test
-    fun `measurement result push remains an ack without an evidenced payload layout`() {
-        val frame = YCBTFrame.validating(YCBTFrame.frame(byteArrayOf(0x04, 0x0e, 0x01, 0x02)))!!
-        val events = decoder.decode(frame)
-        assertTrue(events.single() is RingDecodedEvent.CommandAck)
+    fun `measurement result push reports which measurement ended and how`() {
+        fun result(payload: ByteArray): RingDecodedEvent {
+            val frame = YCBTFrame.validating(YCBTFrame.frame(byteArrayOf(0x04, 0x0e) + payload))!!
+            return decoder.decode(frame).single()
+        }
+
+        // The reporter's capture: heart rate (mode 0x00), success.
+        val ok = result(byteArrayOf(0x00, 0x01)) as RingDecodedEvent.MeasurementComplete
+        assertEquals(YCBTMeasurementMode.HEART_RATE, ok.mode)
+        assertTrue(ok.success)
+
+        val failed = result(byteArrayOf(0x02, 0x02)) as RingDecodedEvent.MeasurementComplete
+        assertEquals(YCBTMeasurementMode.SPO2, failed.mode)
+        assertFalse("2 is the vendor's `measure failed`", failed.success)
+
+        val cancelled = result(byteArrayOf(0x00, 0x03)) as RingDecodedEvent.MeasurementComplete
+        assertFalse("anything but 1 is a failure", cancelled.success)
+    }
+
+    /** The vendor ignores a payload it cannot match against a type + status pair; so do we. */
+    @Test
+    fun `a measurement result too short to name a mode stays an ack`() {
+        val frame = YCBTFrame.validating(YCBTFrame.frame(byteArrayOf(0x04, 0x0e, 0x01)))!!
+        assertTrue(decoder.decode(frame).single() is RingDecodedEvent.CommandAck)
     }
 
     @Test

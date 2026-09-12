@@ -69,9 +69,11 @@ sealed class RingDecodedEvent {
         is ActivityBucket -> this._timestamp
         is HeartRateSample -> this._timestamp
         is HeartRateComplete -> this._timestamp
+        is SportTelemetry -> this._timestamp
         is Spo2Progress -> this._timestamp
         is Spo2Result -> this._timestamp
         is Spo2Complete -> this._timestamp
+        is MeasurementComplete -> this._timestamp
         is SleepTimeline -> this._timestamp
         is HistoryMeasurement -> this._timestamp
         is StressSample -> this._timestamp
@@ -95,6 +97,7 @@ sealed class RingDecodedEvent {
         is BloodPressureSample -> this._timestamp
         is BloodSugarSample -> this._timestamp
         is Unknown -> Instant.EPOCH
+        is FramePending -> Instant.EPOCH
     }
 
     data class ActivityUpdate(
@@ -129,6 +132,21 @@ sealed class RingDecodedEvent {
         override val debugJSON = """{"bpm":$bpm,"error":$isError}"""
     }
 
+    /**
+     * A Colmi `0x78` sport-session telemetry push (issue #64), emitted for *every* such frame so
+     * the diagnostics redactor has a health kind to mask. The bpm rides separately as a
+     * [HeartRateSample] when it is plausible; a warm-up frame carries bpm 0 but still carries the
+     * workout's live step count, distance and calories, which must not reach a report in clear.
+     */
+    data class SportTelemetry(
+        val bpm: Int,
+        val _timestamp: Instant
+    ) : RingDecodedEvent() {
+        override val kind = "sport_telemetry"
+        override val confidence = DecodeConfidence.PARTIAL
+        override val debugJSON = """{"bpm":$bpm}"""
+    }
+
     data class HeartRateComplete(
         val _timestamp: Instant
     ) : RingDecodedEvent() {
@@ -161,6 +179,28 @@ sealed class RingDecodedEvent {
         override val kind = "spo2_complete"
         override val confidence = DecodeConfidence.PARTIAL
         override val debugJSON = "{}"
+    }
+
+    /**
+     * The ring itself ended a spot measurement and said how it went (YCBT `04 0e`, issue #59).
+     *
+     * [mode] is the same measurement-mode byte the start command carried ([YCBTMeasurementMode]),
+     * so a completion can only ever end the measurement it names. [success] is the vendor's
+     * `bArr[1] == 1`; 2 is "failed" and anything else "cancelled", which are both failures here.
+     *
+     * Carries no value on purpose: the vendor app reacts to a success by re-syncing history
+     * (`BaseMeasureActivity.onDataResponse` → `syncData()`), never by reading a reading out of
+     * this frame. Its job is to say *when* the measurement is over, which is exactly what the app
+     * could not tell before — the ring goes quiet and the leg idled out its whole window.
+     */
+    data class MeasurementComplete(
+        val mode: Int,
+        val success: Boolean,
+        val _timestamp: Instant
+    ) : RingDecodedEvent() {
+        override val kind = "measurement_complete"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"mode":$mode,"success":$success}"""
     }
 
     data class SleepTimeline(
@@ -399,6 +439,37 @@ sealed class RingDecodedEvent {
         override val kind = "blood_sugar_sample"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"mgdl":$mgdl}"""
+    }
+
+    /**
+     * One notification of a logical frame that is still being reassembled — no decode yet, and
+     * possibly never one of its own (the frame decodes as a whole).
+     *
+     * It exists for the diagnostics report. A mid-frame chunk used to reach the raw-packet log as
+     * [Unknown], and `unknown` is deliberately *not* masked on export — control and pairing frames
+     * are the data most connection bugs need, and they decode to nothing. But an intermediate chunk
+     * of a multi-frame **health** reply carries samples in exactly the same shape, so those were
+     * exported whole: the same class of defect as issue #58's undecoded temperature frames, where a
+     * decode gap had quietly become a privacy gap. A chunk is now named for what it is, and the
+     * redactor masks it because it cannot know what the assembled frame will turn out to be.
+     */
+    data class FramePending(val raw: ByteArray, val startsFrame: Boolean) : RingDecodedEvent() {
+        /**
+         * The two cases are named apart because they mask differently: only the opening chunk holds
+         * the frame's routing header, so a continuation chunk keeping six bytes "of header" would be
+         * keeping six bytes of samples.
+         */
+        override val kind = if (startsFrame) "frame_start" else "frame_chunk"
+        override val confidence = DecodeConfidence.UNKNOWN
+        override val debugJSON = "{}"
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is FramePending) return false
+            return raw.contentEquals(other.raw) && startsFrame == other.startsFrame
+        }
+
+        override fun hashCode(): Int = 31 * raw.contentHashCode() + startsFrame.hashCode()
     }
 
     data class Unknown(

@@ -73,8 +73,28 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
+    /** Timestamps of one kind's rows from one source since [since] — primes the persistence
+     *  subscriber's memory of the spot readings it stored (issue #60). */
+    @Query("SELECT timestamp FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp >= :since")
+    suspend fun timestampsBySource(kind: String, source: String, since: Long): List<Long>
+
+    /** Remove one kind's rows from one source inside a window — how a spot reading yields to the
+     *  ring's own copy of it once history supplies that (issue #60). */
+    @Query("DELETE FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp BETWEEN :start AND :end")
+    suspend fun deleteBySourceBetween(kind: String, source: String, start: Long, end: Long): Int
+
     @Upsert
     suspend fun upsert(measurement: MeasurementEntity)
+
+    /** The rows behind a set of ids — how the readings list resolves a user's pick back into the
+     *  entities [com.pulseloop.data.MeasurementDeletion] needs to tombstone (issue #60). */
+    @Query("SELECT * FROM measurements WHERE id IN (:ids)")
+    suspend fun byIds(ids: List<String>): List<MeasurementEntity>
+
+    /** Delete one reading (issue #60). Pair with [MeasurementDeletionDao.record] for anything the
+     *  ring could re-sync, or the next history pass writes it back. */
+    @Query("DELETE FROM measurements WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
 
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
@@ -348,6 +368,10 @@ interface SleepSessionDao {
     @Query("SELECT MIN(date) FROM sleep_sessions WHERE totalMinutes > 0")
     suspend fun earliestDay(): Long?
 
+    /** Every stored session, for the one-time repairs in `DataRepairs`. */
+    @Query("SELECT * FROM sleep_sessions")
+    suspend fun all(): List<SleepSessionEntity>
+
     @Upsert
     suspend fun upsert(session: SleepSessionEntity)
 
@@ -597,4 +621,79 @@ interface FoodProductDao {
 
     @Query("DELETE FROM food_products")
     suspend fun clear()
+}
+
+/**
+ * The tombstones behind "delete this reading" (issue #60) — see [MeasurementDeletionEntity] for
+ * why a delete needs a memory at all.
+ */
+@Dao
+interface MeasurementDeletionDao {
+    /** Asked on every history write, so a re-sync can't restore a reading the user removed. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurement_deletions WHERE measurementId = :id)")
+    suspend fun isDeleted(id: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(rows: List<MeasurementDeletionEntity>)
+
+    /**
+     * Is the ring's own copy of a deleted spot reading due back? A `spot` row's id is a fresh UUID,
+     * so it cannot be tombstoned by id — but the reading it holds *is* regenerable, under the
+     * `history:` id the ring's copy arrives with up to
+     * [EventPersistenceSubscriber.SPOT_MATCH_MS][com.pulseloop.service.EventPersistenceSubscriber.Companion.SPOT_MATCH_MS]
+     * away. Matched the way `adoptRingsCopy` matches the pair it reconciles: same kind, within the
+     * window either side.
+     */
+    @Query("""
+        SELECT EXISTS(SELECT 1 FROM measurement_deletions
+        WHERE kindRaw = :kind AND measurementId LIKE 'spot:%' AND timestamp BETWEEN :from AND :to)
+    """)
+    suspend fun isSpotDeleted(kind: String, from: Long, to: Long): Boolean
+
+    /**
+     * Remember [measurements] as deleted — but only the ones a later sync could actually rewrite.
+     * A live reading is stored under a fresh UUID that nothing regenerates, so tombstoning it would
+     * grow this table for no benefit.
+     *
+     * **A `spot` row is the exception, and it needs a range.** It carries a UUID like any live row,
+     * but it exists precisely because the ring logs that measurement itself and will hand it back
+     * under a `history:` id on the next sync ([isSpotDeleted]) — so tombstoning by id alone let the
+     * ring's copy walk straight back in, and the reading had to be deleted twice. The ring stamps
+     * its log to the minute rather than to our settled instant, so the tombstone cannot name the id
+     * it has to suppress; it records the kind and our timestamp instead, under a deterministic
+     * `spot:` key so re-deleting the same reading replaces the row rather than growing the table.
+     *
+     * A measurement retaken inside that window inherits the suppression: the retake itself is
+     * stored and displayed (it is our own row, not a history write), it simply never adopts the
+     * ring's copy and stays marked `spot`. That is the same ±90 s ambiguity `adoptRingsCopy`
+     * already carries, and it fails in the direction that keeps a reading the user asked for.
+     */
+    suspend fun record(measurements: List<MeasurementEntity>) {
+        val regenerable = measurements.mapNotNull { row ->
+            when {
+                row.id.startsWith(HISTORY_ID_PREFIX) ->
+                    MeasurementDeletionEntity(measurementId = row.id, kindRaw = row.kindRaw, timestamp = row.timestamp)
+                row.sourceRaw == SPOT_SOURCE ->
+                    MeasurementDeletionEntity(
+                        measurementId = "$SPOT_ID_PREFIX${row.kindRaw}:${row.timestamp}",
+                        kindRaw = row.kindRaw,
+                        timestamp = row.timestamp,
+                    )
+                else -> null
+            }
+        }
+        if (regenerable.isNotEmpty()) insertAll(regenerable)
+    }
+
+    companion object {
+        /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
+         *  A measurement whose id starts with this is one the ring can hand us again. */
+        const val HISTORY_ID_PREFIX = "history:"
+        /** Key prefix for a range tombstone standing in for a deleted `spot` row — see [record].
+         *  Distinct from [HISTORY_ID_PREFIX] so `isDeleted`'s id lookup can never match one. */
+        const val SPOT_ID_PREFIX = "spot:"
+        /** `EventPersistenceSubscriber.SOURCE_SPOT`, duplicated to keep this DAO off the service
+         *  layer. Asserted equal in `MeasurementDeletionTest`. */
+        const val SPOT_SOURCE = "spot"
+    }
 }

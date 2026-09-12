@@ -1057,7 +1057,8 @@ class RingBLEClient(
                         if (op.attempts == 0) {
                             PulseEventBus.publishBlocking(
                                 PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
-                                    RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
+                                    RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u),
+                                    deviceType = activeCoordinator?.deviceType)
                             )
                         }
                         if (op.attempts == 0) {
@@ -1586,7 +1587,8 @@ class RingBLEClient(
                     raw = value,
                 )
                 PulseEventBus.publishBlocking(
-                    PulseEvent.RawPacket(PacketDirection.INCOMING, value, diagnostic)
+                    PulseEvent.RawPacket(PacketDirection.INCOMING, value, diagnostic,
+                        deviceType = activeCoordinator?.deviceType)
                 )
                 for (decoded in decodedEvents) {
                     if (!acceptsCallback(callbackForgetGeneration)) break

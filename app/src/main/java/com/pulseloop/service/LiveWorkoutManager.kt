@@ -77,7 +77,7 @@ class LiveWorkoutManager(
         )
         db.activitySessionDao().upsert(session)
 
-        coordinator.startWorkoutHeartRate()
+        coordinator.startWorkoutHeartRate(type)
         if (useGps) gps.start(session.id, type)
         polling.start(session.id)
         startForegroundService(session.type)

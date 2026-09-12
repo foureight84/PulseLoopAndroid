@@ -4,6 +4,7 @@ import com.pulseloop.coach.context.CoachContextBuilder
 import com.pulseloop.coach.context.CoachContextPacket
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.*
+import com.pulseloop.ring.SleepStage
 import com.pulseloop.service.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -107,9 +108,12 @@ object CoachSummaryContextBuilder {
             val deepPct: Int,
             val activitySteps: Int?,
         )
-        val deepMin = blocks.filter { it.stageRaw == "deep" }.sumOf { it.durationMinutes }
-        val lightMin = blocks.filter { it.stageRaw == "light" }.sumOf { it.durationMinutes }
-        val awakeMin = blocks.filter { it.stageRaw == "awake" }.sumOf { it.durationMinutes }
+        // stageRaw is persisted as the SleepStage enum NAME, which is uppercase. These three
+        // matched lowercase literals and were therefore always zero, so every sleep summary the
+        // coach has ever been given said the user had no deep, light or awake sleep at all.
+        val deepMin = blocks.filter { it.stageRaw == SleepStage.DEEP.name }.sumOf { it.durationMinutes }
+        val lightMin = blocks.filter { it.stageRaw == SleepStage.LIGHT.name }.sumOf { it.durationMinutes }
+        val awakeMin = blocks.filter { it.stageRaw == SleepStage.AWAKE.name }.sumOf { it.durationMinutes }
 
         val p = SleepDayPacket(
             date = session.date.toString(),

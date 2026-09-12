@@ -198,6 +198,24 @@ class CRPSyncEngineTest {
         assertTrue(w.sent.isEmpty())
     }
 
+    /** Temperature is 2 bytes/slot like HRV, so it also spans four 72-slot frames (`e1/m.d` asks
+     *  for the next index until `3 == index`). Before issue #58 it emitted no marker at all, so
+     *  frames 1-3 — 18:00 onward of every day — were never requested. */
+    @Test
+    fun `temperature walks four frames like HRV`() {
+        val w = FakeWriter()
+        val engine = CRPSyncEngine(w)
+        engine.runStartup(); w.sent.clear()
+        for (idx in 0..2) {
+            engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_HISTORY_TEMP, 0, idx))
+            assertEquals(listOf(2 to 22), w.opcodes())
+            assertEquals(idx + 1, w.sent.last()[7].toInt())
+            w.sent.clear()
+        }
+        engine.handle(RingDecodedEvent.TimingHistoryFrame(CRPCommands.CMD_QUERY_HISTORY_TEMP, 0, 3))
+        assertTrue("terminal temperature frame must not request another", w.sent.isEmpty())
+    }
+
     @Test
     fun `a repeated frame does not spam duplicate follow-up requests`() {
         val w = FakeWriter()

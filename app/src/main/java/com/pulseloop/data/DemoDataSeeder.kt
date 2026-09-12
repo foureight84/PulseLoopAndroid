@@ -281,10 +281,12 @@ object DemoDataSeeder {
             block
         }
 
+        // `totalMinutes` is time asleep, not the span (issue #63) — the pattern above tiles the
+        // whole night including its two awake stretches, so the headline is the blocks less those.
         val session = SleepSessionEntity(
             id = sessionId, date = wakeDayStart,
             startAt = sleepStart, endAt = wake,
-            totalMinutes = totalMinutes,
+            totalMinutes = com.pulseloop.service.asleepMinutes(blocks),
             sourceRaw = "demo",
         )
         db.sleepStageBlockDao().deleteBySession(sessionId)
@@ -301,7 +303,7 @@ object DemoDataSeeder {
             val napSession = SleepSessionEntity(
                 id = napId, date = wakeDayStart,
                 startAt = napStart, endAt = napEnd,
-                totalMinutes = nap.minutes,
+                totalMinutes = com.pulseloop.service.asleepMinutes(napBlocks),
                 sourceRaw = "demo",
             )
             db.sleepStageBlockDao().deleteBySession(napId)

@@ -56,7 +56,12 @@ class CRPDriver(private val writer: RingCommandWriter?) : WearableDriver {
         // Framed command replies (fdd3) reassemble across notifications; everything else is a
         // self-contained push routed by source characteristic inside CRPDecoder.
         if (from.lowercase().contains("fdd3")) {
-            val frame = assembler.append(data) ?: return emptyList()
+            // A mid-frame chunk is reported rather than dropped, so the diagnostics log can mask it:
+            // it may hold half an all-day health reply, and an unnamed chunk exports unmasked.
+            val frame = assembler.append(data)
+                ?: return listOf(
+                    RingDecodedEvent.FramePending(data, startsFrame = CRPProtocol.isFrameStart(data))
+                )
             return CRPDecoder.decode(frame, from)
         }
         return CRPDecoder.decode(data, from)

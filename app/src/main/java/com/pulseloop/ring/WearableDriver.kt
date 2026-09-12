@@ -120,9 +120,52 @@ data class UserProfileValues(
  * Per-device orchestration of command flows.
  */
 interface RingSyncEngine {
+    companion object {
+        /**
+         * Fallback bound on the live-HR leg of a spot measurement, for a family that gives no
+         * other signal that it has finished. Long enough for a settled optical reading, short
+         * enough that a ring which will never produce one doesn't hold the sensor on.
+         */
+        const val DEFAULT_SPOT_HEART_RATE_SECONDS = 30
+        /** Default ceiling on the SpO₂ leg. iOS raised this 40 → 60 (`c8969a4`): the R99's
+         *  successful sweep took 38 s while another ran past 41 s with no result. */
+        const val DEFAULT_SPOT_SPO2_SECONDS = 60
+    }
+
     /** True only for protocols with one native command that returns a combined vitals packet.
      * Capability bits such as manual BP/glucose do not imply this transport feature. */
     val supportsCombinedMeasurement: Boolean get() = false
+
+    /**
+     * How long the live-HR leg of a spot measurement may run on this family (issue #59).
+     *
+     * A ceiling, not a duration: the leg ends the moment the ring says it is done. Only a family
+     * that never says so actually spends this long, which is why it can be raised for a family
+     * that *does* — the ring in #59 needs ~26 s of warm-up before its PPG converges and ends the
+     * measurement itself at ~35 s, so at the default it was cut off just as its readings became
+     * real, while raising the default for everyone would make every other family's measurement
+     * visibly slower for nothing.
+     */
+    val spotHeartRateSeconds: Int get() = DEFAULT_SPOT_HEART_RATE_SECONDS
+
+    /**
+     * Ceiling on the SpO₂ leg of a spot measurement, in seconds. The same reasoning as
+     * [spotHeartRateSeconds]: a family whose ring ends the measurement itself may need a longer
+     * fallback bound than the default, because the ring's own `04 0e` is what actually ends the
+     * leg and the window must be long enough for it to arrive.
+     */
+    val spotSpo2Seconds: Int get() = DEFAULT_SPOT_SPO2_SECONDS
+
+    /**
+     * True when this family's ring tells us a spot measurement has ended (issue #59's `04 0e`).
+     *
+     * It gates whether a leg may keep collecting: a leg that waits for a completion signal no
+     * family sends would simply idle out its whole window, which is why the SpO2 leg keeps its
+     * "first plausible value wins" behaviour everywhere else. The CRP R11 in particular answers a
+     * spot SpO2 with one value after ~48 s of silence and nothing further — waiting past it would
+     * turn a working measurement into a minute-long stare at a progress bar for no gain.
+     */
+    val signalsMeasurementCompletion: Boolean get() = false
 
     fun runStartup()
     fun handle(event: RingDecodedEvent)
@@ -144,6 +187,16 @@ interface RingSyncEngine {
     fun syncSleepNow() {}
     fun startHeartRate()
     fun stopHeartRate()
+    /**
+     * Begin the live-HR stream for a workout of [activityType] (`ActivityMeta.ORDER`). Defaults to
+     * the plain stream; a family whose vendor app runs a live activity as a ring-side *sport
+     * session* rather than a bare HR stream overrides this (Colmi, issue #64). Idempotent: the
+     * coordinator calls it again after every interruption to bring the stream back.
+     */
+    fun startWorkoutHeartRate(activityType: String) { startHeartRate() }
+    /** End what [startWorkoutHeartRate] began. Distinct from [stopHeartRate] so a spot measure's
+     *  stop mid-workout cannot end the ring's sport session. */
+    fun stopWorkoutHeartRate() { stopHeartRate() }
     fun measureHeartRateSpot() { startHeartRate() }
     fun startSpO2()
     fun stopSpO2()

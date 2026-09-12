@@ -122,6 +122,37 @@ class YCBTHealthRecordsTest {
         assertEquals(2, timelines.size)
     }
 
+    /**
+     * Issue #63: the night the ring split in two — the second record must decode as its own
+     * session with its own start, not be folded into or lost behind the first.
+     */
+    @Test
+    fun `two adjacent sessions decode as two timelines with their own starts`() {
+        val firstStart = 0x31def01c
+        val secondStart = firstStart + (3 * 60 + 9) * 60          // 03:21, three minutes after 03:18
+        val first = sleepSession(listOf(0xf2 to 124 * 60, 0xf1 to 62 * 60), baseStart = firstStart)
+        val second = sleepSession(listOf(0xf2 to 119 * 60, 0xf1 to 124 * 60), baseStart = secondStart)
+        val timelines = YCBTHealthRecords.sleep(first + second).filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(2, timelines.size)
+        assertEquals(186, timelines[0].stages.size)
+        assertEquals(243, timelines[1].stages.size)
+        assertEquals(YCBTBytes.date(firstStart), timelines[0]._timestamp)
+        assertEquals(YCBTBytes.date(secondStart), timelines[1]._timestamp)
+    }
+
+    /** A record whose declared length lies must not take the following session down with it:
+     *  the parser resynchronises on the next `af fa`. */
+    @Test
+    fun `a record with a wrong declared length does not swallow the next session`() {
+        val bad = sleepSession(listOf(0xf2 to 60 * 60)).also { it[2] = 12 }   // claims 12 bytes: no segments
+        val good = sleepSession(listOf(0xf1 to 30 * 60))
+        val timelines = YCBTHealthRecords.sleep(bad + good).filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(1, timelines.size)
+        assertEquals(30, timelines.single().stages.size)
+    }
+
     @Test
     fun `nap segment does not truncate the night`() {
         val session = sleepSession(listOf(
@@ -269,7 +300,126 @@ class YCBTHealthRecordsTest {
         assertFalse(YCBTHealthRecords.decode(capturedHeartRecords, YCBTHistoryType.HEART).isEmpty())
     }
 
-    private fun sleepSession(segments: List<Pair<Int, Int>>): ByteArray {
+    /**
+     * Issue #63: the stored run has to end where the ring says the session ended. Concatenating
+     * each segment's rounded minutes drifts — 470 against this record's declared 474 — and
+     * `completeSessionSurvivors` grows its retirement run across blocks that abut end-to-start,
+     * so a minute of drift in the other direction retires a whole neighbouring session.
+     */
+    @Test
+    fun `a session spans exactly the header's declared start and end`() {
+        val event = YCBTHealthRecords.sleep(capturedNight).first() as RingDecodedEvent.SleepTimeline
+        val headerStart = 0x31dee99f
+        val headerEnd = 0x31df58bd
+        assertEquals(YCBTBytes.date(headerStart), event._timestamp)
+        assertEquals((headerEnd - headerStart) / 60, event.stages.size)
+    }
+
+    /**
+     * Issue #63: the night that broke on rc6 — two records a minute apart. The first record's
+     * segments round one minute long, which under concatenation put its end exactly on the
+     * second's start; the merge rule then read the two as one contiguous run and retired the
+     * first. Placed against the header, the minute of gap survives.
+     */
+    @Test
+    fun `a record whose segments round long still ends at its declared end`() {
+        val firstStart = 0x31def01c
+        val firstEnd = firstStart + 322 * 60
+        val secondStart = firstEnd + 60
+        // Sub-minute segments: concatenation floors each at a minute and overshoots the record.
+        val first = sleepRecord(
+            firstStart,
+            firstEnd,
+            listOf(0xf2 to 320 * 60) + List(4) { 0xf1 to 20 },
+        )
+        val second = sleepRecord(secondStart, secondStart + 151 * 60, listOf(0xf2 to 151 * 60))
+        val timelines = YCBTHealthRecords.sleep(first + second)
+            .filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(2, timelines.size)
+        assertEquals(322, timelines[0].stages.size)
+        val firstEndInstant = timelines[0]._timestamp.plusSeconds(322 * 60L)
+        assertTrue(firstEndInstant.isBefore(timelines[1]._timestamp))
+        assertEquals(60L, timelines[1]._timestamp.epochSecond - firstEndInstant.epochSecond)
+    }
+
+    /** A record the ring bounds itself reports wake for the minutes no segment claims. */
+    @Test
+    fun `minutes no segment claims read as awake`() {
+        val start = 0x31def01c
+        val record = sleepRecord(start, start + 60 * 60, listOf(0xf2 to 30 * 60))
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(60, event.stages.size)
+        assertEquals(30, event.stages.count { it == SleepStage.LIGHT })
+        assertEquals(30, event.stages.count { it == SleepStage.AWAKE })
+        assertTrue(event.stages.take(30).all { it == SleepStage.LIGHT })
+    }
+
+    /**
+     * Issue #63: the ring emits zero-length segments, and one that shares a start time with a
+     * real segment used to take its place in the de-duplication — the real segment was dropped
+     * and the minutes it claimed read as wake instead. All four duplicate starts in the
+     * reporter's thirteen-record night dump are this shape: a zero-length LIGHT immediately
+     * ahead of a real 76–105 s segment.
+     */
+    @Test
+    fun `a zero-length segment does not shadow a real segment sharing its start`() {
+        val start = 0x31def01c
+        val record = sleepRecord(start, start + 10 * 60, listOf(
+            0xf2 to 5 * 60,     // LIGHT, 00:00–05:00
+            0xf1 to 0,          // zero-length DEEP at 05:00 — claims no minute
+            0xf3 to 5 * 60,     // REM, 05:00–10:00, sharing the zero-length segment's start
+        ))
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+
+        assertEquals(5, event.stages.count { it == SleepStage.LIGHT })
+        assertEquals(5, event.stages.count { it == SleepStage.REM })
+        assertFalse(event.stages.contains(SleepStage.AWAKE))
+    }
+
+    /** A record whose header carries no bounds keeps the segment-concatenation reading. */
+    @Test
+    fun `a record with no header bounds falls back to concatenated segments`() {
+        val event = YCBTHealthRecords.sleep(sleepSession(listOf(0xf2 to 30 * 60, 0xf1 to 30 * 60)))
+            .first() as RingDecodedEvent.SleepTimeline
+        assertEquals(60, event.stages.size)
+    }
+
+    /** `af fa` record with the vendor header's `startTime` (+4) and `endTime` (+8) filled in. */
+    private fun sleepRecord(
+        startSeconds: Int,
+        endSeconds: Int,
+        segments: List<Pair<Int, Int>>,
+    ): ByteArray {
+        val recordLength = 20 + segments.size * 8
+        val out = mutableListOf<Byte>()
+        fun u16(value: Int) {
+            out.add((value and 0xFF).toByte())
+            out.add(((value shr 8) and 0xFF).toByte())
+        }
+        fun u32(value: Int) {
+            u16(value and 0xFFFF)
+            u16((value shr 16) and 0xFFFF)
+        }
+        out.add(0xaf.toByte())
+        out.add(0xfa.toByte())
+        u16(recordLength)
+        u32(startSeconds)
+        u32(endSeconds)
+        repeat(8) { out.add(0) }
+        var at = startSeconds
+        for ((tag, seconds) in segments) {
+            out.add(tag.toByte())
+            u32(at)
+            out.add((seconds and 0xFF).toByte())
+            out.add(((seconds shr 8) and 0xFF).toByte())
+            out.add(((seconds shr 16) and 0xFF).toByte())
+            at += seconds
+        }
+        return out.toByteArray()
+    }
+
+    private fun sleepSession(segments: List<Pair<Int, Int>>, baseStart: Int = 0x31def01c): ByteArray {
         val recordLength = 20 + segments.size * 8
         val out = mutableListOf<Byte>()
         out.add(0xaf.toByte())
@@ -278,7 +428,7 @@ class YCBTHealthRecordsTest {
         out.add((recordLength shr 8).toByte())
         repeat(16) { out.add(0) }
         for ((index, segment) in segments.withIndex()) {
-            val start = 0x31def01c + index * 3600
+            val start = baseStart + index * 3600
             out.add(segment.first.toByte())
             out.add((start and 0xFF).toByte())
             out.add(((start shr 8) and 0xFF).toByte())

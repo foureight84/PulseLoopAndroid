@@ -135,12 +135,35 @@ class YCBTDecoder {
                 if (events.isEmpty()) listOf(RingDecodedEvent.CommandAck(commandId = cmd.toUByte())) else events
             }
             YCBTDevControl.MEASUREMENT_RESULT -> {
-                // SmartHealth acknowledges this push but its proprietary unpackParseData layout
-                // is not available in the decompile. Do not infer mode/result fields from bytes.
-                listOf(RingDecodedEvent.CommandAck(commandId = cmd.toUByte()))
+                measurementResultEvents(payload, now)
+                    ?: listOf(RingDecodedEvent.CommandAck(commandId = cmd.toUByte()))
             }
             else -> listOf(RingDecodedEvent.CommandAck(commandId = cmd.toUByte()))
         }
+    }
+
+    /**
+     * `04 0e` — the ring finished a spot measurement and is reporting the verdict (issue #59).
+     *
+     * Layout, read off the vendor app rather than guessed: `BaseMeasureActivity.onDataResponse`
+     * (`decompiled-smarthealth/.../home/activity/BaseMeasureActivity.java:259`) requires
+     * `length > 1`, matches `bArr[0]` against the screen's own `getType()` — the same mode byte
+     * `appStartMeasurement(onOff, type)` sent on `03 2f` — and then switches on `bArr[1]`:
+     * `1` success, `2` failed, anything else cancelled.
+     *
+     * The vendor reads no value out of this frame (on success it calls `syncData()` and pulls the
+     * reading from history), so neither do we. Returns null for a payload the vendor would have
+     * ignored, so the caller falls back to a bare ack.
+     */
+    private fun measurementResultEvents(p: ByteArray, now: Instant): List<RingDecodedEvent>? {
+        if (p.size < 2) return null
+        return listOf(
+            RingDecodedEvent.MeasurementComplete(
+                mode = p[0].toInt() and 0xFF,
+                success = (p[1].toInt() and 0xFF) == YCBTDevControl.RESULT_SUCCESS,
+                _timestamp = now,
+            )
+        )
     }
 
     private fun measurementStatusEvents(p: ByteArray, now: Instant): List<RingDecodedEvent> {

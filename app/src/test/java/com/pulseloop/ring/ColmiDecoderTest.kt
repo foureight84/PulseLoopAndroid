@@ -34,6 +34,26 @@ class ColmiDecoderTest {
 
     // MARK: Framing / checksum
 
+    /** Issue #64 + the redactor rule in AGENTS.md: a `0x78` frame's diagnostic kind must be one
+     *  the redactor masks, whether or not the frame carried a plausible bpm. */
+    @Test
+    fun `every sport telemetry frame is tagged for masking, and only a plausible bpm becomes a sample`() {
+        fun frame(bpm: Int) = ColmiPacket.frame(byteArrayOf(
+            0x78, 0x01, 0x00, 0x00, 0x00, bpm.toByte(),
+            0x00, 0x07, 0xd0.toByte(),   // 2000 steps
+        ))
+        val warmUp = ColmiDecoder.decodeNormal(frame(0))
+        assertEquals(1, warmUp.size)
+        assertTrue("a 0-bpm frame is still tagged", warmUp[0] is RingDecodedEvent.SportTelemetry)
+        assertEquals("sport_telemetry", warmUp[0].kind)
+
+        val live = ColmiDecoder.decodeNormal(frame(132))
+        assertEquals(2, live.size)
+        assertTrue("the telemetry tag comes first so it is the frame's diagnostic kind",
+            live[0] is RingDecodedEvent.SportTelemetry)
+        assertEquals(132, (live[1] as RingDecodedEvent.HeartRateSample).bpm)
+    }
+
     @Test
     fun `frame appends checksum and is 16 bytes`() {
         val framed = ColmiPacket.frame(byteArrayOf(0x03))

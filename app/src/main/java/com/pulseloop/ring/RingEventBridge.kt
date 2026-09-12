@@ -83,6 +83,9 @@ object RingEventBridge {
         is RingDecodedEvent.Status ->
             listOf(PulseEvent.DeviceStateChanged(RingConnectionState.CONNECTED, decoded.address, decoded.firmware))
 
+        // Sport telemetry is a diagnostics marker; its bpm arrives as its own HeartRateSample.
+        is RingDecodedEvent.SportTelemetry -> emptyList()
+
         is RingDecodedEvent.TimeSyncAck, is RingDecodedEvent.CommandAck, is RingDecodedEvent.Unknown ->
             emptyList()
 
@@ -96,6 +99,9 @@ object RingEventBridge {
 
         is RingDecodedEvent.Spo2Complete ->
             listOf(PulseEvent.Spo2Complete(decoded._timestamp))
+
+        is RingDecodedEvent.MeasurementComplete ->
+            listOf(PulseEvent.MeasurementComplete(decoded.mode, decoded.success, decoded._timestamp))
 
         is RingDecodedEvent.Spo2Progress ->
             emptyList() // Phase 1 does not fan these out
@@ -139,6 +145,9 @@ object RingEventBridge {
             if (decoded.mgdl in bloodSugarRange) listOf(PulseEvent.BloodSugarSample(decoded.mgdl, decoded._timestamp))
             else emptyList()
         }
+
+        // Half a frame carries nothing to act on; it exists only so the raw-packet log can mask it.
+        is RingDecodedEvent.FramePending -> emptyList()
     }
 
     private fun isPlausibleHistoryMeasurement(kind: MeasurementKind, value: Double): Boolean {

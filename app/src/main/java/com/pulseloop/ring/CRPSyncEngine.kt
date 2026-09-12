@@ -160,10 +160,13 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     }
 
     /** The last frame index each timing vital emits before its day is complete (vendor terminal
-     *  index: HR/SpO2/stress finalize at frame 1 — two 144-slot frames; HRV at frame 3 — four
-     *  72-slot frames). A reply below this index triggers a pull of the next frame. */
-    private fun terminalFrameIndex(cmd: Int): Int =
-        if (cmd == CRPCommands.CMD_QUERY_TIMING_HRV) 3 else 1
+     *  index: HR/SpO2/stress finalize at frame 1 — two 144-slot frames; HRV and temperature at
+     *  frame 3 — four 72-slot frames, since both carry 2 bytes per slot; `e1/m.d` requests the
+     *  next frame until `3 == index`). A reply below this index triggers a pull of the next frame. */
+    private fun terminalFrameIndex(cmd: Int): Int = when (cmd) {
+        CRPCommands.CMD_QUERY_TIMING_HRV, CRPCommands.CMD_QUERY_HISTORY_TEMP -> 3
+        else -> 1
+    }
 
     /** Build the next-frame query for a timing vital, or null for a non-timing cmd. */
     private fun timingQuery(cmd: Int, day: Int, frameIndex: Int): ByteArray? = when (cmd) {
@@ -171,6 +174,7 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         CRPCommands.CMD_QUERY_TIMING_HRV -> CRPProtocol.queryTimingHrvHistory(day, frameIndex)
         CRPCommands.CMD_QUERY_TIMING_SPO2 -> CRPProtocol.queryTimingSpO2History(day, frameIndex)
         CRPCommands.CMD_QUERY_TIMING_STRESS -> CRPProtocol.queryTimingStressHistory(day, frameIndex)
+        CRPCommands.CMD_QUERY_HISTORY_TEMP -> CRPProtocol.queryHistoryTemp(day, frameIndex)
         else -> null
     }
 

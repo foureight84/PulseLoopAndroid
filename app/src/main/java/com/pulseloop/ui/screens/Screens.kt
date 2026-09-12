@@ -80,10 +80,13 @@ fun VitalsScreen(
     val spotMode = !combinedMode && (
         state.supportsManualHr || state.supportsManualSpo2 || state.supportsBP
     )
+    // The spot bound is per-ring: a family that ends its own HR measurement gets a longer
+    // ceiling (issue #59), and the countdown must not run out while the leg is still measuring.
     val measureSeconds = if (combinedMode)
         com.pulseloop.service.RingSyncCoordinator.COMBINED_MEASURE_SECONDS
     else
-        com.pulseloop.service.RingSyncCoordinator.SPOT_MEASURE_SECONDS
+        coordinator?.spotMeasureSeconds
+            ?: com.pulseloop.service.RingSyncCoordinator.SPOT_MEASURE_SECONDS
     // Card chrome state (value / status / trend / footer) is factory-built once per state
     // emission, off the composition path — the cards below run no threshold math.
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — too
@@ -601,7 +604,23 @@ fun VitalDetailScreen(
                     }
                 }
 
-                // 4. Reference zones — colored dot + label + range per zone.
+                // 4. Readings — every individual measurement in the window, newest first, each
+                // deletable (issue #60). Collapsed by default: a Month of all-day history runs to
+                // hundreds of rows, and the chart above is what the screen is normally for.
+                if (state.readings.isNotEmpty()) {
+                    item {
+                        ReadingsCard(
+                            readings = state.readings,
+                            metric = metric,
+                            period = state.period,
+                            unitLabel = state.thresholds?.unitLabel ?: "",
+                            gUnit = gUnit,
+                            onDelete = { vm.deleteReading(it) },
+                        )
+                    }
+                }
+
+                // 5. Reference zones — colored dot + label + range per zone.
                 if (state.engineZones.isNotEmpty()) {
                     item {
                         val cardShape = RoundedCornerShape(20.dp)
@@ -649,7 +668,7 @@ fun VitalDetailScreen(
                     }
                 }
 
-                // 5. What this means
+                // 6. What this means
                 item {
                     val cardShape = RoundedCornerShape(20.dp)
                     Column(
@@ -677,7 +696,7 @@ fun VitalDetailScreen(
                     }
                 }
 
-                // 6. Estimated-metric disclaimer (BP + glucose only, iOS warning card).
+                // 7. Estimated-metric disclaimer (BP + glucose only, iOS warning card).
                 metricDisclaimer(metric)?.let { disclaimer ->
                     item {
                         val cardShape = RoundedCornerShape(20.dp)
@@ -708,6 +727,160 @@ fun VitalDetailScreen(
         }
     }
 }
+
+/**
+ * The window's individual readings, with a delete affordance per row (issue #60).
+ *
+ * Deletion only — a recorded health value can be removed but never edited into a different
+ * number — and always behind a confirmation, because it cannot be undone: the row is gone, and a
+ * reading the ring supplied is tombstoned so the next sync of that day won't restore it.
+ */
+@Composable
+private fun ReadingsCard(
+    readings: List<VitalDetailViewModel.Reading>,
+    metric: String,
+    period: Period,
+    unitLabel: String,
+    gUnit: com.pulseloop.service.GlucoseUnit,
+    onDelete: (VitalDetailViewModel.Reading) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<VitalDetailViewModel.Reading?>(null) }
+    // Rows are composed eagerly inside one LazyColumn item — the parent's 18dp item spacing means
+    // the card can't be split across items without losing its chrome — so the list is paged rather
+    // than rendered whole. A Month of 5-minute all-day history is thousands of readings; a page of
+    // PAGE_SIZE is what someone scanning for a bad measurement actually reads.
+    var visibleCount by remember(readings.size) { mutableStateOf(READINGS_PAGE_SIZE) }
+    val cardShape = RoundedCornerShape(20.dp)
+
+    fun readingText(r: VitalDetailViewModel.Reading): String {
+        val primary = formatStat(r.value, metric, gUnit)
+        return r.secondary?.let { "$primary/${formatStat(it, metric, gUnit)}" } ?: primary
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(cardShape)
+            .background(PulseColors.card)
+            .border(1.dp, PulseColors.borderSubtle, cardShape),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "READINGS",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.sp,
+                color = PulseColors.textMuted,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                readings.size.toString(),
+                fontSize = 12.sp,
+                color = PulseColors.textMuted,
+                modifier = Modifier.padding(end = 6.dp),
+            )
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Hide readings" else "Show readings",
+                tint = PulseColors.textMuted,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+
+        if (expanded) {
+            // Not a nested LazyColumn: this card already sits inside one, and nesting two
+            // scrollers in the same axis crashes Compose. Bounded by [visibleCount] instead.
+            readings.take(visibleCount).forEach { reading ->
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        tooltipTime(reading.timestamp, period),
+                        fontSize = 13.sp,
+                        color = PulseColors.textSecondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        readingText(reading),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = PulseColors.textPrimary,
+                    )
+                    if (unitLabel.isNotEmpty()) {
+                        Text(
+                            " $unitLabel",
+                            fontSize = 11.sp,
+                            color = PulseColors.textMuted,
+                        )
+                    }
+                    IconButton(
+                        onClick = { pendingDelete = reading },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.DeleteOutline,
+                            contentDescription = "Delete this reading",
+                            tint = PulseColors.textMuted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+            if (readings.size > visibleCount) {
+                TextButton(
+                    onClick = { visibleCount += READINGS_PAGE_SIZE },
+                    modifier = Modifier.padding(start = 8.dp),
+                ) {
+                    Text("Show ${minOf(READINGS_PAGE_SIZE, readings.size - visibleCount)} more", fontSize = 13.sp)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+
+    pendingDelete?.let { reading ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete this reading?") },
+            text = {
+                Text(
+                    buildString {
+                        append(readingText(reading))
+                        if (unitLabel.isNotEmpty()) append(" $unitLabel")
+                        append(" at ")
+                        append(tooltipTime(reading.timestamp, period))
+                        append(".\n\nThis can't be undone.")
+                        // Say so plainly rather than letting a user wonder why the reading
+                        // didn't come back after a re-sync — that is deliberate.
+                        if (reading.fromHistory) {
+                            append(" The reading stays deleted the next time this day syncs.")
+                        }
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(reading)
+                    pendingDelete = null
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/** How many readings the list shows before asking (issue #60) — see [ReadingsCard]. */
+private const val READINGS_PAGE_SIZE = 50
 
 /** iOS-style segmented control for Today/Week/Month. */
 @Composable
