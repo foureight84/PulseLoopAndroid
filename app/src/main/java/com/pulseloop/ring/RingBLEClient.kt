@@ -313,7 +313,17 @@ class RingBLEClient(
     }
 
     /**
-     * Reconnect to the stored ring, alternating strategies like the official QRing app
+     * **Auto-reconnect only. A user tapping "Connect" must call [userConnect] instead.**
+     *
+     * This path deliberately honours the stay-off flag [userDisconnect] persists, so it returns
+     * without doing anything at all — no scan, no state change, no error — whenever the user has
+     * manually disconnected. That is correct for every caller here (app foreground, the watchdog,
+     * `RingSyncWorker`, the coach runner) and silently wrong for a button: wiring the Settings hero
+     * card's Connect to this made it a no-op in precisely the situation it exists for, with nothing
+     * on screen to say why (issue #72). [userConnect] clears the flag first, which is what makes a
+     * user's Connect mean "I want the ring back" rather than "retry, if you're still allowed to".
+     *
+     * Reconnects to the stored ring, alternating strategies like the official QRing app
      * (BleBaseControl: `count % 3` picks direct-connect vs scan-then-connect): a direct
      * connect is fastest right after a drop, but parks uselessly against a ring that
      * isn't advertising — a scan first proves reachability. Attempts are capped

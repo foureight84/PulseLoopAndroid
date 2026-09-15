@@ -49,6 +49,7 @@ fun DeviceHeroCard(
     onOpenWearable: () -> Unit,
     onConnect: () -> Unit,
     onSetUp: () -> Unit,
+    onDisconnect: () -> Unit = {},
 ) {
     val deviceType = bleState.activeDeviceType ?: storedDevice?.deviceType
     val wearableModel = WearableModel.model(bleState.activeWearableModelID)
@@ -166,7 +167,12 @@ fun DeviceHeroCard(
                             when (status.action) {
                                 DeviceHeroStatus.Action.CONNECT -> onConnect()
                                 DeviceHeroStatus.Action.SET_UP -> onSetUp()
-                                else -> {}
+                                // The card rendered "Disconnect" as an enabled button wired to
+                                // nothing — the same silent no-op as issue #72's Connect, one
+                                // action along. PENDING is the only state that should do nothing,
+                                // and it is already inert via `actionEnabled`.
+                                DeviceHeroStatus.Action.DISCONNECT -> onDisconnect()
+                                DeviceHeroStatus.Action.PENDING -> {}
                             }
                         }
                         .padding(horizontal = 12.dp)

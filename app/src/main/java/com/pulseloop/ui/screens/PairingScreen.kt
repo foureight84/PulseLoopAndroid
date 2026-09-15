@@ -260,7 +260,10 @@ fun PairingScreen(
                             state.connectionState != RingConnectionState.RECONNECTING
                         ) {
                             SecondaryButton("Reconnect last ring", icon = Icons.Filled.Refresh) {
-                                bleClient.connectLastKnown()
+                                // See SettingsScreen's onConnect (issue #72): a user-initiated
+                                // reconnect must clear the stay-off flag a manual Disconnect set,
+                                // or it is silently suppressed.
+                                bleClient.userConnect()
                             }
                         }
                     }
