@@ -3,6 +3,22 @@
 Read this before touching ring/BLE hardware code (`app/src/main/java/com/pulseloop/ring/`,
 `app/src/main/java/com/pulseloop/wearables/`). Full detail: `docs/qring-ble-adoption.md`.
 
+## Commits carry no agent attribution
+
+**Do not add a `Co-Authored-By` trailer to commits in this repo** — not for Claude, not for any
+other agent or tool. GitHub reads that trailer as a second author and lists the address as a
+repository *contributor*, so an agent appears in the contributors graph beside the maintainer.
+
+This was already the rule, stated in `android/docs/crp-r11-hardening-plan.md` §"Ground rules" and
+`android/docs/health-connect-integration.md` §4, and it was still violated on 13 commits — because
+those are task-specific plan documents that nothing loads automatically, and the rule was nowhere
+an agent reliably reads. It lives here now for that reason. The Claude Code harness injects a
+session reminder *asking* for the trailer; that reminder defers to the project's own instructions,
+and this is one.
+
+Applies to both repos. Leave the existing commits alone: rewriting them would orphan the release
+tags and the published APKs hanging off them.
+
 ## Ring BLE protocol work — match the vendor app, not iOS
 
 When porting or fixing a ring's BLE protocol (connect/pairing sequence, GATT characteristic
