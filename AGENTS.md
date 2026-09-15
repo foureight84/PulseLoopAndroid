@@ -98,16 +98,16 @@ simply produces no reply. `CRPSyncEngine.sendSleepBackfill` therefore pulls the 
 per connection** (not per pass — `runStartup` is also the ~30-minute background sync, and this ring
 funnels everything through one `fdd2` channel).
 
-jring has the same gap, for different reasons. Its depth is `makeHistoryQueryCommand()`'s default of
-1, called with no argument at `JringDriver.kt:105`, against a command that accepts up to 27.
-**`RingSyncCoordinator.syncWindowDays` is not that control** — despite its "must match
-makeHistoryQueryCommand's default" comment, it has exactly one use, sizing the sync-progress window
-in `beginSyncProgress`, and it applies to every family. Don't cite it as a per-family request depth;
-that mistake is what deferred this fix once already. Two things do make jring harder than CRP:
-`JringSyncEngine.runStartup` has no once-per-connection gate, so a wider `days` re-pulls the whole
-span on every ~30-minute background pass rather than once; and `0x10` returns activity *and* sleep
-together — there is no sleep-only request — so each extra day costs ~96 activity packets
-(15× 1-minute buckets per packet) on top of the night.
+jring had the same gap and a worse one underneath it (see "#73" below: byte 1 of `0x10` is a day
+*offset*, so the app never asked for today at all). One day per request, so depth is a loop, not a
+number. **`RingSyncCoordinator.syncWindowDays` is not that control** — despite the "must match
+makeHistoryQueryCommand's default" comment it used to carry, it has exactly one use, sizing the
+sync-progress window in `beginSyncProgress`, and it applies to every family. Don't cite it as a
+per-family request depth; that mistake is what deferred this fix once already. Two things still make
+jring harder than CRP: `runStartup` is also the ~30-minute background sync, so a wider window must be
+gated to once per connection (`historyBackfilled`) or it re-pulls the whole span every half hour;
+and `0x10` returns activity *and* sleep together — there is no sleep-only request — so each extra
+day costs ~96 activity packets (15× 1-minute buckets per packet) on top of the night.
 
 Consequence to keep in mind: nothing bulk-deletes real sleep any more, so a Forget followed by
 pairing a different ring carries the previous ring's history over. If that ever needs to change,
@@ -178,6 +178,38 @@ Two related things worth knowing before changing this area:
 Corollary for new protocol work: a reply that merely reports something about the device (firmware,
 serial, capabilities) is not a connection event. Give it its own `RingDecodedEvent` — as
 `FirmwareRevision` does — rather than hanging it off `Status`.
+
+## `0x10`'s byte 1 is a day offset, not a day count (issue #73)
+
+**An SR08 synced steps and HR but never a single night of sleep**, however long it was worn. The
+request depth looked fine; the day being requested was not. `getDataByDay(int type, int day)`
+(`IRemoteService.aidl`) reaches `BluetoothLeService.a(int, int)`, which writes the type into
+`bArr[0]` — `1` → `16` (`0x10`, activity+sleep), `2` → `22` (`0x16`, heart rate), via the
+`WeatherUtil` constants jadx happens to resolve those bytes to — and then the `day` argument
+**straight into `bArr[1]`**. One day per call. The caller loops:
+`DupMainActivity.onGetMultipleSportData` decrements `P_SYNC_HISTORY_DAY` on each day's sync-end and
+calls `getDataByDay(1, i6)` again, counting **down to 0**.
+
+Read as a count, our `0x10/03` asked for the day before last and `0x10/01` for yesterday, so **no
+pass ever requested today** — and `0x10` is the only source of sleep, so last night could not
+arrive. Steps and HR masked it: activity comes from the ring's automatic `0x03` push, and
+`makeHistoryMeasurementQueryCommand` already hardcoded `16 00`, i.e. offset 0. The one request that
+asked for today was the one that worked, which is the clue that was sitting in the source the whole
+time.
+
+Two process notes worth keeping:
+
+- **The count reading came from a name that isn't in the vendor SDK.** The KDoc cited Gadgetbridge's
+  `triggerActivityReportByDays()`; that identifier appears nowhere in `decompiled-jring-offical/`,
+  only in our own files. A citation to a *different* project's helper is not vendor evidence — check
+  the decompile, which for this family means `jadx --single-class` against `classes2.dex`, since
+  only the `.aidl` files ship as sources.
+- **We diverge from the vendor's chain deliberately.** It is reply-driven, one day at a time,
+  counting down; we enqueue the window's offsets in one pass, **today first**, because nothing here
+  decodes a per-day sync-end to drive the next request from. That is the shape the reporter
+  hardware-validated on an SR08 (offsets 0, 1, 2 separately → 27 `0x11` sleep entries after
+  `0x10/00`). If a ring is ever seen truncating a day's stream when the next request lands, the
+  vendor's chain is the fix and it needs a sync-end signal decoded first.
 
 ## Colmi R11 (CRP "Da Rings") — diagnose from the capture, and decode wear state before blaming code
 

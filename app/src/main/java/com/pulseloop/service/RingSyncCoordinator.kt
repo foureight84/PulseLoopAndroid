@@ -49,7 +49,10 @@ class RingSyncCoordinator(
     private var syncWindowEnd = 0L
     private var syncResetJob: Job? = null
     private var lastAdvanceAt = 0L
-    /** Days of history requested on startup — must match makeHistoryQueryCommand's default. */
+    /** Width of the sync-progress window, in days. This sizes the progress bar in
+     *  [beginSyncProgress] and nothing else — it is **not** any family's request depth, despite
+     *  what this comment used to claim (see `AGENTS.md`; citing it as jring's depth deferred the
+     *  #73 fix once already). */
     private val syncWindowDays = 1
     /** How often the stall-watcher checks, and how long without progress before it gives up. */
     private val SYNC_STALL_CHECK_MS = 2_000L
