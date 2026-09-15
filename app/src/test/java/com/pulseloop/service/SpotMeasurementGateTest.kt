@@ -166,4 +166,73 @@ class SpotMeasurementGateTest {
         val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
         assertNull("a late completion must not end the next measurement", gate.completedSuccessfully(hr))
     }
+
+    // ── The ring's *failure* verdict ────────────────────────────────────────────────────────
+    //
+    // Every completion case above passed `success = true`, and `RingSyncCoordinator` has no test
+    // harness, so `04 0e {mode, 02}` — the ring saying the measurement failed — was never once
+    // executed by the suite. That is the branch a rc1 tester reported as a reading stored from a
+    // run the ring had called a failure (issue #66), and nothing here would have caught a drift
+    // in it. `false` and `null` are also the two answers a caller must not confuse: null means
+    // "still measuring, keep the window as the bound", false means "abort, store nothing".
+
+    @Test
+    fun `a failure verdict is reported as a failure and not as silence`() {
+        val gate = SpotMeasurementGate()
+        val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
+
+        gate.noteCompleted(YCBTMeasurementMode.HEART_RATE, success = false)
+
+        assertEquals("a failed run is `false`, not `null`", false, gate.completedSuccessfully(hr))
+        assertFalse("a failure is not a refusal — it has its own abort path", gate.isRejected(hr))
+    }
+
+    @Test
+    fun `a failure of a different mode cannot fail the one in flight`() {
+        val gate = SpotMeasurementGate()
+        val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
+
+        gate.noteCompleted(YCBTMeasurementMode.SPO2, success = false)
+
+        assertNull("only the measurement the ring named may be ended", gate.completedSuccessfully(hr))
+    }
+
+    /** Legs really do overlap here, and one leg's failure must not abort another's good run. */
+    @Test
+    fun `a failure ends only the measurement it names when two are in flight`() {
+        val gate = SpotMeasurementGate()
+        val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
+        val spo2 = gate.begin(YCBTMeasurementMode.SPO2)
+
+        gate.noteCompleted(YCBTMeasurementMode.SPO2, success = false)
+        gate.noteCompleted(YCBTMeasurementMode.HEART_RATE, success = true)
+
+        assertEquals(false, gate.completedSuccessfully(spo2))
+        assertEquals(true, gate.completedSuccessfully(hr))
+    }
+
+    /** The ring's first word on a run is its last: a stray success after a failure must not turn
+     *  a run the ring failed into one whose samples are worth settling. */
+    @Test
+    fun `a failure is not overwritten by a later success`() {
+        val gate = SpotMeasurementGate()
+        val hr = gate.begin(YCBTMeasurementMode.HEART_RATE)
+
+        gate.noteCompleted(YCBTMeasurementMode.HEART_RATE, success = false)
+        gate.noteCompleted(YCBTMeasurementMode.HEART_RATE, success = true)
+
+        assertEquals("the run was already decided", false, gate.completedSuccessfully(hr))
+    }
+
+    @Test
+    fun `a failure cannot leak into the next measurement on the same mode`() {
+        val gate = SpotMeasurementGate()
+        val first = gate.begin(YCBTMeasurementMode.HEART_RATE)
+        gate.noteCompleted(YCBTMeasurementMode.HEART_RATE, success = false)
+        gate.end(first)
+
+        val retry = gate.begin(YCBTMeasurementMode.HEART_RATE)
+
+        assertNull("a retry starts with the ring having said nothing", gate.completedSuccessfully(retry))
+    }
 }

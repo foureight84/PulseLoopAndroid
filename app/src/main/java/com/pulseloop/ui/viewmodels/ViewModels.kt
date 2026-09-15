@@ -2,6 +2,7 @@ package com.pulseloop.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.pulseloop.data.ActivityBucketDeletion
 import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.Bucket
@@ -10,6 +11,7 @@ import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
 import com.pulseloop.coach.summaries.CoachSummaryKind
 import com.pulseloop.service.DailyCalorieEstimator
+import com.pulseloop.service.DerivedStress
 import com.pulseloop.service.HeartRateZones
 import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepInsights
@@ -447,6 +449,25 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         }
     }
 
+    /**
+     * The individual buckets behind one day's total, newest first (issue #70).
+     *
+     * A ring logs activity in intraday blocks, so a day's steps are a couple of dozen rows rather
+     * than one figure — which is what makes a single inflated block (the ring carried rather than
+     * worn, a rough car journey) removable at all.
+     */
+    suspend fun bucketsForDay(day: Long): List<ActivityBucketEntity> =
+        try { db.activityBucketDao().byDay(day).sortedByDescending { it.startEpoch } }
+        catch (_: Exception) { emptyList() }
+
+    /** Delete one bucket and restate its day. Returns the day's remaining buckets. */
+    suspend fun deleteBucket(startEpoch: Long): List<ActivityBucketEntity> {
+        val day = TimeUtil.startOfDayLocal(startEpoch)
+        try { ActivityBucketDeletion.delete(db, startEpoch) } catch (_: Exception) {}
+        refreshCurrentDay()
+        return bucketsForDay(day)
+    }
+
     suspend fun reloadGoals() {
         try {
             db.userGoalDao().get()?.let { goal ->
@@ -489,6 +510,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val spo2Samples: List<Double> = emptyList(),
         val hrvSamples: List<Double> = emptyList(),
         val stressSamples: List<Double> = emptyList(),
+        /** The stress series came from HRV, not from the ring (issue #67). Never shown unlabelled. */
+        val stressIsDerived: Boolean = false,
         val fatigueSamples: List<Double> = emptyList(),
         val tempSamples: List<Double> = emptyList(),
         val latestHr: Int? = null,
@@ -612,18 +635,40 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val gluc = if (caps.contains(WearableCapability.BLOOD_SUGAR)) series(MeasurementKind.BLOOD_SUGAR) else emptyList()
         val userProfile = db.userProfileDao().get()
 
+        // Issue #67: a ring whose hardware never answers a stress query (the R100 — 22 sends, 0
+        // replies) advertises STRESS anyway, because the capability list is a static per-family
+        // constant rather than something that ring confirmed, and the user gets a card that can
+        // never fill. Where the ring returns HRV but no stress at all, derive one — labelled as
+        // derived everywhere it is shown, because the ring did not measure it.
+        //
+        // "No stress at all" is a question about the ring, so it is asked of the whole history and
+        // not of this 24 h window. An empty window happens for ordinary reasons — the monitor
+        // switched off for a day, a ring re-paired this morning, a quiet night — and on a ring that
+        // *does* measure stress the card would then show a derived number under the footnote "your
+        // ring doesn't measure stress", which is simply false about that ring.
+        val hrvValues = hrv.map { it.value }
+        val ringEverReportedStress = db.measurementDao().hasReal(MeasurementKind.STRESS.name)
+        val derived = if (stress.isEmpty() && !ringEverReportedStress && hrvValues.isNotEmpty())
+            DerivedStress.scored(hrvValues) else emptyList()
+        // Scores carry the timestamp of the HRV reading each was derived from — the chart, the
+        // card's headline value and its gauge all read the series, so a value list on its own left
+        // every one of them empty under a footnote saying where the number came from.
+        val derivedStressSeries = derived.map { (i, score) -> VitalSample(hrv[i].timestamp, score.toDouble()) }
+        val derivedStress = derivedStressSeries.map { it.value }
+
         return VitalsState(
             hrSamples = hr.map { it.value },
             spo2Samples = spo2.map { it.value },
             hrvSamples = hrv.map { it.value },
-            stressSamples = stress.map { it.value },
+            stressSamples = stress.map { it.value }.ifEmpty { derivedStress },
+            stressIsDerived = stress.isEmpty() && derivedStress.isNotEmpty(),
             fatigueSamples = fatigue.map { it.value },
             tempSamples = temp.map { it.value },
             latestHr = hr.lastOrNull()?.value?.toInt(),
             restingHr = HeartRateZones.restingHeartRate(hr.map { it.value }),
             latestSpo2 = spo2.lastOrNull()?.value?.toInt(),
             latestHrv = hrv.lastOrNull()?.value,
-            latestStress = stress.lastOrNull()?.value,
+            latestStress = stress.lastOrNull()?.value ?: derivedStress.lastOrNull(),
             latestFatigue = fatigue.lastOrNull()?.value,
             latestTemp = temp.lastOrNull()?.value,
             // Latest = the series' last sample (iOS `inputs.systolic.last`) — demo seeds today's
@@ -641,7 +686,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             hrSeries = hr.map { VitalSample(it.timestamp, it.value) },
             spo2Series = spo2.map { VitalSample(it.timestamp, it.value) },
             hrvSeries = hrv.map { VitalSample(it.timestamp, it.value) },
-            stressSeries = stress.map { VitalSample(it.timestamp, it.value) },
+            stressSeries = stress.map { VitalSample(it.timestamp, it.value) }.ifEmpty { derivedStressSeries },
             fatigueSeries = fatigue.map { VitalSample(it.timestamp, it.value) },
             tempSeries = temp.map { VitalSample(it.timestamp, it.value) },
             bpSysSeries = bpSys.map { VitalSample(it.timestamp, it.value) },
@@ -961,6 +1006,10 @@ class VitalDetailViewModel(
          *  (issue #60). Demo/seeded rows are included: a user clearing seeded noise out of a
          *  chart is the same gesture as removing a bad measurement. */
         val readings: List<Reading> = emptyList(),
+        /** This chart is derived rather than measured (issue #67) — carried so the screen says so.
+         *  A derived figure shown as a measurement would be worse than the empty chart it replaces,
+         *  which is why it travels with the data instead of being re-inferred at the display layer. */
+        val isDerived: Boolean = false,
     )
 
     /**
@@ -1219,12 +1268,23 @@ class VitalDetailViewModel(
 
             // Every reading, at its real timestamp — no averaging.
             val samples = dao.range(kindName, windowStart, windowEnd)
-            val times = samples.map { it.timestamp }
-            val points = samples.map { convert(it.value) }
+            // Issue #67: the Vitals card derives stress from HRV for a ring whose hardware reports
+            // none, so the detail it opens has to show the same series — a filled card over an
+            // empty chart reads as a bug in the card. Same gate as the card: only where the ring
+            // has never returned a stress reading at all, never blended with hardware values.
+            val derived = if (kind == MeasurementKind.STRESS && samples.isEmpty() && !dao.hasReal(kindName))
+                derivedStressIn(windowStart, windowEnd) else emptyList()
+            val times = if (derived.isNotEmpty()) derived.map { it.timestampMs } else samples.map { it.timestamp }
+            val points = if (derived.isNotEmpty()) derived.map { it.value } else samples.map { convert(it.value) }
             val labels = buildLabels(times, period)
 
             val prevSamples = dao.range(kindName, prevStart, prevEnd)
-            val prevAvg = if (prevSamples.isNotEmpty()) convert(prevSamples.map { it.value }.average()) else null
+            val prevDerived = if (derived.isNotEmpty()) derivedStressIn(prevStart, prevEnd) else emptyList()
+            val prevAvg = when {
+                prevDerived.isNotEmpty() -> prevDerived.map { it.value }.average()
+                prevSamples.isNotEmpty() -> convert(prevSamples.map { it.value }.average())
+                else -> null
+            }
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val range = if (points.isNotEmpty()) points.max() - points.min() else 1.0
             val trend = computeTrend(thisAvg, prevAvg, range)
@@ -1263,9 +1323,24 @@ class VitalDetailViewModel(
                 resting = resting,
                 trend = trend,
                 engineZones = engineZones,
+                isDerived = derived.isNotEmpty(),
                 loading = false,
             ) }
         }
+    }
+
+    /**
+     * The derived stress series across one window (issue #67), timestamped by the HRV reading each
+     * score came from.
+     *
+     * These are not rows: nothing stored them and [deleteReading] has nothing to remove, which is
+     * why the readings list below stays empty on a derived chart.
+     */
+    private suspend fun derivedStressIn(from: Long, to: Long): List<VitalSample> {
+        val hrv = db.measurementDao().range(MeasurementKind.HRV.name, from, to)
+        if (hrv.isEmpty()) return emptyList()
+        return com.pulseloop.service.DerivedStress.scored(hrv.map { it.value })
+            .map { (i, score) -> VitalSample(hrv[i].timestamp, score.toDouble()) }
     }
 
     /**

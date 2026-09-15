@@ -234,9 +234,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     }
 
     /** Send the all-day enable/disable command for every vital. The CRP protocol takes a single
-     *  interval byte per enable, and [MeasurementSettings] carries only [MeasurementSettings.hrIntervalMinutes]
-     *  (no per-vital cadence), so the HR interval is shared across the board. Disabled vitals are
-     *  explicitly turned off so a reconnect can't leave a previously-enabled monitor running. */
+     *  interval byte per enable, and [MeasurementSettings] carries a per-vital cadence only for
+     *  blood oxygen (issue #66) — HRV and stress still share the heart-rate interval. Disabled
+     *  vitals are explicitly turned off so a reconnect can't leave a previously-enabled monitor
+     *  running. */
     private fun applyTimingSettings(settings: MeasurementSettings) {
         if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
         else send(CRPProtocol.disableTimingHeartRate())
@@ -244,7 +245,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         else send(CRPProtocol.disableTimingHRV())
         if (settings.stressEnabled) send(CRPProtocol.enableTimingStress(settings.hrIntervalMinutes))
         else send(CRPProtocol.disableTimingStress())
-        if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
+        // 0 means "follow heart rate", which is what this leg did unconditionally before.
+        if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(
+            settings.spo2IntervalMinutes.takeIf { it > 0 } ?: settings.hrIntervalMinutes
+        ))
         else send(CRPProtocol.disableTimingSpO2())
         if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
         else send(CRPProtocol.disableTimingTemp())

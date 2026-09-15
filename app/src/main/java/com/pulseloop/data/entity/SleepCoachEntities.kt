@@ -39,6 +39,20 @@ data class SleepStageBlockEntity(
     val startMinute: Int,
     val durationMinutes: Int,
     val stageRaw: String,    // SleepStage name
+    /**
+     * The declared start of the **ring record** this block came from (issue #68).
+     *
+     * A night can arrive as several records and is merged into one session, so which record a block
+     * belongs to is information only the import knows — and it is not recoverable afterwards. The
+     * gap between two records is not a reliable substitute: this ring closes one record and opens
+     * the next a **single minute** later, which is the same width as the seam left by rounding each
+     * block onto the minute grid, so any gap threshold either merges real records or splits
+     * unsplit nights.
+     *
+     * `0` means "unknown" — a row written before this column existed. [SleepRecordRun] falls back
+     * to the gap heuristic for those rather than claiming a night was unsplit.
+     */
+    val recordStartAt: Long = 0L,
 )
 
 /**

@@ -87,6 +87,19 @@ data class ActivityDailyEntity(
     /** Ported from iOS #98: net active calories estimated from all-day HR + step buckets when the
      *  ring does not report device-side calories. Read through [effectiveActiveCalories]. */
     val estimatedActiveCalories: Double? = null,
+    /**
+     * What this day's deleted activity buckets contributed, kept so the ring's own cumulative
+     * counter can be corrected for them (issue #70).
+     *
+     * `activity_buckets` holds only the buckets that survive, so a sum over them restates the day
+     * — but the live `ActivityUpdate` total the ring pushes all day is a *cumulative* figure that
+     * still includes the deleted block, and the live path ratchets the day up against it. Without
+     * this the deletion was undone by the next frame, seconds later.
+     *
+     * See [com.pulseloop.data.ActivityBucketDeletion].
+     */
+    val deletedSteps: Int = 0,
+    val deletedDistanceMeters: Double = 0.0,
 )
 
 /**
@@ -140,6 +153,15 @@ data class DeviceMeasurementConfigEntity(
     val hrIntervalMinutes: Int = 5,
     val hrEnabled: Boolean = true,
     val spo2Enabled: Boolean = true,
+    /**
+     * All-day SpO₂ sampling interval, minutes — 0 means "follow the heart-rate interval" (issue #66).
+     *
+     * The monitor command takes the same shape for every vital (`01 <key> {enable, interval}`), so
+     * an interval was always settable for blood oxygen; it simply wasn't surfaced, and inherited
+     * whatever heart rate was set to. On a ring running both monitors hourly that is most of the
+     * battery, which is why the reporter asked for it separately.
+     */
+    val spo2IntervalMinutes: Int = 0,
     val stressEnabled: Boolean = true,
     val hrvEnabled: Boolean = true,
     val temperatureEnabled: Boolean = true,

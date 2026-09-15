@@ -83,7 +83,14 @@ class YCBTSettingsEncoder {
             heartMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
             bloodPressureMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
             temperatureMonitor(enabled = settings.temperatureEnabled, intervalMinutes = interval),
-            bloodOxygenMonitor(enabled = settings.spo2Enabled, intervalMinutes = interval),
+            // Blood oxygen carries its own interval where the user set one (issue #66); 0 means
+            // follow heart rate, which is what it always did. Same clamp — the firmware floors the
+            // interval at its own minimum whatever we ask for.
+            bloodOxygenMonitor(
+                enabled = settings.spo2Enabled,
+                intervalMinutes = if (settings.spo2IntervalMinutes > 0)
+                    clampInterval(settings.spo2IntervalMinutes).toByte() else interval,
+            ),
             hrvMonitor(enabled = settings.hrvEnabled, intervalMinutes = interval),
         )
     }

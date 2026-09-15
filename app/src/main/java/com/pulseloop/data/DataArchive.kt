@@ -69,6 +69,10 @@ data class PulseArchive(
     val distanceMeters: Double = 0.0, val activeMinutes: Int = 0,
     val source: String = "mock", val syncedAt: Long? = null,
     val createdAt: Long, val updatedAt: Long,
+    /** Issue #70. Rides the archive for the same reason the tombstones do: a restore wipes every
+     *  table first, and without the deficit the ring's cumulative counter would walk the deleted
+     *  buckets back into the day. */
+    val deletedSteps: Int = 0, val deletedDistanceMeters: Double = 0.0,
     val estimatedActiveCalories: Double? = null,
 )
 
@@ -138,6 +142,9 @@ data class PulseArchive(
 @Serializable data class SleepStageBlockDTO(
     val id: String, val sessionId: String, val startAt: Long, val startMinute: Int,
     val durationMinutes: Int, val stageRaw: String,
+    /** Issue #68. 0 in an archive written before the column existed, which is the same "unknown"
+     *  the migration backfills — [com.pulseloop.service.sleepRecordRuns] falls back for those. */
+    val recordStartAt: Long = 0L,
 )
 
 @Serializable data class CoachConversationDTO(

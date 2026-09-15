@@ -80,6 +80,8 @@ object DataArchiveService {
                     syncedAt = c.longOrNull("syncedAt"), createdAt = c.long("createdAt"),
                     updatedAt = c.long("updatedAt"),
                     estimatedActiveCalories = c.dblOrNull("estimatedActiveCalories"),
+                    deletedSteps = c.int_("deletedSteps"),
+                    deletedDistanceMeters = c.dbl("deletedDistanceMeters"),
                 )
             },
             activityBuckets = collect("activity_buckets") { c ->
@@ -167,7 +169,7 @@ object DataArchiveService {
                 SleepStageBlockDTO(
                     id = c.str("id"), sessionId = c.str("sessionId"), startAt = c.long("startAt"),
                     startMinute = c.int_("startMinute"), durationMinutes = c.int_("durationMinutes"),
-                    stageRaw = c.str("stageRaw"),
+                    stageRaw = c.str("stageRaw"), recordStartAt = c.long("recordStartAt"),
                 )
             },
             coachConversations = collect("coach_conversations") { c ->
@@ -395,6 +397,8 @@ object DataArchiveService {
                     source = a.source, syncedAt = a.syncedAt, createdAt = a.createdAt,
                     updatedAt = a.updatedAt,
                     estimatedActiveCalories = a.estimatedActiveCalories,
+                    deletedSteps = a.deletedSteps,
+                    deletedDistanceMeters = a.deletedDistanceMeters,
                 ))
             }
             for (b in archive.activityBuckets) {
@@ -476,7 +480,7 @@ object DataArchiveService {
                 SleepStageBlockEntity(
                     id = block.id, sessionId = block.sessionId, startAt = block.startAt,
                     startMinute = block.startMinute, durationMinutes = block.durationMinutes,
-                    stageRaw = block.stageRaw,
+                    stageRaw = block.stageRaw, recordStartAt = block.recordStartAt,
                 )
             }.groupBy { it.sessionId }
             for (ss in archive.sleepSessions) {

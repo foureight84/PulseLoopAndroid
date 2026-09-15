@@ -72,6 +72,8 @@ data class MeasurementSettings(
     /** All-day HR sampling interval in minutes (Colmi clamps to 5..60 in 5-min steps). */
     val hrIntervalMinutes: Int,
     val spo2Enabled: Boolean,
+    /** All-day SpO₂ interval in minutes; 0 follows [hrIntervalMinutes] (issue #66). */
+    val spo2IntervalMinutes: Int = 0,
     val stressEnabled: Boolean,
     val hrvEnabled: Boolean,
     val temperatureEnabled: Boolean,

@@ -152,6 +152,78 @@ fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
 val SleepSessionEntity.spanMinutes: Int
     get() = ((endAt - startAt) / 60_000L).toInt().coerceAtLeast(0)
 
+/**
+ * One ring sleep record inside a stored session (issue #68).
+ *
+ * A ring closes a session when the wearer gets up and opens a new one when they settle, so one
+ * night can arrive as two or three records minutes apart. The app merges those into a single stored
+ * session — that is the night, and the merge is what #63 fixed — but the individual records are real
+ * information the merge then hides, and the vendor app shows them. This is that, recovered from
+ * stored data rather than re-parsed: since #63 each record's blocks are placed against its own
+ * declared bounds, so a record boundary is a stretch of the session's timeline that no block claims.
+ */
+data class SleepRecordRun(
+    val startAt: Long,
+    val endAt: Long,
+    val blocks: List<SleepStageBlockEntity>,
+) {
+    val asleepMinutes: Int get() = asleepMinutes(blocks)
+    val spanMinutes: Int get() = ((endAt - startAt) / 60_000L).toInt().coerceAtLeast(0)
+}
+
+/**
+ * Split [blocks] into the ring records they came from.
+ *
+ * **The boundary is read, not inferred.** Each block carries the declared start of the record it
+ * arrived in ([SleepStageBlockEntity.recordStartAt], stamped by `buildStageBlocks`), so records are
+ * grouped by that. The gap between two records is *not* a usable substitute: this ring closes one
+ * record and opens the next a single minute later (05:57 → 05:58 on the reporter's Sept 9), which
+ * is exactly the width of the seam left by rounding each block onto the minute grid *within* one
+ * record. No threshold separates those two cases — 2 minutes merged a genuinely split night, and
+ * 1 minute would grow a spurious second record on every unsplit one. The same one-minute boundary
+ * broke the #63 merge itself, so it is a real property of this firmware rather than one night.
+ *
+ * [minGapMinutes] is the fallback for rows written before that column existed, where the gap is
+ * all there is. Those nights keep the old behaviour rather than being claimed as unsplit.
+ *
+ * Returns one run for an unsplit night, which is the common case and the reason a caller can show
+ * this unconditionally.
+ */
+fun sleepRecordRuns(
+    blocks: List<SleepStageBlockEntity>,
+    minGapMinutes: Int = 2,
+): List<SleepRecordRun> {
+    if (blocks.isEmpty()) return emptyList()
+    val ordered = blocks.sortedBy { it.startAt }
+
+    fun endOf(b: SleepStageBlockEntity) = b.startAt + b.durationMinutes * 60_000L
+    fun runOf(group: List<SleepStageBlockEntity>) =
+        SleepRecordRun(group.first().startAt, group.maxOf { endOf(it) }, group)
+
+    // Every block knows its record: group by it and we are done. All-or-nothing, because a night
+    // that is part migrated and part not has no consistent boundary to read — one stamped record
+    // plus a legacy block would look like a two-record night whatever the truth.
+    if (ordered.all { it.recordStartAt > 0L }) {
+        return ordered.groupBy { it.recordStartAt }
+            .entries.sortedBy { it.key }
+            .map { (_, group) -> runOf(group.sortedBy { it.startAt }) }
+    }
+
+    val runs = mutableListOf<SleepRecordRun>()
+    var current = mutableListOf(ordered.first())
+    for (block in ordered.drop(1)) {
+        val gapMs = block.startAt - current.maxOf { endOf(it) }
+        if (gapMs >= minGapMinutes * 60_000L) {
+            runs += runOf(current.toList())
+            current = mutableListOf(block)
+        } else {
+            current += block
+        }
+    }
+    runs += runOf(current.toList())
+    return runs
+}
+
 object SleepFormat {
     fun duration(minutes: Int?): String {
         if (minutes == null || minutes < 0) return "—"

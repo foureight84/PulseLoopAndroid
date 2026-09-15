@@ -484,10 +484,24 @@ class EventPersistenceSubscriber(
             // live-activity decode before this fix — overwrite it so the day self-heals instead
             // of staying stuck at a garbage number until midnight.
             val stale = existing.steps > 200_000
+            // The ring's counter is cumulative for the day, so it still contains any bucket the
+            // user deleted (issue #70) — ratcheting against it raw restored the deleted block
+            // within seconds, and again on every reconnect. See [ActivityBucketDeletion].
+            val deletion = com.pulseloop.data.ActivityBucketDeletion
+            val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
-                steps = if (stale) steps else maxOf(existing.steps, steps),
-                calories = if (stale) calories else maxOf(existing.calories, calories),
-                distanceMeters = if (stale) distanceM else maxOf(existing.distanceMeters, distanceM),
+                steps = if (stale) steps
+                    else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
+                // A bucket carries no calorie field, so there is nothing to subtract from the
+                // ring's own figure — the deletion drops it and the app's estimate takes over
+                // (see [com.pulseloop.data.ActivityBucketDeletion]). Ratcheting here would put it
+                // straight back.
+                calories = if (stale) calories
+                    else if (hasDeletion) existing.calories
+                    else maxOf(existing.calories, calories),
+                distanceMeters = if (stale) distanceM else deletion.ratchetAgainstRing(
+                    existing.distanceMeters, distanceM, existing.deletedDistanceMeters,
+                ),
                 updatedAt = System.currentTimeMillis(),
             ))
         } else {
@@ -511,6 +525,14 @@ class EventPersistenceSubscriber(
 
     private suspend fun applyActivityBucketAtomic(ts: Long, steps: Int, distanceM: Double) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        // A bucket the user deleted (issue #70). Buckets upsert by start time so the day's total is
+        // the sum of distinct buckets rather than an accumulation — which is also what would write
+        // a deleted one straight back on the next sync of that day, exactly as it would have for a
+        // deleted reading in #60.
+        if (db.measurementDeletionDao().isActivityBucketDeleted(
+                com.pulseloop.data.ActivityBucketDeletion.tombstoneId(ts)
+            )
+        ) return
         db.activityBucketDao().upsert(ActivityBucketEntity(
             startEpoch = ts,
             date = dayStart,
@@ -692,6 +714,13 @@ class EventPersistenceSubscriber(
     /**
      * Build SleepStageBlockEntity entries with run-length encoding.
      * Consecutive minutes of the same stage are merged into one block.
+     *
+     * Every block carries [startTs] as its `recordStartAt` — the declared start of the ring record
+     * these stages arrived in (issue #68). This is the only point at which that is known: the night
+     * is merged into one session immediately afterwards, and the record boundary is not recoverable
+     * from the stored timeline, because this ring reopens a record a single minute after closing
+     * one and that is the same width as the minute-grid rounding seam between two blocks of the
+     * same record.
      */
     private fun buildStageBlocks(sessionId: String, startTs: Long, stages: List<SleepStage>): List<SleepStageBlockEntity> {
         if (stages.isEmpty()) return emptyList()
@@ -712,6 +741,7 @@ class EventPersistenceSubscriber(
                     startMinute = blockMinute,
                     durationMinutes = duration,
                     stageRaw = currentStage.name,
+                    recordStartAt = startTs,
                 ))
                 currentStage = stage
                 blockStart = startTs + i * 60_000L
@@ -726,6 +756,7 @@ class EventPersistenceSubscriber(
             startMinute = blockMinute,
             durationMinutes = duration,
             stageRaw = currentStage.name,
+            recordStartAt = startTs,
         ))
         return blocks
     }

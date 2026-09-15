@@ -44,7 +44,7 @@ import com.pulseloop.data.entity.*
         CachedFoodProductEntity::class,
         MeasurementDeletionEntity::class,
     ],
-    version = 25,
+    version = 28,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -481,6 +481,47 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v25 -> v26: `device_measurement_configs.spo2IntervalMinutes` (issue #66). 0 means "follow
+         * the heart-rate interval", which is exactly what every existing row did implicitly, so the
+         * default backfills losslessly.
+         */
+        private val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `device_measurement_configs` ADD COLUMN `spo2IntervalMinutes` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v26 -> v27: what a day's deleted activity buckets took with them (issue #70).
+         *
+         * The tombstone keeps a deleted bucket from being re-synced, but the ring's *live*
+         * cumulative day counter still includes it and the live path ratchets the day up against
+         * that counter — so today's deletion was undone seconds later. The day has to remember how
+         * much it removed in order to subtract it from every later cumulative reading. 0 for every
+         * existing row is exactly right: nothing had been deleted from them.
+         */
+        private val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `deletedSteps` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `deletedDistanceMeters` REAL NOT NULL DEFAULT 0.0")
+            }
+        }
+
+        /**
+         * v27 -> v28: `sleep_stage_blocks.recordStartAt` (issue #68).
+         *
+         * Which ring record a block came from, so a split night's records can be listed without
+         * guessing the boundary from gaps — this ring reopens a record one minute later, the same
+         * width as the minute-grid rounding seam. 0 backfills every existing row as "unknown",
+         * which keeps those nights on the gap heuristic instead of silently calling them unsplit.
+         */
+        private val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `sleep_stage_blocks` ADD COLUMN `recordStartAt` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -572,6 +613,9 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_22_23,
                         MIGRATION_23_24,
                         MIGRATION_24_25,
+                        MIGRATION_25_26,
+                        MIGRATION_26_27,
+                        MIGRATION_27_28,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

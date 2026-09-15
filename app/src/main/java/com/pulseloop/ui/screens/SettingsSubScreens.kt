@@ -1449,12 +1449,22 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val capabilities = device?.capabilities.orEmpty()
     val minimumInterval = if (device?.deviceType == RingDeviceType.YCBT) 30 else 5
     val intervalSteps = ((60 - minimumInterval) / 5 - 1).coerceAtLeast(0)
+    // Only offered where the ring's protocol actually carries a separate blood-oxygen interval —
+    // elsewhere the slider moved, the value saved, and "Saved & sent to ring ✓" appeared over a
+    // setting nothing on the wire could express (issue #66).
+    val supportsSpo2Interval = device?.deviceType?.supportsSeparateSpo2Interval == true
+    // The SpO₂ slider runs five minutes lower than the HR one (its floor is "follow heart rate"),
+    // so it needs its own step count: reusing the HR one put ticks 5.45 min apart, none of which
+    // the 5-minute snap could land on.
+    val spo2IntervalSteps = ((60 - (minimumInterval - 5)) / 5 - 1).coerceAtLeast(0)
     val supportsStressSetting = WearableCapability.STRESS in capabilities &&
         device?.deviceType != RingDeviceType.YCBT
 
     var cfgHrEnabled by remember { mutableStateOf(true) }
     var cfgHrInterval by remember { mutableStateOf(5) }
     var cfgSpo2 by remember { mutableStateOf(true) }
+    /** 0 = follow the heart-rate interval, which is what it always did (issue #66). */
+    var cfgSpo2Interval by remember { mutableStateOf(0) }
     var cfgStress by remember { mutableStateOf(true) }
     var cfgHrv by remember { mutableStateOf(true) }
     var cfgTemp by remember { mutableStateOf(true) }
@@ -1468,6 +1478,9 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         cfgHrEnabled = config?.hrEnabled ?: true
         cfgHrInterval = (config?.hrIntervalMinutes ?: minimumInterval).coerceIn(minimumInterval, 60)
         cfgSpo2 = (config?.spo2Enabled ?: true) && WearableCapability.SPO2 in capabilities
+        cfgSpo2Interval = (config?.spo2IntervalMinutes ?: 0).let {
+            if (it <= 0) 0 else it.coerceIn(minimumInterval, 60)
+        }
         cfgStress = (config?.stressEnabled ?: true) && supportsStressSetting
         cfgHrv = (config?.hrvEnabled ?: true) && WearableCapability.HRV in capabilities
         cfgTemp = (config?.temperatureEnabled ?: true) && WearableCapability.TEMPERATURE in capabilities
@@ -1519,6 +1532,30 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     if (WearableCapability.SPO2 in capabilities) {
                         VitalToggle("Blood oxygen (SpO₂)", cfgSpo2) { cfgSpo2 = it }
+                        // The monitor command takes the same shape for every vital
+                        // (`01 <key> {enable, interval}`), so blood oxygen always had an interval —
+                        // it just wasn't surfaced and silently followed heart rate. On a ring
+                        // running both monitors hourly that is most of the battery (issue #66).
+                        if (cfgSpo2 && supportsSpo2Interval) {
+                            Text(
+                                if (cfgSpo2Interval <= 0) "Same as heart rate" else "Every $cfgSpo2Interval min",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Slider(
+                                enabled = cfgLoaded,
+                                // The bottom of the track is "follow heart rate" rather than a
+                                // shorter interval than the ring will honour.
+                                value = (if (cfgSpo2Interval <= 0) minimumInterval - 5 else cfgSpo2Interval).toFloat(),
+                                onValueChange = {
+                                    val stepped = (it / 5).toInt() * 5
+                                    cfgSpo2Interval = if (stepped < minimumInterval) 0 else stepped.coerceAtMost(60)
+                                    cfgSavedMsg = null
+                                },
+                                valueRange = (minimumInterval - 5).toFloat()..60f,
+                                steps = spo2IntervalSteps,
+                            )
+                        }
                     }
                     if (supportsStressSetting) {
                         VitalToggle("Stress", cfgStress) { cfgStress = it }
@@ -1541,6 +1578,8 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                         hrIntervalMinutes = cfgHrInterval.coerceIn(minimumInterval, 60),
                                         hrEnabled = cfgHrEnabled,
                                         spo2Enabled = cfgSpo2 && WearableCapability.SPO2 in capabilities,
+                                        spo2IntervalMinutes = if (!supportsSpo2Interval || cfgSpo2Interval <= 0) 0
+                                            else cfgSpo2Interval.coerceIn(minimumInterval, 60),
                                         stressEnabled = cfgStress && supportsStressSetting,
                                         hrvEnabled = cfgHrv && WearableCapability.HRV in capabilities,
                                         temperatureEnabled = cfgTemp && WearableCapability.TEMPERATURE in capabilities,
@@ -1857,7 +1896,14 @@ private fun BatteryHistorySection(db: PulseLoopDatabase) {
                     yDomain = 0.0..100.0,
                     accent = PulseColors.success,
                     height = 160.dp,
+                    // Day boundaries on the 7 d view, six-hour marks on 24 h (issue #65).
+                    verticalGridlines = com.pulseloop.service.BatteryProjection.gridlines(
+                        startMs = samples.first().timestampMs,
+                        endMs = samples.last().timestampMs,
+                    ),
                 )
+                Spacer(Modifier.height(10.dp))
+                BatteryRuntimeEstimate(samples)
             }
         }
     }
@@ -3159,3 +3205,40 @@ private fun openHealthConnectPlayStore(context: Context) {
     }
 }
 
+
+/**
+ * "About 1d 16h left — draining 2.4 %/h", or an honest silence (issue #65).
+ *
+ * Fitted over the current discharge run rather than the whole window, because a week of history
+ * almost always contains a charge — see [com.pulseloop.service.BatteryProjection]. Shown as an
+ * estimate, in those words, because that is what it is: a straight line through past drain, which
+ * says nothing about a day spent measuring more often than the last one.
+ */
+@Composable
+private fun BatteryRuntimeEstimate(samples: List<VitalSample>) {
+    val estimate = remember(samples) {
+        com.pulseloop.service.BatteryProjection.estimate(
+            samples.map { com.pulseloop.service.BatteryProjection.Sample(it.timestampMs, it.value) }
+        )
+    }
+    if (estimate == null) {
+        Text(
+            "Not enough of a trend to estimate runtime yet — it appears after a few hours of discharge.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Column {
+        Text(
+            "About ${estimate.label} left",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Estimated from the current discharge at %.1f %%/h.".format(estimate.percentPerHour),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}

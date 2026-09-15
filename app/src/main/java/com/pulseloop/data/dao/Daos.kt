@@ -200,6 +200,10 @@ interface ActivityBucketDao {
     @Upsert
     suspend fun upsert(bucket: ActivityBucketEntity)
 
+    /** One bucket, by its start time — what the Activity screen's records list deletes (issue #70). */
+    @Query("DELETE FROM activity_buckets WHERE startEpoch = :startEpoch")
+    suspend fun deleteByStart(startEpoch: Long)
+
     @Query("DELETE FROM activity_buckets")
     suspend fun clear()
 }
@@ -685,6 +689,32 @@ interface MeasurementDeletionDao {
         if (regenerable.isNotEmpty()) insertAll(regenerable)
     }
 
+    /**
+     * Remember a deleted activity bucket (issue #70).
+     *
+     * `activity_buckets` is keyed by the bucket's own start time and written with `upsert` for
+     * exactly the reason history readings are — re-syncing a day the ring still holds must replace
+     * each bucket rather than accumulate it, or the daily total drifts upward on every pass. So a
+     * deleted bucket has the same problem a deleted reading had: the next sync writes it straight
+     * back. Buckets live in their own table with an epoch-millis key rather than a string id, hence
+     * the [ACTIVITY_ID_PREFIX] key rather than a second tombstone table — the row means the same
+     * thing (something regenerable the user removed) and rides the archive with the rest.
+     */
+    suspend fun recordActivity(startEpochs: List<Long>) {
+        if (startEpochs.isEmpty()) return
+        insertAll(startEpochs.map {
+            MeasurementDeletionEntity(
+                measurementId = "$ACTIVITY_ID_PREFIX$it",
+                kindRaw = ACTIVITY_KIND,
+                timestamp = it,
+            )
+        })
+    }
+
+    /** Asked before every bucket write, so a re-sync can't restore one the user removed. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurement_deletions WHERE measurementId = :id)")
+    suspend fun isActivityBucketDeleted(id: String): Boolean
+
     companion object {
         /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
          *  A measurement whose id starts with this is one the ring can hand us again. */
@@ -695,5 +725,13 @@ interface MeasurementDeletionDao {
         /** `EventPersistenceSubscriber.SOURCE_SPOT`, duplicated to keep this DAO off the service
          *  layer. Asserted equal in `MeasurementDeletionTest`. */
         const val SPOT_SOURCE = "spot"
+        /** Key prefix for a deleted activity bucket (issue #70), keyed by its `startEpoch`. */
+        const val ACTIVITY_ID_PREFIX = "activity:"
+        /** `kindRaw` for an activity tombstone. Not a [com.pulseloop.ring.MeasurementKind] — buckets
+         *  are not measurements — so it is deliberately a name no kind can collide with. */
+        const val ACTIVITY_KIND = "ACTIVITY_BUCKET"
+
+        /** The tombstone key for the bucket starting at [startEpoch]. */
+        fun activityBucketId(startEpoch: Long): String = "$ACTIVITY_ID_PREFIX$startEpoch"
     }
 }
