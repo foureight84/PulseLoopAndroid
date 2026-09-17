@@ -55,7 +55,23 @@ object RingEncoder {
         cmd[1] = dayOffset.coerceIn(0, 27).toByte()
         return cmd
     }
-    fun makeHistoryMeasurementQueryCommand(): ByteArray = hexToBytes("1600000000000000000000000000000000000000")
+    /**
+     * Request heart-rate history for **one** day (0x16), answered as the multi-packet stream
+     * `RingDecoder.decodeHeartRateHistory` unpacks (`0xF0` header … `0xFF` sync finished).
+     *
+     * byte[1] is a day offset on the same footing as [makeHistoryQueryCommand]'s: the vendor
+     * reaches both through `getDataByDay(int type, int day)`, which picks the opcode from *type*
+     * (`1` -> `0x10`, `2` -> `0x16`) and writes *day* into `bArr[1]` either way. This used to be a
+     * fixed `16 00`, which is why heart rate kept working while sleep did not (issue #73) — and
+     * why it now takes an offset, so [JringHistorySync] can chain each backfilled day's HR behind
+     * that day's activity/sleep the way the vendor does.
+     */
+    fun makeHistoryMeasurementQueryCommand(dayOffset: Int = 0): ByteArray {
+        val cmd = ByteArray(20)
+        cmd[0] = 0x16
+        cmd[1] = dayOffset.coerceIn(0, 27).toByte()
+        return cmd
+    }
     fun makeHeartRateStartCommand(): ByteArray = hexToBytes("14b4000000000000000000000000000000000000")
     fun makeHeartRateStopCommand(): ByteArray = hexToBytes("1500000000000000000000000000000000000000")
     /**

@@ -220,12 +220,48 @@ Two process notes worth keeping:
   only in our own files. A citation to a *different* project's helper is not vendor evidence — check
   the decompile, which for this family means `jadx --single-class` against `classes2.dex`, since
   only the `.aidl` files ship as sources.
-- **We diverge from the vendor's chain deliberately.** It is reply-driven, one day at a time,
-  counting down; we enqueue the window's offsets in one pass, **today first**, because nothing here
-  decodes a per-day sync-end to drive the next request from. That is the shape the reporter
-  hardware-validated on an SR08 (offsets 0, 1, 2 separately → 27 `0x11` sleep entries after
-  `0x10/00`). If a ring is ever seen truncating a day's stream when the next request lands, the
-  vendor's chain is the fix and it needs a sync-end signal decoded first.
+- **Asking for the right day was only half of it — see below.** The first fix enqueued the whole
+  window in one pass and recorded the condition that would force the vendor's chain. That condition
+  arrived within a day.
+
+## This ring answers one history request at a time (issue #73, second half)
+
+**The day-offset fix alone did not restore sleep.** On `v2.9.1+54-rc1` the same SR08 still showed
+**45 minutes against an expected 6h30**, and the reporter's capture says why: `10 00`, `10 01`,
+`10 02` and `16 00` all went out inside **176 ms**, with `10 02` landing *between* two of today's
+sleep packets. Four `0x11` packets arrived in total — three consecutive 15-minute blocks for today
+(01:15–02:00, exactly the 45 minutes displayed) and one from the previous day. A second request
+mid-stream truncates the first, so the window's days were cutting each other off.
+
+`JringHistorySync` is the fix: one day at a time, the next request held until the current day's
+stream goes quiet. Per day, `0x10/offset` → settle → `0x16/offset` → next day, which is the vendor's
+own chain (`getDataByDay(1, day)` then `(2, day)`, advancing on that day's sync-end).
+
+- **The activity/sleep leg is time-settled, not reply-driven, and that is forced.** Nothing in the
+  `0x10`/`0x11` wire format marks the end of a day — both are bare runs of 15 one-minute samples.
+  JYouPro is in the same position and does the same thing: a **2000 ms** idle timer reset on each
+  reply, which is where `settleMs`' default comes from. The **heart-rate** leg does have a real end
+  marker (`0x16` subtype `0xFF` → `HistorySyncFinished`) and chains on it.
+- **`LuckRingHistorySync` is the same machine for the same reason** — port from it rather than
+  inventing a third one. The jring version adds the second (HR) leg per day.
+- **A re-entrant `start()` is declined, and the caller is told.** `runStartup` is also the
+  ~30-minute background sync, so a pass landing mid-backfill is normal; restarting would abandon
+  the in-flight day mid-stream, which is the truncation itself. `start` returns whether it began a
+  pass so `historyBackfilled` is only spent by a pass that ran — otherwise a connection can lose
+  its backfill to a no-op and never ask for the older days again.
+- **A day that answers nothing still gets its HR request.** `16 00` used to be unconditional and it
+  is the request that always worked; a silent `0x10` must not take today's HR down with it.
+- **The pass is dropped on disconnect** (`JringDriver.connectionDidEnd`). The writer outlives the
+  driver, so a timer firing after the link dropped would land a stray `0x10` in the *next*
+  connection — the same truncation, arriving from a connection that has already ended.
+- **Timers are epoch-guarded** (`JringHistorySync.armTimer`). `Job.cancel()` does not retract a
+  coroutine already past its `delay` and waiting on the monitor, and a stale settle firing into a
+  live stream would re-create the bug from the inside.
+- The one remaining divergence from the vendor is order: it counts **down** to today, we lead with
+  today — the day the user opened the app to see, and the one the reporter's prototype validated.
+- **Don't generalise this to other families.** `YCBTHistoryTransfer` has a terminal block with a
+  CRC and a YCBT owner read the same history twice back to back byte-identically (11 frames,
+  1916 bytes) while this SR08 was truncating. Different transports, different failure modes.
 
 ## Colmi R11 (CRP "Da Rings") — diagnose from the capture, and decode wear state before blaming code
 
