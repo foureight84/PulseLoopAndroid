@@ -783,6 +783,18 @@ values intact**, because an undecoded frame fell through to `command_ack`, which
 `HEALTH_KINDS`. A decode gap silently became a privacy gap. When you add a decoder for a frame that
 carries physiological values, check that its `decodedKind` is one the redactor masks.
 
+**The export carries no database rows, and that is deliberate — don't add them, and don't ask a
+reporter for stored-row detail through it.** `DiagnosticsExporter` emits app info, device info,
+logs, raw packets, crashes and logcat, and nothing else. Issue #74's "Next" section asked a reporter
+for "the timestamps of the heart-rate rows stored around that minute, and whether they carry the
+spot flag" — a question the format cannot answer, so the ask was made twice and answered neither
+time. The reporter (@Albabit, #74) gave the reason the section should stay absent: **a diagnostics
+file people paste into public issues is not where health readings should end up.** That is the same
+principle `maskPacketHex` already enforces one layer down, so a measurements section would undo
+deliberately, in clear, exactly what the masking exists to prevent. When you need to know what the
+app *stored*, ask what the user sees on screen — for "is the user shown a bad reading?" that is also
+the better evidence, since it answers the question the issue is actually about.
+
 **The header length must come from the packet's own family, and a half-assembled frame has no header
 at all.** Two further shapes of the same failure, fixed together:
 
