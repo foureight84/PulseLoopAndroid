@@ -1,7 +1,8 @@
 package com.pulseloop.ring
 
-/** Days of history pulled on the first pass of a jring connection; every later pass asks for one.
- *  See [JringSyncEngine.historyDaysForThisPass] for why this is shorter than CRP's week. */
+/** Days of history pulled on the first pass of a jring connection; every later pass asks only for
+ *  today. Each day is its own `0x10` request — byte 1 is a day offset, not a count (issue #73).
+ *  See [JringSyncEngine.historyDayOffsetsForThisPass] for why this is shorter than CRP's week. */
 private const val JRING_BACKFILL_DAYS = 3
 
 @OptIn(ExperimentalStdlibApi::class)
@@ -59,7 +60,15 @@ object JringCoordinator : WearableCoordinator {
  * Ported from [JringDriver] in JringDriver.swift.
  * Thin wrapper over RingDecoder/RingEncoder for jring devices.
  */
-class JringDriver(private val writer: RingCommandWriter) : WearableDriver {
+class JringDriver(
+    private val writer: RingCommandWriter,
+    /** The history pager. Owned here because only the driver sees whole frames ([ingest]); handed
+     *  to the engine so `runStartup` can seed the day window. A fresh driver is built per
+     *  connection (`RingBLEClient.installDriver` calls `coordinator.makeDriver` on every connect),
+     *  so nothing here needs a reconnect *reset* — but its timers do need [connectionDidEnd].
+     *  Injectable so a test can run a whole pass on millisecond timers. */
+    private val historySync: JringHistorySync = JringHistorySync(writer),
+) : WearableDriver {
     /** One clock per connection, shared by the decoder and the sync engine: the engine latches
      *  the UTC offset when it sends 0x01, and the decoder subtracts that same offset off every
      *  ring-stamped history timestamp. See [JringClock]. */
@@ -74,19 +83,42 @@ class JringDriver(private val writer: RingCommandWriter) : WearableDriver {
 
     override fun frame(command: ByteArray) = command  // jring: already 20 bytes, no checksum
 
-    override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> =
-        decoder.decode(data)
+    override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> {
+        // The pager settles on whole frames, so it is fed here rather than from the engine's
+        // decoded-event stream: one 0x10 frame fans out into 15 ActivityBucket events, which says
+        // nothing about how many frames are still coming.
+        historySync.noteFrame(data)
+        return decoder.decode(data)
+    }
 
-    override fun makeSyncEngine(): RingSyncEngine = JringSyncEngine(writer, clock)
+    override fun makeSyncEngine(): RingSyncEngine = JringSyncEngine(writer, clock, historySync)
+
+    /**
+     * Drop any in-flight history pass on disconnect.
+     *
+     * A fresh driver is built per connection, so no *state* needs resetting here — but the pager
+     * holds live timers, and [RingCommandWriter] outlives this driver. A settle firing after the
+     * link dropped would enqueue the next day's `0x10` into whatever connection comes next,
+     * landing a stray history request on top of that connection's own stream: the truncation of
+     * issue #73, arriving from a connection that has already ended.
+     */
+    override fun connectionDidEnd() {
+        historySync.cancel()
+    }
 }
 
 /**
  * Ported from [JringSyncEngine] in JringSyncEngine.swift.
- * Fire-and-forget sync engine for jring devices.
+ * Fire-and-forget sync engine for jring devices — with one exception: history goes through
+ * [JringHistorySync], because this ring answers one history request at a time (issue #73).
  */
 class JringSyncEngine(
     private val writer: RingCommandWriter?,
     private val clock: JringClock = JringClock(),
+    /** Owned by [JringDriver] in production so it can be fed whole frames; defaulted here so a
+     *  caller holding only a writer (tests, and any future engine-only path) still gets a pager
+     *  rather than an unpaced burst. */
+    private val historySync: JringHistorySync = JringHistorySync(writer),
 ) : RingSyncEngine {
     override val supportsCombinedMeasurement: Boolean = true
     private val encoder = RingEncoder
@@ -106,8 +138,11 @@ class JringSyncEngine(
         // had to initialise with the vendor app first.
         writer?.enqueue(encoder.makeAutomaticHeartRateCommand(enabled = true, cadenceMinutes = 30))
         writer?.enqueue(encoder.makeBandFunctionCommand())
-        writer?.enqueue(encoder.makeHistoryQueryCommand(days = historyDaysForThisPass()))
-        writer?.enqueue(encoder.makeHistoryMeasurementQueryCommand())
+        // History is paged rather than enqueued: [JringHistorySync] sends one day's 0x10, holds
+        // the rest until that day's stream goes quiet, and asks for each day's 0x16 HR itself.
+        // The gate is only spent if a pass actually began — `start` declines while one is in
+        // flight, and a declined backfill must still be owed.
+        if (historySync.start(historyDayOffsetsForThisPass())) historyBackfilled = true
     }
 
     /** Whether this connection has already pulled the deep history window. A fresh engine is built
@@ -116,30 +151,37 @@ class JringSyncEngine(
     private var historyBackfilled = false
 
     /**
-     * How many days of history to ask for on this pass: the deep window once per connection, one
-     * day on every pass after it.
+     * Which days to ask for on this pass: **today always**, plus the older days of the backfill
+     * window once per connection.
      *
-     * The ring holds days the app has never asked for. Before issue #43 that didn't matter, because
-     * connecting deleted the stored copy anyway; now that it doesn't, a single-day request means a
-     * user's history can only ever grow one night at a time from install, and never recovers what
-     * the ring already has. `0x10` takes a day count (`triggerActivityReportByDays`, capped at 27)
-     * and the ring replies with the days it actually has, so asking for more is safe.
+     * `0x10`'s byte 1 is a day offset rather than a count (issue #73 — see
+     * [RingEncoder.makeHistoryQueryCommand] for the vendor evidence), so each day needs its own
+     * request. Today (`0`) leads every pass because it is the day the user is looking at, and
+     * because under the old count reading it was the one day never requested at all: a single
+     * `0x10/01` asked for yesterday, so last night's sleep never arrived.
      *
-     * **Why the gate matters more here than on CRP.** [runStartup] is also the ~30-minute background
-     * sync (and `refresh()`/`querySleep()` route through it), so an unconditional wider window would
-     * re-pull the whole span every half hour forever. And `0x10` returns activity *and* sleep — there
-     * is no sleep-only request — so each extra day is roughly 96 more packets (activity arrives as
-     * 15× 1-minute buckets each), against the nights we actually came for. That volume, not the
-     * nights, is why this window is deliberately shorter than the CRP backfill's week.
+     * **Why the once-per-connection gate matters more here than on CRP.** [runStartup] is also the
+     * ~30-minute background sync (and `refresh()`/`querySleep()` route through it), so an
+     * unconditional wider window would re-pull the whole span every half hour forever. And `0x10`
+     * returns activity *and* sleep — there is no sleep-only request — so each extra day is roughly
+     * 96 more packets (activity arrives as 15× 1-minute buckets each), against the nights we
+     * actually came for. That volume, not the nights, is why this window is deliberately shorter
+     * than the CRP backfill's week.
      *
-     * Re-syncing the same days is harmless: activity buckets upsert by timestamp with the day total
-     * recomputed from distinct buckets, and sleep reconciles one waking day at a time.
+     * **This is the window, not the schedule.** Which days to ask for is decided here; *when* each
+     * request goes out is [JringHistorySync]'s, one day at a time. The two were briefly the same
+     * thing and that was the second half of #73: enqueued together, the window's requests
+     * truncated each other on an SR08.
+     *
+     * **One divergence from the vendor remains, deliberate:** it counts *down* to today
+     * (`DupMainActivity.onGetMultipleSportData`), we lead with today. It is the day the user opened
+     * the app to see, so it is the day that should land first and the one that survives if a pass
+     * is cut short. Re-syncing the same days is harmless anyway: activity buckets upsert by
+     * timestamp with the day total recomputed from distinct buckets, and sleep reconciles one
+     * waking day at a time.
      */
-    private fun historyDaysForThisPass(): Int {
-        if (historyBackfilled) return 1
-        historyBackfilled = true
-        return JRING_BACKFILL_DAYS
-    }
+    private fun historyDayOffsetsForThisPass(): List<Int> =
+        if (historyBackfilled) listOf(0) else (0 until JRING_BACKFILL_DAYS).toList()
 
     override fun handle(event: RingDecodedEvent) {
         when (event) {

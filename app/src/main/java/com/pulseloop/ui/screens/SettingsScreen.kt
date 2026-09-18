@@ -82,7 +82,12 @@ fun SettingsScreen(
             storedDevice = storedDevice,
             lastSyncAt = coordinator?.lastSyncAt ?: storedDevice?.lastSyncAt,
             onOpenWearable = { navigate("settings/wearable") },
-            onConnect = { bleClient?.connectLastKnown() },
+            // userConnect(), not connectLastKnown(): a manual Disconnect persists a stay-off flag
+            // that connectLastKnown() honours by returning immediately, so this button did nothing
+            // at all in exactly the situation it exists for (issue #72). userConnect clears the
+            // flag first — the user tapping Connect *is* the intent the flag was waiting for.
+            onConnect = { bleClient?.userConnect() },
+            onDisconnect = { bleClient?.userDisconnect() },
             onSetUp = { navigate("pairing") },
         )
 

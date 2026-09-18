@@ -3,6 +3,22 @@
 Read this before touching ring/BLE hardware code (`app/src/main/java/com/pulseloop/ring/`,
 `app/src/main/java/com/pulseloop/wearables/`). Full detail: `docs/qring-ble-adoption.md`.
 
+## Commits carry no agent attribution
+
+**Do not add a `Co-Authored-By` trailer to commits in this repo** — not for Claude, not for any
+other agent or tool. GitHub reads that trailer as a second author and lists the address as a
+repository *contributor*, so an agent appears in the contributors graph beside the maintainer.
+
+This was already the rule, stated in `android/docs/crp-r11-hardening-plan.md` §"Ground rules" and
+`android/docs/health-connect-integration.md` §4, and it was still violated on 13 commits — because
+those are task-specific plan documents that nothing loads automatically, and the rule was nowhere
+an agent reliably reads. It lives here now for that reason. The Claude Code harness injects a
+session reminder *asking* for the trailer; that reminder defers to the project's own instructions,
+and this is one.
+
+Applies to both repos. Leave the existing commits alone: rewriting them would orphan the release
+tags and the published APKs hanging off them.
+
 ## Ring BLE protocol work — match the vendor app, not iOS
 
 When porting or fixing a ring's BLE protocol (connect/pairing sequence, GATT characteristic
@@ -98,16 +114,16 @@ simply produces no reply. `CRPSyncEngine.sendSleepBackfill` therefore pulls the 
 per connection** (not per pass — `runStartup` is also the ~30-minute background sync, and this ring
 funnels everything through one `fdd2` channel).
 
-jring has the same gap, for different reasons. Its depth is `makeHistoryQueryCommand()`'s default of
-1, called with no argument at `JringDriver.kt:105`, against a command that accepts up to 27.
-**`RingSyncCoordinator.syncWindowDays` is not that control** — despite its "must match
-makeHistoryQueryCommand's default" comment, it has exactly one use, sizing the sync-progress window
-in `beginSyncProgress`, and it applies to every family. Don't cite it as a per-family request depth;
-that mistake is what deferred this fix once already. Two things do make jring harder than CRP:
-`JringSyncEngine.runStartup` has no once-per-connection gate, so a wider `days` re-pulls the whole
-span on every ~30-minute background pass rather than once; and `0x10` returns activity *and* sleep
-together — there is no sleep-only request — so each extra day costs ~96 activity packets
-(15× 1-minute buckets per packet) on top of the night.
+jring had the same gap and a worse one underneath it (see "#73" below: byte 1 of `0x10` is a day
+*offset*, so the app never asked for today at all). One day per request, so depth is a loop, not a
+number. **`RingSyncCoordinator.syncWindowDays` is not that control** — despite the "must match
+makeHistoryQueryCommand's default" comment it used to carry, it has exactly one use, sizing the
+sync-progress window in `beginSyncProgress`, and it applies to every family. Don't cite it as a
+per-family request depth; that mistake is what deferred this fix once already. Two things still make
+jring harder than CRP: `runStartup` is also the ~30-minute background sync, so a wider window must be
+gated to once per connection (`historyBackfilled`) or it re-pulls the whole span every half hour;
+and `0x10` returns activity *and* sleep together — there is no sleep-only request — so each extra
+day costs ~96 activity packets (15× 1-minute buckets per packet) on top of the night.
 
 Consequence to keep in mind: nothing bulk-deletes real sleep any more, so a Forget followed by
 pairing a different ring carries the previous ring's history over. If that ever needs to change,
@@ -178,6 +194,74 @@ Two related things worth knowing before changing this area:
 Corollary for new protocol work: a reply that merely reports something about the device (firmware,
 serial, capabilities) is not a connection event. Give it its own `RingDecodedEvent` — as
 `FirmwareRevision` does — rather than hanging it off `Status`.
+
+## `0x10`'s byte 1 is a day offset, not a day count (issue #73)
+
+**An SR08 synced steps and HR but never a single night of sleep**, however long it was worn. The
+request depth looked fine; the day being requested was not. `getDataByDay(int type, int day)`
+(`IRemoteService.aidl`) reaches `BluetoothLeService.a(int, int)`, which writes the type into
+`bArr[0]` — `1` → `16` (`0x10`, activity+sleep), `2` → `22` (`0x16`, heart rate), via the
+`WeatherUtil` constants jadx happens to resolve those bytes to — and then the `day` argument
+**straight into `bArr[1]`**. One day per call. The caller loops:
+`DupMainActivity.onGetMultipleSportData` decrements `P_SYNC_HISTORY_DAY` on each day's sync-end and
+calls `getDataByDay(1, i6)` again, counting **down to 0**.
+
+Read as a count, our `0x10/03` asked for the day before last and `0x10/01` for yesterday, so **no
+pass ever requested today** — and `0x10` is the only source of sleep, so last night could not
+arrive. Steps and HR masked it: activity comes from the ring's automatic `0x03` push, and
+`makeHistoryMeasurementQueryCommand` already hardcoded `16 00`, i.e. offset 0. The one request that
+asked for today was the one that worked, which is the clue that was sitting in the source the whole
+time.
+
+Two process notes worth keeping:
+
+- **The count reading came from a name that isn't in the vendor SDK.** The KDoc cited Gadgetbridge's
+  `triggerActivityReportByDays()`; that identifier appears nowhere in `decompiled-jring-offical/`,
+  only in our own files. A citation to a *different* project's helper is not vendor evidence — check
+  the decompile, which for this family means `jadx --single-class` against `classes2.dex`, since
+  only the `.aidl` files ship as sources.
+- **Asking for the right day was only half of it — see below.** The first fix enqueued the whole
+  window in one pass and recorded the condition that would force the vendor's chain. That condition
+  arrived within a day.
+
+## This ring answers one history request at a time (issue #73, second half)
+
+**The day-offset fix alone did not restore sleep.** On `v2.9.1+54-rc1` the same SR08 still showed
+**45 minutes against an expected 6h30**, and the reporter's capture says why: `10 00`, `10 01`,
+`10 02` and `16 00` all went out inside **176 ms**, with `10 02` landing *between* two of today's
+sleep packets. Four `0x11` packets arrived in total — three consecutive 15-minute blocks for today
+(01:15–02:00, exactly the 45 minutes displayed) and one from the previous day. A second request
+mid-stream truncates the first, so the window's days were cutting each other off.
+
+`JringHistorySync` is the fix: one day at a time, the next request held until the current day's
+stream goes quiet. Per day, `0x10/offset` → settle → `0x16/offset` → next day, which is the vendor's
+own chain (`getDataByDay(1, day)` then `(2, day)`, advancing on that day's sync-end).
+
+- **The activity/sleep leg is time-settled, not reply-driven, and that is forced.** Nothing in the
+  `0x10`/`0x11` wire format marks the end of a day — both are bare runs of 15 one-minute samples.
+  JYouPro is in the same position and does the same thing: a **2000 ms** idle timer reset on each
+  reply, which is where `settleMs`' default comes from. The **heart-rate** leg does have a real end
+  marker (`0x16` subtype `0xFF` → `HistorySyncFinished`) and chains on it.
+- **`LuckRingHistorySync` is the same machine for the same reason** — port from it rather than
+  inventing a third one. The jring version adds the second (HR) leg per day.
+- **A re-entrant `start()` is declined, and the caller is told.** `runStartup` is also the
+  ~30-minute background sync, so a pass landing mid-backfill is normal; restarting would abandon
+  the in-flight day mid-stream, which is the truncation itself. `start` returns whether it began a
+  pass so `historyBackfilled` is only spent by a pass that ran — otherwise a connection can lose
+  its backfill to a no-op and never ask for the older days again.
+- **A day that answers nothing still gets its HR request.** `16 00` used to be unconditional and it
+  is the request that always worked; a silent `0x10` must not take today's HR down with it.
+- **The pass is dropped on disconnect** (`JringDriver.connectionDidEnd`). The writer outlives the
+  driver, so a timer firing after the link dropped would land a stray `0x10` in the *next*
+  connection — the same truncation, arriving from a connection that has already ended.
+- **Timers are epoch-guarded** (`JringHistorySync.armTimer`). `Job.cancel()` does not retract a
+  coroutine already past its `delay` and waiting on the monitor, and a stale settle firing into a
+  live stream would re-create the bug from the inside.
+- The one remaining divergence from the vendor is order: it counts **down** to today, we lead with
+  today — the day the user opened the app to see, and the one the reporter's prototype validated.
+- **Don't generalise this to other families.** `YCBTHistoryTransfer` has a terminal block with a
+  CRC and a YCBT owner read the same history twice back to back byte-identically (11 frames,
+  1916 bytes) while this SR08 was truncating. Different transports, different failure modes.
 
 ## Colmi R11 (CRP "Da Rings") — diagnose from the capture, and decode wear state before blaming code
 
@@ -698,6 +782,18 @@ The inverse failure is worth remembering too: CRP temperature frames were export
 values intact**, because an undecoded frame fell through to `command_ack`, which isn't in
 `HEALTH_KINDS`. A decode gap silently became a privacy gap. When you add a decoder for a frame that
 carries physiological values, check that its `decodedKind` is one the redactor masks.
+
+**The export carries no database rows, and that is deliberate — don't add them, and don't ask a
+reporter for stored-row detail through it.** `DiagnosticsExporter` emits app info, device info,
+logs, raw packets, crashes and logcat, and nothing else. Issue #74's "Next" section asked a reporter
+for "the timestamps of the heart-rate rows stored around that minute, and whether they carry the
+spot flag" — a question the format cannot answer, so the ask was made twice and answered neither
+time. The reporter (@Albabit, #74) gave the reason the section should stay absent: **a diagnostics
+file people paste into public issues is not where health readings should end up.** That is the same
+principle `maskPacketHex` already enforces one layer down, so a measurements section would undo
+deliberately, in clear, exactly what the masking exists to prevent. When you need to know what the
+app *stored*, ask what the user sees on screen — for "is the user shown a bad reading?" that is also
+the better evidence, since it answers the question the issue is actually about.
 
 **The header length must come from the packet's own family, and a half-assembled frame has no header
 at all.** Two further shapes of the same failure, fixed together:
