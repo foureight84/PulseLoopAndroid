@@ -167,11 +167,14 @@ fun DeviceHeroCard(
                             when (status.action) {
                                 DeviceHeroStatus.Action.CONNECT -> onConnect()
                                 DeviceHeroStatus.Action.SET_UP -> onSetUp()
-                                // The card rendered "Disconnect" as an enabled button wired to
-                                // nothing — the same silent no-op as issue #72's Connect, one
-                                // action along. PENDING is the only state that should do nothing,
-                                // and it is already inert via `actionEnabled`.
+                                // Unreachable today: the row above only renders when action !=
+                                // DISCONNECT, and DeviceHeroStatus produces DISCONNECT only for
+                                // the connected state — so this is a tripwire, not a fix (the PR
+                                // description once claimed a dead button here; there never was
+                                // one). Exhaustiveness needs the branch, and if the render
+                                // condition is ever relaxed it must call through, not do nothing.
                                 DeviceHeroStatus.Action.DISCONNECT -> onDisconnect()
+                                // Already inert: actionEnabled is false while a connect is in flight.
                                 DeviceHeroStatus.Action.PENDING -> {}
                             }
                         }
