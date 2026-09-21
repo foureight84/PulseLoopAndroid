@@ -200,8 +200,9 @@ class EventPersistenceSubscriber(
                         // History, because this keeps getting re-added: connect used to clear *all*
                         // sleep for every family except YCBT and rebuild it from the ring. No ring
                         // re-supplies more than its own buffer, and the two smallest re-supply a
-                        // single day — CRP sends `queryHistorySleep(daysAgo=0)`, jring
-                        // `makeHistoryQueryCommand()` with its 1-day default (JringDriver.kt:105,
+                        // single day — CRP sends `queryHistorySleep(daysAgo=0)`, jring asked
+                        // `makeHistoryQueryCommand()` for one day (and, until issue #73, for the
+                        // wrong one: byte 1 is a day offset, so it never asked for today at all;
                         // NOT `syncWindowDays`, which only sizes the progress bar) — so every
                         // connect destroyed each night older than that, and a new night replaced
                         // the last one instead of joining it (issue #43, zaggash's R11). The

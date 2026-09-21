@@ -49,6 +49,7 @@ fun DeviceHeroCard(
     onOpenWearable: () -> Unit,
     onConnect: () -> Unit,
     onSetUp: () -> Unit,
+    onDisconnect: () -> Unit = {},
 ) {
     val deviceType = bleState.activeDeviceType ?: storedDevice?.deviceType
     val wearableModel = WearableModel.model(bleState.activeWearableModelID)
@@ -166,7 +167,15 @@ fun DeviceHeroCard(
                             when (status.action) {
                                 DeviceHeroStatus.Action.CONNECT -> onConnect()
                                 DeviceHeroStatus.Action.SET_UP -> onSetUp()
-                                else -> {}
+                                // Unreachable today: the row above only renders when action !=
+                                // DISCONNECT, and DeviceHeroStatus produces DISCONNECT only for
+                                // the connected state — so this is a tripwire, not a fix (the PR
+                                // description once claimed a dead button here; there never was
+                                // one). Exhaustiveness needs the branch, and if the render
+                                // condition is ever relaxed it must call through, not do nothing.
+                                DeviceHeroStatus.Action.DISCONNECT -> onDisconnect()
+                                // Already inert: actionEnabled is false while a connect is in flight.
+                                DeviceHeroStatus.Action.PENDING -> {}
                             }
                         }
                         .padding(horizontal = 12.dp)
