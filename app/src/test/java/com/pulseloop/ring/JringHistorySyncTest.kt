@@ -227,6 +227,25 @@ class JringHistorySyncTest {
     }
 
     @Test
+    fun `a frame too short to be a packet does not hold the stream open`() = runBlocking {
+        // RingPacket.fromData rejects anything that isn't exactly 20 bytes, and the decoder with
+        // it — so the pager must not treat a fragment as a live frame either, or it re-arms the
+        // settle window on data the app will never read and the day stalls out to the full settle.
+        val writer = FakeWriter()
+        val sync = JringHistorySync(writer, settleMs = 5_000, stallMs = 100)
+
+        sync.start(listOf(0))
+        sync.noteFrame(ByteArray(19).also { it[0] = 0x11 })   // one byte short of a packet
+        delay(300)
+        assertEquals(
+            "the fragment is not a frame: the leg stalls out on schedule",
+            listOf(0x10 to 0, 0x16 to 0),
+            writer.requests,
+        )
+        sync.cancel()
+    }
+
+    @Test
     fun `frames for a leg that is not in flight are ignored`() = runBlocking {
         val writer = FakeWriter()
         val sync = makeSync(writer, settleMs = 40, stallMs = 5_000)

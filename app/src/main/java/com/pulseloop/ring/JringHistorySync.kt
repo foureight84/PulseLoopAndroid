@@ -97,10 +97,14 @@ class JringHistorySync(
     /**
      * Called by the driver for every inbound history frame, so the pager can tell a live stream
      * from a finished one. Frames for a leg that isn't in flight are ignored.
+     *
+     * The packet-length guard mirrors [RingPacket.fromData]: the jring wire contract is one fixed
+     * 20-byte packet per notify, and anything else is already rejected by the decoder. A fragment
+     * must not re-arm the settle window, or a leg stays "live" long past its stream.
      */
     @Synchronized
     fun noteFrame(data: ByteArray) {
-        if (!isRunning || data.isEmpty()) return
+        if (!isRunning || data.size != RingPacket.PACKET_SIZE) return
         when (data[0].toInt() and 0xFF) {
             OPCODE_ACTIVITY, OPCODE_SLEEP -> if (leg == Leg.ACTIVITY) restartSettle()
             OPCODE_HEART_RATE -> {
