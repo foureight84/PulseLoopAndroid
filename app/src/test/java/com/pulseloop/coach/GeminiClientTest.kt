@@ -1,6 +1,7 @@
 package com.pulseloop.coach.gemini
 
 import com.pulseloop.coach.openai.FunctionCallOutput
+import com.pulseloop.coach.openai.ResponsesError
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -333,5 +334,61 @@ class GeminiClientTest {
         val note = userParts[0].jsonObject["text"]!!.jsonPrimitive.content
         assertTrue(note.startsWith("Web search sources"))
         assertTrue(note.contains("https://example.com"))
+    }
+
+    // ── Overload retry (issue #77) ─────────────────────────────────────
+
+    @Test
+    fun `a 503 is retried and the turn survives`() = kotlinx.coroutines.runBlocking {
+        // gemini-flash-latest routes to whatever pool is congested; "high demand" 503s killed
+        // every coach turn for days on end. A 503 means the request was never served, so
+        // retrying cannot double-bill — unlike a read timeout, which stays never-retried.
+        val client = GeminiClient("key")
+        var attempts = 0
+        val result = client.postWithOverloadRetry(
+            "https://example.test/generateContent", ByteArray(0), backoffMs = 1,
+        ) { _, _ ->
+            if (attempts++ < 2) throw ResponsesError.Http(503, "This model is currently experiencing high demand.")
+            "ok"
+        }
+        assertEquals("ok", result)
+        assertEquals(3, attempts)
+    }
+
+    @Test
+    fun `the last 503 still surfaces`() = kotlinx.coroutines.runBlocking {
+        val client = GeminiClient("key")
+        var attempts = 0
+        try {
+            client.postWithOverloadRetry(
+                "https://example.test/generateContent", ByteArray(0), backoffMs = 1,
+            ) { _, _ ->
+                attempts++
+                throw ResponsesError.Http(503, "still overloaded")
+            }
+            fail("a persistently overloaded model must surface, not hang")
+        } catch (e: ResponsesError.Http) {
+            assertEquals(503, e.status)
+        }
+        assertEquals(3, attempts)
+    }
+
+    @Test
+    fun `a 429 is never retried`() = kotlinx.coroutines.runBlocking {
+        // Quota buckets refill daily, not in seconds — retrying only burns the turn's wall time.
+        val client = GeminiClient("key")
+        var attempts = 0
+        try {
+            client.postWithOverloadRetry(
+                "https://example.test/generateContent", ByteArray(0), backoffMs = 1,
+            ) { _, _ ->
+                attempts++
+                throw ResponsesError.Http(429, "You exceeded your current quota.")
+            }
+            fail("429 must surface immediately")
+        } catch (e: ResponsesError.Http) {
+            assertEquals(429, e.status)
+        }
+        assertEquals(1, attempts)
     }
 }

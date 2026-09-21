@@ -294,7 +294,11 @@ object CoachResponseSchema {
                 "items" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
             "chart" to JsonObject(mapOf(
-                "type" to JsonPrimitive("object"),
+                // Nullable: most answers carry no chart. Under `strict: true` OpenAI requires
+                // every property to be listed in `required`, with optionality expressed as a
+                // null union — not by omitting the key (issue #77: the 400 was the missing
+                // `additionalProperties`, and an incomplete `required` was the next one).
+                "type" to JsonArray(listOf(JsonPrimitive("object"), JsonPrimitive("null"))),
                 "properties" to JsonObject(mapOf(
                     "chart_type" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     "title" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
@@ -313,13 +317,21 @@ object CoachResponseSchema {
                         )),
                     )),
                 )),
+                "required" to JsonArray(listOf(
+                    "chart_type", "title", "x_label", "y_label", "points",
+                ).map { JsonPrimitive(it) }),
+                "additionalProperties" to JsonPrimitive(false),
             )),
             "confidence" to JsonObject(mapOf(
                 "type" to JsonPrimitive("string"),
                 "enum" to JsonArray(listOf("low", "medium", "high").map { JsonPrimitive(it) }),
             )),
-            "safety_note" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-            "data_quality_note" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+            "safety_note" to JsonObject(mapOf(
+                "type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))),
+            )),
+            "data_quality_note" to JsonObject(mapOf(
+                "type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))),
+            )),
             "sources" to JsonObject(mapOf(
                 "type" to JsonPrimitive("array"),
                 "items" to JsonObject(mapOf(
@@ -329,7 +341,9 @@ object CoachResponseSchema {
                         "url" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                         "publisher" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     )),
-                    "required" to JsonArray(listOf(JsonPrimitive("title"), JsonPrimitive("url"))),
+                    "required" to JsonArray(listOf(
+                        JsonPrimitive("title"), JsonPrimitive("url"), JsonPrimitive("publisher"),
+                    )),
                     "additionalProperties" to JsonPrimitive(false),
                 )),
             )),
@@ -342,8 +356,13 @@ object CoachResponseSchema {
                 "items" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
         )),
+        // OpenAI strict structured outputs (issue #77): `required` must list **every**
+        // property — optionality is a null union, not a missing key — and every object
+        // needs `additionalProperties: false`. CoachResponseParser still only demands the
+        // four load-bearing keys, so a compliant reply decodes with the rest defaulted.
         "required" to JsonArray(listOf(
-            "response_type", "title", "summary", "confidence"
+            "response_type", "title", "summary", "bullets", "chart", "safety_note",
+            "data_quality_note", "sources", "follow_up_chips", "actions_taken", "confidence",
         ).map { JsonPrimitive(it) }),
         "additionalProperties" to JsonPrimitive(false),
     ))

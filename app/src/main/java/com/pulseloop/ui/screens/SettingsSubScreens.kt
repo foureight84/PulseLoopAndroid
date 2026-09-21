@@ -201,7 +201,10 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    val models = listOf("gpt-5.4", "gpt-4o", "gpt-4o-mini", "o4-mini")
+    // Retired slugs removed (issue #77): gpt-4o / gpt-4o-mini / o4-mini are rejected by the
+    // Responses API, and a picker entry that cannot work is worse than a shorter list. New
+    // models go here as OpenAI ships them.
+    val models = listOf("gpt-5.4")
 
     SettingsSubScreen(title = "AI Coach", onBack = onBack) {
         // AI Coach section — ported from CoachSettingsSection.swift

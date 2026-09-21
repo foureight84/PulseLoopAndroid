@@ -10,6 +10,7 @@ import com.pulseloop.coach.openai.ResponsesError
 import com.pulseloop.coach.openai.ResponsesHttp
 import com.pulseloop.coach.openai.ResponsesToolSpecs
 import com.pulseloop.coach.openai.TextContent
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.*
 import java.util.UUID
 
@@ -66,7 +67,7 @@ class GeminiClient(
         val geminiBody = buildRequestBody(req)
         val bodyBytes = json.encodeToString(JsonObject.serializer(), geminiBody).toByteArray()
 
-        val body = ResponsesHttp.post("$baseURL/$model:generateContent?key=$apiKey", bodyBytes)
+        val body = postWithOverloadRetry("$baseURL/$model:generateContent?key=$apiKey", bodyBytes)
 
         val root = try {
             json.parseToJsonElement(body).jsonObject
@@ -74,6 +75,42 @@ class GeminiClient(
             throw ResponsesError.Decoding("GeminiClient: response was not a JSON object")
         }
         return ingestResponse(root)
+    }
+
+    /**
+     * POST with a bounded retry on Gemini's **503 "high demand"** (issue #77). The
+     * `-latest` model aliases route to whatever pool is congested that hour, so a coach
+     * turn could fail on first contact for days while Google's own dashboard showed the
+     * account nowhere near quota. A 503 means the request was never served — nothing was
+     * generated and nothing billed — so a retry cannot double-charge, unlike a read
+     * timeout, which [ResponsesHttp] deliberately never retries for exactly that reason.
+     *
+     * A **429 is not retried**: it means the key's quota bucket said no, and on the free
+     * tier that bucket refills daily, not in seconds. [ResponsesHttp] raises it as-is and
+     * the turn fails with the provider's own message.
+     *
+     * [post] is a seam so a test can fail attempts without a network stack.
+     */
+    internal suspend fun postWithOverloadRetry(
+        url: String,
+        bodyBytes: ByteArray,
+        backoffMs: Long = OVERLOAD_BACKOFF_MS,
+        post: suspend (String, ByteArray) -> String = { u, b -> ResponsesHttp.post(u, b) },
+    ): String {
+        for (attempt in 0..MAX_OVERLOAD_RETRIES) {
+            try {
+                return post(url, bodyBytes)
+            } catch (e: ResponsesError.Http) {
+                if (e.status != 503 || attempt == MAX_OVERLOAD_RETRIES) throw e
+                delay(backoffMs shl attempt)   // 2 s, then 8 s
+            }
+        }
+        throw IllegalStateException("overload retry loop never returned")
+    }
+
+    private companion object {
+        const val MAX_OVERLOAD_RETRIES = 2
+        const val OVERLOAD_BACKOFF_MS = 2_000L
     }
 
     // ── Request assembly (internal for unit tests) ───────────────────────
