@@ -159,6 +159,10 @@ interface ActivityDailyDao {
     @Query("SELECT * FROM activity_daily WHERE source NOT IN ('demo','mock') ORDER BY date DESC LIMIT :limit")
     suspend fun recentReal(limit: Int = 7): List<ActivityDailyEntity>
 
+    /** Earliest tracked day key (local midnight millis) — bounds how far Activity day navigation can page back (issue #76). */
+    @Query("SELECT MIN(date) FROM activity_daily")
+    suspend fun earliestDay(): Long?
+
     /** Whether the ring has ever synced a day. */
     @Query("SELECT EXISTS(SELECT 1 FROM activity_daily WHERE source NOT IN ('demo','mock'))")
     suspend fun hasReal(): Boolean
