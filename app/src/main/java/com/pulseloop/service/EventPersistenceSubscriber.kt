@@ -6,6 +6,7 @@ import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
+import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.ring.*
 import kotlinx.coroutines.*
 
@@ -569,6 +570,16 @@ class EventPersistenceSubscriber(
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
         if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
+        // Quiet-hours gate (issue #79), opt-in and off by default: a record the ring opens outside
+        // the window is declined here, before any write — the still-wrist/sofa case. Already-
+        // imported nights are untouched (this never deletes), and the gate is read per record so a
+        // settings change takes effect on the next packet, not the next launch.
+        val quiet = QuietHoursPrefs(context)
+        if (quiet.enabled &&
+            !QuietHoursPrefs.covers(quiet.startMinutes, quiet.endMinutes, QuietHoursPrefs.minuteOfDay(ts))
+        ) {
+            return
+        }
         db.withTransaction { upsertSleepSessionAtomic(ts, stages, completeSession) }
     }
 

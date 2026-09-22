@@ -74,6 +74,7 @@ import com.pulseloop.service.VitalColorToken
 import com.pulseloop.service.VitalSample
 import com.pulseloop.service.ZoneSeverity
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.DeviceHeroStatus
 import com.pulseloop.ui.components.ZoneLineChart
@@ -1609,6 +1610,83 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
 // MARK: - Wearable
 
 /**
+ * The opt-in quiet-hours gate (issue #79): sleep the ring opens outside the window is ignored on
+ * import. The rationale lives on [QuietHoursPrefs]; this is just the controls — a switch and the
+ * two window ends, on the Wearable screen because it governs what a sync is allowed to store.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun QuietHoursCard() {
+    val context = LocalContext.current
+    val prefs = remember { QuietHoursPrefs(context) }
+    var enabled by remember { mutableStateOf(prefs.enabled) }
+    var start by remember { mutableStateOf(prefs.startMinutes) }
+    var end by remember { mutableStateOf(prefs.endMinutes) }
+    // "start" | "end" while a picker is open.
+    var picking by remember { mutableStateOf<String?>(null) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Sleep quiet hours", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Switch(checked = enabled, onCheckedChange = { enabled = it; prefs.enabled = it })
+            }
+            Text(
+                "When on, sleep the ring opens outside the window is ignored on import — a still " +
+                    "wrist reads as sleep, so an evening on the sofa can log a phantom session and " +
+                    "run the night high. Already-imported nights are never touched, and what the " +
+                    "gate skips while it is narrower stays skipped.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (enabled) {
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = { picking = "start" }, modifier = Modifier.weight(1f)) {
+                        Text("From ${formatMinutesOfDay(start)}")
+                    }
+                    OutlinedButton(onClick = { picking = "end" }, modifier = Modifier.weight(1f)) {
+                        Text("Until ${formatMinutesOfDay(end)}")
+                    }
+                }
+            }
+        }
+    }
+
+    picking?.let { which ->
+        val initial = if (which == "start") start else end
+        val pickerState = rememberTimePickerState(
+            initialHour = initial / 60,
+            initialMinute = initial % 60,
+            is24Hour = true,
+        )
+        AlertDialog(
+            onDismissRequest = { picking = null },
+            title = { Text(if (which == "start") "Quiet from" else "Quiet until") },
+            text = { TimePicker(state = pickerState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val minutes = pickerState.hour * 60 + pickerState.minute
+                    if (which == "start") { start = minutes; prefs.startMinutes = minutes }
+                    else { end = minutes; prefs.endMinutes = minutes }
+                    picking = null
+                }) { Text("Done") }
+            },
+            dismissButton = {
+                TextButton(onClick = { picking = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+private fun formatMinutesOfDay(minutes: Int): String =
+    "%02d:%02d".format(minutes / 60, minutes % 60)
+
+/**
  * Wearable detail screen (iOS WearableSettingsView) — the hero card opens this. Connection
  * state, exact model name, firmware, sync/find/disconnect actions, plus the old inline "Ring"
  * card's forget + factory-reset management.
@@ -1733,6 +1811,10 @@ fun WearableSettingsScreen(
 
         if (device != null) {
             BatteryHistorySection(db)
+        }
+
+        if (device != null) {
+            QuietHoursCard()
         }
 
         if (device != null) {
