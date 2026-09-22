@@ -170,7 +170,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
         SleepStageSummaryCards(
             deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
             light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
-            awake = SleepFormat.duration(byStage["AWAKE"] ?: 0),
+            // Awake counts the between-record gaps too (issue #81) — the same minutes this page's
+            // RECORDS card labels "Awake Xm between".
+            awake = SleepFormat.duration(com.pulseloop.service.awakeMinutes(blocks)),
         )
     }
 }
@@ -222,7 +224,7 @@ private fun SleepCarousel(
                 SleepStageSummaryCards(
                     deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
                     light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
-                    awake = SleepFormat.duration(byStage["AWAKE"] ?: 0),
+                    awake = SleepFormat.duration(com.pulseloop.service.awakeMinutes(blocks)),
                 )
             }
         }

@@ -323,7 +323,7 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         val stageAvg = if (valid.isEmpty()) null else Triple(
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / valid.size,
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / valid.size,
-            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "AWAKE" }.sumOf { b -> b.durationMinutes } } / valid.size,
+            valid.sumOf { s -> com.pulseloop.service.awakeMinutes(lookup(s.id)) } / valid.size,
         )
         val bars = when (range) {
             SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, collapsedSessions, lookup)
