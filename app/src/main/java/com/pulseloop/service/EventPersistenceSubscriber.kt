@@ -3,6 +3,7 @@ package com.pulseloop.service
 import android.content.Context
 import androidx.room.withTransaction
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.ring.*
@@ -593,6 +594,14 @@ class EventPersistenceSubscriber(
         // (issue #63): see [completeSessionSurvivors] for why "the session it describes" is a
         // contiguous run of blocks and not every block of every row the packet touches.
         val replacements = buildStageBlocks("", ts, stages)
+            // Tombstone check (issue #78): a deleted ring record's blocks come back with the same
+            // `startAt` values on every re-send of that night, so the re-derive must drop them
+            // here or `SleepRecordDeletion`'s work lasts exactly one sync.
+            .filterNot { block ->
+                db.measurementDeletionDao().isDeleted(
+                    MeasurementDeletionDao.sleepBlockId(dayStart, block.startAt),
+                )
+            }
         val dayBlocks = replaceOverlappingSleepBlocks(
             existing = if (completeSession) {
                 completeSessionSurvivors(existingBlocks, ts, packetEnd)
@@ -767,16 +776,10 @@ class EventPersistenceSubscriber(
      * Medical research: optimal deep sleep = 15-25% of total.
      * Matches the official app's scoring.
      */
-    private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? {
-        if (totalMin == 0) return null
-        val deepPct = (deepMin.toFloat() / totalMin * 100).toInt()
-        return when {
-            deepPct >= 20 -> 90
-            deepPct >= 15 -> 75
-            deepPct >= 10 -> 60
-            else -> 40
-        }
-    }
+    private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
+        // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
+        // same banding, so one function owns it.
+        sleepStageScore(deepMin, totalMin)
 
     // ── Calorie estimation recompute (iOS #98) ───────────────────────────────────
 

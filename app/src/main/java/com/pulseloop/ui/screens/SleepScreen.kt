@@ -14,15 +14,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -124,7 +128,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
             item { SleepStageSummaryCards(deep = "—", light = "—", awake = "—") }
         }
         // Single session: render exactly as before, no carousel chrome.
-        sessions.size == 1 -> sessionPageItems(sessions[0], state.dayBlocks[sessions[0].id] ?: emptyList())
+        sessions.size == 1 -> sessionPageItems(sessions[0], state.dayBlocks[sessions[0].id] ?: emptyList(), viewModel)
         // Multiple sessions (night + naps): horizontal paged carousel with dot indicators.
         else -> item { SleepCarousel(sessions, state.dayBlocks) }
     }
@@ -146,6 +150,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     session: SleepSessionEntity,
     blocks: List<SleepStageBlockEntity>,
+    viewModel: SleepViewModel? = null,
 ) {
     item { SessionHero(session, blocks) }
     item {
@@ -159,7 +164,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     // takes its share of the list's 16 dp spacing, which put a 32 dp hole in every single-record
     // night.
     val runs = com.pulseloop.service.sleepRecordRuns(blocks)
-    if (runs.size > 1) item { SleepRecordsCard(runs) }
+    if (runs.size > 1) item { SleepRecordsCard(session, runs, viewModel) }
     item {
         val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
         SleepStageSummaryCards(
@@ -978,10 +983,18 @@ private const val PILL_OFFSET_ABOVE_LANE_DP = 30f
  * and the vendor app keeps each as its own row. Shown underneath rather than instead.
  */
 @Composable
-private fun SleepRecordsCard(runs: List<com.pulseloop.service.SleepRecordRun>) {
+private fun SleepRecordsCard(
+    session: SleepSessionEntity,
+    runs: List<com.pulseloop.service.SleepRecordRun>,
+    viewModel: SleepViewModel?,
+) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    // Two-step delete (the vitals/activity pattern): a row's trash icon arms the confirm dialog.
+    var pendingRun by remember { mutableStateOf<com.pulseloop.service.SleepRecordRun?>(null) }
     VisualizationCard(
         eyebrow = "Records",
-        title = "The ring recorded this night in ${runs.size} parts",
+        title = if (runs.size == 1) "The ring recorded this night in 1 part"
+            else "The ring recorded this night in ${runs.size} parts",
         legend = false,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1005,6 +1018,17 @@ private fun SleepRecordsCard(runs: List<com.pulseloop.service.SleepRecordRun>) {
                             color = PulseColors.textMuted,
                         )
                     }
+                    // The escape hatch (issue #78): the ring opened a record on a still wrist —
+                    // say, the evening before the wearer got into bed — and the night runs an
+                    // hour high. The wearer knows which run is wrong; the sensor cannot.
+                    IconButton(onClick = { pendingRun = run }) {
+                        Icon(
+                            Icons.Filled.DeleteOutline,
+                            contentDescription = "Delete this record",
+                            tint = PulseColors.textMuted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
                 if (index < runs.lastIndex) {
                     val gapMinutes = ((runs[index + 1].startAt - run.endAt) / 60_000L).toInt()
@@ -1017,5 +1041,29 @@ private fun SleepRecordsCard(runs: List<com.pulseloop.service.SleepRecordRun>) {
                 }
             }
         }
+    }
+
+    pendingRun?.let { run ->
+        AlertDialog(
+            onDismissRequest = { pendingRun = null },
+            title = { Text("Delete this record?") },
+            text = {
+                Text(
+                    "${SleepFormat.clockTime(run.startAt)} – ${SleepFormat.clockTime(run.endAt)} " +
+                        "leaves tonight's totals and the hypnogram, and it won't come back on re-sync.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRun = null
+                    scope.launch {
+                        viewModel?.deleteSleepRecord(session.id, run.startAt)
+                    }
+                }) { Text("Delete", color = PulseColors.danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRun = null }) { Text("Keep") }
+            },
+        )
     }
 }

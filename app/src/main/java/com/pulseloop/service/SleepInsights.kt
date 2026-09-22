@@ -142,6 +142,23 @@ fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
         .coerceAtLeast(0)
 
 /**
+ * The banded stage score stored on a session row — deep-percentage bands, nothing else. The one
+ * source of truth for it: `EventPersistenceSubscriber` stamps it on every reconcile, and
+ * `SleepRecordDeletion` restates with the same function so a post-deletion row agrees with what
+ * the next sync would write (issue #78).
+ */
+fun sleepStageScore(deepMin: Int, totalMin: Int): Int? {
+    if (totalMin == 0) return null
+    val deepPct = (deepMin.toFloat() / totalMin * 100).toInt()
+    return when {
+        deepPct >= 20 -> 90
+        deepPct >= 15 -> 75
+        deepPct >= 10 -> 60
+        else -> 40
+    }
+}
+
+/**
  * How long the session covers on the clock, first stage block to last — which since issue #63 is a
  * different number from [SleepSessionEntity.totalMinutes], the time actually asleep.
  *

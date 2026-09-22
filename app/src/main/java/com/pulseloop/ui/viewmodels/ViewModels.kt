@@ -381,6 +381,17 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     /** Step to an older (older = true) or newer day, clamped to [0, maxDayOffset]. */
     fun stepDay(older: Boolean) = jumpToOffset(_state.value.dayOffset + if (older) 1 else -1)
 
+    /**
+     * Delete one ring record (issue #78) and rebuild the day. Returns whether anything was
+     * removed, so the UI can only confirm on a real deletion.
+     */
+    suspend fun deleteSleepRecord(sessionId: String, recordStartAt: Long): Boolean =
+        try {
+            val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt)
+            if (removed) rebuild(_state.value.range)
+            removed
+        } catch (_: Exception) { false }
+
     /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
     fun jumpToDay(dayMillis: Long) {
         val today = TimeUtil.startOfTodayLocal()
