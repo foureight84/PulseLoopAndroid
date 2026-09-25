@@ -202,10 +202,9 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    // Retired slugs removed (issue #77): gpt-4o / gpt-4o-mini / o4-mini are rejected by the
-    // Responses API, and a picker entry that cannot work is worse than a shorter list. New
-    // models go here as OpenAI ships them.
-    val models = listOf("gpt-5.4")
+    // The curated OpenAI picks live in one place, [OpenAIModel]; the retired gpt-4o / gpt-4o-mini
+    // / o4-mini are gone from it (issue #77), and a stored one reads as the default.
+    val models = com.pulseloop.coach.config.OpenAIModel.entries.map { it.slug to it.blurb }
 
     SettingsSubScreen(title = "AI Coach", onBack = onBack) {
         // AI Coach section — ported from CoachSettingsSection.swift
@@ -677,7 +676,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         }
                         else -> {
                             // OpenAI (and legacy modes): the original model picker + key field.
-                            ModelDropdown("Model", selectedModel, models.map { it to "" }) {
+                            ModelDropdown("Model", selectedModel, models) {
                                 selectedModel = it; keyStore.model = it
                             }
                             KeyField(

@@ -102,7 +102,7 @@ class GeminiClient(
                 return post(url, bodyBytes)
             } catch (e: ResponsesError.Http) {
                 if (e.status != 503 || attempt == MAX_OVERLOAD_RETRIES) throw e
-                delay(backoffMs shl attempt)   // 2 s, then 8 s
+                delay(backoffMs shl attempt)   // 2 s, then 4 s
             }
         }
         throw IllegalStateException("overload retry loop never returned")

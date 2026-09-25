@@ -52,4 +52,20 @@ class CoachModelPresetsTest {
         // ApiKeyStore.model defaults to "gpt-5.4"; the preset default must agree.
         assertEquals("gpt-5.4", OpenAIModel.DEFAULT.slug)
     }
+
+    /** Issue #77: a stored retired slug must not strand the user on a model the picker no longer offers. */
+    @Test
+    fun `retired OpenAI slugs normalize to the default`() {
+        for (slug in listOf("gpt-4o", "gpt-4o-mini", "o4-mini", "")) {
+            assertEquals(OpenAIModel.DEFAULT.slug, OpenAIModel.normalize(slug))
+        }
+        assertEquals("gpt-5.5", OpenAIModel.normalize("gpt-5.5"))
+        // A typed/unknown slug is the user's choice — only the retired set is rewritten.
+        assertEquals("gpt-6-preview", OpenAIModel.normalize("gpt-6-preview"))
+    }
+
+    @Test
+    fun `no preset is a retired slug`() {
+        OpenAIModel.entries.forEach { assertFalse(it.slug in OpenAIModel.RETIRED_SLUGS) }
+    }
 }
