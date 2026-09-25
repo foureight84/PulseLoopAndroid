@@ -159,6 +159,10 @@ interface ActivityDailyDao {
     @Query("SELECT * FROM activity_daily WHERE source NOT IN ('demo','mock') ORDER BY date DESC LIMIT :limit")
     suspend fun recentReal(limit: Int = 7): List<ActivityDailyEntity>
 
+    /** Earliest tracked day key (local midnight millis) — bounds how far Activity day navigation can page back (issue #76). */
+    @Query("SELECT MIN(date) FROM activity_daily")
+    suspend fun earliestDay(): Long?
+
     /** Whether the ring has ever synced a day. */
     @Query("SELECT EXISTS(SELECT 1 FROM activity_daily WHERE source NOT IN ('demo','mock'))")
     suspend fun hasReal(): Boolean
@@ -318,6 +322,9 @@ interface SleepSessionDao {
     @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY (sourceRaw = 'demo') ASC, totalMinutes DESC LIMIT 1")
     suspend fun byDay(day: Long): SleepSessionEntity?
 
+    @Query("SELECT * FROM sleep_sessions WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): SleepSessionEntity?
+
     /** All sessions for a day, earliest first — feeds the Day-view carousel. */
     @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY startAt ASC")
     suspend fun allByDay(day: Long): List<SleepSessionEntity>
@@ -407,6 +414,10 @@ interface SleepStageBlockDao {
 
     @Query("DELETE FROM sleep_stage_blocks WHERE sessionId = :sessionId")
     suspend fun deleteBySession(sessionId: String)
+
+    /** Remove one run-length block — the delete affordance on the sleep RECORDS card (issue #78). */
+    @Query("DELETE FROM sleep_stage_blocks WHERE sessionId = :sessionId AND startAt = :startAt")
+    suspend fun deleteByStart(sessionId: String, startAt: Long)
 
     @Query("DELETE FROM sleep_stage_blocks")
     suspend fun clear()
@@ -715,6 +726,28 @@ interface MeasurementDeletionDao {
     @Query("SELECT EXISTS(SELECT 1 FROM measurement_deletions WHERE measurementId = :id)")
     suspend fun isActivityBucketDeleted(id: String): Boolean
 
+    /**
+     * Remember a deleted ring sleep record (issue #78) — one tombstone per stage block.
+     *
+     * Sleep's write path never upserts a session by id: [com.pulseloop.service.EventPersistenceSubscriber]
+     * re-derives the whole waking day from the raw stage blocks the ring re-sends, so deleting a
+     * session row alone would let the next sync of that night rebuild it exactly. A block is
+     * minute-grid RLE over the record's stages, so the same record re-sent reproduces its blocks
+     * with the same `startAt` values — which is the stable identity, the same role the bucket
+     * startEpoch plays above. Keyed by the waking day as well, because the same wall-clock minute
+     * legitimately recurs on different days.
+     */
+    suspend fun recordSleepBlocks(dayStart: Long, startAts: List<Long>) {
+        if (startAts.isEmpty()) return
+        insertAll(startAts.map {
+            MeasurementDeletionEntity(
+                measurementId = sleepBlockId(dayStart, it),
+                kindRaw = SLEEP_RECORD_KIND,
+                timestamp = it,
+            )
+        })
+    }
+
     companion object {
         /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
          *  A measurement whose id starts with this is one the ring can hand us again. */
@@ -731,7 +764,15 @@ interface MeasurementDeletionDao {
          *  are not measurements — so it is deliberately a name no kind can collide with. */
         const val ACTIVITY_KIND = "ACTIVITY_BUCKET"
 
+        /** Key prefix for a deleted ring sleep record's blocks (issue #78) — see [recordSleepBlocks]. */
+        const val SLEEP_ID_PREFIX = "sleep:"
+        /** `kindRaw` for a sleep-record tombstone — a name no measurement kind can collide with. */
+        const val SLEEP_RECORD_KIND = "SLEEP_RECORD_BLOCK"
+
         /** The tombstone key for the bucket starting at [startEpoch]. */
         fun activityBucketId(startEpoch: Long): String = "$ACTIVITY_ID_PREFIX$startEpoch"
+
+        /** The tombstone key for the sleep stage block starting at [startAt] on waking day [dayStart]. */
+        fun sleepBlockId(dayStart: Long, startAt: Long): String = "$SLEEP_ID_PREFIX$dayStart:$startAt"
     }
 }

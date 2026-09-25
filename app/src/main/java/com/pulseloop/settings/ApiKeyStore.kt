@@ -27,7 +27,8 @@ class ApiKeyStore(context: Context) {
     val hasApiKey: Boolean get() = apiKey.isNotBlank()
 
     var model: String
-        get() = prefs.getString(KEY_MODEL, "gpt-5.4") ?: "gpt-5.4"
+        // Normalized so a retired slug stored by an older picker (issue #77) reads as the default.
+        get() = com.pulseloop.coach.config.OpenAIModel.normalize(prefs.getString(KEY_MODEL, "") ?: "")
         set(value) { prefs.edit().putString(KEY_MODEL, value).apply() }
 
     var coachEnabled: Boolean

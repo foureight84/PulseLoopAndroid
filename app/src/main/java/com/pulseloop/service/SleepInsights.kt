@@ -142,6 +142,62 @@ fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
         .coerceAtLeast(0)
 
 /**
+ * Awake minutes for a session, including the short gaps between its ring records (issue #81).
+ *
+ * The ring reports a brief night-waking two ways: as an explicit `AWAKE` stage block, and — when it
+ * catches the waking by closing the record and opening a new one rather than staging it — as the
+ * gap between two records of the same session. The second form is real not-asleep minutes the
+ * RECORDS card already displays as "Awake Xm between", so the Awake figure counts it too; otherwise
+ * the same night can read 4m awake on one card and 0m on the other (five wakings, four caught by
+ * reopening, one staged).
+ *
+ * The one-minute seam stays excluded: this ring closes one record and opens the next a single
+ * minute later (issue #63), which is the same width as the minute-grid rounding seam *within* one
+ * record — counting those grows a spurious minute on every unsplit night. Two minutes is the same
+ * real-boundary threshold [sleepRecordRuns] draws its line at.
+ */
+fun awakeMinutes(blocks: List<SleepStageBlockEntity>): Int {
+    val staged = blocks
+        .filter { it.stageRaw == SleepStage.AWAKE.name }
+        .sumOf { it.durationMinutes }
+    val runs = sleepRecordRuns(blocks)
+    val between = (0 until runs.lastIndex).sumOf { i ->
+        betweenRecordAwakeMinutes(runs[i], runs[i + 1])
+    }
+    return staged + between
+}
+
+/**
+ * The waking between two consecutive ring records of one session, in minutes — 0 for the one-minute
+ * seam (issue #63). The one rule both the Awake figure ([awakeMinutes]) and the RECORDS card's
+ * "Awake Xm between" line read, so the two cannot disagree about the same gap (issue #81).
+ *
+ * No upper cap is needed: a session never holds a gap of [SleepSegmentation.SESSION_GAP_MINUTES]
+ * or more — the write path and `SleepRecordDeletion` both split there.
+ */
+fun betweenRecordAwakeMinutes(earlier: SleepRecordRun, later: SleepRecordRun): Int {
+    val gapMinutes = ((later.startAt - earlier.endAt) / 60_000L).toInt()
+    return if (gapMinutes >= 2) gapMinutes else 0
+}
+
+/**
+ * The banded stage score stored on a session row — deep-percentage bands, nothing else. The one
+ * source of truth for it: `EventPersistenceSubscriber` stamps it on every reconcile, and
+ * `SleepRecordDeletion` restates with the same function so a post-deletion row agrees with what
+ * the next sync would write (issue #78).
+ */
+fun sleepStageScore(deepMin: Int, totalMin: Int): Int? {
+    if (totalMin == 0) return null
+    val deepPct = (deepMin.toFloat() / totalMin * 100).toInt()
+    return when {
+        deepPct >= 20 -> 90
+        deepPct >= 15 -> 75
+        deepPct >= 10 -> 60
+        else -> 40
+    }
+}
+
+/**
  * How long the session covers on the clock, first stage block to last — which since issue #63 is a
  * different number from [SleepSessionEntity.totalMinutes], the time actually asleep.
  *

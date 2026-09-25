@@ -97,5 +97,13 @@ enum class OpenAIModel(val slug: String, val blurb: String) {
 
     companion object {
         val DEFAULT = GPT_54
+
+        /** Slugs the Settings picker used to offer and no longer does (issue #77). A stored
+         *  selection of one would keep failing with no visible way out, so it reads as [DEFAULT]. */
+        val RETIRED_SLUGS = setOf("gpt-4o", "gpt-4o-mini", "o4-mini")
+
+        /** [slug], or [DEFAULT]'s slug when it is blank or retired. */
+        fun normalize(slug: String): String =
+            if (slug.isBlank() || slug in RETIRED_SLUGS) DEFAULT.slug else slug
     }
 }

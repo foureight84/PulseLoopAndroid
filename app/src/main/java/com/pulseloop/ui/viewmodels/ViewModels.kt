@@ -323,7 +323,7 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         val stageAvg = if (valid.isEmpty()) null else Triple(
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / valid.size,
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / valid.size,
-            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "AWAKE" }.sumOf { b -> b.durationMinutes } } / valid.size,
+            valid.sumOf { s -> com.pulseloop.service.awakeMinutes(lookup(s.id)) } / valid.size,
         )
         val bars = when (range) {
             SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, collapsedSessions, lookup)
@@ -381,6 +381,17 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     /** Step to an older (older = true) or newer day, clamped to [0, maxDayOffset]. */
     fun stepDay(older: Boolean) = jumpToOffset(_state.value.dayOffset + if (older) 1 else -1)
 
+    /**
+     * Delete one ring record (issue #78) and rebuild the day. Returns whether anything was
+     * removed, so the UI can only confirm on a real deletion.
+     */
+    suspend fun deleteSleepRecord(sessionId: String, recordStartAt: Long): Boolean =
+        try {
+            val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt)
+            if (removed) rebuild(_state.value.range)
+            removed
+        } catch (_: Exception) { false }
+
     /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
     fun jumpToDay(dayMillis: Long) {
         val today = TimeUtil.startOfTodayLocal()
@@ -401,12 +412,23 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
 /**
  * ActivityViewModel — reads Room data for the Activity screen.
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
     data class ActivityState(
         val recentDays: List<ActivityDailyEntity> = emptyList(),
         /** All finished sessions, newest first (drives Today + the history sheet). */
         val finishedWorkouts: List<ActivitySessionEntity> = emptyList(),
         val today: ActivityDailyEntity? = null,
+        // ── Day navigation (issue #76 — mirrors SleepViewModel's, iOS #84) ──
+        /** How many days back the shown day is: 0 = today, clamped to [0, maxDayOffset]. */
+        val dayOffset: Int = 0,
+        /** How far the chevrons may page: a week past the earliest stored day, one-year floor.
+        *  0 (locked to today) when nothing is stored yet. */
+        val maxDayOffset: Int = 0,
+        /** Local-midnight key of the shown day — drives the RECORDS card's day query. */
+        val shownDay: Long = 0,
+        /** The shown day's totals (the summary card); `today` stays live for the week widget. */
+        val daySummary: ActivityDailyEntity? = null,
         val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
         val activeMinutesGoal: Int = 45,
         val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
@@ -418,11 +440,18 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
     private val _state = MutableStateFlow(ActivityState())
     val state: StateFlow<ActivityState> = _state.asStateFlow()
     private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
+    /** The day the dashboard is looking at; [currentDayValues] handles today's own rollover. */
+    private val shownDayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
 
     private val db = db
 
     fun refreshCurrentDay() {
         todayStart.value = TimeUtil.startOfTodayLocal()
+        // A resume lands the user back on today, where they left the app from.
+        jumpToOffset(0)
+        // Re-read the pager bound too: it was computed once at init, so days synced (or a
+        // midnight rolled) since then would stay out of reach until the ViewModel was rebuilt.
+        viewModelScope.launch { refreshMaxDayOffset() }
     }
 
     init {
@@ -437,10 +466,16 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
             }
         }
         viewModelScope.launch {
+            shownDayStart.flatMapLatest { day -> db.activityDailyDao().byDayFlow(day) }.collect { day ->
+                _state.update { it.copy(daySummary = day) }
+            }
+        }
+        viewModelScope.launch {
             db.activitySessionDao().recentFlow(200).collect { sessions ->
                 _state.update { it.copy(finishedWorkouts = sessions.filter { s -> s.statusRaw == "finished" }) }
             }
         }
+        viewModelScope.launch { refreshMaxDayOffset() }
         // Reactive: goals saved from onboarding/Settings show up without a manual reload.
         viewModelScope.launch {
             try {
@@ -464,8 +499,44 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
     suspend fun deleteBucket(startEpoch: Long): List<ActivityBucketEntity> {
         val day = TimeUtil.startOfDayLocal(startEpoch)
         try { ActivityBucketDeletion.delete(db, startEpoch) } catch (_: Exception) {}
-        refreshCurrentDay()
+        // The daily-total flows are reactive; only the live "today" pointer needs a nudge, and
+        // only when the deleted day IS today — a past-day deletion must not yank the dashboard
+        // back from the day the user is inspecting (issue #76).
+        if (day == TimeUtil.startOfTodayLocal()) todayStart.value = day
         return bucketsForDay(day)
+    }
+
+    // ── Day navigation (issue #76 — mirrors SleepViewModel's, iOS #84) ──
+
+    /** Step to an older (older = true) or newer day, clamped to [0, maxDayOffset]. */
+    fun stepDay(older: Boolean) = jumpToOffset(_state.value.dayOffset + if (older) 1 else -1)
+
+    /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
+    fun jumpToDay(dayMillis: Long) {
+        val today = TimeUtil.startOfTodayLocal()
+        jumpToOffset(((today - TimeUtil.startOfDayLocal(dayMillis)) / 86_400_000L).toInt())
+    }
+
+    /** Return the dashboard to today. */
+    fun resetToToday() = jumpToOffset(0)
+
+    private fun jumpToOffset(target: Int) {
+        val clamped = target.coerceIn(0, _state.value.maxDayOffset)
+        val shown = TimeUtil.startOfTodayLocal() - clamped * 86_400_000L
+        shownDayStart.value = shown
+        _state.update { it.copy(dayOffset = clamped, shownDay = shown) }
+    }
+
+    /** Recompute the pager bound: a week before the earliest stored day, one-year floor.
+    *  Mirrors SleepViewModel.maxDayOffset; 0 (locked to today) when nothing is stored. */
+    private suspend fun refreshMaxDayOffset() {
+        val earliest = try { db.activityDailyDao().earliestDay() } catch (_: Exception) { null }
+        val maxOffset = if (earliest == null) 0 else {
+            val today = TimeUtil.startOfTodayLocal()
+            val floor = maxOf(earliest - 7 * 86_400_000L, today - 365 * 86_400_000L)
+            ((today - floor) / 86_400_000L).toInt().coerceAtLeast(0)
+        }
+        _state.update { it.copy(maxDayOffset = maxOffset) }
     }
 
     suspend fun reloadGoals() {

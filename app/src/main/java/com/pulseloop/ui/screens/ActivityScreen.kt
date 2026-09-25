@@ -14,6 +14,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -130,6 +132,10 @@ fun ActivityScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        // Day navigation (issue #76): the summary + RECORDS cards follow the shown day, so a
+        // past day's steps/distance/calories are reachable the way Sleep already allows.
+        item { ActivityDayNavHeader(state, viewModel) }
+
         item { DailyActivitySummaryCard(state, units) }
 
         item {
@@ -228,8 +234,8 @@ fun ActivityScreen(
             ActivityRecordsCard(
                 viewModel = viewModel,
                 units = units,
-                dayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal(),
-                dayLabel = "today",
+                dayStart = shownDayStart(state),
+                dayLabel = shownDayLabel(state),
             )
         }
         item { Spacer(Modifier.height(64.dp)) }
@@ -277,12 +283,84 @@ private fun weeklySteps(state: ActivityViewModel.ActivityState, todayIdx: Int): 
     }
 }
 
+// ─────────────────── Day navigation (issue #76) ───────────────────
+
+/** Local-midnight key of the day the dashboard is showing. */
+private fun shownDayStart(state: ActivityViewModel.ActivityState): Long =
+    if (state.shownDay != 0L) state.shownDay else com.pulseloop.util.TimeUtil.startOfTodayLocal()
+
+/** Label for the RECORDS card's empty text: "today" as before, else the shown date. */
+private fun shownDayLabel(state: ActivityViewModel.ActivityState): String {
+    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    return if (shownDayStart(state) == today) "today"
+    else dayHeaderLabel(shownDayStart(state)).lowercase()
+}
+
+/** ‹ older · date · newer › stepper above the dashboard — the Sleep header's shape (iOS #84),
+ *  minus the swipe/picker: Activity needs only to reach days the store already holds. */
+@Composable
+private fun ActivityDayNavHeader(state: ActivityViewModel.ActivityState, viewModel: ActivityViewModel?) {
+    val canOlder = state.dayOffset < state.maxDayOffset
+    val canNewer = state.dayOffset > 0
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        ActivityNavChevron(Icons.Filled.ChevronLeft, "Previous day", canOlder) { viewModel?.stepDay(older = true) }
+        Text(
+            dayHeaderLabel(shownDayStart(state)),
+            fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary,
+            modifier = Modifier.weight(1f),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+        ActivityNavChevron(Icons.Filled.ChevronRight, "Next day", canNewer) { viewModel?.stepDay(older = false) }
+    }
+}
+
+@Composable
+private fun ActivityNavChevron(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon, contentDescription = label,
+            tint = if (enabled) PulseColors.textPrimary else PulseColors.textMuted.copy(alpha = 0.4f),
+        )
+    }
+}
+
+/** Same phrasing as Sleep's header: Today / Yesterday / weekday / date. */
+private fun dayHeaderLabel(dayMillis: Long): String {
+    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
+    val date = Instant.ofEpochMilli(dayMillis).atZone(ZoneId.systemDefault())
+    return when {
+        daysAgo <= 0 -> "Today"
+        daysAgo == 1 -> "Yesterday"
+        daysAgo < 7 -> date.format(DateTimeFormatter.ofPattern("EEEE"))
+        date.year == java.time.Year.now().value -> date.format(DateTimeFormatter.ofPattern("EEE, MMM d"))
+        else -> date.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))
+    }
+}
+
 // ─────────────────── Daily summary card (stats + rings) ───────────────────
 
 @Composable
 private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, units: UnitSystem) {
     val shape = RoundedCornerShape(20.dp)
-    val today = state.today
+    // The shown day's totals, not always-today: day navigation must move this card (issue #76).
+    // WeeklyGoalCard keeps reading state.today — a week widget is about the live week.
+    val today = state.daySummary ?: state.today
     val distValue = today?.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
     Row(
         Modifier

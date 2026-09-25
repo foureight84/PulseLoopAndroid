@@ -3,8 +3,10 @@ package com.pulseloop.service
 import android.content.Context
 import androidx.room.withTransaction
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
+import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.ring.*
 import kotlinx.coroutines.*
 
@@ -568,6 +570,20 @@ class EventPersistenceSubscriber(
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
         if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
+        // Quiet-hours gate (issue #79), opt-in and off by default: the record is trimmed to the
+        // minutes inside the window before any write — the still-wrist/sofa case — rather than
+        // judged by its start, because the ring often runs the sofa hour and the real night as one
+        // record. Already-imported nights are untouched (this never deletes), and the gate is read
+        // per record so a settings change takes effect on the next packet, not the next launch.
+        val quiet = QuietHoursPrefs(context)
+        if (quiet.enabled) {
+            val kept = QuietHoursPrefs.keptMinutes(ts, stages.size, quiet.startMinutes, quiet.endMinutes)
+                ?: return
+            val keptTs = ts + kept.first * 60_000L
+            val keptStages = stages.subList(kept.first, kept.last + 1)
+            db.withTransaction { upsertSleepSessionAtomic(keptTs, keptStages, completeSession) }
+            return
+        }
         db.withTransaction { upsertSleepSessionAtomic(ts, stages, completeSession) }
     }
 
@@ -593,6 +609,14 @@ class EventPersistenceSubscriber(
         // (issue #63): see [completeSessionSurvivors] for why "the session it describes" is a
         // contiguous run of blocks and not every block of every row the packet touches.
         val replacements = buildStageBlocks("", ts, stages)
+            // Tombstone check (issue #78): a deleted ring record's blocks come back with the same
+            // `startAt` values on every re-send of that night, so the re-derive must drop them
+            // here or `SleepRecordDeletion`'s work lasts exactly one sync.
+            .filterNot { block ->
+                db.measurementDeletionDao().isDeleted(
+                    MeasurementDeletionDao.sleepBlockId(dayStart, block.startAt),
+                )
+            }
         val dayBlocks = replaceOverlappingSleepBlocks(
             existing = if (completeSession) {
                 completeSessionSurvivors(existingBlocks, ts, packetEnd)
@@ -767,16 +791,10 @@ class EventPersistenceSubscriber(
      * Medical research: optimal deep sleep = 15-25% of total.
      * Matches the official app's scoring.
      */
-    private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? {
-        if (totalMin == 0) return null
-        val deepPct = (deepMin.toFloat() / totalMin * 100).toInt()
-        return when {
-            deepPct >= 20 -> 90
-            deepPct >= 15 -> 75
-            deepPct >= 10 -> 60
-            else -> 40
-        }
-    }
+    private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
+        // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
+        // same banding, so one function owns it.
+        sleepStageScore(deepMin, totalMin)
 
     // ── Calorie estimation recompute (iOS #98) ───────────────────────────────────
 
