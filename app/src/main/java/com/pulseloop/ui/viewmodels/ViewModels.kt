@@ -449,6 +449,9 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         todayStart.value = TimeUtil.startOfTodayLocal()
         // A resume lands the user back on today, where they left the app from.
         jumpToOffset(0)
+        // Re-read the pager bound too: it was computed once at init, so days synced (or a
+        // midnight rolled) since then would stay out of reach until the ViewModel was rebuilt.
+        viewModelScope.launch { refreshMaxDayOffset() }
     }
 
     init {
