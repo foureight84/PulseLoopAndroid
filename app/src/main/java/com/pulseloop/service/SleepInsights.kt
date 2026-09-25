@@ -162,10 +162,22 @@ fun awakeMinutes(blocks: List<SleepStageBlockEntity>): Int {
         .sumOf { it.durationMinutes }
     val runs = sleepRecordRuns(blocks)
     val between = (0 until runs.lastIndex).sumOf { i ->
-        val gapMinutes = ((runs[i + 1].startAt - runs[i].endAt) / 60_000L).toInt()
-        if (gapMinutes >= 2) gapMinutes else 0
+        betweenRecordAwakeMinutes(runs[i], runs[i + 1])
     }
     return staged + between
+}
+
+/**
+ * The waking between two consecutive ring records of one session, in minutes — 0 for the one-minute
+ * seam (issue #63). The one rule both the Awake figure ([awakeMinutes]) and the RECORDS card's
+ * "Awake Xm between" line read, so the two cannot disagree about the same gap (issue #81).
+ *
+ * No upper cap is needed: a session never holds a gap of [SleepSegmentation.SESSION_GAP_MINUTES]
+ * or more — the write path and `SleepRecordDeletion` both split there.
+ */
+fun betweenRecordAwakeMinutes(earlier: SleepRecordRun, later: SleepRecordRun): Int {
+    val gapMinutes = ((later.startAt - earlier.endAt) / 60_000L).toInt()
+    return if (gapMinutes >= 2) gapMinutes else 0
 }
 
 /**

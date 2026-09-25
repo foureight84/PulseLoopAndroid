@@ -81,42 +81,87 @@ object SleepRecordDeletion {
      * Rewrite [session] from the blocks it still has — bounds, asleep minutes and score, the same
      * formulas `reconcileWakingDay` applies (blocks re-keyed to the new bounds the same way). Empty
      * means gone: the row is deleted and the day reads as unslept.
+     *
+     * The survivors are re-segmented by [com.pulseloop.service.SleepSegmentation] first, exactly as
+     * the next sync would do it. Deleting a *middle* record can leave an hour-plus hole — which the
+     * write path reads as two sessions, not one night with a long waking. Restating it as a single
+     * row would both disagree with the next sync and let `awakeMinutes` count the hole as a
+     * between-record waking (issue #81), turning a deleted 00:25–03:19 into three hours awake.
      */
     private suspend fun restateSession(
         db: PulseLoopDatabase,
         session: SleepSessionEntity,
         remaining: List<SleepStageBlockEntity>,
     ) {
-        if (remaining.isEmpty()) {
+        val plan = planRestate(session, remaining)
+        if (plan.isEmpty()) {
             db.sleepSessionDao().deleteById(session.id)
             return
         }
-        val ordered = remaining.sortedBy { it.startAt }
-        val startAt = ordered.first().startAt
-        val endAt = ordered.maxOf { it.startAt + it.durationMinutes * 60_000L }
-        val totalMin = com.pulseloop.service.asleepMinutes(ordered)
-        val deepMin = ordered.filter { it.stageRaw == SleepStage.DEEP.name }
-            .sumOf { it.durationMinutes }
-        val now = System.currentTimeMillis()
-        db.sleepSessionDao().upsert(
-            session.copy(
-                startAt = startAt,
-                endAt = endAt,
-                totalMinutes = totalMin,
-                score = com.pulseloop.service.sleepStageScore(deepMin, totalMin),                updatedAt = now,
-            ),
-        )
-        // Re-key the surviving blocks to the restated bounds: `startMinute` is relative to the
-        // session start, so it moves with the new first block.
         db.sleepStageBlockDao().deleteBySession(session.id)
-        ordered.forEach {
-            db.sleepStageBlockDao().insert(
-                it.copy(
-                    id = java.util.UUID.randomUUID().toString(),
-                    sessionId = session.id,
-                    startMinute = ((it.startAt - startAt) / 60_000L).toInt().coerceAtLeast(0),
+        val now = System.currentTimeMillis()
+        for (row in plan) {
+            val totalMin = com.pulseloop.service.asleepMinutes(row.blocks)
+            val deepMin = row.blocks.filter { it.stageRaw == SleepStage.DEEP.name }
+                .sumOf { it.durationMinutes }
+            // Parent session BEFORE its blocks (FK sleep_stage_blocks -> sleep_sessions.id).
+            db.sleepSessionDao().upsert(
+                session.copy(
+                    id = row.id,
+                    startAt = row.startAt,
+                    endAt = row.endAt,
+                    totalMinutes = totalMin,
+                    score = com.pulseloop.service.sleepStageScore(deepMin, totalMin),
+                    updatedAt = now,
                 ),
             )
+            // Re-key the surviving blocks to the restated bounds: `startMinute` is relative to the
+            // session start, so it moves with the new first block.
+            row.blocks.forEach {
+                db.sleepStageBlockDao().insert(
+                    it.copy(
+                        id = java.util.UUID.randomUUID().toString(),
+                        sessionId = row.id,
+                        startMinute = ((it.startAt - row.startAt) / 60_000L).toInt().coerceAtLeast(0),
+                    ),
+                )
+            }
+        }
+    }
+
+    /** One session row the restate writes: its id, bounds and blocks (sorted). */
+    internal data class RestatedRow(
+        val id: String,
+        val startAt: Long,
+        val endAt: Long,
+        val blocks: List<SleepStageBlockEntity>,
+    )
+
+    /**
+     * Split [remaining] the way `reconcileWakingDay` would and assign row ids: the segment that
+     * overlaps [session]'s old bounds most keeps its id (so the Day view stays on the same row);
+     * any other segment gets the id the write path mints for a new segment, `sleep-<day>-<start>`,
+     * so the next sync matches it rather than inserting a twin. Empty in → empty out.
+     */
+    internal fun planRestate(
+        session: SleepSessionEntity,
+        remaining: List<SleepStageBlockEntity>,
+    ): List<RestatedRow> {
+        val segments = com.pulseloop.service.SleepSegmentation.segment(remaining).map { g ->
+            val sorted = g.sortedBy { it.startAt }
+            RestatedRow(
+                id = "",
+                startAt = sorted.first().startAt,
+                endAt = sorted.maxOf { it.startAt + it.durationMinutes * 60_000L },
+                blocks = sorted,
+            )
+        }
+        if (segments.isEmpty()) return emptyList()
+        fun overlap(r: RestatedRow) =
+            maxOf(0L, minOf(r.endAt, session.endAt) - maxOf(r.startAt, session.startAt))
+        val keeper = segments.maxBy { overlap(it) }
+        return segments.map {
+            it.copy(id = if (it === keeper) session.id else "sleep-${session.date}-${it.startAt}")
         }
     }
 }

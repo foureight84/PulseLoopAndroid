@@ -96,4 +96,60 @@ class SleepRecordDeletionTest {
 
         assertEquals(deletedStarts.size, dao.rows.size)
     }
+
+    // ── Restating the survivors ([SleepRecordDeletion.planRestate]) ─────────
+
+    private fun block(startMinute: Int, minutes: Int, recordStartMinute: Int) =
+        com.pulseloop.data.entity.SleepStageBlockEntity(
+            id = "b$startMinute",
+            sessionId = "night",
+            startAt = wakingDay + startMinute * 60_000L,
+            startMinute = startMinute,
+            durationMinutes = minutes,
+            stageRaw = com.pulseloop.ring.SleepStage.LIGHT.name,
+            recordStartAt = wakingDay + recordStartMinute * 60_000L,
+        )
+
+    // The reported night, minutes from 23:08: 23:08–00:05, 00:25–03:19, 03:26–07:08.
+    private val first = block(0, 57, 0)
+    private val middle = block(77, 174, 77)
+    private val last = block(258, 222, 258)
+    private val session = com.pulseloop.data.entity.SleepSessionEntity(
+        id = "night", date = wakingDay,
+        startAt = first.startAt, endAt = last.startAt + last.durationMinutes * 60_000L,
+        totalMinutes = 453,
+    )
+
+    /** The reported case: drop the sofa record, the rest stays one session on the same row. */
+    @Test
+    fun `deleting the first record restates one row under the same id`() {
+        val plan = SleepRecordDeletion.planRestate(session, listOf(middle, last))
+        assertEquals(1, plan.size)
+        assertEquals("night", plan[0].id)
+        assertEquals(middle.startAt, plan[0].startAt)
+    }
+
+    /**
+     * Deleting the middle record leaves a 3 h 21 m hole. The next sync re-segments at the 60-minute
+     * session gap, so the restate must too — kept as one row, `awakeMinutes` would have counted the
+     * whole hole as a between-record waking (#81).
+     */
+    @Test
+    fun `deleting a middle record past the session gap splits the night like a re-sync would`() {
+        val plan = SleepRecordDeletion.planRestate(session, listOf(first, last))
+        assertEquals(2, plan.size)
+        // The longer survivor overlaps the old bounds most and keeps the row id...
+        assertEquals("night", plan[1].id)
+        assertEquals(listOf(last.startAt), plan[1].blocks.map { it.startAt })
+        // ...the other takes the id the write path mints, so a re-sync matches rather than twins it.
+        assertEquals("sleep-$wakingDay-${first.startAt}", plan[0].id)
+        plan.forEach { row ->
+            assertEquals(0, com.pulseloop.service.awakeMinutes(row.blocks))
+        }
+    }
+
+    @Test
+    fun `deleting every record restates nothing`() {
+        assertTrue(SleepRecordDeletion.planRestate(session, emptyList()).isEmpty())
+    }
 }

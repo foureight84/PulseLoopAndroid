@@ -130,7 +130,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
         // Single session: render exactly as before, no carousel chrome.
         sessions.size == 1 -> sessionPageItems(sessions[0], state.dayBlocks[sessions[0].id] ?: emptyList(), viewModel)
         // Multiple sessions (night + naps): horizontal paged carousel with dot indicators.
-        else -> item { SleepCarousel(sessions, state.dayBlocks) }
+        else -> item { SleepCarousel(sessions, state.dayBlocks, viewModel) }
     }
 
     item {
@@ -195,6 +195,7 @@ private fun SessionHero(session: SleepSessionEntity, blocks: List<SleepStageBloc
 private fun SleepCarousel(
     sessions: List<SleepSessionEntity>,
     blocksBySession: Map<String, List<SleepStageBlockEntity>>,
+    viewModel: SleepViewModel? = null,
 ) {
     // Reset to the first page whenever the day's session set changes (a different day / fewer
     // pages): keying the composable recreates the pager state.
@@ -220,6 +221,11 @@ private fun SleepCarousel(
                 VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
                     SleepHypnogram(blocks = blocks, spanMin = s.spanMinutes, startTs = s.startAt)
                 }
+                // Unlike the single-session page, shown even for a one-record session: on a
+                // multi-session day a phantom (the sofa evening the merge did not join to the
+                // night) is its own page, and this card is the only place to delete it (#78).
+                val runs = com.pulseloop.service.sleepRecordRuns(blocks)
+                if (runs.isNotEmpty()) SleepRecordsCard(s, runs, viewModel)
                 val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
                 SleepStageSummaryCards(
                     deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
@@ -991,11 +997,13 @@ private fun SleepRecordsCard(
     viewModel: SleepViewModel?,
 ) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     // Two-step delete (the vitals/activity pattern): a row's trash icon arms the confirm dialog.
     var pendingRun by remember { mutableStateOf<com.pulseloop.service.SleepRecordRun?>(null) }
     VisualizationCard(
         eyebrow = "Records",
-        title = if (runs.size == 1) "The ring recorded this night in 1 part"
+        // One run only happens on a carousel page, which may be a nap rather than a night.
+        title = if (runs.size == 1) "The ring recorded this as one record"
             else "The ring recorded this night in ${runs.size} parts",
         legend = false,
     ) {
@@ -1032,8 +1040,12 @@ private fun SleepRecordsCard(
                         )
                     }
                 }
-                if (index < runs.lastIndex) {
-                    val gapMinutes = ((runs[index + 1].startAt - run.endAt) / 60_000L).toInt()
+                // Only a gap the Awake card also counts (issue #81): the one-minute seam between
+                // two records is not a waking, so it gets no "Awake" line here either.
+                val gapMinutes = if (index < runs.lastIndex) {
+                    com.pulseloop.service.betweenRecordAwakeMinutes(run, runs[index + 1])
+                } else 0
+                if (gapMinutes > 0) {
                     Text(
                         "Awake ${SleepFormat.duration(gapMinutes)} between",
                         fontSize = 12.sp,
@@ -1059,7 +1071,12 @@ private fun SleepRecordsCard(
                 TextButton(onClick = {
                     pendingRun = null
                     scope.launch {
-                        viewModel?.deleteSleepRecord(session.id, run.startAt)
+                        val removed = viewModel?.deleteSleepRecord(session.id, run.startAt) ?: false
+                        if (!removed) {
+                            android.widget.Toast.makeText(
+                                context, "Couldn't delete this record", android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        }
                     }
                 }) { Text("Delete", color = PulseColors.danger) }
             },
