@@ -570,14 +570,18 @@ class EventPersistenceSubscriber(
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
         if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
-        // Quiet-hours gate (issue #79), opt-in and off by default: a record the ring opens outside
-        // the window is declined here, before any write — the still-wrist/sofa case. Already-
-        // imported nights are untouched (this never deletes), and the gate is read per record so a
-        // settings change takes effect on the next packet, not the next launch.
+        // Quiet-hours gate (issue #79), opt-in and off by default: the record is trimmed to the
+        // minutes inside the window before any write — the still-wrist/sofa case — rather than
+        // judged by its start, because the ring often runs the sofa hour and the real night as one
+        // record. Already-imported nights are untouched (this never deletes), and the gate is read
+        // per record so a settings change takes effect on the next packet, not the next launch.
         val quiet = QuietHoursPrefs(context)
-        if (quiet.enabled &&
-            !QuietHoursPrefs.covers(quiet.startMinutes, quiet.endMinutes, QuietHoursPrefs.minuteOfDay(ts))
-        ) {
+        if (quiet.enabled) {
+            val kept = QuietHoursPrefs.keptMinutes(ts, stages.size, quiet.startMinutes, quiet.endMinutes)
+                ?: return
+            val keptTs = ts + kept.first * 60_000L
+            val keptStages = stages.subList(kept.first, kept.last + 1)
+            db.withTransaction { upsertSleepSessionAtomic(keptTs, keptStages, completeSession) }
             return
         }
         db.withTransaction { upsertSleepSessionAtomic(ts, stages, completeSession) }

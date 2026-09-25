@@ -14,7 +14,12 @@ import java.time.ZoneId
  * compare imports against, and the sofa case is mostly caught by a plain window. The Modes
  * version stays open as a follow-up — the reporter offered to build it.
  *
- * **The filter is drop-on-import, and that is not recoverable.** A record the gate declines is
+ * **Minute-level, not record-level.** A record is trimmed to the minutes that fall inside the
+ * window ([keptMinutes]) rather than accepted or declined by its start minute. The ring often
+ * opens one record on the sofa and runs it straight on into the real night; judging that record
+ * by its 23:08 start would either keep the sofa hour or throw the whole night away.
+ *
+ * **The filter is drop-on-import, and that is not recoverable.** Minutes the gate trims are
  * never written, so widening the window later cannot resurrect what was skipped while it was
  * narrower — the same one-way property the deletion tombstones have, chosen for the same reason:
  * the alternative (import everything, hide outside the window) makes the ring's own figure and
@@ -57,6 +62,38 @@ class QuietHoursPrefs(context: Context) {
             if (start == end) return true
             return if (start < end) minuteOfDay in start until end
             else minuteOfDay >= start || minuteOfDay < end
+        }
+
+        /**
+         * Which minutes of a ring record opened at [ts] with [minutes] stage minutes to keep: the
+         * longest contiguous stretch whose minutes fall inside [start]→[end] (see [covers]), as
+         * indices into the record's stages. Null when no minute is inside — the record is dropped.
+         *
+         * Longest-stretch rather than every in-window minute because the window is one daily
+         * interval: a record longer than the gap between two windows (a nap run through to the
+         * evening) could touch two of them, and keeping both would bridge the hole with a record
+         * that was never contiguous.
+         */
+        fun keptMinutes(
+            ts: Long,
+            minutes: Int,
+            start: Int,
+            end: Int,
+            zone: ZoneId = ZoneId.systemDefault(),
+        ): IntRange? {
+            if (minutes <= 0) return null
+            var best: IntRange? = null
+            var runStart = -1
+            for (i in 0..minutes) {
+                val inside = i < minutes && covers(start, end, minuteOfDay(ts + i * 60_000L, zone))
+                if (inside && runStart < 0) runStart = i
+                if (!inside && runStart >= 0) {
+                    val run = runStart until i
+                    if (best == null || run.count() > best.count()) best = run
+                    runStart = -1
+                }
+            }
+            return best
         }
 
         /** Local minute-of-day of an epoch-millis instant. */

@@ -1636,10 +1636,11 @@ private fun QuietHoursCard() {
                 Switch(checked = enabled, onCheckedChange = { enabled = it; prefs.enabled = it })
             }
             Text(
-                "When on, sleep the ring opens outside the window is ignored on import — a still " +
-                    "wrist reads as sleep, so an evening on the sofa can log a phantom session and " +
-                    "run the night high. Already-imported nights are never touched, and what the " +
-                    "gate skips while it is narrower stays skipped.",
+                "When on, sleep the ring records outside the window is trimmed off on import — a " +
+                    "still wrist reads as sleep, so an evening on the sofa can log a phantom session " +
+                    "and run the night high. Set the start to when you actually go to bed. Naps " +
+                    "outside the window are skipped too. Already-imported nights are never touched, " +
+                    "and what the gate skips while it is narrower stays skipped.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
