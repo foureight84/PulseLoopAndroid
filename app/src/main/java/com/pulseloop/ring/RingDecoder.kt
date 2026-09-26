@@ -112,7 +112,7 @@ class RingDecoder(private val clock: JringClock? = null) {
      */
     private fun decodeActivityHistory(bytes: ByteArray): List<RingDecodedEvent> {
         if (bytes.size < 20) return listOf(unknown(0x10, bytes))
-        val baseTimestamp = Instant.ofEpochSecond(u32le(bytes, 1).toLong())
+        val baseTimestamp = ringDate(u32le(bytes, 1).toLong())
         return (5..19).map { i ->
             RingDecodedEvent.ActivityBucket(
                 _timestamp = baseTimestamp.plusSeconds((i - 5) * 60L),
@@ -147,7 +147,7 @@ class RingDecoder(private val clock: JringClock? = null) {
         )
         return RingDecodedEvent.HeartRateSample(
             bpm = bytes[5].toInt() and 0xFF,
-            _timestamp = Instant.ofEpochSecond(tsRaw),
+            _timestamp = ringDate(tsRaw),
             sleepStatus = bytes[6].toInt() and 0xFF,
             isError = false,
         )
