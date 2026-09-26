@@ -19,7 +19,12 @@ object RetrievalTools {
         name = "get_profile_context",
         publicLabel = "Checking your profile and ring status",
         description = "Get user profile, goals, device sync status, and data-quality warnings.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()), "additionalProperties" to JsonPrimitive(false))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db
         if (db == null) {
@@ -111,16 +116,16 @@ object RetrievalTools {
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
                 "start_date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "end_date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                "end_date" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("start_date"))),
+            "required" to JsonArray(listOf(JsonPrimitive("start_date"), JsonPrimitive("end_date"))),
             "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, ctx ->
         val db = ctx.db
         if (db == null) return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
         val json = Json { ignoreUnknownKeys = true }
-        val params = try { json.decodeFromString<Map<String, String>>(args) } catch (_: Exception) { null }
+        val params = try { json.decodeFromString<Map<String, String?>>(args) } catch (_: Exception) { null }
             ?: return@CoachToolDef ToolResult("""{"error":"invalid arguments"}""", isError = true)
         val start = params["start_date"] ?: return@CoachToolDef ToolResult("""{"error":"missing 'start_date'"}""", isError = true)
         val end = params["end_date"] ?: start
@@ -157,6 +162,7 @@ object RetrievalTools {
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("start_date"), JsonPrimitive("end_date"), JsonPrimitive("include"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { jsonParams, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -197,6 +203,7 @@ object RetrievalTools {
                 "end_date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("start_date"), JsonPrimitive("end_date"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -223,6 +230,7 @@ object RetrievalTools {
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf("activity_id" to JsonObject(mapOf("type" to JsonPrimitive("string"))))),
             "required" to JsonArray(listOf(JsonPrimitive("activity_id"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { jsonParams, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -240,7 +248,12 @@ object RetrievalTools {
         name = "get_sync_status",
         publicLabel = "Checking ring connection",
         description = "Get the ring's current connection state, battery, last sync time.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
         val device = kotlinx.coroutines.runBlocking { db.deviceDao().current() }
@@ -260,6 +273,7 @@ object RetrievalTools {
                 "end" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("start"), JsonPrimitive("end"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -283,6 +297,7 @@ object RetrievalTools {
                 "enum" to JsonArray(listOf("week","month","year").map { JsonPrimitive(it) }),
             )))),
             "required" to JsonArray(listOf(JsonPrimitive("range"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { jsonParams, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -300,7 +315,12 @@ object RetrievalTools {
         name = "get_goal_progress",
         publicLabel = "Checking your goals",
         description = "Compare today's metrics against the user's goals.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
         val goal = kotlinx.coroutines.runBlocking { db.userGoalDao().get() }
@@ -315,7 +335,12 @@ object RetrievalTools {
         name = "get_recent_anomalies",
         publicLabel = "Scanning for anything unusual",
         description = "Detect statistical outliers in steps and resting HR over last ~14 days.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
         val recentSteps = kotlinx.coroutines.runBlocking { db.activityDailyDao().recent(14) }.map { it.steps.toDouble() }
@@ -372,10 +397,11 @@ object AnalysisTools {
                     "items" to JsonObject(mapOf("type" to JsonPrimitive("number"))))),
                 "period_b" to JsonObject(mapOf("type" to JsonPrimitive("array"),
                     "items" to JsonObject(mapOf("type" to JsonPrimitive("number"))))),
-                "label_a" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "label_b" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                "label_a" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
+                "label_b" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("period_a"), JsonPrimitive("period_b"))),
+            "required" to JsonArray(listOf(JsonPrimitive("period_a"), JsonPrimitive("period_b"), JsonPrimitive("label_a"), JsonPrimitive("label_b"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -403,10 +429,13 @@ object AnalysisTools {
                             "x" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
                             "y" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
                         )),
+                        "required" to JsonArray(listOf(JsonPrimitive("x"), JsonPrimitive("y"))),
+                        "additionalProperties" to JsonPrimitive(false),
                     )),
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("pairs"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -434,6 +463,7 @@ object AnalysisTools {
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("values"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -465,6 +495,7 @@ object AnalysisTools {
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("values"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -532,9 +563,9 @@ object MemoryTools {
             "properties" to JsonObject(mapOf(
                 "key" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                 "value" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "importance" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
+                "importance" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("key"), JsonPrimitive("value"))),
+            "required" to JsonArray(listOf(JsonPrimitive("key"), JsonPrimitive("value"), JsonPrimitive("importance"))),
             "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, ctx ->
@@ -543,9 +574,9 @@ object MemoryTools {
         val json = Json { ignoreUnknownKeys = true }
         val params = try { json.decodeFromString<Map<String, JsonElement>>(args) } catch (_: Exception) { null }
         if (params == null) return@CoachToolDef ToolResult("""{"saved":false,"error":"invalid arguments"}""", isError = true)
-        val key = params["key"]?.jsonPrimitive?.content ?: return@CoachToolDef ToolResult("""{"saved":false,"error":"missing key"}""", isError = true)
-        val value = params["value"]?.jsonPrimitive?.content ?: ""
-        val importance = params["importance"]?.jsonPrimitive?.int ?: 5
+        val key = params["key"]?.jsonPrimitive?.contentOrNull ?: return@CoachToolDef ToolResult("""{"saved":false,"error":"missing key"}""", isError = true)
+        val value = params["value"]?.jsonPrimitive?.contentOrNull ?: ""
+        val importance = params["importance"]?.jsonPrimitive?.intOrNull ?: 5
         kotlinx.coroutines.runBlocking {
             val existing = db.coachMemoryDao().byKey(key)
             db.coachMemoryDao().upsert(
@@ -589,10 +620,10 @@ object ActionTools {
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
                 "steps" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
-                "sleep_minutes" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
-                "active_minutes" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
+                "sleep_minutes" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
+                "active_minutes" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("steps"))),
+            "required" to JsonArray(listOf(JsonPrimitive("steps"), JsonPrimitive("sleep_minutes"), JsonPrimitive("active_minutes"))),
             "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, ctx ->
