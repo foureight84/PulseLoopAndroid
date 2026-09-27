@@ -810,3 +810,20 @@ at all.** Two further shapes of the same failure, fixed together:
   and the two cases mask differently: `frame_start` keeps its family's header (it is there, and it is
   what identifies the reply), `frame_chunk` keeps byte 0 and nothing else, because the middle of a
   frame is payload from byte 0 on.
+
+**Capture is application-scoped and bounded — keep it that way.** `DiagnosticsSubscriber` is started
+once from `PulseLoopApplication` and is the only writer of `raw_packets` and `wearable_logs`. For a
+long time it was never started at all: the Debug console showed "0 packets captured" beside 778
+stored CRP packets, and Ring Events lived in composable state that vanished on navigation. Three
+things to preserve:
+
+- **Nothing in the UI owns capture.** The Debug screen reads Room through `DiagnosticsViewModel` and
+  acts on the app's own `RingBLEClient` / `RingSyncCoordinator`. A screen that builds its own client
+  is talking to a second, unconnected ring stack.
+- **Both tables are capped** (`DiagnosticsRetention`: 1,000 packets, 2,000 log rows, trimmed every 50
+  inserts so a DELETE stays off the per-packet path; up to 49 over between trims). They ride in the
+  data archive, and a verbose driver logs every attempt and every reply, so an unbounded table grows
+  for the life of the install.
+- **Verbose transport logging is a driver opt-in** (`WearableDriver.verboseTransportDiagnostics`,
+  on for CRP only), and its log lines carry the frame's route (`diagnosticRoute`) — never its payload.
+  An undecoded frame is still logged `unknown` and exported whole, per the section above.
