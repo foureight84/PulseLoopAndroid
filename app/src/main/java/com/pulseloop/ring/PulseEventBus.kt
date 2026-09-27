@@ -15,6 +15,17 @@ import kotlinx.coroutines.launch
  * Typed events published on the bus for subscribers to consume.
  */
 sealed class PulseEvent {
+    /**
+     * A transport diagnostic for the wearable log. Never put health values or raw payloads in
+     * [message]. [traffic] marks a per-packet TX/RX line, as opposed to a connection event.
+     */
+    data class Diagnostic(
+        val message: String,
+        val deviceType: RingDeviceType? = null,
+        val error: Boolean = false,
+        val traffic: Boolean = false,
+        val timestamp: Long = System.currentTimeMillis(),
+    ) : PulseEvent()
     data class DeviceStateChanged(
         val state: RingConnectionState,
         val address: String?,
@@ -46,6 +57,8 @@ sealed class PulseEvent {
         val data: ByteArray,
         val decoded: RingDecodedEvent,
         val deviceType: RingDeviceType? = null,
+        val capturedAt: Long = System.currentTimeMillis(),
+        val transportJSON: String? = null,
     ) : PulseEvent() {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true

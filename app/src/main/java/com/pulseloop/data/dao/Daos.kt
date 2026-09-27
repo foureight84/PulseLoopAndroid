@@ -504,6 +504,8 @@ interface UserGoalDao {
 
 @Dao
 interface WearableLogDao {
+    @Query("SELECT * FROM wearable_logs ORDER BY timestamp DESC, rowid DESC LIMIT :limit")
+    fun observeRecent(limit: Int = 200): Flow<List<WearableLogEntity>>
     @Query("SELECT * FROM wearable_logs ORDER BY timestamp DESC LIMIT :limit")
     suspend fun recent(limit: Int = 500): List<WearableLogEntity>
 
@@ -512,15 +514,28 @@ interface WearableLogDao {
 
     @Query("DELETE FROM wearable_logs WHERE timestamp < :before")
     suspend fun deleteOlderThan(before: Long)
+
+    /** Keeps the newest [keep] rows. See `DiagnosticsRetention`. */
+    @Query("DELETE FROM wearable_logs WHERE rowid NOT IN (SELECT rowid FROM wearable_logs ORDER BY timestamp DESC, rowid DESC LIMIT :keep)")
+    suspend fun trimTo(keep: Int)
 }
 
 @Dao
 interface RawPacketDao {
+    @Query("SELECT count(*) FROM raw_packets")
+    fun observeCount(): Flow<Int>
+
+    @Query("SELECT * FROM raw_packets ORDER BY timestamp DESC, rowid DESC LIMIT :limit")
+    fun observeRecent(limit: Int = 100): Flow<List<RawPacketEntity>>
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(packet: RawPacketEntity)
 
     @Query("SELECT * FROM raw_packets ORDER BY timestamp DESC LIMIT :limit")
     suspend fun recent(limit: Int = 500): List<RawPacketEntity>
+
+    /** Keeps the newest [keep] rows. See `DiagnosticsRetention`. */
+    @Query("DELETE FROM raw_packets WHERE rowid NOT IN (SELECT rowid FROM raw_packets ORDER BY timestamp DESC, rowid DESC LIMIT :keep)")
+    suspend fun trimTo(keep: Int)
 }
 
 @Dao

@@ -411,15 +411,9 @@ class EventPersistenceSubscriber(
             is PulseEvent.Spo2Complete -> {}
             is PulseEvent.MeasurementRejected -> {} // Product orchestration only; no persistence.
             is PulseEvent.WearState -> {} // Product orchestration only (fast-fail a measure); not persisted.
-            is PulseEvent.RawPacket -> {
-                db.rawPacketDao().insert(RawPacketEntity(
-                    directionRaw = event.direction.name,
-                    commandId = event.data.getOrNull(0)?.toInt()?.and(0xFF) ?: 0,
-                    hexPayload = event.data.joinToString("") { "%02x".format(it) },
-                    decodedKind = event.decoded.kind,
-                    deviceTypeRaw = event.deviceType?.name,
-                ))
-            }
+            // Both persisted by DiagnosticsSubscriber, which also stamps and bounds them.
+            is PulseEvent.RawPacket -> {}
+            is PulseEvent.Diagnostic -> {}
             is PulseEvent.ActivitySyncReset -> {}
             is PulseEvent.FirmwareVersion -> {
                 // 0xF6 must NOT write the firmware version. The ring streams two distinct 0xF6

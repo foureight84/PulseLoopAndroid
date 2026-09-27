@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.util.UUID
 
 /**
@@ -1063,19 +1065,26 @@ class RingBLEClient(
                         target.value = op.data
                         // Publish the outgoing packet once, on the first issue attempt only — a
                         // retry storm used to log 200 duplicate CommandAcks, flooding the 200-entry
-                        // diagnostics ring buffer and evicting the real reply packets.
-                        if (op.attempts == 0) {
+                        // diagnostics ring buffer and evicting the real reply packets. A driver that
+                        // asks for transport detail gets every attempt; capture retention bounds it.
+                        val verbose = activeDriver?.verboseTransportDiagnostics == true
+                        if (op.attempts == 0 || verbose) {
                             PulseEventBus.publishBlocking(
                                 PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
                                     RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u),
-                                    deviceType = activeCoordinator?.deviceType)
+                                    deviceType = activeCoordinator?.deviceType,
+                                    transportJSON = packetMetadata(target.uuid.toString(), op.attempts + 1))
                             )
                         }
                         if (op.attempts == 0) {
                             val prefix = op.data.take(4).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
                             recordDiagnostic("write issue $prefix len=${op.data.size}")
                         }
-                        gatt.writeCharacteristic(target)
+                        val accepted = gatt.writeCharacteristic(target)
+                        if (verbose) {
+                            recordDiagnostic("TX ${routeLabel(op.data)} attempt=${op.attempts + 1} accepted=$accepted", traffic = true)
+                        }
+                        accepted
                     }
                 }
                 is GattOp.Read -> gatt.readCharacteristic(op.characteristic)
@@ -1103,6 +1112,7 @@ class RingBLEClient(
                         // callback for a timed-out write could otherwise retire its successor.
                         // Reset the link instead of issuing another ambiguous command write.
                         if (op is GattOp.CommandWrite) {
+                            recordDiagnostic("GATT write acknowledgement timed out", error = true)
                             recoverWedgedLink()
                             return@launch
                         }
@@ -1143,6 +1153,7 @@ class RingBLEClient(
                 }
                 return
             }
+            recordDiagnostic("GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${opLabel(op)}", error = true)
             Log.w("RingBLEClient", "GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${opLabel(op)}")
             if (op is GattOp.DescriptorWrite &&
                 subscriptionGate?.isRequired(op.descriptor.characteristic.uuid.toString()) == true
@@ -1189,12 +1200,46 @@ class RingBLEClient(
     }
 
     @Synchronized
-    private fun recordDiagnostic(message: String) {
+    private fun recordDiagnostic(
+        message: String,
+        error: Boolean = false,
+        traffic: Boolean = false,
+    ) {
+        // `generation` is the forget generation: it separates one pairing's traffic from the next,
+        // not one reconnect from another.
+        PulseEventBus.publishBlocking(PulseEvent.Diagnostic(
+            "generation=$forgetGeneration $message", activeCoordinator?.deviceType, error, traffic,
+        ))
         Log.i("RingBLEClient", message)
         _state.update { current ->
             current.copy(diagnostics = (current.diagnostics + message).takeLast(6))
         }
     }
+
+    private fun routeLabel(data: ByteArray): String =
+        activeDriver?.diagnosticRoute(data) ?: "bytes=${data.size}"
+
+    /**
+     * Records a notification or read from a characteristic outside the driver's decode path (the
+     * standard blood-pressure, glucose and battery characteristics, or one the driver does not
+     * subscribe to). It is logged as a continuation chunk so the export masks everything after
+     * byte 0: these payloads are health values or unknown, and nothing here decodes them.
+     */
+    private fun captureAuxiliary(uuid: String, bytes: ByteArray) {
+        val copy = bytes.copyOf()
+        PulseEventBus.publishBlocking(PulseEvent.RawPacket(PacketDirection.INCOMING, copy,
+            RingDecodedEvent.FramePending(copy, startsFrame = false), activeCoordinator?.deviceType,
+            transportJSON = packetMetadata(uuid)))
+    }
+
+    /** Transport facts stored with a raw packet; the export keeps only these keys
+     *  ([com.pulseloop.diagnostics.DiagnosticsExporter.transportMetadata]). */
+    private fun packetMetadata(uuid: String, attempt: Int = 0): String =
+        buildJsonObject {
+            put("characteristic", uuid)
+            put("generation", forgetGeneration)
+            if (attempt > 0) put("attempt", attempt)
+        }.toString()
 
     // MARK: Scan callback
 
@@ -1502,6 +1547,11 @@ class RingBLEClient(
         ) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT read completed — link is alive
+            val value: ByteArray? = characteristic.value
+            if (activeDriver?.verboseTransportDiagnostics == true) {
+                recordDiagnostic("read ${characteristic.uuid} status=$status", error = status != BluetoothGatt.GATT_SUCCESS)
+                if (status == BluetoothGatt.GATT_SUCCESS) value?.let { captureAuxiliary(characteristic.uuid.toString(), it) }
+            }
             resetOpFailures()
             // Retire the in-flight op regardless of payload, before any early return —
             // but only if it IS the read this callback answers (a stale post-timeout ACK
@@ -1509,7 +1559,6 @@ class RingBLEClient(
             completeOp { it is GattOp.Read && it.characteristic === characteristic }
             if (status != BluetoothGatt.GATT_SUCCESS) return
             if (characteristic.uuid.toString() == activeDriver?.batteryCharUUID) {
-                val value = characteristic.value
                 if (value != null && value.isNotEmpty()) {
                     val pct = value[0].toInt() and 0xFF
                     updateState { copy(batteryPercent = pct) }
@@ -1518,7 +1567,7 @@ class RingBLEClient(
             } else if (characteristic.uuid == FW_REV_UUID ||
                        characteristic.uuid.toString().startsWith("00002a26") ||
                        characteristic.uuid.toString().startsWith("00002a28")) {
-                val fw = characteristic.value?.let { String(it) }?.trim()
+                val fw = value?.let { String(it) }?.trim()
                 if (fw != null && fw.isNotEmpty()) {
                     updateState { copy(firmwareVersion = fw) }
                     onFirmwareRead?.invoke(fw)
@@ -1533,6 +1582,7 @@ class RingBLEClient(
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                recordDiagnostic("GATT write failed ($status)", error = true)
                 updateState { copy(lastError = "Ring command write failed (GATT $status)") }
                 // Do not advance into the next command: the failed operation may be one of the
                 // required post-subscription handshake writes, and callbacks share a channel.
@@ -1551,6 +1601,10 @@ class RingBLEClient(
             val value = characteristic.value ?: return
             val uuid = characteristic.uuid.toString()
             val callbackForgetGeneration = forgetGeneration
+            if (activeDriver?.verboseTransportDiagnostics == true &&
+                (uuid !in activeDriver?.notifyUUIDs.orEmpty() || uuid.startsWith("00002a35") || uuid.startsWith("00002a18"))) {
+                captureAuxiliary(uuid, value)
+            }
 
             // Standard BLE health services — read before the ring-service guard
             if (uuid.startsWith("00002a35")) {
@@ -1590,16 +1644,27 @@ class RingBLEClient(
                 activeSyncEngine?.handleRawNotify(value)
             }
 
-            val decodedEvents = driver.ingest(value, characteristic.uuid.toString())
+            val capturedAt = System.currentTimeMillis()
+            val captured = value.copyOf()
+            val decodedEvents = driver.ingest(captured, uuid)
             if (acceptsCallback(callbackForgetGeneration)) {
+                // A frame that decodes to nothing is logged `unknown` and exported whole: control
+                // and pairing frames are what connection reports need. Partial frames arrive as the
+                // decoder's own FramePending, which the export masks.
                 val diagnostic = decodedEvents.firstOrNull() ?: RingDecodedEvent.Unknown(
-                    commandId = value.firstOrNull()?.toUByte() ?: 0u,
-                    raw = value,
+                    commandId = captured.firstOrNull()?.toUByte() ?: 0u,
+                    raw = captured,
                 )
                 PulseEventBus.publishBlocking(
-                    PulseEvent.RawPacket(PacketDirection.INCOMING, value, diagnostic,
-                        deviceType = activeCoordinator?.deviceType)
+                    PulseEvent.RawPacket(PacketDirection.INCOMING, captured, diagnostic,
+                        deviceType = activeCoordinator?.deviceType, capturedAt = capturedAt,
+                        transportJSON = packetMetadata(uuid))
                 )
+                if (driver.verboseTransportDiagnostics) {
+                    val kinds = decodedEvents.groupingBy { it.kind }.eachCount().entries.joinToString { "${it.key}:${it.value}" }
+                    recordDiagnostic("RX ${routeLabel(captured)} on $uuid decoded=${kinds.ifEmpty { "unrecognized" }}",
+                        traffic = true)
+                }
                 for (decoded in decodedEvents) {
                     if (!acceptsCallback(callbackForgetGeneration)) break
                     if (decoded is RingDecodedEvent.SupportFunctions) {
@@ -1627,7 +1692,7 @@ class RingBLEClient(
         override fun onDescriptorWrite(
             gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
         ) {
-            recordDiagnostic("notify ${descriptor.characteristic.uuid.toString().take(8)} status=$status")
+            recordDiagnostic("notify ${descriptor.characteristic.uuid.toString().take(8)} status=$status", error = status != BluetoothGatt.GATT_SUCCESS)
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // descriptor ACK — link is alive
             resetOpFailures()

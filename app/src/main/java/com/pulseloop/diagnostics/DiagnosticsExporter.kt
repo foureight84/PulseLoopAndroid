@@ -16,6 +16,19 @@ import java.time.Instant
  * Builds a shareable diagnostics bundle (JSON): app/OS/device info + recent WearableLog timeline.
  */
 object DiagnosticsExporter {
+    /** The keys `RingBLEClient` stores in `raw_packets.decodedJSON` for each packet. */
+    private val TRANSPORT_KEYS = setOf("characteristic", "generation", "attempt")
+
+    /**
+     * The transport facts of one stored packet, or null if it has none. Older rows may hold decoder
+     * JSON in the same column, so only [TRANSPORT_KEYS] are exported, never arbitrary values.
+     */
+    internal fun transportMetadata(metadata: String?): JsonObject? {
+        val parsed = metadata?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+        return parsed?.filterKeys { it in TRANSPORT_KEYS }
+            ?.takeIf { it.isNotEmpty() }?.let { JsonObject(it) }
+    }
+
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
     /**
@@ -97,6 +110,7 @@ object DiagnosticsExporter {
                             DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind, pkt.deviceTypeRaw ?: "")
                         } else pkt.hexPayload)
                         put("decoded", kind)
+                        transportMetadata(pkt.decodedJSON)?.let { put("transport", it) }
                     }
                 }
             }

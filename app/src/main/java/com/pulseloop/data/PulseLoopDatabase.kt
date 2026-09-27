@@ -71,6 +71,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun coachSummaryDao(): CoachSummaryDao
     abstract fun wearableLogDao(): WearableLogDao
     abstract fun rawPacketDao(): RawPacketDao
+    abstract fun debugDao(): DebugDao
     abstract fun batterySampleDao(): BatterySampleDao
     abstract fun coachNotificationRecordDao(): CoachNotificationRecordDao
     // iOS #96: Nutrition
@@ -472,8 +473,8 @@ abstract class PulseLoopDatabase : RoomDatabase() {
          * when the report is exported (a Colmi frame masked with CRP's six-byte header exports five
          * bytes of samples). Nullable with no backfill on purpose — the family of an already
          * captured packet is not recoverable, and the redactor masks a row with no family from
-         * byte 1, which is the conservative reading. `raw_packets` is a 1000-row debug ring buffer,
-         * so existing rows age out within a session or two of use.
+         * byte 1, which is the conservative reading. `raw_packets` is a 1000-row debug ring buffer
+         * (`DiagnosticsRetention`), so existing rows age out within a session or two of use.
          */
         private val MIGRATION_24_25 = object : Migration(24, 25) {
             override fun migrate(db: SupportSQLiteDatabase) {

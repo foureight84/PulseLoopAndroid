@@ -40,6 +40,16 @@ interface WearableDriver {
     /** Whether an outbound frame must go to the commandUUID characteristic. */
     fun usesCommandChannel(frame: ByteArray): Boolean = false
 
+    /**
+     * Log every write attempt and every notification to the wearable log, not just the first
+     * attempt of each command. Off by default; worth it for a ring that funnels handshake, history
+     * and measurements through one channel, where attempt-level timing is the evidence.
+     */
+    val verboseTransportDiagnostics: Boolean get() = false
+
+    /** A payload-free label for a frame in the wearable log (its route, never its values). */
+    fun diagnosticRoute(frame: ByteArray): String = "bytes=${frame.size}"
+
     /** Decode one inbound notify frame → 0..n events. */
     fun ingest(data: ByteArray, from: String): List<RingDecodedEvent>
 
