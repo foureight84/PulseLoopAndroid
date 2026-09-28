@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pulseloop.PhoneStepManager
 import com.pulseloop.service.MetricKind
 import com.pulseloop.service.MetricZone
 import com.pulseloop.service.VitalsThresholdEngine
@@ -73,6 +74,12 @@ fun TodayScreen(
             isRefreshing = true
             scope.launch {
                 coordinator?.pullToRefresh()
+                // Also refresh phone steps from Health Connect — otherwise pulling to
+                // refresh syncs the ring but leaves the activity tile showing a stale
+                // step count. No-op unless the user's step source is set to "Phone".
+                if (keyStore.stepSource == "phone") {
+                    PhoneStepManager(context).refresh()
+                }
                 kotlinx.coroutines.delay(1500)
                 isRefreshing = false
             }

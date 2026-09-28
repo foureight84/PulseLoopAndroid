@@ -17,6 +17,7 @@
     <!-- Coach weather context (iOS #65d) only needs city-level precision; declared explicitly
          even though ACCESS_FINE_LOCATION above already implies it. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <!-- Phase 7: Notifications for coach check-ins (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -49,6 +50,7 @@
     <uses-permission android:name="android.permission.health.WRITE_BODY_TEMPERATURE" />
     <uses-permission android:name="android.permission.health.WRITE_SLEEP" />
     <uses-permission android:name="android.permission.health.WRITE_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.WRITE_ACTIVE_CALORIES_BURNED" />
     <uses-permission android:name="android.permission.health.WRITE_DISTANCE" />
     <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />

@@ -45,6 +45,25 @@ class EventPersistenceSubscriber(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
+    /** Cached step-source preference. Re-read at most once per second so a toggle
+     *  change in Settings propagates without creating a fresh EncryptedSharedPreferences
+     *  instance for every activity event (which would be extremely slow during a sync). */
+    private var cachedStepSourceIsPhone: Boolean = false
+    private var cachedStepSourceAt: Long = 0L
+    private val stepSourceIsPhone: Boolean
+        get() {
+            val now = System.currentTimeMillis()
+            if (now - cachedStepSourceAt > 1000L) {
+                cachedStepSourceIsPhone = try {
+                    com.pulseloop.settings.ApiKeyStore(context).stepSource == "phone"
+                } catch (_: Exception) {
+                    false
+                }
+                cachedStepSourceAt = now
+            }
+            return cachedStepSourceIsPhone
+        }
+
     // Battery-history throttle (iOS #61b) — in-memory, so the first reading after each (re)launch
     // always records; a change or a 30-min floor logs a fresh row otherwise, keeping the table to a
     // few dozen rows/day instead of one per BLE battery read.
@@ -84,6 +103,7 @@ class EventPersistenceSubscriber(
         is PulseEvent.TemperatureSample,
         is PulseEvent.ActivityUpdate,
         is PulseEvent.ActivityBucket,
+        is PulseEvent.PhoneStepsUpdate,
         is PulseEvent.SleepTimeline -> true
         else -> false
     }
@@ -377,14 +397,25 @@ class EventPersistenceSubscriber(
                 else db.measurementDao().insert(measurement)
             }
             is PulseEvent.ActivityUpdate -> {
-                upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
+                // When the user picks the phone as their step source, ignore the ring's
+                // live activity totals so its over-counted steps don't land in the DB.
+                if (!stepSourceIsPhone) {
+                    upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
+                }
             }
             is PulseEvent.ActivityBucket -> {
-                // Per-slice ring history: upserted by timestamp + the day total recomputed as the
-                // sum of distinct buckets, so re-syncs are idempotent (no drift). Routing these
-                // through upsertActivityDaily's max() ratchet collapsed a history day's total to
-                // its single largest bucket. Calories omitted (unverified ring field).
-                applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
+                // Same rule as ActivityUpdate: phone source means no ring steps get stored.
+                if (!stepSourceIsPhone) {
+                    applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
+                }
+            }
+            is PulseEvent.PhoneStepsUpdate -> {
+                upsertActivityDailyFromPhone(
+                    event.timestamp.toEpochMilli(),
+                    event.steps,
+                    event.calories,
+                    event.distanceMeters,
+                )
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
@@ -513,6 +544,28 @@ class EventPersistenceSubscriber(
                 distanceMeters = distanceM, source = "ring",
             ))
         }
+    }
+
+    /**
+     * Persist the phone's pedometer count for today. Overwrites rather than ratchets:
+     * unlike the ring's cumulative counter, the phone's "today" value is authoritative
+     * and shouldn't get stuck at a stale higher number from the ring if the user
+     * switched the toggle mid-day.
+     */
+    private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int, calories: Double, distanceM: Double) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        val existing = db.activityDailyDao().byDay(dayStart)
+        val now = System.currentTimeMillis()
+        db.activityDailyDao().upsert(
+            (existing ?: ActivityDailyEntity(date = dayStart, source = "phone")).copy(
+                steps = steps,
+                calories = calories,
+                distanceMeters = distanceM,
+                source = "phone",
+                syncedAt = now,
+                updatedAt = now,
+            )
+        )
     }
 
     /**

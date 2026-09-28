@@ -51,6 +51,7 @@ fun SettingsScreen(
     // recomposes this hub, so toggles made there are reflected immediately.
     val coachEnabled = keyStore.coachEnabled
     val developerUnlocked = keyStore.developerUnlocked
+    var stepSource by remember { mutableStateOf(keyStore.stepSource) }
 
     // Provider-aware AI Coach summary — mirrors iOS `coachTrailing` (no Apple on-device
     // mode on Android; hosted providers show the selected model slug).
@@ -138,6 +139,21 @@ fun SettingsScreen(
                 SettingsRowItem(Icons.Filled.RestaurantMenu, PulseColors.calories, "Nutrition") {
                     navigate("settings/nutrition")
                 },
+            ),
+        )
+        // STEP SOURCE
+        SettingsSection(
+            title = "Step Source",
+            rows = listOf(
+                SettingsRowItem(
+                    icon = Icons.Filled.Timeline,
+                    tint = PulseColors.accent,
+                    title = "Data Source",
+                    trailingValue = if (stepSource == "phone") "Phone" else "Ring"
+                ) {
+                    stepSource = if (stepSource == "ring") "phone" else "ring"
+                    keyStore.stepSource = stepSource
+                }
             ),
         )
 
