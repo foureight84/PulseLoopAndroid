@@ -21,8 +21,8 @@ android {
         // versionCode/versionName are overridable from Gradle properties so the release CI
         // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
         // Local builds fall back to the literals below.
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 40
-        versionName = (project.findProperty("appVersionName") as String?) ?: "2.7.0"
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 59
+        versionName = (project.findProperty("appVersionName") as String?) ?: "2.9.2-custom1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Repo the self-updater polls for new releases.
