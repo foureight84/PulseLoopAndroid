@@ -60,6 +60,15 @@ sealed class PulseEvent {
     data class ActivityUpdate(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double, val calories: Double) : PulseEvent()
     data class ActivityBucket(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double) : PulseEvent()
     data object ActivitySyncReset : PulseEvent()
+    /** Steps counted by the phone's own pedometer, published by the app's [PhoneStepManager]
+     *  when the user has chosen "phone" as their step source. Distinct from [ActivityUpdate],
+     *  which carries the ring's cumulative counter. */
+    data class PhoneStepsUpdate(
+        val timestamp: java.time.Instant,
+        val steps: Int,
+        val distanceMeters: Double,
+        val calories: Double,
+    ) : PulseEvent()
     /**
      * [spot] marks the one settled reading a spot measurement publishes for itself (issue #60);
      * false for the ring's live stream. [ringWillLogIt] additionally says this ring writes that

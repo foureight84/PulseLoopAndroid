@@ -48,6 +48,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Health Connect READ_STEPS permission — needed so PulseLoop can read today's
+    // step total when the user has selected "Phone" as their step source.
+    private val healthConnectPermissionLauncher = registerForActivityResult(
+        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract()
+    ) { granted ->
+        if (granted.isNotEmpty()) {
+            refreshPhoneSteps()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -68,6 +78,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Re-request on resume in case user granted in Settings
         requestAllPermissions()
+        refreshPhoneSteps()
         if (hasAllBlePermissions() && hasNotificationPermission()) {
             CoachNotifications.schedule(this)
         }
@@ -160,6 +171,11 @@ class MainActivity : ComponentActivity() {
         // BLE / Location — GPS tracking needs location on all API levels
         if (!hasFineLocation()) missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
 
+        // Android 10+: Phone step counter access
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !hasActivityRecognition()) {
+            missing.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (!hasBleScan()) missing.add(Manifest.permission.BLUETOOTH_SCAN)
             if (!hasBleConnect()) missing.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -193,4 +209,44 @@ class MainActivity : ComponentActivity() {
     private fun hasFineLocation() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasActivityRecognition() = ContextCompat.checkSelfPermission(
+        this, Manifest.permission.ACTIVITY_RECOGNITION
+    ) == PackageManager.PERMISSION_GRANTED
+    // ── Phone step refresh (Health Connect) ─────────────────────────────
+
+    /**
+     * Ask Health Connect for today's steps and publish the result. Called on every
+     * foreground return, but only when the user has selected "Phone" as their step
+     * source, so there is zero cost when "Ring" is selected.
+     */
+    private fun refreshPhoneSteps() {
+        val apiKeyStore = com.pulseloop.settings.ApiKeyStore(this)
+        if (apiKeyStore.stepSource != "phone") return
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val manager = PhoneStepManager(this@MainActivity)
+            if (!manager.refresh()) {
+                // Permission not yet granted — request it on the main thread.
+                requestHealthConnectReadSteps()
+            }
+        }
+    }
+
+    /**
+     * Ask the user to grant Health Connect's READ_STEPS permission. On Android 14+
+     * this shows a Health Connect system dialog. If the user taps Allow, the
+     * launcher callback fires [refreshPhoneSteps] again.
+     */
+    private fun requestHealthConnectReadSteps() {
+        val readSteps = androidx.health.connect.client.permission.HealthPermission
+            .getReadPermission(androidx.health.connect.client.records.StepsRecord::class)
+        lifecycleScope.launch(Dispatchers.Main) {
+            try {
+                healthConnectPermissionLauncher.launch(setOf(readSteps))
+            } catch (_: Exception) {
+                // Health Connect not installed — silently do nothing.
+            }
+        }
+    }
 }
