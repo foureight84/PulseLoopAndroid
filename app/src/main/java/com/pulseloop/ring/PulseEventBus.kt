@@ -86,6 +86,7 @@ sealed class PulseEvent {
         val timestamp: java.time.Instant,
         val spot: Boolean = false,
         val ringWillLogIt: Boolean = false,
+        val sourceRaw: String? = null,
     ) : PulseEvent()
     data class HeartRateComplete(val timestamp: java.time.Instant) : PulseEvent()
     /** [spot] and [ringWillLogIt] as on [HeartRateSample]. */
@@ -94,6 +95,7 @@ sealed class PulseEvent {
         val timestamp: java.time.Instant,
         val spot: Boolean = false,
         val ringWillLogIt: Boolean = false,
+        val sourceRaw: String? = null,
     ) : PulseEvent()
     /** The ring ended a live-SpO₂ run (error or natural finish) — no more results coming. */
     data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()

@@ -128,10 +128,12 @@ class EventPersistenceSubscriber(
         unit: String,
         at: Long,
         awaitingRingsCopy: Boolean,
+        sourceRaw: String? = null,
     ) {
+        val resolvedSource = sourceRaw ?: if (awaitingRingsCopy) SOURCE_SPOT else "live"
         db.measurementDao().insert(MeasurementEntity(
             kindRaw = kind.name, value = value, unit = unit, timestamp = at,
-            sourceRaw = if (awaitingRingsCopy) SOURCE_SPOT else "live",
+            sourceRaw = resolvedSource,
         ))
         if (awaitingRingsCopy) spotReadingsOf(kind).add(at)
     }
@@ -273,6 +275,7 @@ class EventPersistenceSubscriber(
                 storeLiveReading(
                     MeasurementKind.HEART_RATE, event.bpm.toDouble(), "bpm",
                     event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                    sourceRaw = event.sourceRaw,
                 )
             }
             is PulseEvent.Spo2Result -> {
@@ -280,6 +283,7 @@ class EventPersistenceSubscriber(
                 storeLiveReading(
                     MeasurementKind.SPO2, event.value.toDouble(), "%",
                     event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                    sourceRaw = event.sourceRaw,
                 )
             }
             is PulseEvent.HistoryMeasurement -> {

@@ -81,6 +81,21 @@ class RingSyncCoordinator(
      *  reading (seen on real hardware, issue #29) can't turn a success into "not worn". */
     var measureNotWorn: Boolean = false
         private set
+    var measureDisconnected: Boolean = false
+        private set
+    val crpSpotController: CRPSpotController by lazy {
+        CRPSpotController(
+            sendWrite = { client.enqueueWrite(it) },
+            cancelQueuedWrite = { predicate -> client.cancelQueuedCommand(predicate) },
+            isConnected = { isConnected },
+            events = PulseEventBus.events,
+            publishEvent = { PulseEventBus.publishBlocking(it) },
+        )
+    }
+    val spotCountdownRemaining: StateFlow<Int?>
+        get() = crpSpotController.countdownRemaining
+    val activeDeviceType: RingDeviceType?
+        get() = client.state.value.activeDeviceType
     /** The samples of the HR measurement in flight, and the rule for whether they settled — see
      *  [HRSampleWindow], which owns the warm-up echo and the consistency gate (iOS #66). */
     private val hrWindow = HRSampleWindow()
@@ -572,7 +587,7 @@ class RingSyncCoordinator(
         // Clear last run's verdict before any path that can return without reaching MEASURING (the
         // workout refusal below), so the caller never reads an old DONE/FAILED as this run's.
         hrState = MeasureState.IDLE
-        if (!isConnected) { hrState = MeasureState.FAILED; return null }
+        if (!isConnected) { hrState = MeasureState.FAILED; measureDisconnected = true; return null }
         // A workout owns the bpm stream for its whole duration, and this leg cannot share it: the
         // live-sample gate is one switch per kind, so whichever of the two closed it decides
         // whether the other's samples are stored. Running anyway used to mean the workout's
@@ -585,6 +600,20 @@ class RingSyncCoordinator(
         // measurement keeps the last reading on screen until a fresh one replaces it.
         hrNoReadingReported = false
         measureNotWorn = false
+        measureDisconnected = false
+
+        if (client.state.value.activeDeviceType == RingDeviceType.CRP) {
+            var result: Int? = null
+            try {
+                result = crpSpotController.measureHeartRate(heartRateMeasureSeconds)
+            } finally {
+                if (crpSpotController.measureNotWorn) measureNotWorn = true
+                if (crpSpotController.measureDisconnected) measureDisconnected = true
+                hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
+            }
+            return result
+        }
+
         hrWindow.begin()
         // This leg owns the bpm stream: a workout cannot have been running (refused above), and one
         // that starts mid-leg aborts it rather than taking the gate out from under us.
@@ -659,11 +688,25 @@ class RingSyncCoordinator(
 
     suspend fun measureSpO2(): Int? {
         if (spo2State == MeasureState.MEASURING) return null
-        if (!isConnected) { spo2State = MeasureState.FAILED; return null }
+        if (!isConnected) { spo2State = MeasureState.FAILED; measureDisconnected = true; return null }
         spo2State = MeasureState.MEASURING
         latestSpO2Value = null
         spo2NoReadingReported = false
         measureNotWorn = false
+        measureDisconnected = false
+
+        if (client.state.value.activeDeviceType == RingDeviceType.CRP) {
+            var result: Int? = null
+            try {
+                result = crpSpotController.measureSpO2(spo2OnlyMeasureSeconds)
+            } finally {
+                if (crpSpotController.measureNotWorn) measureNotWorn = true
+                if (crpSpotController.measureDisconnected) measureDisconnected = true
+                spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
+            }
+            return result
+        }
+
         spo2Window.begin()
         gateLiveSamples(MeasurementKind.SPO2, closed = true)
         val spotToken = spot.begin(YCBTMeasurementMode.SPO2)

@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pulseloop.ring.RingDeviceType
 import com.pulseloop.service.MetricKind
 import com.pulseloop.ui.components.TrendChart
 import com.pulseloop.ui.components.ZoneLineChart
@@ -74,6 +75,7 @@ fun VitalsScreen(
     // Set alongside [measureFailed] when the CRP ring reported it wasn't on the finger, so the
     // failure copy tells the user to put the ring on rather than the generic "hold still" (issue #29).
     var measureNotWornHint by remember { mutableStateOf(false) }
+    var measureDisconnectedHint by remember { mutableStateOf(false) }
     // Two measurement flavours:
     //  • combined (56ff/Jring): one 0x23 packet → BP + SpO₂ + stress + fatigue + blood sugar
     //  • spot (Colmi): sequential live HR + SpO₂ via the real-time command (0x69)
@@ -297,12 +299,20 @@ fun VitalsScreen(
                         measuringLabel = label
                         measureFailed = false
                         measureNotWornHint = false
+                        measureDisconnectedHint = false
                         remaining = seconds
                         measureTotal = seconds
                         measureCaption = caption
                         scope.launch {
+                            val countdownFlow = coordinator.spotCountdownRemaining
                             val ticker = launch {
-                                while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
+                                if (coordinator.activeDeviceType == RingDeviceType.CRP) {
+                                    countdownFlow.collect { sec ->
+                                        if (sec != null) remaining = sec
+                                    }
+                                } else {
+                                    while (remaining > 0) { kotlinx.coroutines.delay(1000); remaining-- }
+                                }
                             }
                             try {
                                 leg()
@@ -313,6 +323,7 @@ fun VitalsScreen(
                                 if (failed()) {
                                     measureFailed = true
                                     measureNotWornHint = coordinator.measureNotWorn
+                                    measureDisconnectedHint = coordinator.measureDisconnected
                                 }
                                 viewModel?.refreshNow()  // show the new reading immediately
                             }
@@ -441,10 +452,14 @@ fun VitalsScreen(
                 // iOS MeasurementKindPresentation failure copy ("…Keep the ring snug and your
                 // hand still, then try again."), shown until the next attempt.
                 Text(
-                    if (measureNotWornHint)
-                        "The ring isn't detecting your finger. Put it on snugly, then try again."
-                    else
-                        "Couldn't get a steady reading. Keep the ring snug and your hand still, then try again.",
+                    when {
+                        measureDisconnectedHint ->
+                            "The ring disconnected during measurement."
+                        measureNotWornHint ->
+                            "The ring isn't detecting your finger. Put it on snugly, then try again."
+                        else ->
+                            "Couldn't get a steady reading. Keep the ring snug and your hand still, then try again."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(top = 4.dp),

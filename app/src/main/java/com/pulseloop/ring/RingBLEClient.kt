@@ -721,6 +721,28 @@ class RingBLEClient(
         enqueueOp(GattOp.CommandWrite(framed, useCommand))
     }
 
+    /**
+     * Remove queued command writes that match [predicate].
+     * Returns true if any matching op was removed from [opQueue].
+     */
+    fun cancelQueuedCommand(predicate: (ByteArray) -> Boolean): Boolean {
+        return synchronized(opLock) {
+            var removed = false
+            val it = opQueue.iterator()
+            while (it.hasNext()) {
+                val op = it.next()
+                if (op is GattOp.CommandWrite && predicate(op.data)) {
+                    it.remove()
+                    removed = true
+                }
+            }
+            removed
+        }
+    }
+
+    val isConnected: Boolean
+        get() = _state.value.connectionState == RingConnectionState.CONNECTED
+
     fun readBattery() {
         val ch = batteryChar ?: return
         enqueueOp(GattOp.Read(ch))
