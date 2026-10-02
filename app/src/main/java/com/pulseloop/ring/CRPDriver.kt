@@ -67,5 +67,14 @@ class CRPDriver(private val writer: RingCommandWriter?) : WearableDriver {
         return CRPDecoder.decode(data, from)
     }
 
+    /** Handshake, history and spot measurements all share `fdd2`/`fdd3`, so the R11's reports are
+     *  only diagnosable with every attempt and reply in the log. */
+    override val verboseTransportDiagnostics: Boolean get() = true
+
+    override fun diagnosticRoute(frame: ByteArray): String =
+        if (frame.size >= 6 && CRPProtocol.isFrameStart(frame))
+            "group=${frame[4].toInt() and 0xFF} cmd=${frame[5].toInt() and 0xFF} bytes=${frame.size}"
+        else "chunk bytes=${frame.size}"
+
     override fun makeSyncEngine(): RingSyncEngine = CRPSyncEngine(writer)
 }

@@ -125,6 +125,10 @@ The Debug console shows a live view of what the app and ring are doing:
 - **Live event log** — the decoded event stream (measurements, sync stages, connection changes) as it flows through the app
 - **Database stats** — row counts per table, so you can see whether history sync is actually landing data
 
+Packets and events are captured in the background and stored on the device, so they survive leaving
+the screen and restarting the app. They are trimmed to the newest 1,000 packets and 2,000 log
+entries every 50 writes, so either can briefly run a few dozen over.
+
 ### Exporting a diagnostics report
 
 **Export Diagnostics** (Settings → Privacy & Data, also available on the Debug

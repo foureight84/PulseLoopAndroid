@@ -5,7 +5,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.pulseloop.data.DataRepairs
+import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.diagnostics.CrashLogger
+import com.pulseloop.diagnostics.DiagnosticsSubscriber
 import com.pulseloop.widgets.WidgetRefreshWorker
 import com.pulseloop.widgets.WidgetSnapshotPublisher
 import kotlinx.coroutines.CoroutineScope
@@ -23,6 +25,8 @@ class PulseLoopApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLogger.install(this)
+        // Application-scoped so capture runs whether or not the Debug screen is open.
+        DiagnosticsSubscriber(PulseLoopDatabase.getInstance(this)).start(appScope)
         // One-time cleanup of activity totals corrupted by the old bucket handling; runs off the
         // main thread and is prefs-gated so it executes once. Safe to race the first sync — the
         // ring can't connect before this completes a couple of DELETE statements.

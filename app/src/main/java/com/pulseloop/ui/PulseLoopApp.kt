@@ -20,7 +20,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -31,6 +34,8 @@ import com.pulseloop.coach.orchestration.CoachOrchestrator
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.tools.*
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.diagnostics.DiagnosticsRepository
+import com.pulseloop.diagnostics.DiagnosticsViewModel
 import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.service.*
 import com.pulseloop.coach.summaries.CoachSummaryCoordinator
@@ -633,7 +638,16 @@ fun PulseLoopApp() {
                         onBack = { navController.popBackStack() },
                     )
                 }
-                paddedComposable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
+                paddedComposable("debug") {
+                    // A real ViewModel, not `remember`: its Room flows live in viewModelScope and must
+                    // be cancelled when the screen leaves the back stack.
+                    val debugVM: DiagnosticsViewModel = viewModel(factory = object : ViewModelProvider.Factory {
+                        @Suppress("UNCHECKED_CAST")
+                        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                            DiagnosticsViewModel(DiagnosticsRepository(db), bleClient, coordinator) as T
+                    })
+                    DebugScreen(debugVM, onBack = { navController.popBackStack() })
+                }
                 paddedComposable("vitals/{metric}") { backStackEntry ->
                     val metric = backStackEntry.arguments?.getString("metric") ?: return@paddedComposable
                     VitalDetailScreen(
