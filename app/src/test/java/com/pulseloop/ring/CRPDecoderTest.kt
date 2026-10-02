@@ -56,8 +56,25 @@ class CRPDecoderTest {
     }
 
     @Test
-    fun `group1 cmd9 out-of-range bpm is dropped`() {
-        assertTrue(CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_HR, byteArrayOf(0)), fdd3).isEmpty())
+    fun `group1 cmd9 out-of-range bpm yields no reading, only a rejected result`() {
+        val event = CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_HR, byteArrayOf(0)), fdd3).single()
+        assertEquals(RingDecodedEvent.RejectedVitalResult(MeasurementKind.HEART_RATE), event)
+        assertTrue(RingEventBridge.eventsFor(event).isEmpty())
+    }
+
+    /** An implausible but real value (30 bpm, 69 %, an empty payload) must not reach the log as
+     *  `unknown`, which the diagnostics export leaves unmasked. */
+    @Test
+    fun `out-of-band spot results are named so the export masks them`() {
+        for ((cmd, payload) in listOf(
+            CRPCommands.CMD_RESULT_HR to byteArrayOf(30),
+            CRPCommands.CMD_RESULT_SPO2 to byteArrayOf(69),
+            CRPCommands.CMD_RESULT_SPO2 to byteArrayOf(0xFF.toByte()),
+            CRPCommands.CMD_RESULT_HR to byteArrayOf(),
+        )) {
+            val event = CRPDecoder.decode(CRPProtocol.frame(1, cmd, payload), fdd3).single()
+            assertEquals("rejected_vital_result", event.kind)
+        }
     }
 
     @Test
@@ -79,9 +96,10 @@ class CRPDecoderTest {
     }
 
     @Test
-    fun `group1 out-of-range temperature is dropped`() {
+    fun `group1 out-of-range temperature yields no reading, only a rejected result`() {
         // 0x0064 = 100 -> 10.0 C, below the 28..50 validity window.
-        assertTrue(CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_TEMP, byteArrayOf(0x64, 0x00)), fdd3).isEmpty())
+        val event = CRPDecoder.decode(CRPProtocol.frame(1, CRPCommands.CMD_RESULT_TEMP, byteArrayOf(0x64, 0x00)), fdd3).single()
+        assertEquals(RingDecodedEvent.RejectedVitalResult(MeasurementKind.TEMPERATURE), event)
     }
 
     // ---- Wear state: framed group-3 cmd-7 push (g1/a.java case 3->7, onWearStateChange). ----

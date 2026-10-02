@@ -27,6 +27,8 @@ object DiagnosticsRedactor {
         "activity", "activity_bucket", "hr_sample", "spo2_progress", "spo2_result",
         "sleep_timeline", "history_measurement", "stress_sample", "hrv_sample", "temperature_sample",
         "sport_telemetry",
+        // A live vital result outside its plausible band: no reading, but the byte is still a value.
+        "rejected_vital_result",
         // Half of a frame still being reassembled (RingDecodedEvent.FramePending). Masked because
         // what it will decode to is not yet known, and a chunk of a multi-frame health reply holds
         // samples in the same shape as the assembled one. `unknown` stays unmasked deliberately —

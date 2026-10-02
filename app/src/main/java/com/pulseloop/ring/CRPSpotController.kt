@@ -1,6 +1,7 @@
 package com.pulseloop.ring
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
@@ -25,7 +26,8 @@ import java.time.Instant
  * - Autonomous wear-state push (group 3, cmd 7 [00]) fast-fails as not-worn.
  * - Link loss (disconnect) aborts measurement immediately without issuing any stop write.
  * - Countdown starts only when the start command is actually sent to the ring (outgoing raw packet),
- *   not when queued.
+ *   not when queued. A start that is not seen leaving the queue within [dispatchTimeoutSeconds]
+ *   fails the measurement, so nothing waits on a dispatch that never happens.
  * - Cancelling while queued purges the command from opQueue without sending stop.
  *   Cancelling after dispatch sends stop (if connected).
  * - History traffic (group 2) never completes a spot measurement.
@@ -37,7 +39,13 @@ class CRPSpotController(
     private val isConnected: () -> Boolean,
     private val events: SharedFlow<PulseEvent> = PulseEventBus.events,
     private val publishEvent: (PulseEvent) -> Unit = { PulseEventBus.publishBlocking(it) },
+    private val dispatchTimeoutSeconds: Int = DISPATCH_TIMEOUT_SECONDS,
 ) {
+    companion object {
+        /** How long the start command may wait in the write queue before the measurement fails. */
+        const val DISPATCH_TIMEOUT_SECONDS = 15
+    }
+
     constructor(client: RingBLEClient) : this(
         sendWrite = { client.enqueueWrite(it) },
         cancelQueuedWrite = { client.cancelQueuedCommand(it) },
@@ -123,12 +131,22 @@ class CRPSpotController(
 
         return coroutineScope {
             var countdownJob: Job? = null
-            val listenerJob = launch {
+            // Bounds the wait for the start command to leave the queue; cancelled once it does.
+            // Without it, a dispatch that is never observed leaves no deadline at all.
+            val dispatchTimeoutJob = launch {
+                delay(dispatchTimeoutSeconds * 1000L)
+                completion.complete(null)
+            }
+            // UNDISPATCHED so the bus subscription exists before [sendWrite] below: the bus does
+            // not replay, and on an idle queue the start's outgoing packet can be published before
+            // a normally dispatched listener has subscribed — the countdown then never started.
+            val listenerJob = launch(start = CoroutineStart.UNDISPATCHED) {
                 events.collect { event ->
                     when (event) {
                         is PulseEvent.RawPacket -> {
                             if (event.direction == PacketDirection.OUTGOING) {
                                 if (event.data.contentEquals(startFrame)) {
+                                    dispatchTimeoutJob.cancel()
                                     countdownJob?.cancel()
                                     countdownJob = launch {
                                         for (s in timeoutSeconds downTo 0) {
@@ -202,6 +220,7 @@ class CRPSpotController(
                 result = completion.await()
             } finally {
                 withContext(NonCancellable) {
+                    dispatchTimeoutJob.cancel()
                     countdownJob?.cancel()
                     listenerJob.cancel()
                     _countdownRemaining.value = null

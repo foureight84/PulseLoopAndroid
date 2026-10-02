@@ -60,6 +60,12 @@ class DiagnosticsRedactorTest {
      * live steps, distance and calories. It used to decode to nothing, fall through to `unknown`,
      * and export in clear while the neighbouring frames with a bpm were masked.
      */
+    /** A spot result the decoder rejected (here 30 bpm) still holds a physiological value. */
+    @Test
+    fun `a rejected CRP vital result keeps its route but loses its value`() {
+        assertEquals("fdda10070109··", DiagnosticsRedactor.maskPacketHex("fdda100701091e", "rejected_vital_result", "CRP"))
+    }
+
     @Test
     fun `a sport telemetry frame is masked even when it carried no heart rate`() {
         val frame = "7801" + "0000" + "00" + "0007d0" + "0005dc" + "00c350"
