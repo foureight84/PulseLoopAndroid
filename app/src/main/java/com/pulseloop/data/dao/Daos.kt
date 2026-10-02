@@ -788,6 +788,23 @@ interface MeasurementDeletionDao {
         return parseSleepEditId(id)
     }
 
+    /**
+     * Remember an entirely deleted ring sleep record. Prevents head/tail stages from resurrecting
+     * if the record was previously trimmed via an edit before deletion.
+     */
+    suspend fun recordSleepRecordDeleted(dayStart: Long, recordStartAt: Long) {
+        insertAll(listOf(
+            MeasurementDeletionEntity(
+                measurementId = sleepRecordDeleteId(dayStart, recordStartAt),
+                kindRaw = SLEEP_RECORD_DELETE_KIND,
+                timestamp = recordStartAt,
+            )
+        ))
+    }
+
+    suspend fun isSleepRecordDeleted(dayStart: Long, recordStartAt: Long): Boolean =
+        isDeleted(sleepRecordDeleteId(dayStart, recordStartAt))
+
     companion object {
         /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
          *  A measurement whose id starts with this is one the ring can hand us again. */
@@ -813,6 +830,15 @@ interface MeasurementDeletionDao {
         const val SLEEP_EDIT_PREFIX = "sleep:edit:"
         /** `kindRaw` for a sleep-record boundary edit tombstone. */
         const val SLEEP_EDIT_KIND = "SLEEP_RECORD_EDIT"
+
+        /** Key prefix for an entirely deleted ring sleep record. */
+        const val SLEEP_RECORD_DELETE_PREFIX = "sleep:record:"
+        /** `kindRaw` for an entirely deleted sleep record tombstone. */
+        const val SLEEP_RECORD_DELETE_KIND = "SLEEP_RECORD_DELETE"
+
+        /** The tombstone key for an entirely deleted sleep record. */
+        fun sleepRecordDeleteId(dayStart: Long, recordStartAt: Long): String =
+            "$SLEEP_RECORD_DELETE_PREFIX$dayStart:$recordStartAt"
 
         /** The tombstone key for the bucket starting at [startEpoch]. */
         fun activityBucketId(startEpoch: Long): String = "$ACTIVITY_ID_PREFIX$startEpoch"

@@ -32,8 +32,7 @@ object ZenModeTracker {
     fun isZenModeActive(context: Context): Boolean {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         if (nm != null && nm.isNotificationPolicyAccessGranted) {
-            val filter = nm.currentInterruptionFilter
-            if (isZenModeActive(filter)) return true
+            return isZenModeActive(nm.currentInterruptionFilter)
         }
         return try {
             val zenMode = Settings.Global.getInt(context.contentResolver, "zen_mode", 0)

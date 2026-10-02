@@ -161,4 +161,13 @@ class QuietHoursPrefsTest {
         assertEquals(180 until 360, kept)
         assertEquals(180, kept!!.count())
     }
+
+    @Test
+    fun `keptMinutesByWindows returns null for non-overlapping daytime windows to allow schedule fallback`() {
+        val sleepStart = at(23, 0)
+        // User had DND active only for a 30-minute afternoon meeting
+        val windows = listOf(ZenWindow(start = at(14, 0), end = at(14, 30)))
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 480, windows)
+        assertEquals(null, kept)
+    }
 }

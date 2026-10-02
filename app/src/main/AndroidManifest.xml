@@ -147,14 +147,6 @@
                 android:resource="@xml/widget_dual_info" />
         </receiver>
 
-        <!-- Quiet-hours ZenMode receiver (issue #83) -->
-        <receiver
-            android:name=".settings.ZenModeReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.app.action.INTERRUPTION_FILTER_CHANGED" />
-            </intent-filter>
-        </receiver>
         <activity
             android:name=".widgets.WidgetConfigActivity"
             android:exported="true"

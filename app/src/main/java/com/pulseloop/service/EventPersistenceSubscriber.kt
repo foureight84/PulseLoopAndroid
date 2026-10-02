@@ -584,9 +584,18 @@ class EventPersistenceSubscriber(
             effectiveStages = effectiveStages.subList(kept.first, kept.last + 1)
         }
 
-        // Sleep record edit gate (issue #82): adjust boundaries if user edited this record
+        // Sleep record deletion gate: drop if the user deleted this entire record (issue #78, #82)
         val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(effectiveTs)
+        val origDayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
+        if (db.measurementDeletionDao().isSleepRecordDeleted(dayStart, ts) ||
+            db.measurementDeletionDao().isSleepRecordDeleted(origDayStart, ts)
+        ) {
+            return
+        }
+
+        // Sleep record edit gate (issue #82): adjust boundaries if user edited this record
         val edit = db.measurementDeletionDao().getSleepEdit(dayStart, ts)
+            ?: db.measurementDeletionDao().getSleepEdit(origDayStart, ts)
         if (edit != null) {
             val recEnd = effectiveTs + effectiveStages.size * 60_000L
             val trimmedStart = maxOf(effectiveTs, edit.newStartAt)

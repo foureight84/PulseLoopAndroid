@@ -69,6 +69,9 @@ object SleepRecordDeletion {
         // reconciles is assigned that same `date`, so a re-send of the record lands on the same key.
         val day = session.date
         db.measurementDeletionDao().deleteSleepEdit(day, targetRecordStart)
+        if (targetRecordStart > 0L) {
+            db.measurementDeletionDao().recordSleepRecordDeleted(day, targetRecordStart)
+        }
         db.measurementDeletionDao().recordSleepBlocks(day, targets.map { it.startAt })
         targets.forEach { db.sleepStageBlockDao().deleteByStart(sessionId, it.startAt) }
 
@@ -119,12 +122,14 @@ object SleepRecordDeletion {
 
             if (keepStart < keepEnd) {
                 val duration = ((keepEnd - keepStart) / 60_000L).toInt()
-                survivingTargets.add(
-                    b.copy(
-                        startAt = keepStart,
-                        durationMinutes = duration,
+                if (duration > 0) {
+                    survivingTargets.add(
+                        b.copy(
+                            startAt = keepStart,
+                            durationMinutes = duration,
+                        )
                     )
-                )
+                }
             }
         }
 

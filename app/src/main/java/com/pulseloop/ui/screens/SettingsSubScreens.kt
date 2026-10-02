@@ -1619,12 +1619,29 @@ private fun QuietHoursCard() {
     val context = LocalContext.current
     val prefs = remember { QuietHoursPrefs(context) }
     var enabled by remember { mutableStateOf(prefs.enabled) }
-    var gateByZenMode by remember { mutableStateOf(prefs.gateByZenMode) }
+    var gateByZenMode by remember {
+        mutableStateOf(prefs.gateByZenMode && QuietHoursPrefs.isNotificationPolicyAccessGranted(context))
+    }
     var start by remember { mutableStateOf(prefs.startMinutes) }
     var end by remember { mutableStateOf(prefs.endMinutes) }
     // "start" | "end" while a picker is open.
     var picking by remember { mutableStateOf<String?>(null) }
     var showPermissionDialog by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = QuietHoursPrefs.isNotificationPolicyAccessGranted(context)
+                if (prefs.gateByZenMode && !granted) {
+                    prefs.gateByZenMode = false
+                }
+                gateByZenMode = prefs.gateByZenMode && granted
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -1715,6 +1732,7 @@ private fun QuietHoursCard() {
             confirmButton = {
                 TextButton(onClick = {
                     showPermissionDialog = false
+                    prefs.gateByZenMode = true
                     try {
                         context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
                     } catch (_: Exception) {}

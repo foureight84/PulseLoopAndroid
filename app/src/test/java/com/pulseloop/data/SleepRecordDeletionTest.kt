@@ -233,4 +233,52 @@ class SleepRecordDeletionTest {
         assertEquals(6, zdtEnd.hour)
         assertEquals(45, zdtEnd.minute)
     }
+
+    @Test
+    fun `resolveAdjustedTime resolves pre-midnight adjustment for post-midnight start`() {
+        val zone = java.time.ZoneId.of("UTC")
+        // Start: 2026-10-02 00:15 UTC
+        val start = 1790900100000L
+        // End: 2026-10-02 06:30 UTC
+        val end = 1790922600000L
+
+        // Adjust start earlier to 23:45 (should roll back to 2026-10-01)
+        val adjustedStart = com.pulseloop.ui.screens.resolveAdjustedTime(start, start, end, 23, 45, zone)
+        val zdt = java.time.Instant.ofEpochMilli(adjustedStart).atZone(zone)
+        assertEquals(2026, zdt.year)
+        assertEquals(10, zdt.monthValue)
+        assertEquals(1, zdt.dayOfMonth)
+        assertEquals(23, zdt.hour)
+        assertEquals(45, zdt.minute)
+    }
+
+    @Test
+    fun `resolveAdjustedTime resolves morning time near end for early evening start`() {
+        val zone = java.time.ZoneId.of("UTC")
+        // Start: 2026-10-01 19:30 UTC
+        val start = 1790883000000L
+        // End: 2026-10-02 08:00 UTC
+        val end = 1790928000000L
+
+        // Adjust start to 07:45 AM (should select 2026-10-02, not 2026-10-01 07:45 AM)
+        val adjustedStart = com.pulseloop.ui.screens.resolveAdjustedTime(start, start, end, 7, 45, zone)
+        val zdt = java.time.Instant.ofEpochMilli(adjustedStart).atZone(zone)
+        assertEquals(2026, zdt.year)
+        assertEquals(10, zdt.monthValue)
+        assertEquals(2, zdt.dayOfMonth)
+        assertEquals(7, zdt.hour)
+        assertEquals(45, zdt.minute)
+    }
+
+    @Test
+    fun `deleting an edited record sets full record deletion tombstone`() = runTest {
+        val dao = FakeDeletionDao()
+        val recordStart = wakingDay + 0L
+        dao.recordSleepEdit(wakingDay, recordStart, wakingDay + 10 * 60_000L, wakingDay + 50 * 60_000L)
+        dao.deleteSleepEdit(wakingDay, recordStart)
+        dao.recordSleepRecordDeleted(wakingDay, recordStart)
+
+        org.junit.Assert.assertNull(dao.getSleepEdit(wakingDay, recordStart))
+        org.junit.Assert.assertTrue(dao.isSleepRecordDeleted(wakingDay, recordStart))
+    }
 }

@@ -1213,7 +1213,8 @@ private fun SleepRecordEditDialog(
 
 /**
  * Resolves the epoch millis for an adjusted time within/near a sleep record [recordStart]..[recordEnd].
- * Handles records that cross midnight by selecting the calendar date that produces an instant closest to [targetTs].
+ * Evaluates candidate calendar dates and selects the one that places the time within or closest to
+ * [recordStart]..[recordEnd], breaking ties with proximity to [targetTs].
  */
 internal fun resolveAdjustedTime(
     targetTs: Long,
@@ -1226,9 +1227,25 @@ internal fun resolveAdjustedTime(
     val startZdt = java.time.Instant.ofEpochMilli(recordStart).atZone(zone)
     val endZdt = java.time.Instant.ofEpochMilli(recordEnd).atZone(zone)
 
-    val c1 = startZdt.toLocalDate().atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
-    val c2 = endZdt.toLocalDate().atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
+    val startDate = startZdt.toLocalDate()
+    val endDate = endZdt.toLocalDate()
+    val candidates = listOf(
+        startDate.minusDays(1),
+        startDate,
+        endDate,
+        endDate.plusDays(1),
+    ).distinct().map { date ->
+        date.atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
+    }
 
-    if (startZdt.toLocalDate() == endZdt.toLocalDate()) return c1
-    return if (kotlin.math.abs(c1 - targetTs) <= kotlin.math.abs(c2 - targetTs)) c1 else c2
+    fun distanceToRecord(c: Long): Long = when {
+        c < recordStart -> recordStart - c
+        c > recordEnd -> c - recordEnd
+        else -> 0L
+    }
+
+    return candidates.minWith(
+        compareBy<Long> { distanceToRecord(it) }
+            .thenBy { kotlin.math.abs(it - targetTs) }
+    )
 }

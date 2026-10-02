@@ -92,7 +92,8 @@ class QuietHoursPrefs(context: Context) {
                 val windows = ZenModeTracker.getWindows(context, since = dayStart)
                     .filter { w -> (w.end ?: Long.MAX_VALUE) > dayStart && w.start < dayEnd }
                 if (windows.isNotEmpty()) {
-                    return keptMinutesByWindows(ts, minutes, windows)
+                    val kept = keptMinutesByWindows(ts, minutes, windows)
+                    if (kept != null) return kept
                 }
             }
             return keptMinutes(ts, minutes, prefs.startMinutes, prefs.endMinutes, zone)

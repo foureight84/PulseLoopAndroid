@@ -11,11 +11,8 @@ import android.content.Intent
 class ZenModeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
         if (context == null || intent == null) return
-        when (intent.action) {
-            NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED,
-            Intent.ACTION_BOOT_COMPLETED -> {
-                ZenModeTracker.recordCurrentFilter(context)
-            }
+        if (intent.action == NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED) {
+            ZenModeTracker.recordCurrentFilter(context)
         }
     }
 }
