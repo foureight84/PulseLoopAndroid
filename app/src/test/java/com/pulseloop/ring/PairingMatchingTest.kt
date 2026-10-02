@@ -157,10 +157,12 @@ class PairingMatchingTest {
             "SMART_RING" to "jring",
             "R02_A1B2" to "colmi-r02",
             "R03_1234" to "colmi-r03",
+            "QRing_R03_1234" to "colmi-r03",
             "R06_FFFF" to "colmi-r06",
             "COLMI R07_9" to "colmi-r07",
             "R08_1234" to "colmi-r08",
             "R09_00AA" to "colmi-r09",
+            "RT09_00AA" to "colmi-r09",
             "COLMI R10_xyz" to "colmi-r10",
             "R11C_BEEF" to "colmi-r11",
             "COLMI R12_x" to "colmi-r12",
@@ -228,7 +230,36 @@ class PairingMatchingTest {
 
     @Test
     fun `colmi r02 naming variations resolve to COLMI_R02 model`() {
-        for (name in listOf("R02_A1B2", "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI R02", "R02", "R02-1234", "r02_abcd")) {
+        val r02Names = listOf(
+            // Original / factory Yawell naming
+            "R02_A1B2", "r02_abcd", "R02_123456", "R02-1234", "R02 1234", "R02", "r02",
+            // Retail Colmi branding
+            "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI-R02-1234", "COLMIR02_1234",
+            "COLMI R02", "COLMI_R02", "COLMI-R02", "Colmi R02", "colmi r02", "COLMI R02 1234",
+            // Hardware / sub-revisions
+            "R02C_1234", "R02C-1234", "R02C", "COLMI R02C_1234",
+            "R02Pro_1234", "R02 Pro_1234", "R02 Pro", "COLMI R02 Pro",
+            "R02Plus_1234", "R02 Plus_1234", "R02+ 1234", "R02+_1234", "R02+",
+            "R02S_1234", "R02P_1234", "R02N_1234",
+            // Realtek RT-series chipset firmware convention
+            "RT02_1234", "RT02-1234", "RT02 1234", "RT02", "rt02",
+            "COLMI RT02_1234", "COLMI_RT02_1234", "COLMI RT02",
+            // Factory QR02 prefix
+            "QR02_1234", "QR02-1234", "QR02", "COLMI QR02_1234",
+            // Companion app branding with R02 model
+            "QRing_R02_1234", "QRing-R02-1234", "QRing R02 1234", "QRing R02_1234",
+            "QRING_R02_ABCD", "QRingR02_1234", "QRing_R02", "QRing R02",
+            "Q-Ring_R02_1234", "Q-Ring R02", "COLMI QRing R02",
+            // Smart Ring / Ring naming with R02 model
+            "Ring R02", "Ring R02_1234", "Ring_R02_1234", "RING_R02",
+            "Smart Ring R02", "Smart Ring R02_1234", "Colmi Smart Ring R02",
+            // Generic QRing companion app branding
+            "QRing", "QRING", "qring", "Q-Ring", "Q Ring", "Q_Ring",
+            "QRing_1234", "QRing_A1B2", "QRING_ABCD", "QRing-1234", "QRing 1234",
+            "Q-Ring_1234", "Q Ring 1234", "COLMI QRing", "COLMI QRing_1234",
+            "QRing Pro", "QRing_Pro", "QRing Plus",
+        )
+        for (name in r02Names) {
             val model = WearableModel.modelForAdvertisedName(name)
             assertNotNull("expected model for $name", model)
             assertEquals("expected COLMI_R02 id for $name", WearableModel.COLMI_R02.id, model?.id)
