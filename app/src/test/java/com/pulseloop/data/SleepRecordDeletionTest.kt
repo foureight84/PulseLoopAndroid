@@ -281,4 +281,19 @@ class SleepRecordDeletionTest {
         org.junit.Assert.assertNull(dao.getSleepEdit(wakingDay, recordStart))
         org.junit.Assert.assertTrue(dao.isSleepRecordDeleted(wakingDay, recordStart))
     }
+
+    @Test
+    fun `legacy unstamped multi-block record selects all contiguous blocks up to next stamped start`() {
+        val b1 = block(0, 30, -1).copy(recordStartAt = 0L)
+        val b2 = block(30, 30, -1).copy(recordStartAt = 0L)
+        val nextStamped = block(90, 60, 90)
+        val blocks = listOf(b1, b2, nextStamped)
+
+        val targets = blocks.filter { it.recordStartAt > 0L && it.recordStartAt == b1.startAt }.ifEmpty {
+            blocks.filter { it.recordStartAt == 0L && it.startAt >= b1.startAt }
+                .takeWhile { it.startAt < nextStamped.recordStartAt }
+        }
+        assertEquals(2, targets.size)
+        assertEquals(listOf(b1.startAt, b2.startAt), targets.map { it.startAt })
+    }
 }

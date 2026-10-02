@@ -1732,9 +1732,9 @@ private fun QuietHoursCard() {
             confirmButton = {
                 TextButton(onClick = {
                     showPermissionDialog = false
-                    prefs.gateByZenMode = true
                     try {
                         context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                        prefs.gateByZenMode = true
                     } catch (_: Exception) {}
                 }) { Text("Open Settings") }
             },

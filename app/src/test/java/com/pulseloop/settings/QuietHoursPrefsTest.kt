@@ -170,4 +170,15 @@ class QuietHoursPrefsTest {
         val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 480, windows)
         assertEquals(null, kept)
     }
+
+    @Test
+    fun `keptMinutesByWindows bounds open windows to MAX_WINDOW_DURATION_MS`() {
+        // Sleep started 21 hours after an unclosed window was opened (beyond 16h max)
+        val oldBedtimeStart = at(23, 0)
+        val windows = listOf(ZenWindow(start = oldBedtimeStart, end = null))
+
+        val sleepStart = oldBedtimeStart + 21 * 3600_000L
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 60, windows)
+        assertEquals(null, kept)
+    }
 }

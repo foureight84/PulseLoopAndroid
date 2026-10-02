@@ -56,7 +56,7 @@ object SleepRecordDeletion {
         val targets = if (recordStartAt == 0L) {
             emptyList()
         } else {
-            blocks.filter { it.recordStartAt == recordStartAt || it.startAt == recordStartAt }.ifEmpty {
+            blocks.filter { it.recordStartAt > 0L && it.recordStartAt == recordStartAt }.ifEmpty {
                 blocks.filter { it.recordStartAt == 0L && it.startAt >= recordStartAt }
                     .takeWhile { it.startAt < nextStampedStart(blocks, recordStartAt) }
             }
@@ -102,7 +102,7 @@ object SleepRecordDeletion {
         val targets = if (recordStartAt == 0L) {
             emptyList()
         } else {
-            blocks.filter { it.recordStartAt == recordStartAt || it.startAt == recordStartAt }.ifEmpty {
+            blocks.filter { it.recordStartAt > 0L && it.recordStartAt == recordStartAt }.ifEmpty {
                 blocks.filter { it.recordStartAt == 0L && it.startAt >= recordStartAt }
                     .takeWhile { it.startAt < nextStampedStart(blocks, recordStartAt) }
             }

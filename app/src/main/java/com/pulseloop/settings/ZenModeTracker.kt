@@ -19,6 +19,8 @@ object ZenModeTracker {
     private const val PREFS_NAME = "zen_mode_history"
     private const val KEY_WINDOWS = "windows"
     private const val MAX_RETENTION_MS = 30L * 86_400_000L // 30 days
+    /** Maximum realistic duration of a single quiet window (16 hours). */
+    const val MAX_WINDOW_DURATION_MS = 16L * 3600_000L
 
     /**
      * Is Zen mode (Bedtime / DND / Priority / Alarms) active given an interruption filter?
@@ -51,15 +53,6 @@ object ZenModeTracker {
         recordState(context, active, timestamp)
     }
 
-    /**
-     * Record an interruption filter change.
-     */
-    @Synchronized
-    fun recordFilterChange(context: Context, filter: Int, timestamp: Long = System.currentTimeMillis()) {
-        val active = isZenModeActive(filter)
-        recordState(context, active, timestamp)
-    }
-
     @Synchronized
     fun recordState(context: Context, active: Boolean, timestamp: Long = System.currentTimeMillis()) {
         val windows = loadWindows(context)
@@ -75,13 +68,20 @@ object ZenModeTracker {
         val result = windows.toMutableList()
         val last = result.lastOrNull()
         if (active) {
-            // Already inside an open window: do nothing
-            if (last != null && last.end == null) return result
+            if (last != null && last.end == null) {
+                // If the open window exceeded max duration, close it and start a fresh one
+                if (timestamp - last.start > MAX_WINDOW_DURATION_MS) {
+                    result[result.lastIndex] = last.copy(end = last.start + MAX_WINDOW_DURATION_MS)
+                    result.add(ZenWindow(start = timestamp, end = null))
+                }
+                return result
+            }
             result.add(ZenWindow(start = timestamp, end = null))
         } else {
-            // Close the currently open window if any
+            // Close the currently open window if any, capped to max window duration
             if (last != null && last.end == null) {
-                result[result.lastIndex] = last.copy(end = maxOf(last.start, timestamp))
+                val cappedEnd = minOf(maxOf(last.start, timestamp), last.start + MAX_WINDOW_DURATION_MS)
+                result[result.lastIndex] = last.copy(end = cappedEnd)
             }
         }
         return result
@@ -93,7 +93,9 @@ object ZenModeTracker {
     @Synchronized
     fun getWindows(context: Context, since: Long = 0L): List<ZenWindow> {
         val windows = loadWindows(context)
-        return if (since <= 0L) windows else windows.filter { (it.end ?: Long.MAX_VALUE) >= since }
+        return if (since <= 0L) windows else windows.filter {
+            (it.end ?: (it.start + MAX_WINDOW_DURATION_MS)) >= since
+        }
     }
 
     /**
@@ -106,7 +108,7 @@ object ZenModeTracker {
 
     fun pruneWindows(windows: List<ZenWindow>, now: Long, maxRetentionMs: Long = MAX_RETENTION_MS): List<ZenWindow> {
         val cutoff = now - maxRetentionMs
-        return windows.filter { (it.end ?: now) >= cutoff }
+        return windows.filter { (it.end ?: it.start) >= cutoff }
     }
 
     fun parseWindows(raw: String?): List<ZenWindow> {
@@ -115,7 +117,9 @@ object ZenModeTracker {
             val parts = entry.split(",")
             if (parts.isEmpty()) return@mapNotNull null
             val start = parts[0].toLongOrNull() ?: return@mapNotNull null
-            val end = if (parts.size > 1 && parts[1].isNotBlank()) parts[1].toLongOrNull() else null
+            val end = if (parts.size > 1 && parts[1].isNotBlank()) {
+                parts[1].toLongOrNull() ?: return@mapNotNull null
+            } else null
             ZenWindow(start, end)
         }
     }

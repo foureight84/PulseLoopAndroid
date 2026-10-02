@@ -1137,7 +1137,7 @@ private fun SleepRecordEditDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Adjust start or end time. Stages outside the new range will be removed.",
+                    "Adjust start or end time to trim this record. Stages outside the new range will be removed.",
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                     color = PulseColors.textMuted,
                 )
@@ -1196,6 +1196,7 @@ private fun SleepRecordEditDialog(
             confirmButton = {
                 TextButton(onClick = {
                     val resolved = resolveAdjustedTime(targetTs, run.startAt, run.endAt, timeState.hour, timeState.minute, zone)
+                        .coerceIn(run.startAt, run.endAt)
                     if (which == "start") {
                         currentStart = resolved
                     } else {
