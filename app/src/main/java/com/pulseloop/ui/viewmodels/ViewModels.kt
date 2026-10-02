@@ -392,6 +392,21 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             removed
         } catch (_: Exception) { false }
 
+    /**
+     * Edit one ring record's boundaries (issue #82) and rebuild the day.
+     */
+    suspend fun editSleepRecord(
+        sessionId: String,
+        recordStartAt: Long,
+        newStartAt: Long,
+        newEndAt: Long,
+    ): Boolean =
+        try {
+            val updated = com.pulseloop.data.SleepRecordDeletion.edit(db, sessionId, recordStartAt, newStartAt, newEndAt)
+            if (updated) rebuild(_state.value.range)
+            updated
+        } catch (_: Exception) { false }
+
     /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
     fun jumpToDay(dayMillis: Long) {
         val today = TimeUtil.startOfTodayLocal()

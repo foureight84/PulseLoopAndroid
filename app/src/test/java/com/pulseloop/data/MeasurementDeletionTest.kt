@@ -26,6 +26,14 @@ class MeasurementDeletionTest {
                 it.timestamp in from..to
         }
         override suspend fun isActivityBucketDeleted(id: String) = id in rows
+        override suspend fun deleteSleepEdit(dayStart: Long, recordStartAt: Long) {
+            val prefix = "sleep:edit:$dayStart:$recordStartAt:"
+            rows.keys.filter { it.startsWith(prefix) }.forEach { rows.remove(it) }
+        }
+        override suspend fun getSleepEditId(dayStart: Long, recordStartAt: Long): String? {
+            val prefix = "sleep:edit:$dayStart:$recordStartAt:"
+            return rows.keys.firstOrNull { it.startsWith(prefix) }
+        }
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }

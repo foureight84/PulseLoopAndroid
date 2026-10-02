@@ -1619,10 +1619,12 @@ private fun QuietHoursCard() {
     val context = LocalContext.current
     val prefs = remember { QuietHoursPrefs(context) }
     var enabled by remember { mutableStateOf(prefs.enabled) }
+    var gateByZenMode by remember { mutableStateOf(prefs.gateByZenMode) }
     var start by remember { mutableStateOf(prefs.startMinutes) }
     var end by remember { mutableStateOf(prefs.endMinutes) }
     // "start" | "end" while a picker is open.
     var picking by remember { mutableStateOf<String?>(null) }
+    var showPermissionDialog by remember { mutableStateOf(false) }
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -1645,6 +1647,49 @@ private fun QuietHoursCard() {
             )
             if (enabled) {
                 Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            "Track Bedtime / DND mode",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            "Automatically align quiet hours with Android's Bedtime or Do Not Disturb mode.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = gateByZenMode,
+                        onCheckedChange = { desired ->
+                            if (desired) {
+                                if (QuietHoursPrefs.isNotificationPolicyAccessGranted(context)) {
+                                    gateByZenMode = true
+                                    prefs.gateByZenMode = true
+                                } else {
+                                    showPermissionDialog = true
+                                }
+                            } else {
+                                gateByZenMode = false
+                                prefs.gateByZenMode = false
+                            }
+                        },
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (gateByZenMode) "Fallback schedule (used when no Bedtime/DND mode was active):"
+                    else "Quiet hours schedule:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = { picking = "start" }, modifier = Modifier.weight(1f)) {
                         Text("From ${formatMinutesOfDay(start)}")
@@ -1655,6 +1700,30 @@ private fun QuietHoursCard() {
                 }
             }
         }
+    }
+
+    if (showPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { showPermissionDialog = false },
+            title = { Text("Permission required") },
+            text = {
+                Text(
+                    "Android requires Do Not Disturb / Notification Policy Access to detect " +
+                        "when Bedtime or Do Not Disturb mode is active.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPermissionDialog = false
+                    try {
+                        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                    } catch (_: Exception) {}
+                }) { Text("Open Settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPermissionDialog = false }) { Text("Cancel") }
+            },
+        )
     }
 
     picking?.let { which ->
