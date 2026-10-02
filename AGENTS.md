@@ -288,10 +288,12 @@ supporting evidence as the cause.
   a recent commit. A known-good "measure button" capture (worn, HR returns ~19 s after `g1/cmd9 [01]`)
   is the baseline to diff against.
 - **Wear state = `group 3 / cmd 7`** (`onWearStateChange`, `payload[0] > 0`). Decoded as of the
-  wear-state fix: `CRPDecoder` → `RingDecodedEvent.WearingStatus` → `PulseEvent.WearState`, and
-  `RingSyncCoordinator` fast-fails an in-flight CRP spot measure (with a "put the ring on" message)
-  when it reports not-worn *before* any reading. Gated to CRP — YCBT's wear polarity is unverified.
-  A not-worn measure now fails in ~2 s with guidance instead of spinning the full window silently.
+  wear-state fix: `CRPDecoder` → `RingDecodedEvent.WearingStatus` → `PulseEvent.WearState`. A spot
+  measure in flight is ended by `CRPSpotController` (see "A CRP spot measurement ends on one result"
+  below), which watches for the raw `g3c7 [00]` frame as well as the event, and the coordinator
+  surfaces it as `measureNotWorn` for the "put the ring on" message. Gated to CRP — YCBT's wear
+  polarity is unverified. A not-worn measure fails in seconds with guidance instead of spinning the
+  full window silently.
 - **SpO2 works on the R11 — do not "fix" it by removing the capability.** zaggash's 2026-07-23
   capture (build 26) contains a real reading: `group 1 / cmd 11` payload `0x61` = **97 %**. It is
   slow and contact-sensitive — the successful measure took **48 s** of silence before answering, and
@@ -385,6 +387,38 @@ supporting evidence as the cause.
   data against 44 empty — the ring records little, the decode is fine), and stress is unanswered on
   both its history and state opcodes. When a CRP question needs a non-empty capture, this ring is
   now the better source.
+- **A CRP spot measurement ends on one result, and it does not go through `HRSampleWindow`
+  (issue #88).** The ring answers `g1/cmd9` (HR) or `g1/cmd11` (SpO₂) with a single frame and then
+  goes quiet. On a second R11 (firmware `MOY-R2Z3-2.2.1`, not zaggash's `MOY-R1K3-2.1.6`) HR arrived
+  15–17 s after the start:
+
+  | Time | Dir | Frame | Meaning |
+  | --- | --- | --- | --- |
+  | 20:28:03.187 | TX | `fdda1007010901` | start HR |
+  | 20:28:19.932 | RX | `fdda1007010948` | 72 bpm |
+  | 20:28:28.415 | TX | `fdda1007010900` | stop HR |
+
+  `HRSampleWindow` wants six samples and calls 8 s of silence lost contact, so it threw that result
+  away. `CRPSpotController` runs CRP spot HR/SpO₂ instead. What it relies on:
+  - **Every cmd-9/11 frame is terminal, an empty one included.** The vendor dispatcher `g1/a.c`
+    hands `frame[6..]` to `e1/f.b` / `e1/d.b` with no length check, both return 0 for an empty
+    payload, and the app layer (`v3/a.a`, `f4/b.a`) turns 0 into "no value" and ends the
+    measurement. (JADX flags `g1/a.c` with a type-inference warning; `-m simple` and `-m fallback`
+    show the same control flow.)
+  - **Its deadline starts when it sees the start command's outgoing `RawPacket` on the bus.** The bus
+    does not replay, so the listener must be subscribed *before* the write is enqueued (it is
+    launched `UNDISPATCHED`): on an idle queue the packet can be published before a normally
+    dispatched coroutine runs, and the countdown never started. A dispatch timeout backs this up,
+    so a start that is never seen leaving the queue still ends the measurement. Without either, a
+    silent ring left the UI measuring forever.
+  - **CRP has no transaction id.** A late result of the same kind that lands inside a later request
+    is indistinguishable from that request's own answer. History frames never complete a request.
+  - **The stored row is `sourceRaw = "spot_result"`, not `"spot"`.** It must stay out of
+    `adoptRingsCopy` for the five-minute-grid reason in "The ring owns a spot reading it logged
+    itself" below.
+  - **A rejected result is still a health frame.** `CRPDecoder` names an out-of-band vital result
+    `RejectedVitalResult` so the export masks it; decoded to nothing it would be logged `unknown`
+    and exported whole.
 - Whenever you touch CRP measure/sync/all-day behavior, hardware-validate with the ring owner
   (zaggash) — and for a "measure broken" report, first get a capture of **several** Measure presses
   with the ring snug and still, to separate a contact failure from a real code bug.
@@ -466,7 +500,8 @@ it is safe to assume away:
 waits for a completion signal no family sends just idles out its window, and the CRP R11 answers a
 spot SpO2 with one value after ~48 s of silence and nothing further — waiting past it would turn a
 working measurement into a minute-long stare at a progress bar. Families without the signal keep
-"first plausible value wins" for SpO2.
+"first plausible value wins" for SpO2. CRP is outside both rules: its spot legs are run by `CRPSpotController` and end on the
+ring's one result frame (see the R11 section above).
 
 **A spot measurement's output is one reading, not a stream.** While one is settling, the
 coordinator closes a gate on that kind's live samples and reopens it before publishing the settled
