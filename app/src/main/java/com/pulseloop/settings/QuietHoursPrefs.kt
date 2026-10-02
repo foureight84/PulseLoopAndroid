@@ -44,13 +44,87 @@ class QuietHoursPrefs(context: Context) {
         get() = prefs.getInt(KEY_END, DEFAULT_END)
         set(value) { prefs.edit().putInt(KEY_END, value.coerceIn(0, 24 * 60)).apply() }
 
+    /** Opt-in: gate quiet hours on Android Bedtime / DND mode (issue #83). */
+    var gateByZenMode: Boolean
+        get() = prefs.getBoolean(KEY_GATE_BY_ZEN_MODE, false)
+        set(value) { prefs.edit().putBoolean(KEY_GATE_BY_ZEN_MODE, value).apply() }
+
+    fun keptMinutesForRecord(
+        ts: Long,
+        minutes: Int,
+        context: Context,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): IntRange? = keptMinutesForRecord(ts, minutes, this, context, zone)
+
     companion object {
         private const val PREFS_NAME = "sleep_quiet_hours"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_START = "startMinutes"
         private const val KEY_END = "endMinutes"
+        private const val KEY_GATE_BY_ZEN_MODE = "gate_by_zen_mode"
         const val DEFAULT_START = 22 * 60
         const val DEFAULT_END = 7 * 60
+
+        fun isNotificationPolicyAccessGranted(context: Context): Boolean {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                ?: return false
+            return nm.isNotificationPolicyAccessGranted
+        }
+
+        /**
+         * Which minutes of a ring record to keep given user preferences.
+         * If [gateByZenMode] is enabled and policy access is granted, filters against recorded
+         * Bedtime/DND quiet windows. If no quiet windows exist for the waking day, falls back
+         * to the configured clock window.
+         */
+        fun keptMinutesForRecord(
+            ts: Long,
+            minutes: Int,
+            prefs: QuietHoursPrefs,
+            context: Context,
+            zone: ZoneId = ZoneId.systemDefault(),
+        ): IntRange? {
+            if (!prefs.enabled) return 0 until minutes
+            if (prefs.gateByZenMode && isNotificationPolicyAccessGranted(context)) {
+                val wakingDay = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
+                val dayStart = wakingDay - 12 * 3600_000L
+                val dayEnd = wakingDay + 36 * 3600_000L
+                val windows = ZenModeTracker.getWindows(context, since = dayStart)
+                    .filter { w -> (w.end ?: (w.start + ZenModeTracker.MAX_WINDOW_DURATION_MS)) > dayStart && w.start < dayEnd }
+                if (windows.isNotEmpty()) {
+                    val kept = keptMinutesByWindows(ts, minutes, windows)
+                    if (kept != null) return kept
+                }
+            }
+            return keptMinutes(ts, minutes, prefs.startMinutes, prefs.endMinutes, zone)
+        }
+
+        /**
+         * Longest contiguous stretch of minutes falling inside any of [windows].
+         */
+        fun keptMinutesByWindows(
+            ts: Long,
+            minutes: Int,
+            windows: List<ZenWindow>,
+        ): IntRange? {
+            if (minutes <= 0 || windows.isEmpty()) return null
+            var best: IntRange? = null
+            var runStart = -1
+            for (i in 0..minutes) {
+                val minuteTs = ts + i * 60_000L
+                val inside = i < minutes && windows.any { w ->
+                    val effectiveEnd = w.end ?: (w.start + ZenModeTracker.MAX_WINDOW_DURATION_MS)
+                    minuteTs >= w.start && minuteTs < effectiveEnd
+                }
+                if (inside && runStart < 0) runStart = i
+                if (!inside && runStart >= 0) {
+                    val run = runStart until i
+                    if (best == null || run.count() > best.count()) best = run
+                    runStart = -1
+                }
+            }
+            return best
+        }
 
         /**
          * Does a record opened at [minuteOfDay] (local) fall inside the window [start]→[end]?

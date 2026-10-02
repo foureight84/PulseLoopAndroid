@@ -56,20 +56,92 @@ object SleepRecordDeletion {
         val targets = if (recordStartAt == 0L) {
             emptyList()
         } else {
-            blocks.filter { it.recordStartAt == recordStartAt }.ifEmpty {
+            blocks.filter { it.recordStartAt > 0L && it.recordStartAt == recordStartAt }.ifEmpty {
                 blocks.filter { it.recordStartAt == 0L && it.startAt >= recordStartAt }
                     .takeWhile { it.startAt < nextStampedStart(blocks, recordStartAt) }
             }
         }
         if (targets.isEmpty()) return@withTransaction false
 
+        val targetRecordStart = targets.first().recordStartAt.let { if (it > 0L) it else targets.first().startAt }
+
         // The waking day the tombstone keys under is this session's own date: every record the day
         // reconciles is assigned that same `date`, so a re-send of the record lands on the same key.
         val day = session.date
+        db.measurementDeletionDao().deleteSleepEdit(day, targetRecordStart)
+        if (targetRecordStart > 0L) {
+            db.measurementDeletionDao().recordSleepRecordDeleted(day, targetRecordStart)
+        }
         db.measurementDeletionDao().recordSleepBlocks(day, targets.map { it.startAt })
         targets.forEach { db.sleepStageBlockDao().deleteByStart(sessionId, it.startAt) }
 
         restateSession(db, session, blocks - targets.toSet())
+        true
+    }
+
+    /**
+     * Adjust the declared boundaries of the ring record whose blocks carry [recordStartAt] to
+     * [newStartAt]..[newEndAt] (issue #82).
+     *
+     * Stages inside the new range stay; stages now outside it are removed and drop from session
+     * totals. The edit is recorded in [MeasurementDeletionDao] so it survives a re-sync.
+     *
+     * Returns true when the record was successfully updated.
+     */
+    suspend fun edit(
+        db: PulseLoopDatabase,
+        sessionId: String,
+        recordStartAt: Long,
+        newStartAt: Long,
+        newEndAt: Long,
+    ): Boolean = db.withTransaction {
+        if (newStartAt >= newEndAt) return@withTransaction false
+        val session = db.sleepSessionDao().byId(sessionId) ?: return@withTransaction false
+        val blocks = db.sleepStageBlockDao().forSession(sessionId)
+
+        val targets = if (recordStartAt == 0L) {
+            emptyList()
+        } else {
+            blocks.filter { it.recordStartAt > 0L && it.recordStartAt == recordStartAt }.ifEmpty {
+                blocks.filter { it.recordStartAt == 0L && it.startAt >= recordStartAt }
+                    .takeWhile { it.startAt < nextStampedStart(blocks, recordStartAt) }
+            }
+        }
+        if (targets.isEmpty()) return@withTransaction false
+
+        val targetRecordStart = targets.first().recordStartAt.let { if (it > 0L) it else targets.first().startAt }
+        val day = session.date
+
+        // Trim each target block to [newStartAt, newEndAt)
+        val survivingTargets = mutableListOf<SleepStageBlockEntity>()
+        for (b in targets) {
+            val bStart = b.startAt
+            val bEnd = b.startAt + b.durationMinutes * 60_000L
+            val keepStart = maxOf(bStart, newStartAt)
+            val keepEnd = minOf(bEnd, newEndAt)
+
+            if (keepStart < keepEnd) {
+                val duration = ((keepEnd - keepStart) / 60_000L).toInt()
+                if (duration > 0) {
+                    survivingTargets.add(
+                        b.copy(
+                            startAt = keepStart,
+                            durationMinutes = duration,
+                        )
+                    )
+                }
+            }
+        }
+
+        // If trimming leaves no stages in this record, delete the record completely
+        if (survivingTargets.isEmpty()) {
+            return@withTransaction delete(db, sessionId, recordStartAt)
+        }
+
+        db.measurementDeletionDao().recordSleepEdit(day, targetRecordStart, newStartAt, newEndAt)
+
+        val nonTargets = blocks - targets.toSet()
+        restateSession(db, session, nonTargets + survivingTargets)
         true
     }
 

@@ -105,4 +105,80 @@ class QuietHoursPrefsTest {
     fun `an empty record keeps nothing`() {
         assertEquals(null, QuietHoursPrefs.keptMinutes(at(23, 0), 0, 22 * 60, 7 * 60, utc))
     }
+
+    // ── Bedtime / DND quiet windows (issue #83) ─────────────────────────
+
+    @Test
+    fun `keptMinutesByWindows trims sofa time before Bedtime mode turns on`() {
+        // Sleep recorded 22:30 -> 07:30 (540 minutes)
+        // User turned on Bedtime at 23:45 and woke up at 07:15 (450 minutes later)
+        val sleepStart = at(22, 30)
+        val bedtimeStart = at(23, 45) // 75 minutes into sleep
+        val bedtimeEnd = bedtimeStart + 450 * 60_000L // 07:15 next morning
+        val windows = listOf(ZenWindow(start = bedtimeStart, end = bedtimeEnd))
+
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 540, windows)
+        org.junit.Assert.assertNotNull(kept)
+        assertEquals(75 until 525, kept)
+        assertEquals(450, kept!!.count())
+    }
+
+    @Test
+    fun `keptMinutesByWindows keeps sleep with an open in-progress window`() {
+        // Sleep started 23:00, Bedtime turned on at 23:30 and is still active (end == null)
+        val sleepStart = at(23, 0)
+        val bedtimeStart = at(23, 30)
+        val windows = listOf(ZenWindow(start = bedtimeStart, end = null))
+
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 120, windows)
+        org.junit.Assert.assertNotNull(kept)
+        assertEquals(30 until 120, kept)
+    }
+
+    @Test
+    fun `keptMinutesByWindows drops record outside all quiet windows`() {
+        val sleepStart = at(14, 0)
+        val bedtimeStart = at(23, 0)
+        val bedtimeEnd = at(7, 0)
+        val windows = listOf(ZenWindow(start = bedtimeStart, end = bedtimeEnd))
+
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 60, windows)
+        assertEquals(null, kept)
+    }
+
+    @Test
+    fun `keptMinutesByWindows picks the longest stretch across multiple windows`() {
+        // Window 1: 01:00 to 02:00 (60m)
+        // Window 2: 03:00 to 06:00 (180m)
+        val sleepStart = at(0, 0)
+        val windows = listOf(
+            ZenWindow(start = at(1, 0), end = at(2, 0)),
+            ZenWindow(start = at(3, 0), end = at(6, 0)),
+        )
+
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 420, windows)
+        org.junit.Assert.assertNotNull(kept)
+        assertEquals(180 until 360, kept)
+        assertEquals(180, kept!!.count())
+    }
+
+    @Test
+    fun `keptMinutesByWindows returns null for non-overlapping daytime windows to allow schedule fallback`() {
+        val sleepStart = at(23, 0)
+        // User had DND active only for a 30-minute afternoon meeting
+        val windows = listOf(ZenWindow(start = at(14, 0), end = at(14, 30)))
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 480, windows)
+        assertEquals(null, kept)
+    }
+
+    @Test
+    fun `keptMinutesByWindows bounds open windows to MAX_WINDOW_DURATION_MS`() {
+        // Sleep started 21 hours after an unclosed window was opened (beyond 16h max)
+        val oldBedtimeStart = at(23, 0)
+        val windows = listOf(ZenWindow(start = oldBedtimeStart, end = null))
+
+        val sleepStart = oldBedtimeStart + 21 * 3600_000L
+        val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 60, windows)
+        assertEquals(null, kept)
+    }
 }

@@ -568,24 +568,54 @@ class EventPersistenceSubscriber(
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
         if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
-        // Quiet-hours gate (issue #79), opt-in and off by default: the record is trimmed to the
+        var effectiveTs = ts
+        var effectiveStages = stages
+
+        // Quiet-hours gate (issue #79, #83), opt-in and off by default: the record is trimmed to the
         // minutes inside the window before any write — the still-wrist/sofa case — rather than
         // judged by its start, because the ring often runs the sofa hour and the real night as one
         // record. Already-imported nights are untouched (this never deletes), and the gate is read
         // per record so a settings change takes effect on the next packet, not the next launch.
         val quiet = QuietHoursPrefs(context)
         if (quiet.enabled) {
-            val kept = QuietHoursPrefs.keptMinutes(ts, stages.size, quiet.startMinutes, quiet.endMinutes)
+            val kept = quiet.keptMinutesForRecord(effectiveTs, effectiveStages.size, context)
                 ?: return
-            val keptTs = ts + kept.first * 60_000L
-            val keptStages = stages.subList(kept.first, kept.last + 1)
-            db.withTransaction { upsertSleepSessionAtomic(keptTs, keptStages, completeSession) }
+            effectiveTs = effectiveTs + kept.first * 60_000L
+            effectiveStages = effectiveStages.subList(kept.first, kept.last + 1)
+        }
+
+        // Sleep record deletion gate: drop if the user deleted this entire record (issue #78, #82)
+        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(effectiveTs)
+        val origDayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
+        if (db.measurementDeletionDao().isSleepRecordDeleted(dayStart, ts) ||
+            db.measurementDeletionDao().isSleepRecordDeleted(origDayStart, ts)
+        ) {
             return
         }
-        db.withTransaction { upsertSleepSessionAtomic(ts, stages, completeSession) }
+
+        // Sleep record edit gate (issue #82): adjust boundaries if user edited this record
+        val edit = db.measurementDeletionDao().getSleepEdit(dayStart, ts)
+            ?: db.measurementDeletionDao().getSleepEdit(origDayStart, ts)
+        if (edit != null) {
+            val recEnd = effectiveTs + effectiveStages.size * 60_000L
+            val trimmedStart = maxOf(effectiveTs, edit.newStartAt)
+            val trimmedEnd = minOf(recEnd, edit.newEndAt)
+            if (trimmedStart >= trimmedEnd) return
+            val startIndex = ((trimmedStart - effectiveTs) / 60_000L).toInt()
+            val endIndex = ((trimmedEnd - effectiveTs) / 60_000L).toInt()
+            effectiveTs = trimmedStart
+            effectiveStages = effectiveStages.subList(startIndex, endIndex)
+        }
+
+        db.withTransaction { upsertSleepSessionAtomic(effectiveTs, effectiveStages, completeSession, originalRecordStart = ts) }
     }
 
-    private suspend fun upsertSleepSessionAtomic(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
+    private suspend fun upsertSleepSessionAtomic(
+        ts: Long,
+        stages: List<SleepStage>,
+        completeSession: Boolean,
+        originalRecordStart: Long = ts,
+    ) {
         // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
         // a night that starts before midnight lands under the morning of waking instead of being
         // split into two sessions at midnight. Matches the iOS reference
@@ -606,7 +636,7 @@ class EventPersistenceSubscriber(
         // separate naps — and, for a complete record, the *other* ring sessions of the same night
         // (issue #63): see [completeSessionSurvivors] for why "the session it describes" is a
         // contiguous run of blocks and not every block of every row the packet touches.
-        val replacements = buildStageBlocks("", ts, stages)
+        val replacements = buildStageBlocks("", ts, stages, recordStartAt = originalRecordStart)
             // Tombstone check (issue #78): a deleted ring record's blocks come back with the same
             // `startAt` values on every re-send of that night, so the re-derive must drop them
             // here or `SleepRecordDeletion`'s work lasts exactly one sync.
@@ -745,7 +775,12 @@ class EventPersistenceSubscriber(
      * one and that is the same width as the minute-grid rounding seam between two blocks of the
      * same record.
      */
-    private fun buildStageBlocks(sessionId: String, startTs: Long, stages: List<SleepStage>): List<SleepStageBlockEntity> {
+    private fun buildStageBlocks(
+        sessionId: String,
+        startTs: Long,
+        stages: List<SleepStage>,
+        recordStartAt: Long = startTs,
+    ): List<SleepStageBlockEntity> {
         if (stages.isEmpty()) return emptyList()
         val blocks = mutableListOf<SleepStageBlockEntity>()
         var currentStage = stages[0]
@@ -764,7 +799,7 @@ class EventPersistenceSubscriber(
                     startMinute = blockMinute,
                     durationMinutes = duration,
                     stageRaw = currentStage.name,
-                    recordStartAt = startTs,
+                    recordStartAt = recordStartAt,
                 ))
                 currentStage = stage
                 blockStart = startTs + i * 60_000L
@@ -779,7 +814,7 @@ class EventPersistenceSubscriber(
             startMinute = blockMinute,
             durationMinutes = duration,
             stageRaw = currentStage.name,
-            recordStartAt = startTs,
+            recordStartAt = recordStartAt,
         ))
         return blocks
     }
