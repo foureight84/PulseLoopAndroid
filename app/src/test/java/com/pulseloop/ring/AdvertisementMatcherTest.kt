@@ -178,4 +178,14 @@ class AdvertisementMatcherTest {
         )
         assertNull(matched)
     }
+
+    @Test
+    fun `Colmi R02 matches by advertised name without service UUIDs or manufacturer data`() {
+        for (name in listOf("R02_A1B2", "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI R02", "R02", "R02-1234", "r02_abcd")) {
+            val matched = AdvertisementMatcher.match(
+                registry, name = name, serviceUUIDs = emptyList(), manufacturerEntries = emptyList(),
+            )
+            assertEquals("Expected Colmi match for $name", RingDeviceType.COLMI_R02, matched)
+        }
+    }
 }

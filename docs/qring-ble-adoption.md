@@ -227,9 +227,9 @@ it never parsed `0x3C`. So the fix had to *teach PulseLoop to read `0x3C`* and r
 > The real QRing app (`DeviceCmdInit.init`, quoted above) bonds **unconditionally** whenever
 > the ring's `0x3C` reply sets `supportBlePair` — no per-model check at all. **PulseLoop
 > deliberately does not do this.** `RingBLEClient.bondActiveDevice()` also requires
-> `WearableModel.requiresOsBond == true` for the resolved model, currently just
-> `COLMI_R09`, `COLMI_R11`, `YAWELL_R11` — the models with a *demonstrated* GATT-only
-> fragility. Every other Colmi/Yawell model, including the **R10**, reports `supportBlePair`
+> `WearableModel.requiresOsBond == true` for the resolved model, currently
+> `COLMI_R02`, `COLMI_R09`, `COLMI_R11`, `YAWELL_R11` — the models with a *demonstrated*
+> GATT-only fragility (or replacement units requiring an OS bond). Every other Colmi/Yawell model, including the **R10**, reports `supportBlePair`
 > too but stays GATT-only on purpose: bonding is a real UX cost (an OS pairing dialog, the
 > ring occupying the phone's paired-devices list) that isn't worth paying for a model that
 > already holds a stable link without it.

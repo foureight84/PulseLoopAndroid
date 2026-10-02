@@ -304,9 +304,14 @@ class RingBLEClient(
             Log.i("RingBLEClient", "Ring detected as JRING (generic \"SMART_RING\" name) but user " +
                 "selected ${selectedModel!!.displayName} — honoring the carousel choice")
         }
+        val targetFamily = if (honorSelection) {
+            selectedModel!!.family
+        } else {
+            detectedType ?: selectedModel?.family
+        }
         beginConnect(
             target,
-            if (honorSelection) selectedModel!!.family else detectedType,
+            targetFamily,
             selectedModelID = if (honorSelection) selectedModelID
                 else discoveredRing?.wearableModelID ?: selectedModelID,
             advertisedName = discoveredRing?.name ?: target.name,

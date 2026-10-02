@@ -66,21 +66,22 @@ data class WearableModel(
         )
 
         // Colmi line — all share the Colmi protocol/driver
-        val COLMI_R02 = colmi("colmi-r02", "Colmi R02", "Colmi", "^R02_.*", R.drawable.ring_colmi_r02)
-        val COLMI_R03 = colmi("colmi-r03", "Colmi R03", "Colmi", "^R03_.*", R.drawable.ring_colmi_r03)
-        val COLMI_R06 = colmi("colmi-r06", "Colmi R06", "Colmi", "^R06_.*", R.drawable.ring_colmi_r06)
-        val COLMI_R07 = colmi("colmi-r07", "Colmi R07", "Colmi", "^COLMI R07_.*", R.drawable.ring_colmi_r07)
-        val COLMI_R08 = colmi("colmi-r08", "Colmi R08", "Colmi", "^R08_.*", R.drawable.ring_colmi_r08)
-        // R09 is one of two models that need an OS bond to hold a stable Android link (see
-        // WearableModel.requiresOsBond).
-        val COLMI_R09 = colmi("colmi-r09", "Colmi R09", "Colmi", "^R09_.*", R.drawable.ring_colmi_r09,
+        val COLMI_R02 = colmi("colmi-r02", "Colmi R02", "Colmi", "(?i)^(COLMI[ _])?R02([_-].*)?$", R.drawable.ring_colmi_r02,
             requiresOsBond = true)
-        val COLMI_R10 = colmi("colmi-r10", "Colmi R10", "Colmi", "^COLMI R10_.*", R.drawable.ring_colmi_r10)
+        val COLMI_R03 = colmi("colmi-r03", "Colmi R03", "Colmi", "(?i)^(COLMI[ _])?R03([_-].*)?$", R.drawable.ring_colmi_r03)
+        val COLMI_R06 = colmi("colmi-r06", "Colmi R06", "Colmi", "(?i)^(COLMI[ _])?R06([_-].*)?$", R.drawable.ring_colmi_r06)
+        val COLMI_R07 = colmi("colmi-r07", "Colmi R07", "Colmi", "(?i)^(COLMI[ _])?R07([_-].*)?$", R.drawable.ring_colmi_r07)
+        val COLMI_R08 = colmi("colmi-r08", "Colmi R08", "Colmi", "(?i)^(COLMI[ _])?R08([_-].*)?$", R.drawable.ring_colmi_r08)
+        // R02, R09 and R11 need an OS bond to hold a stable Android link (see
+        // WearableModel.requiresOsBond).
+        val COLMI_R09 = colmi("colmi-r09", "Colmi R09", "Colmi", "(?i)^(COLMI[ _])?R09([_-].*)?$", R.drawable.ring_colmi_r09,
+            requiresOsBond = true)
+        val COLMI_R10 = colmi("colmi-r10", "Colmi R10", "Colmi", "(?i)^COLMI[ _]R10([_-].*)?$", R.drawable.ring_colmi_r10)
         // The R11 shares its product art with the Yawell R11 (same hardware, same look) and the
         // same OS-bond requirement (issue #29 — stuck on "Connecting" GATT-only).
         val COLMI_R11 = colmi("colmi-r11", "Colmi R11", "Colmi", "^R11C_[0-9A-F]{4}$", R.drawable.ring_yawell_r11,
             requiresOsBond = true)
-        val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
+        val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "(?i)^(COLMI[ _])?R12([_-].*)?$", R.drawable.ring_colmi_r12)
 
         /**
          * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this

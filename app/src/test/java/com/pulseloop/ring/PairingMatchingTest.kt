@@ -41,7 +41,8 @@ class PairingMatchingTest {
     @Test
     fun `colmi family names match`() {
         val names = listOf(
-            "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
+            "R02_A1B2", "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI R02", "R02", "R02-1234", "r02_abcd",
+            "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
             "COLMI R10_xyz", "COLMI R12_x", "R05_1A2B", "R10_DEAD", "R11_BEEF",
             "R11C_BEEF", "H59_anything",
         )
@@ -179,28 +180,30 @@ class PairingMatchingTest {
         }
     }
 
-    // ── OS-bond gating (only the R09 and R11/Yawell R11 need a bond on Android) ───────────
+    // ── OS-bond gating (R02, R09 and R11/Yawell R11 need a bond on Android) ───────────
 
     @Test
-    fun `only the R09 and R11 require an OS bond`() {
+    fun `R02, R09 and R11 require an OS bond`() {
+        assertTrue("R02 must require an OS bond", WearableModel.COLMI_R02.requiresOsBond)
         assertTrue("R09 must require an OS bond", WearableModel.COLMI_R09.requiresOsBond)
         assertTrue("R11 must require an OS bond", WearableModel.COLMI_R11.requiresOsBond)
         assertTrue("Yawell R11 must require an OS bond", WearableModel.YAWELL_R11.requiresOsBond)
         // Every other catalog model works GATT-only like iOS — no bond, no pairing prompt.
         val bonded = WearableModel.CATALOG.filter { it.requiresOsBond }.map { it.id }.sorted()
-        assertEquals(listOf("colmi-r09", "colmi-r11", "yawell-r11"), bonded)
+        assertEquals(listOf("colmi-r02", "colmi-r09", "colmi-r11", "yawell-r11"), bonded)
     }
 
     @Test
     fun `bond decision resolves from the advertised name`() {
-        // The R09/R11 advertise as R09_xxxx/R11C_xxxx → gate bonds them; the R10 advertises as
+        // The R02/R09/R11 advertise as R02_xxxx/COLMI R02_xxxx/R09_xxxx/R11C_xxxx → gate bonds them; the R10 advertises as
         // COLMI R10_xxxx → gate leaves it unbonded. This is exactly the input
         // RingBLEClient.bondActiveDevice uses.
+        assertTrue(WearableModel.modelForAdvertisedName("R02_A1B2")?.requiresOsBond == true)
+        assertTrue(WearableModel.modelForAdvertisedName("COLMI R02_A1B2")?.requiresOsBond == true)
         assertTrue(WearableModel.modelForAdvertisedName("R09_00AA")?.requiresOsBond == true)
         assertTrue(WearableModel.modelForAdvertisedName("R11C_BEEF")?.requiresOsBond == true)
         assertTrue(WearableModel.modelForAdvertisedName("R11_BEEF")?.requiresOsBond == true)
         assertFalse(WearableModel.modelForAdvertisedName("COLMI R10_xyz")?.requiresOsBond == true)
-        assertFalse(WearableModel.modelForAdvertisedName("R02_A1B2")?.requiresOsBond == true)
     }
 
     @Test
@@ -221,6 +224,16 @@ class PairingMatchingTest {
             family = RingDeviceType.COLMI_R02,
         )
         assertEquals(WearableModel.COLMI_R12.id, model?.id)
+    }
+
+    @Test
+    fun `colmi r02 naming variations resolve to COLMI_R02 model`() {
+        for (name in listOf("R02_A1B2", "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI R02", "R02", "R02-1234", "r02_abcd")) {
+            val model = WearableModel.modelForAdvertisedName(name)
+            assertNotNull("expected model for $name", model)
+            assertEquals("expected COLMI_R02 id for $name", WearableModel.COLMI_R02.id, model?.id)
+            assertEquals("expected COLMI_R02 family for $name", RingDeviceType.COLMI_R02, model?.family)
+        }
     }
 
     @Test
