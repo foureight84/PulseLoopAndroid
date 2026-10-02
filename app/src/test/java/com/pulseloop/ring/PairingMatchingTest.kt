@@ -431,4 +431,37 @@ class PairingMatchingTest {
         // And the R100 routes to the CRP driver family, not to Colmi's.
         assertEquals(RingDeviceType.CRP, WearableModel.modelForAdvertisedName("R100")?.family)
     }
+
+    @Test
+    fun `candidate devices with unknown deviceType are included alongside family matches`() {
+        val oldRing = RingBLEClient.DiscoveredRing(
+            id = "AA:BB:CC:DD:EE:01",
+            name = "R02_OLD",
+            rssi = -85,
+            isLikelyRing = true,
+            deviceType = RingDeviceType.COLMI_R02,
+        )
+        val newRingCandidate = RingBLEClient.DiscoveredRing(
+            id = "AA:BB:CC:DD:EE:02",
+            name = "Smart Device",
+            rssi = -55,
+            isLikelyRing = false,
+            deviceType = null,
+        )
+        val otherFamilyRing = RingBLEClient.DiscoveredRing(
+            id = "AA:BB:CC:DD:EE:03",
+            name = "JRING_1234",
+            rssi = -60,
+            isLikelyRing = true,
+            deviceType = RingDeviceType.JRING,
+        )
+        val discovered = listOf(oldRing, newRingCandidate, otherFamilyRing)
+        val matches = discovered.filter { it.deviceType == RingDeviceType.COLMI_R02 }
+        val candidates = discovered.filter { it.deviceType == null }
+        val presented = (matches + candidates).ifEmpty { discovered }
+
+        assertEquals(listOf(oldRing, newRingCandidate), presented)
+        assertTrue(presented.contains(newRingCandidate))
+        assertFalse(presented.contains(otherFamilyRing))
+    }
 }

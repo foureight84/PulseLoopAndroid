@@ -208,6 +208,8 @@ class RingBLEClient(
     private var watchdogJob: Job? = null
     private var ownershipRetryJob: Job? = null
     @Volatile private var watchdogReconnectPaused = false
+    @Volatile var pairingMode = false
+        private set
 
     // MARK: Service-discovery gate
     //
@@ -226,6 +228,52 @@ class RingBLEClient(
     init { startConnectionWatchdog() }
 
     // MARK: Public API
+
+    /**
+     * Enter or exit pairing mode (e.g. while the pairing screen is active).
+     *
+     * While in pairing mode:
+     * - Auto-reconnect to [lastKnownIdentifier] is completely suppressed.
+     * - The watchdog is paused.
+     * - Any in-flight background reconnect attempt to [lastKnownIdentifier] is cleanly cancelled
+     *   so the Bluetooth LE radio is unencumbered for discovery.
+     * - The scanner will never auto-grab a previously-paired ring; it lists all discovered rings
+     *   for the user to pick from.
+     */
+    fun setPairingMode(enabled: Boolean) {
+        pairingMode = enabled
+        if (enabled) {
+            watchdogReconnectPaused = true
+            reconnectScanPending = false
+            if (_state.value.connectionState == RingConnectionState.CONNECTING ||
+                _state.value.connectionState == RingConnectionState.RECONNECTING) {
+                cancelConnecting()
+            }
+        } else {
+            watchdogReconnectPaused = false
+        }
+    }
+
+    /** Cancel an in-flight connection attempt without forgetting the ring. */
+    fun cancelConnecting() {
+        connectingStartedAt = 0
+        reconnectScanPending = false
+        val gatt = bluetoothGatt
+        bluetoothGatt = null
+        activeDriver?.connectionDidEnd()
+        writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
+        subscriptionGate = null
+        resetOpQueue()
+        if (gatt != null) {
+            try { gatt.disconnect() } catch (_: Exception) {}
+            closeGattQuietly(gatt)
+            releaseConnectionOwnership()
+        }
+        if (_state.value.connectionState == RingConnectionState.CONNECTING ||
+            _state.value.connectionState == RingConnectionState.RECONNECTING) {
+            updateState { copy(connectionState = RingConnectionState.IDLE) }
+        }
+    }
 
     /** Check if required BLE permissions are granted. */
     fun hasPermissions(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -247,6 +295,12 @@ class RingBLEClient(
         // A user-initiated scan (pairing screen) must never be hijacked by a leftover
         // reconnect flag — sighting the known ring mid-pairing would auto-connect it.
         reconnectScanPending = false
+        watchdogReconnectPaused = true
+        pairingMode = true
+        if (_state.value.connectionState == RingConnectionState.CONNECTING ||
+            _state.value.connectionState == RingConnectionState.RECONNECTING) {
+            cancelConnecting()
+        }
         updateState {
             copy(
                 connectionState = RingConnectionState.SCANNING,
@@ -279,8 +333,7 @@ class RingBLEClient(
         }
         val discoveredRing = _state.value.discovered.firstOrNull { it.id == id }
         connectingName = discoveredRing?.name ?: target.name
-        // Pairing/connecting a ring is an explicit user intent — clear any stay-off flag from a
-        // prior Disconnect so [connectLastKnown] isn't suppressed for this or the next session.
+        pairingMode = false
         prefs.edit().remove(USER_DISCONNECTED_KEY).apply()
         watchdogReconnectPaused = false
         resetReconnectBackoff()
@@ -342,7 +395,7 @@ class RingBLEClient(
     }
 
     private fun connectLastKnownInternal() {
-        if (!bluetoothAdapter.isEnabled) return
+        if (!bluetoothAdapter.isEnabled || pairingMode) return
         // Honor a user-initiated Disconnect: stay off until the user reconnects ([userConnect])
         // or pairs a new ring ([connectTo]). Every auto-reconnect path — foreground
         // reconnectIfNeeded, the watchdog, and the background RingSyncWorker — funnels through
@@ -439,7 +492,7 @@ class RingBLEClient(
 
     private fun connectionWatchdogTick() {
         if (!bluetoothAdapter.isEnabled || !hasPermissions()) return
-        if (watchdogReconnectPaused) return
+        if (watchdogReconnectPaused || pairingMode) return
         // Time out a hung CONNECTING attempt FIRST — before the last-known-ring guard below —
         // so it also covers a first-ever pairing (no stored ring yet). The official QRing app
         // arms this timeout on every connect (mTimeoutRunnable). Without it, a first pair that
@@ -761,7 +814,7 @@ class RingBLEClient(
     val hasLastKnownRing: Boolean
         get() = lastKnownIdentifier != null
 
-    private val lastKnownIdentifier: String?
+    val lastKnownIdentifier: String?
         get() = prefs.getString(LAST_PERIPHERAL_KEY, null)
     private val lastKnownDeviceType: RingDeviceType?
         get() = prefs.getString(LAST_DEVICE_TYPE_KEY, null)?.let { type ->
@@ -1274,15 +1327,20 @@ class RingBLEClient(
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
             val scanRecord = result.scanRecord ?: return
-            val name = scanRecord.deviceName ?: device.name ?: return
-            if (name.isEmpty()) return
+            val rawName = scanRecord.deviceName ?: device.name
+            val matchedType = matchDeviceType(rawName, scanRecord)
+            val matchedModel = com.pulseloop.wearables.WearableModel.modelForAdvertisedName(rawName)
+            val name = rawName?.takeIf { it.isNotEmpty() }
+                ?: matchedModel?.displayName
+                ?: matchedType?.displayName
+                ?: return
 
-            val matchedType = matchDeviceType(name, scanRecord)
-            val matchedModel = com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)
             discoveredPeripherals[device.address] = device
 
             // Reconnect scan: the known ring is advertising again — grab it now.
-            if (reconnectScanPending && device.address == lastKnownIdentifier) {
+            // Never auto-connect when pairingMode is active (user-initiated pairing scan) —
+            // that would hijack the pairing flow and abort the scanner from finding new rings.
+            if (!pairingMode && reconnectScanPending && device.address == lastKnownIdentifier) {
                 reconnectScanPending = false
                 sightlessScans = 0
                 scanner?.stopScan(this)
