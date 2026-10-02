@@ -159,8 +159,7 @@ object CRPDecoder {
      */
     private fun decodeVitalResult(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
         fun ack() = listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE shl 4) or (cmd and 0x0F)).toUByte()))
-        if (payload.isEmpty()) return ack()
-        val value = payload[0].toInt() and 0xFF
+        val value = if (payload.isEmpty()) 0 else payload[0].toInt() and 0xFF
 
         return when (cmd) {
             CRPCommands.CMD_RESULT_HR ->
