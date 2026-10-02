@@ -98,6 +98,7 @@ sealed class RingDecodedEvent {
         is BloodSugarSample -> this._timestamp
         is Unknown -> Instant.EPOCH
         is FramePending -> Instant.EPOCH
+        is RejectedVitalResult -> Instant.EPOCH
     }
 
     data class ActivityUpdate(
@@ -439,6 +440,19 @@ sealed class RingDecodedEvent {
         override val kind = "blood_sugar_sample"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"mgdl":$mgdl}"""
+    }
+
+    /**
+     * A live vital result whose value is outside its plausible band, including the ring's own
+     * "no reading" values (0, 0xFF, an empty payload). Carries no value and produces nothing to
+     * persist; it exists so the raw-packet log names the frame and the diagnostics export masks
+     * it. Left undecoded, it would be logged `unknown`, which is exported whole on purpose for
+     * control frames — the decode-gap-becomes-privacy-gap failure from issue #58.
+     */
+    data class RejectedVitalResult(val measurementKind: MeasurementKind) : RingDecodedEvent() {
+        override val kind = "rejected_vital_result"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = "{}"
     }
 
     /**

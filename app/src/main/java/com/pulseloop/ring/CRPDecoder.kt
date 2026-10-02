@@ -159,27 +159,30 @@ object CRPDecoder {
      */
     private fun decodeVitalResult(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
         fun ack() = listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE shl 4) or (cmd and 0x0F)).toUByte()))
+        // An out-of-band value still names the frame, so the raw-packet log masks it on export
+        // rather than logging an undecoded health frame as `unknown`, which is exported whole.
+        fun rejected(kind: MeasurementKind) = listOf(RingDecodedEvent.RejectedVitalResult(kind))
         val value = if (payload.isEmpty()) 0 else payload[0].toInt() and 0xFF
 
         return when (cmd) {
             CRPCommands.CMD_RESULT_HR ->
                 if (value in 40..200) listOf(RingDecodedEvent.HeartRateSample(bpm = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.HEART_RATE)
             CRPCommands.CMD_RESULT_HRV ->
                 if (value in 20..200) listOf(RingDecodedEvent.HrvSample(value = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.HRV)
             CRPCommands.CMD_RESULT_SPO2 ->
                 if (value in 70..100) listOf(RingDecodedEvent.Spo2Result(value = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.SPO2)
             CRPCommands.CMD_RESULT_STRESS ->
                 if (value in 0..100) listOf(RingDecodedEvent.StressSample(value = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.STRESS)
             CRPCommands.CMD_RESULT_TEMP -> {
                 // Vendor `e1/m.a(payload[1], payload[0])`: twoBytes2int/10, valid 28.0..50.0 °C.
-                if (payload.size < 2) return emptyList()
+                if (payload.size < 2) return rejected(MeasurementKind.TEMPERATURE)
                 val celsius = (((payload[1].toInt() and 0xFF) shl 8) or (payload[0].toInt() and 0xFF)) / 10.0
                 if (celsius in 28.0..50.0) listOf(RingDecodedEvent.TemperatureSample(celsius = celsius, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.TEMPERATURE)
             }
             else -> ack() // enable/disable acknowledgments and other group-1 replies
         }
