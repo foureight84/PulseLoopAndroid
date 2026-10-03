@@ -335,7 +335,12 @@ data class BaselineStats(
             val sd = sqrt(variance)
             val first = samples.minOfOrNull { it.timestampMs }
             val last = samples.maxOfOrNull { it.timestampMs }
-            val spanDays = if (first != null && last != null) (last - first) / 86_400_000.0 else 0.0
+            val spanDays = if (first != null && last != null) {
+                java.time.temporal.ChronoUnit.DAYS.between(
+                    java.time.Instant.ofEpochMilli(first).atZone(java.time.ZoneId.systemDefault()).toLocalDate(),
+                    java.time.Instant.ofEpochMilli(last).atZone(java.time.ZoneId.systemDefault()).toLocalDate(),
+                ).toDouble()
+            } else 0.0
             return BaselineStats(
                 mean = mean,
                 median = percentile(sorted, 0.50),

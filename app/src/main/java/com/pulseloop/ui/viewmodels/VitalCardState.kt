@@ -182,6 +182,12 @@ object VitalsCardFactory {
         /** Calibration state (iOS `Calibration`): drives BP/glucose "needs calibration" quality. */
         val hasBPReference: Boolean = false,
         val isGlucoseCalibrated: Boolean = false,
+
+        /** Pre-computed HRV baseline (30-day lookback). The 24h HRV series is not enough to
+         *  establish one — spanDays needs to reach 7 — so the ViewModel computes it once from
+         *  a wider window and passes it in, rather than each card trying to derive it from the
+         *  visible 24h data. Null when HRV isn't supported or has too few samples. */
+        val hrvBaseline: BaselineStats? = null,
     )
 
     fun card(metric: MetricKind, inputs: Inputs, profile: UserPhysiologyProfile): VitalCardState =
@@ -256,7 +262,10 @@ object VitalsCardFactory {
 
     private fun hrv(inputs: Inputs, profile: UserPhysiologyProfile): VitalCardState {
         val samples = inputs.hrv
-        val baseline = BaselineStats.compute(samples)
+        // Prefer the caller-supplied 30-day baseline; fall back to the visible-window computation
+        // (which will be insufficient on a 24h window — a caller that forgets to pass a baseline
+        // gets "Building baseline" rather than a wrong number).
+        val baseline = inputs.hrvBaseline ?: BaselineStats.compute(samples)
         val latest = samples.lastOrNull()?.value
         val quality = quality(MetricKind.HRV, samples.lastOrNull()?.timestampMs, inputs)
         val interp = latest?.let { VitalsThresholdEngine.interpret(it, MetricKind.HRV, profile, baseline = baseline) }
