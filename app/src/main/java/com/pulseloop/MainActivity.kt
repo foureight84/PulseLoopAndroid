@@ -25,6 +25,13 @@ import kotlinx.coroutines.launch
  *   - Android 12+: BLUETOOTH_SCAN + BLUETOOTH_CONNECT
  *   - Android < 12: ACCESS_FINE_LOCATION (for BLE scanning)
  *   - Android 13+: POST_NOTIFICATIONS
+ *
+ * Health Connect READ_STEPS is deliberately **not** requested here — it is
+ * requested only from the Step Source row in Settings, on the user's explicit
+ * action. This means users on the default "Ring" step source never see the
+ * prompt, and users who declined are not asked again on every foreground.
+ * ACTIVITY_RECOGNITION is not requested at all: the fork reads steps from
+ * Health Connect, never from the raw hardware step counter.
  */
 class MainActivity : ComponentActivity() {
 
@@ -42,14 +49,6 @@ class MainActivity : ComponentActivity() {
     ) { granted ->
         if (granted) {
             CoachNotifications.schedule(this)
-        }
-    }
-
-    private val healthConnectPermissionLauncher = registerForActivityResult(
-        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract()
-    ) { granted ->
-        if (granted.isNotEmpty()) {
-            refreshPhoneSteps()
         }
     }
 
@@ -141,10 +140,6 @@ class MainActivity : ComponentActivity() {
 
         if (!hasFineLocation()) missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !hasActivityRecognition()) {
-            missing.add(Manifest.permission.ACTIVITY_RECOGNITION)
-        }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (!hasBleScan()) missing.add(Manifest.permission.BLUETOOTH_SCAN)
             if (!hasBleConnect()) missing.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -177,33 +172,24 @@ class MainActivity : ComponentActivity() {
         this, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
 
-    private fun hasActivityRecognition() = ContextCompat.checkSelfPermission(
-        this, Manifest.permission.ACTIVITY_RECOGNITION
-    ) == PackageManager.PERMISSION_GRANTED
-
+    /**
+     * Refresh today's phone step count and backfill the last 30 days from
+     * Health Connect, when the user's step source is set to "Phone".
+     *
+     * If the Health Connect read permission is missing, this quietly returns
+     * without prompting. The permission is requested from Settings → Step
+     * Source, on the user's explicit action — never from here, so neither app
+     * launch nor return-to-foreground re-triggers a dialog the user may have
+     * already declined.
+     */
     private fun refreshPhoneSteps() {
         val apiKeyStore = com.pulseloop.settings.ApiKeyStore(this)
-        val source = apiKeyStore.stepSource
-        if (source != "phone") return
+        if (apiKeyStore.stepSource != "phone") return
 
         lifecycleScope.launch(Dispatchers.IO) {
             val manager = PhoneStepManager(this@MainActivity)
-            if (!manager.refresh()) {
-                requestHealthConnectReadSteps()
-                return@launch
-            }
+            if (!manager.refresh()) return@launch
             manager.refreshHistoricalDays()
-        }
-    }
-
-    private fun requestHealthConnectReadSteps() {
-        val readSteps = androidx.health.connect.client.permission.HealthPermission
-            .getReadPermission(androidx.health.connect.client.records.StepsRecord::class)
-        lifecycleScope.launch(Dispatchers.Main) {
-            try {
-                healthConnectPermissionLauncher.launch(setOf(readSteps))
-            } catch (_: Exception) {
-            }
         }
     }
 }

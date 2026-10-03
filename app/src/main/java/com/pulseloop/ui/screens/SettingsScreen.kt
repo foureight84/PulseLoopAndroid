@@ -1,5 +1,6 @@
 package com.pulseloop.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -20,9 +21,9 @@ import com.pulseloop.ui.components.DeviceHeroCard
 import com.pulseloop.ui.components.SettingsRowItem
 import com.pulseloop.ui.components.SettingsSection
 import com.pulseloop.ui.theme.PulseColors
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Ported from SettingsView.swift (iOS #49 rehaul).
@@ -40,6 +41,7 @@ fun SettingsScreen(
     val keyStore = remember { ApiKeyStore(context) }
     val providerStore = remember { CoachProviderSettingsStore(context) }
     val db = remember { PulseLoopDatabase.getInstance(context) }
+    val scope = rememberCoroutineScope()
 
     val bleState = bleClient?.state?.collectAsState()?.value
         ?: com.pulseloop.ring.RingBLEClient.BLEState()
@@ -70,6 +72,33 @@ fun SettingsScreen(
         else -> keyStore.model
     }
     val notificationsTrailing = if (keyStore.notificationsEnabled) "On" else "Off"
+
+    // The Health Connect READ_STEPS permission is requested only from the Step Source
+    // row below, on the user's explicit action. MainActivity deliberately does not
+    // prompt for it on launch or on foreground return — this is the single entry
+    // point, so a user who declines is not asked again until they touch the toggle
+    // once more. If the dialog is declined, the toggle reverts to "Ring" so the UI
+    // never claims a source the app cannot actually read from.
+    val healthConnectPermissionLauncher = rememberLauncherForActivityResult(
+        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract()
+    ) { granted ->
+        if (granted.isNotEmpty()) {
+            // Granted — proceed with the backfill the user asked for.
+            scope.launch(Dispatchers.IO) {
+                try {
+                    com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
+                } catch (_: Exception) {
+                    // A failed backfill just leaves the ring's data in place for
+                    // historical days. Nothing user-visible to report.
+                }
+            }
+        } else {
+            // Declined. Revert the toggle so the UI doesn't claim a source the app
+            // cannot actually read from.
+            stepSource = "ring"
+            keyStore.stepSource = "ring"
+        }
+    }
 
     fun navigate(route: String) {
         navController?.navigate(route)
@@ -145,11 +174,13 @@ fun SettingsScreen(
             ),
         )
 
-        // STEP SOURCE — when switching to Phone mode, kick off a background backfill of
-        // historical days from Health Connect so past days show the phone's step totals
-        // rather than the ring's. The refresh is fire-and-forget: the persistence layer
-        // receives PhoneStepsUpdate events and writes each day's row; the Activity
-        // screen's Flows pick up the new rows automatically.
+        // STEP SOURCE — switching to "Phone" backfills the last 30 days of step totals
+        // from Health Connect, so past days show the phone's numbers rather than the
+        // ring's. The permission for Health Connect READ_STEPS is requested here, on the
+        // user's explicit action, and only when it isn't already granted. The backfill
+        // itself is fire-and-forget: the persistence layer receives PhoneStepsUpdate
+        // events and writes each day's row; the Activity screen's Flows pick up the new
+        // rows automatically.
         SettingsSection(
             title = "Step Source",
             rows = listOf(
@@ -159,19 +190,40 @@ fun SettingsScreen(
                     title = "Data Source",
                     trailingValue = if (stepSource == "phone") "Phone" else "Ring"
                 ) {
-                    stepSource = if (stepSource == "ring") "phone" else "ring"
-                    keyStore.stepSource = stepSource
-                    if (stepSource == "phone") {
-                        // Short-lived scope: the composable's context outlives this call, and
-                        // the backfill is a bounded (~30-day) query, so a scope tied to the
-                        // screen's composition is fine. Nothing here holds a reference that
-                        // would leak.
-                        CoroutineScope(Dispatchers.IO).launch {
-                            try {
-                                com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
-                            } catch (_: Exception) {
-                                // A failed backfill just leaves the ring's data in place for
-                                // historical days. Nothing user-visible to report.
+                    val newSource = if (stepSource == "ring") "phone" else "ring"
+                    stepSource = newSource
+                    keyStore.stepSource = newSource
+                    if (newSource == "phone") {
+                        scope.launch {
+                            // Check the permission state on IO — getOrCreate() hits the
+                            // disk the first time, and getGrantedPermissions() crosses
+                            // into the Health Connect service.
+                            val readSteps = androidx.health.connect.client.permission.HealthPermission
+                                .getReadPermission(androidx.health.connect.client.records.StepsRecord::class)
+                            val hasPermission = withContext(Dispatchers.IO) {
+                                try {
+                                    val client = androidx.health.connect.client.HealthConnectClient
+                                        .getOrCreate(context)
+                                    readSteps in client.permissionController.getGrantedPermissions()
+                                } catch (_: Exception) {
+                                    false
+                                }
+                            }
+                            if (hasPermission) {
+                                // Already granted — backfill now.
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
+                                    } catch (_: Exception) {
+                                        // A failed backfill just leaves the ring's data in
+                                        // place for historical days. Nothing user-visible
+                                        // to report.
+                                    }
+                                }
+                            } else {
+                                // Not granted — ask. The launcher's callback above
+                                // handles the granted/declined outcome.
+                                healthConnectPermissionLauncher.launch(setOf(readSteps))
                             }
                         }
                     }
