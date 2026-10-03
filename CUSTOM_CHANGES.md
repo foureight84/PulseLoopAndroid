@@ -28,16 +28,26 @@ trusts for its step count.
 ### New files
 
 **`app/src/main/java/com/pulseloop/PhoneStepManager.kt`**
-Reads today's step total from Health Connect and publishes it onto the
-app's internal event bus. This is the core of the feature. It performs no
-background polling and no persistent work — it is a single async query that
-runs only when the app is foregrounded or the user pulls to refresh.
+Reads step totals from Health Connect and publishes them onto the app's
+internal event bus. This is the core of the feature. It exposes two functions:
 
-**`app/src/main/java/com/pulseloop/PhoneStepCounter.kt`**
-A thin wrapper around Android's `Sensor.TYPE_STEP_COUNTER`. Retained from an
-earlier iteration of this feature but **not currently referenced by any
-production code path**. It can be safely deleted if the Health Connect
-approach remains the sole method.
+- `refresh()` — queries today's step total, from local midnight to now. Called
+  on every app foreground and on pull-to-refresh.
+- `refreshHistoricalDays(daysBack = 30)` — queries per-day step totals for the
+  last 30 days and publishes one event per non-empty day. Called on app
+  foreground and when the user switches the step source from "Ring" to
+  "Phone". This is what makes past days show the phone's numbers instead of
+  the ring's.
+
+Neither function performs background polling or persistent work — both are
+single async queries that run only when the app is foregrounded or the user
+acts. `refreshHistoricalDays` anchors its query window to **local midnight**
+rather than to `LocalDateTime.now()`, because Health Connect's
+`aggregateGroupByPeriod` aligns buckets to the range start rather than to
+calendar days. Anchoring to midnight is what makes each returned bucket a full
+calendar day; anchoring to "now" produces buckets that straddle two days and
+mislabel every row by roughly one day. See the KDoc on
+`refreshHistoricalDays` for the full reasoning.
 
 ### Modified files
 
@@ -46,6 +56,10 @@ approach remains the sole method.
   Required on Android 10+ to access the hardware step sensor. Kept for
   completeness even though the current implementation reads from Health
   Connect instead of the raw sensor.
+- Added `<uses-permission android:name="android.permission.health.READ_STEPS" />`
+  Required for Health Connect to return step records. This is the *only*
+  Health Connect read permission the fork requests; the app remains write-only
+  for every other health data type.
 
 **`app/src/main/java/com/pulseloop/settings/ApiKeyStore.kt`**
 - Added a new preference: `stepSource`, a `String` that is either `"ring"`
@@ -60,19 +74,32 @@ approach remains the sole method.
 
 **`app/src/main/java/com/pulseloop/service/EventPersistenceSubscriber.kt`**
 - Added `PhoneStepsUpdate` handling: persists the event via a new helper
-  `upsertActivityDailyFromPhone()`, which overwrites (rather than ratchets)
-  today's activity row for the phone source.
-- Ring-originated step events (`ActivityUpdate` and `ActivityBucket`) are now
-  gated on the current `stepSource` preference: if the user has selected
-  "Phone", ring step writes are skipped entirely.
+  `upsertActivityDailyFromPhone()`. This helper **overwrites** the daily row
+  unconditionally and stamps `activity_daily.source = "phone"`. Unlike the
+  ring's cumulative counter, the phone's "today" value is authoritative and
+  should not get stuck at a stale higher number from the ring if the user
+  switched the toggle mid-day, so it does not ratchet.
+- `ActivityUpdate` (the ring's live counter) is gated on the current
+  `stepSource` preference: if the user has selected "Phone", the ring's live
+  daily total is skipped entirely.
+- `ActivityBucket` (the ring's intraday history samples) is **always written**,
+  regardless of step source — those are the intraday records the Activity
+  screen's Records tab and per-day history read. Suppressing them emptied the
+  Records list for every user on the Phone source and dropped the ring's
+  contribution to past days. What is gated instead is the *daily total
+  recompute* in `applyActivityBucketAtomic`: when the day's `activity_daily`
+  row is already marked `source = "phone"`, the ring's bucket-derived sum does
+  not overwrite it. Without that gate, the ring's next sync would clobber the
+  phone backfill's past days with the ring's own bucket sum.
 - The step-source preference is cached and re-read at most once per second
   to avoid decrypting the preferences file on every ring packet during a sync.
 
 **`app/src/main/java/com/pulseloop/MainActivity.kt`**
 - Added a Health Connect permission launcher for `READ_STEPS`.
 - Added `refreshPhoneSteps()`: called from `onResume()`, it queries Health
-  Connect and publishes a `PhoneStepsUpdate` if the user's step source is
-  "Phone". If the Health Connect read permission has not been granted yet, it
+  Connect for today's steps and then for the last 30 days via
+  `refreshHistoricalDays()`, publishing one `PhoneStepsUpdate` per non-empty
+  day. If the Health Connect read permission has not been granted yet, it
   triggers the permission request dialog.
 - Added the `ACTIVITY_RECOGNITION` runtime permission to the app's standard
   permission request flow.
@@ -80,6 +107,10 @@ approach remains the sole method.
 **`app/src/main/java/com/pulseloop/ui/screens/SettingsScreen.kt`**
 - Added a "Step Source" section with a single row that toggles between
   "Ring" and "Phone". The selected value is shown on the right side of the row.
+- When the toggle flips to "Phone", the screen fires a background call to
+  `PhoneStepManager.refreshHistoricalDays()` so the last 30 days are backfilled
+  from Health Connect immediately. The row's preference write is synchronous;
+  the backfill is fire-and-forget.
 
 **`app/src/main/java/com/pulseloop/ui/screens/TodayScreen.kt`**
 - The pull-to-refresh handler now also calls `PhoneStepManager.refresh()` when
@@ -98,6 +129,12 @@ approach remains the sole method.
 ---
 
 ## How It Works
+
+The feature has two paths, and they are independent. The **live path** keeps
+today's step count fresh. The **backfill path** makes past days show the
+phone's numbers instead of the ring's.
+
+### Live path (today)
 
 ```
                           App foregrounds
@@ -118,7 +155,7 @@ approach remains the sole method.
                                                  ▼
                                       Health Connect query:
                                       "StepsRecord.COUNT_TOTAL
-                                       between startOfDay and now"
+                                       between local midnight and now"
                                                  │
                                                  ▼
                                      PulseEventBus.publish(
@@ -137,13 +174,64 @@ approach remains the sole method.
                                        Today / Activity UI
 ```
 
-When the user selects "Ring", the phone-side flow is a complete no-op and the
-app behaves exactly as upstream. When the user selects "Phone", ring step
-writes are skipped and the Health Connect flow takes over.
+### Backfill path (past days)
+
+```
+                  App foregrounds  OR  user toggles to "Phone"
+                                │
+                                ▼
+                     refreshHistoricalDays()
+                                │
+                                ▼
+                Health Connect query per-day buckets:
+                  range: [today-midnight - 29d .. tomorrow-midnight]
+                  slicer: Period.ofDays(1)
+                  anchor: LOCAL MIDNIGHT (not "now")
+                                │
+                                ▼
+                For each non-empty bucket, publish
+                  PhoneStepsUpdate(timestamp = bucket.startTime)
+                                │
+                                ▼
+                    upsertActivityDailyFromPhone()
+                                │
+                                ▼
+              activity_daily rows for each past day, marked source="phone"
+                                │
+                                ▼
+                Ring's next sync arrives with bucket events
+                                │
+                                ▼
+             applyActivityBucketAtomic checks existing.source == "phone"
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+              source == "phone"       source != "phone"
+                    │                       │
+              skip daily total         recompute from buckets
+              (buckets still written)  (as upstream)
+```
+
+The midnight anchor in the backfill path is not cosmetic. Health Connect's
+`aggregateGroupByPeriod` aligns its buckets to the range **start**, so a range
+that begins at, say, 22:42 produces buckets that run 22:42 → 22:42 and cover
+parts of two calendar days. Each bucket then gets mislabeled as the day it
+starts on, and the data appears shifted by roughly one day. Anchoring the
+range to local midnight makes every bucket exactly one calendar day, and the
+`bucket.startTime` → local-day conversion in the persistence layer lands on
+the correct date.
+
+When the user selects "Ring", both paths are complete no-ops and the app
+behaves exactly as upstream. When the user selects "Phone", the ring's live
+daily counter is skipped, the phone backfills past days, and the ring's own
+past-day recompute is suppressed for any day the phone has already claimed.
 
 **Refresh triggers:**
-- App launch and every foreground return (`onResume`).
-- Pull-to-refresh gesture on the Today screen.
+- App launch and every foreground return (`onResume`), for both the live and
+  backfill paths.
+- Pull-to-refresh gesture on the Today screen, for the live path only.
+- Toggling the step source from "Ring" to "Phone" in Settings, for the
+  backfill path only.
 
 There is **no** background polling, no scheduled job, and no WorkManager
 worker dedicated to step refresh. If the app is not open, no step query runs.
@@ -153,7 +241,10 @@ This is deliberate and matches the app's existing refresh model.
 last time a source app (Mi Fitness, Google Fit, etc.) wrote a step record to
 Health Connect. Android's Health Connect implementation batches step writes
 roughly every minute or two. PulseLoop always reads the newest value Health
-Connect has, but cannot make Health Connect itself more up-to-date.
+Connect has, but cannot make Health Connect itself more up-to-date. On the
+very first launch after install, Health Connect may return an empty result
+until the Health Connect app itself has been foregrounded once; the second
+launch's backfill picks up from there.
 
 ---
 
@@ -208,12 +299,18 @@ never be prompted for the Health Connect read permission.
 3. If you selected "Phone" for the first time, Android will show a Health
    Connect permission prompt asking whether PulseLoop may read your steps.
    Tap **Allow**.
-4. Close the app (swipe from Recents) and reopen it, or pull down on the
-   Today screen. The step tile will now show the phone's step count.
+4. The app immediately backfills the last 30 days of phone step counts in the
+   background. On the **Activity** screen, past days will now show the phone's
+   numbers rather than the ring's. Today's tile updates on the next foreground
+   (or on pull-to-refresh).
+5. Close the app (swipe from Recents) and reopen it, or pull down on the
+   Today screen, to force a live refresh of today's count.
 
 **To revert:** Set the toggle back to "Ring". The app will resume reading the
 ring's step data on the next sync. Historical step rows written while "Phone"
-was selected remain in the database and are not deleted by the toggle.
+was selected remain in the database and are not deleted by the toggle — they
+are marked `source = "phone"` and will not be overwritten by the ring's own
+syncs.
 
 ---
 
@@ -224,7 +321,8 @@ was selected remain in the database and are not deleted by the toggle.
   that must be installed from the Play Store.
 - The phone must have **at least one source app writing step data to Health
   Connect** (e.g. Mi Fitness, Google Fit, Samsung Health). If no such app
-  exists, the Health Connect query will return zero.
+  exists, the Health Connect query will return zero and past days will remain
+  on the ring's numbers.
 - The **Steps read permission** must be granted for the feature to function.
   This is checked at runtime; if revoked, PulseLoop falls back to no step
   refresh and the user is re-prompted on the next foreground.
@@ -244,14 +342,23 @@ Most conflicts, if any, will land in `EventPersistenceSubscriber.kt` and
 `MainActivity.kt`, since both files are actively developed upstream. The
 changes in this fork are structured to be self-contained:
 
-- `PhoneStepManager.kt` and `PhoneStepCounter.kt` are entirely new files and
-  will not conflict.
+- `PhoneStepManager.kt` is an entirely new file and will not conflict.
 - The changes to `ApiKeyStore.kt`, `PulseEventBus.kt`, and `DebugScreen.kt`
   are additive (new property / new event / new case) and normally merge
   cleanly.
-- The changes to `EventPersistenceSubscriber.kt`, `MainActivity.kt`, and
-  `TodayScreen.kt` insert code near existing code and may need manual
-  attention on large upstream refactors.
+- The changes to `EventPersistenceSubscriber.kt`, `MainActivity.kt`,
+  `SettingsScreen.kt`, and `TodayScreen.kt` insert code near existing code
+  and may need manual attention on large upstream refactors.
+
+**One semantic contract to preserve on merge.** `activity_daily.source =
+"phone"` is not a display hint — it is a marker the ring's own bucket-sync
+path reads to decide whether to recompute a day's total. If upstream ever
+changes the `ActivityDailyEntity` schema or the `applyActivityBucketAtomic`
+logic, the `dayOwnedByPhone` check must be carried across, or the ring's next
+sync will clobber every past day the phone backfilled. The two commit
+messages `Skip ring bucket totals on phone-owned days...` and `Trigger
+phone-step backfill on app startup and step-source toggle` describe the
+invariant.
 
 The feature is guarded end-to-end by the `stepSource` preference. On any
 build where the preference is unset or set to "ring", the app behaves exactly
