@@ -20,6 +20,9 @@ import com.pulseloop.ui.components.DeviceHeroCard
 import com.pulseloop.ui.components.SettingsRowItem
 import com.pulseloop.ui.components.SettingsSection
 import com.pulseloop.ui.theme.PulseColors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Ported from SettingsView.swift (iOS #49 rehaul).
@@ -141,7 +144,12 @@ fun SettingsScreen(
                 },
             ),
         )
-        // STEP SOURCE
+
+        // STEP SOURCE — when switching to Phone mode, kick off a background backfill of
+        // historical days from Health Connect so past days show the phone's step totals
+        // rather than the ring's. The refresh is fire-and-forget: the persistence layer
+        // receives PhoneStepsUpdate events and writes each day's row; the Activity
+        // screen's Flows pick up the new rows automatically.
         SettingsSection(
             title = "Step Source",
             rows = listOf(
@@ -153,6 +161,20 @@ fun SettingsScreen(
                 ) {
                     stepSource = if (stepSource == "ring") "phone" else "ring"
                     keyStore.stepSource = stepSource
+                    if (stepSource == "phone") {
+                        // Short-lived scope: the composable's context outlives this call, and
+                        // the backfill is a bounded (~30-day) query, so a scope tied to the
+                        // screen's composition is fine. Nothing here holds a reference that
+                        // would leak.
+                        CoroutineScope(Dispatchers.IO).launch {
+                            try {
+                                com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
+                            } catch (_: Exception) {
+                                // A failed backfill just leaves the ring's data in place for
+                                // historical days. Nothing user-visible to report.
+                            }
+                        }
+                    }
                 }
             ),
         )
