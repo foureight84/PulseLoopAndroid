@@ -404,10 +404,13 @@ class EventPersistenceSubscriber(
                 }
             }
             is PulseEvent.ActivityBucket -> {
-                // Same rule as ActivityUpdate: phone source means no ring steps get stored.
-                if (!stepSourceIsPhone) {
-                    applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
-                }
+                // Buckets are always written — they're the intraday records the Activity
+                // screen's RECORDS card and per-day history read. Suppressing them (as this
+                // used to do when stepSourceIsPhone) emptied the Records list for every user
+                // on the Phone source, and dropped the ring's contribution to past days
+                // entirely. The daily *total* is the only thing gated by the source, and
+                // applyActivityBucketAtomic handles that gating internally.
+                applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.PhoneStepsUpdate -> {
                 upsertActivityDailyFromPhone(
@@ -525,14 +528,14 @@ class EventPersistenceSubscriber(
             val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
                 steps = if (stale) steps
-                    else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
+                else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
                 // A bucket carries no calorie field, so there is nothing to subtract from the
                 // ring's own figure — the deletion drops it and the app's estimate takes over
                 // (see [com.pulseloop.data.ActivityBucketDeletion]). Ratcheting here would put it
                 // straight back.
                 calories = if (stale) calories
-                    else if (hasDeletion) existing.calories
-                    else maxOf(existing.calories, calories),
+                else if (hasDeletion) existing.calories
+                else maxOf(existing.calories, calories),
                 distanceMeters = if (stale) distanceM else deletion.ratchetAgainstRing(
                     existing.distanceMeters, distanceM, existing.deletedDistanceMeters,
                 ),
@@ -610,15 +613,30 @@ class EventPersistenceSubscriber(
         val isToday = dayStart == com.pulseloop.util.TimeUtil.startOfTodayLocal()
         val stale = existing != null && existing.steps > 200_000
         val ratchet = isToday && existing != null && !stale
-        db.activityDailyDao().upsert(
-            (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
-                steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
-                distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
-                source = if (ratchet) existing!!.source else "ring_history",
-                syncedAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis(),
+        // When the user is on the Phone step source, the ring's bucket-derived totals must
+        // not overwrite the phone's accurate daily figure — that was the whole point of the
+        // source selection. This has to be true for **past days as well as today**: the phone
+        // backfills historical days with PhoneStepsUpdate events (see
+        // PhoneStepManager.refreshHistoricalDays), and without this check the ring's next
+        // sync would overwrite them back with its own bucket sum on the same day. Two
+        // triggers to skip:
+        //   1. Phone mode + today (the ring may still be writing buckets, phone owns the total)
+        //   2. The day's existing row is already marked source = "phone" (past days the
+        //      backfill already wrote — the phone's total for that day is authoritative and
+        //      must not be clobbered by the ring's bucket sum).
+        val dayOwnedByPhone = existing?.source == "phone"
+        val skipDailyTotal = dayOwnedByPhone || (stepSourceIsPhone && isToday)
+        if (!skipDailyTotal) {
+            db.activityDailyDao().upsert(
+                (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
+                    steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
+                    distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
+                    source = if (ratchet) existing!!.source else "ring_history",
+                    syncedAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis(),
+                )
             )
-        )
+        }
     }
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
@@ -738,7 +756,7 @@ class EventPersistenceSubscriber(
         val matched: List<Pair<Segment, SleepSessionEntity?>> = segments.map { seg ->
             val best = available.maxByOrNull { overlap(seg.start, seg.end, it.startAt, it.endAt) }
             if (best != null && (overlap(seg.start, seg.end, best.startAt, best.endAt) > 0L ||
-                    best.startAt in seg.start..seg.end)) {
+                        best.startAt in seg.start..seg.end)) {
                 available.remove(best)
                 seg to best
             } else {
@@ -845,7 +863,7 @@ class EventPersistenceSubscriber(
      * Matches the official app's scoring.
      */
     private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
-        // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
+    // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
         // same banding, so one function owns it.
         sleepStageScore(deepMin, totalMin)
 
