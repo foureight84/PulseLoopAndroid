@@ -34,7 +34,7 @@
          missing entirely, so every workout start crashed on API 34+. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
-    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <!-- Self-update: fetch the GitHub release manifest/APK and install it -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -107,7 +107,7 @@
         <!-- Phase 6: Workout foreground service -->
         <service
             android:name=".service.WorkoutForegroundService"
-            android:foregroundServiceType="health"
+            android:foregroundServiceType="health|location"
             android:exported="false" />
 
         <!-- Home-screen widgets (iOS #44): three Glance app widgets + the shared configure
