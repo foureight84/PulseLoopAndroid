@@ -210,6 +210,9 @@ class RingBLEClient(
     @Volatile private var watchdogReconnectPaused = false
     @Volatile var pairingMode = false
         private set
+    private var watchdogPausedBeforePairing = false
+    // TEMP(#96): pairing-scan trace, see PairingScanTrace.
+    private val pairingTrace = PairingScanTrace { recordDiagnostic(it) }
 
     // MARK: Service-discovery gate
     //
@@ -241,16 +244,24 @@ class RingBLEClient(
      *   for the user to pick from.
      */
     fun setPairingMode(enabled: Boolean) {
-        pairingMode = enabled
         if (enabled) {
+            if (!pairingMode) watchdogPausedBeforePairing = watchdogReconnectPaused
+            pairingMode = true
             watchdogReconnectPaused = true
             reconnectScanPending = false
+            recordDiagnostic("pairing-trace: pairing mode on, state=${_state.value.connectionState}") // TEMP(#96)
             if (_state.value.connectionState == RingConnectionState.CONNECTING ||
                 _state.value.connectionState == RingConnectionState.RECONNECTING) {
                 cancelConnecting()
             }
-        } else {
-            watchdogReconnectPaused = false
+        } else if (pairingMode) {
+            // Restore rather than clear: a prior [disconnect] pauses the watchdog on purpose.
+            // If the user picked a ring, [connectTo] already left pairing mode and set its own
+            // watchdog state, so this branch doesn't run.
+            pairingMode = false
+            watchdogReconnectPaused = watchdogPausedBeforePairing
+            pairingTrace.scanEnded("pairing screen closed") // TEMP(#96)
+            recordDiagnostic("pairing-trace: pairing mode off, watchdogPaused=$watchdogReconnectPaused") // TEMP(#96)
         }
     }
 
@@ -294,13 +305,11 @@ class RingBLEClient(
         }
         // A user-initiated scan (pairing screen) must never be hijacked by a leftover
         // reconnect flag — sighting the known ring mid-pairing would auto-connect it.
+        // Pairing mode is NOT entered here: the reconnect path ([connectLastKnownInternal]) and
+        // pull-to-refresh scan through this too, and latching pairing mode from them disabled
+        // every auto-reconnect until the pairing screen was opened and closed (v2.9.3 rc2).
+        // Only the pairing screen enters it, via [setPairingMode].
         reconnectScanPending = false
-        watchdogReconnectPaused = true
-        pairingMode = true
-        if (_state.value.connectionState == RingConnectionState.CONNECTING ||
-            _state.value.connectionState == RingConnectionState.RECONNECTING) {
-            cancelConnecting()
-        }
         updateState {
             copy(
                 connectionState = RingConnectionState.SCANNING,
@@ -309,6 +318,7 @@ class RingBLEClient(
             )
         }
         discoveredPeripherals.clear()
+        if (pairingMode) pairingTrace.scanStarted(hasLastKnown = lastKnownIdentifier != null) // TEMP(#96)
 
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -317,6 +327,7 @@ class RingBLEClient(
     }
 
     fun stopScanning() {
+        pairingTrace.scanEnded("stopped") // TEMP(#96)
         reconnectScanPending = false
         scanner?.stopScan(scanCallback)
         if (_state.value.connectionState == RingConnectionState.SCANNING) {
@@ -333,7 +344,15 @@ class RingBLEClient(
         }
         val discoveredRing = _state.value.discovered.firstOrNull { it.id == id }
         connectingName = discoveredRing?.name ?: target.name
+        if (pairingMode) { // TEMP(#96)
+            pairingTrace.scanEnded("ring picked")
+            recordDiagnostic("pairing-trace: picked family=${discoveredRing?.deviceType?.name ?: "-"} " +
+                "model=${discoveredRing?.wearableModelID ?: "-"} selected=${selectedModelID ?: "-"} " +
+                "lastKnown=${id == lastKnownIdentifier}")
+        }
         pairingMode = false
+        // Pairing/connecting a ring is an explicit user intent — clear any stay-off flag from a
+        // prior Disconnect so [connectLastKnown] isn't suppressed for this or the next session.
         prefs.edit().remove(USER_DISCONNECTED_KEY).apply()
         watchdogReconnectPaused = false
         resetReconnectBackoff()
@@ -1330,6 +1349,19 @@ class RingBLEClient(
             val rawName = scanRecord.deviceName ?: device.name
             val matchedType = matchDeviceType(rawName, scanRecord)
             val matchedModel = com.pulseloop.wearables.WearableModel.modelForAdvertisedName(rawName)
+            if (pairingMode) { // TEMP(#96)
+                pairingTrace.sighting(
+                    address = device.address,
+                    rawName = rawName,
+                    rssi = result.rssi,
+                    matchedType = matchedType,
+                    matchedModelID = matchedModel?.id,
+                    serviceUUIDs = scanRecord.serviceUuids?.map { it.uuid.toString() } ?: emptyList(),
+                    companyIDs = scanRecord.manufacturerSpecificData?.let { d -> (0 until d.size()).map { d.keyAt(it) } }
+                        ?: emptyList(),
+                    isLastKnown = device.address == lastKnownIdentifier,
+                )
+            }
             val name = rawName?.takeIf { it.isNotEmpty() }
                 ?: matchedModel?.displayName
                 ?: matchedType?.displayName
@@ -1375,6 +1407,7 @@ class RingBLEClient(
         }
 
         override fun onScanFailed(errorCode: Int) {
+            recordDiagnostic("scan failed: errorCode=$errorCode", error = true)
             updateState { copy(lastError = "Scan failed: $errorCode") }
         }
     }

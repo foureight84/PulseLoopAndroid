@@ -178,24 +178,4 @@ class AdvertisementMatcherTest {
         )
         assertNull(matched)
     }
-
-    @Test
-    fun `Colmi R02 matches by advertised name without service UUIDs or manufacturer data`() {
-        val r02Names = listOf(
-            "R02_A1B2", "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI-R02-1234", "COLMIR02_1234",
-            "COLMI R02", "COLMI_R02", "COLMI-R02", "R02", "R02-1234", "R02 1234", "r02_abcd",
-            "R02C_1234", "R02Pro_1234", "R02 Pro_1234", "R02Plus_1234", "R02+ 1234", "R02S_1234",
-            "RT02_1234", "RT02-1234", "RT02", "COLMI RT02_1234", "QR02_1234", "QR02",
-            "QRing_R02_1234", "QRing-R02-1234", "QRing R02 1234", "QRing_R02", "QRing R02", "Q-Ring_R02_1234",
-            "Ring R02", "Smart Ring R02", "Colmi Smart Ring R02",
-            "QRing", "QRING", "qring", "Q-Ring", "Q Ring", "QRing_1234", "QRing_A1B2", "Q-Ring_1234",
-            "COLMI QRing", "COLMI QRing_1234", "QRing Pro", "QRing Plus",
-        )
-        for (name in r02Names) {
-            val matched = AdvertisementMatcher.match(
-                registry, name = name, serviceUUIDs = emptyList(), manufacturerEntries = emptyList(),
-            )
-            assertEquals("Expected Colmi match for $name", RingDeviceType.COLMI_R02, matched)
-        }
-    }
 }

@@ -66,37 +66,21 @@ data class WearableModel(
         )
 
         // Colmi line — all share the Colmi protocol/driver
-        val COLMI_R02 = colmi(
-            id = "colmi-r02",
-            name = "Colmi R02",
-            brand = "Colmi",
-            patterns = listOf(
-                // Standard Colmi R02 naming and hardware/revision variants (e.g. R02_1234, COLMI R02_1234, R02-1234, R02C, R02Pro, R02+)
-                "(?i)^(COLMI[ _-]?)?(R|RT|QR)02[A-Z0-9+]*([ _-].*)?$",
-                // QRing companion app branding with R02 model (e.g. QRing_R02_1234, QRing R02, Q-Ring_R02_1234, QRingR02)
-                "(?i)^(COLMI[ _-]?)?Q[ _-]?RING[ _-]?(R|RT|QR)?02[A-Z0-9+]*([ _-].*)?$",
-                // Ring / Smart Ring naming with R02 model (e.g. Ring R02, Smart Ring R02_1234, Colmi Smart Ring R02)
-                "(?i)^(COLMI[ _-]?)?(SMART[ _-])?RING[ _-]?(R|RT|QR)?02[A-Z0-9+]*([ _-].*)?$",
-                // Generic QRing companion app branding (e.g. QRing, QRing_1234, Q-Ring, Q Ring 1234, QRing Pro)
-                "(?i)^(COLMI[ _-]?)?Q[ _-]?RING([ _-](PRO|PLUS|[0-9A-Fa-f]+))?$",
-            ),
-            imageRes = R.drawable.ring_colmi_r02,
-            requiresOsBond = true,
-        )
-        val COLMI_R03 = colmi("colmi-r03", "Colmi R03", "Colmi", "(?i)^(COLMI[ _-]?|Q[ _-]?RING[ _-]?)?(R|RT|QR)03[A-Z0-9+]*([ _-].*)?$", R.drawable.ring_colmi_r03)
-        val COLMI_R06 = colmi("colmi-r06", "Colmi R06", "Colmi", "(?i)^(COLMI[ _-]?|Q[ _-]?RING[ _-]?)?(R|RT|QR)06[A-Z0-9+]*([ _-].*)?$", R.drawable.ring_colmi_r06)
-        val COLMI_R07 = colmi("colmi-r07", "Colmi R07", "Colmi", "(?i)^(COLMI[ _-]?|Q[ _-]?RING[ _-]?)?(R|RT|QR)07[A-Z0-9+]*([ _-].*)?$", R.drawable.ring_colmi_r07)
-        val COLMI_R08 = colmi("colmi-r08", "Colmi R08", "Colmi", "(?i)^(COLMI[ _-]?|Q[ _-]?RING[ _-]?)?(R|RT|QR)08[A-Z0-9+]*([ _-].*)?$", R.drawable.ring_colmi_r08)
-        // R02, R09 and R11 need an OS bond to hold a stable Android link (see
+        val COLMI_R02 = colmi("colmi-r02", "Colmi R02", "Colmi", "^R02_.*", R.drawable.ring_colmi_r02)
+        val COLMI_R03 = colmi("colmi-r03", "Colmi R03", "Colmi", "^R03_.*", R.drawable.ring_colmi_r03)
+        val COLMI_R06 = colmi("colmi-r06", "Colmi R06", "Colmi", "^R06_.*", R.drawable.ring_colmi_r06)
+        val COLMI_R07 = colmi("colmi-r07", "Colmi R07", "Colmi", "^COLMI R07_.*", R.drawable.ring_colmi_r07)
+        val COLMI_R08 = colmi("colmi-r08", "Colmi R08", "Colmi", "^R08_.*", R.drawable.ring_colmi_r08)
+        // R09 is one of two models that need an OS bond to hold a stable Android link (see
         // WearableModel.requiresOsBond).
-        val COLMI_R09 = colmi("colmi-r09", "Colmi R09", "Colmi", "(?i)^(COLMI[ _-]?|Q[ _-]?RING[ _-]?)?(R|RT|QR)09[A-Z0-9+]*([ _-].*)?$", R.drawable.ring_colmi_r09,
+        val COLMI_R09 = colmi("colmi-r09", "Colmi R09", "Colmi", "^R09_.*", R.drawable.ring_colmi_r09,
             requiresOsBond = true)
-        val COLMI_R10 = colmi("colmi-r10", "Colmi R10", "Colmi", "(?i)^(COLMI[ _-]|Q[ _-]?RING[ _-]?)R10[A-Z0-9+]*([ _-].*)?$", R.drawable.ring_colmi_r10)
+        val COLMI_R10 = colmi("colmi-r10", "Colmi R10", "Colmi", "^COLMI R10_.*", R.drawable.ring_colmi_r10)
         // The R11 shares its product art with the Yawell R11 (same hardware, same look) and the
         // same OS-bond requirement (issue #29 — stuck on "Connecting" GATT-only).
         val COLMI_R11 = colmi("colmi-r11", "Colmi R11", "Colmi", "^R11C_[0-9A-F]{4}$", R.drawable.ring_yawell_r11,
             requiresOsBond = true)
-        val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "(?i)^(COLMI[ _-]?|Q[ _-]?RING[ _-]?)?(R|RT|QR)12[A-Z0-9+]*([ _-].*)?$", R.drawable.ring_colmi_r12)
+        val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
 
         /**
          * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
@@ -217,25 +201,16 @@ data class WearableModel(
             id: String,
             name: String,
             brand: String,
-            patterns: List<String>,
+            pattern: String,
             @DrawableRes imageRes: Int?,
             requiresOsBond: Boolean = false,
         ) = WearableModel(
             id = id, displayName = name, brand = brand, family = RingDeviceType.COLMI_R02,
             tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Stress · Temp · Sleep",
-            advertisedNamePatterns = patterns,
+            advertisedNamePatterns = listOf(pattern),
             imageRes = imageRes,
             requiresOsBond = requiresOsBond,
         )
-
-        private fun colmi(
-            id: String,
-            name: String,
-            brand: String,
-            pattern: String,
-            @DrawableRes imageRes: Int?,
-            requiresOsBond: Boolean = false,
-        ) = colmi(id, name, brand, listOf(pattern), imageRes, requiresOsBond)
 
         private fun ycbt(
             id: String,

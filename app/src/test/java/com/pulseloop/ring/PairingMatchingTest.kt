@@ -41,8 +41,7 @@ class PairingMatchingTest {
     @Test
     fun `colmi family names match`() {
         val names = listOf(
-            "R02_A1B2", "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI R02", "R02", "R02-1234", "r02_abcd",
-            "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
+            "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
             "COLMI R10_xyz", "COLMI R12_x", "R05_1A2B", "R10_DEAD", "R11_BEEF",
             "R11C_BEEF", "H59_anything",
         )
@@ -157,12 +156,10 @@ class PairingMatchingTest {
             "SMART_RING" to "jring",
             "R02_A1B2" to "colmi-r02",
             "R03_1234" to "colmi-r03",
-            "QRing_R03_1234" to "colmi-r03",
             "R06_FFFF" to "colmi-r06",
             "COLMI R07_9" to "colmi-r07",
             "R08_1234" to "colmi-r08",
             "R09_00AA" to "colmi-r09",
-            "RT09_00AA" to "colmi-r09",
             "COLMI R10_xyz" to "colmi-r10",
             "R11C_BEEF" to "colmi-r11",
             "COLMI R12_x" to "colmi-r12",
@@ -182,30 +179,28 @@ class PairingMatchingTest {
         }
     }
 
-    // ── OS-bond gating (R02, R09 and R11/Yawell R11 need a bond on Android) ───────────
+    // ── OS-bond gating (only the R09 and R11/Yawell R11 need a bond on Android) ───────────
 
     @Test
-    fun `R02, R09 and R11 require an OS bond`() {
-        assertTrue("R02 must require an OS bond", WearableModel.COLMI_R02.requiresOsBond)
+    fun `only the R09 and R11 require an OS bond`() {
         assertTrue("R09 must require an OS bond", WearableModel.COLMI_R09.requiresOsBond)
         assertTrue("R11 must require an OS bond", WearableModel.COLMI_R11.requiresOsBond)
         assertTrue("Yawell R11 must require an OS bond", WearableModel.YAWELL_R11.requiresOsBond)
         // Every other catalog model works GATT-only like iOS — no bond, no pairing prompt.
         val bonded = WearableModel.CATALOG.filter { it.requiresOsBond }.map { it.id }.sorted()
-        assertEquals(listOf("colmi-r02", "colmi-r09", "colmi-r11", "yawell-r11"), bonded)
+        assertEquals(listOf("colmi-r09", "colmi-r11", "yawell-r11"), bonded)
     }
 
     @Test
     fun `bond decision resolves from the advertised name`() {
-        // The R02/R09/R11 advertise as R02_xxxx/COLMI R02_xxxx/R09_xxxx/R11C_xxxx → gate bonds them; the R10 advertises as
+        // The R09/R11 advertise as R09_xxxx/R11C_xxxx → gate bonds them; the R10 advertises as
         // COLMI R10_xxxx → gate leaves it unbonded. This is exactly the input
         // RingBLEClient.bondActiveDevice uses.
-        assertTrue(WearableModel.modelForAdvertisedName("R02_A1B2")?.requiresOsBond == true)
-        assertTrue(WearableModel.modelForAdvertisedName("COLMI R02_A1B2")?.requiresOsBond == true)
         assertTrue(WearableModel.modelForAdvertisedName("R09_00AA")?.requiresOsBond == true)
         assertTrue(WearableModel.modelForAdvertisedName("R11C_BEEF")?.requiresOsBond == true)
         assertTrue(WearableModel.modelForAdvertisedName("R11_BEEF")?.requiresOsBond == true)
         assertFalse(WearableModel.modelForAdvertisedName("COLMI R10_xyz")?.requiresOsBond == true)
+        assertFalse(WearableModel.modelForAdvertisedName("R02_A1B2")?.requiresOsBond == true)
     }
 
     @Test
@@ -226,45 +221,6 @@ class PairingMatchingTest {
             family = RingDeviceType.COLMI_R02,
         )
         assertEquals(WearableModel.COLMI_R12.id, model?.id)
-    }
-
-    @Test
-    fun `colmi r02 naming variations resolve to COLMI_R02 model`() {
-        val r02Names = listOf(
-            // Original / factory Yawell naming
-            "R02_A1B2", "r02_abcd", "R02_123456", "R02-1234", "R02 1234", "R02", "r02",
-            // Retail Colmi branding
-            "COLMI R02_A1B2", "COLMI_R02_1234", "COLMI-R02-1234", "COLMIR02_1234",
-            "COLMI R02", "COLMI_R02", "COLMI-R02", "Colmi R02", "colmi r02", "COLMI R02 1234",
-            // Hardware / sub-revisions
-            "R02C_1234", "R02C-1234", "R02C", "COLMI R02C_1234",
-            "R02Pro_1234", "R02 Pro_1234", "R02 Pro", "COLMI R02 Pro",
-            "R02Plus_1234", "R02 Plus_1234", "R02+ 1234", "R02+_1234", "R02+",
-            "R02S_1234", "R02P_1234", "R02N_1234",
-            // Realtek RT-series chipset firmware convention
-            "RT02_1234", "RT02-1234", "RT02 1234", "RT02", "rt02",
-            "COLMI RT02_1234", "COLMI_RT02_1234", "COLMI RT02",
-            // Factory QR02 prefix
-            "QR02_1234", "QR02-1234", "QR02", "COLMI QR02_1234",
-            // Companion app branding with R02 model
-            "QRing_R02_1234", "QRing-R02-1234", "QRing R02 1234", "QRing R02_1234",
-            "QRING_R02_ABCD", "QRingR02_1234", "QRing_R02", "QRing R02",
-            "Q-Ring_R02_1234", "Q-Ring R02", "COLMI QRing R02",
-            // Smart Ring / Ring naming with R02 model
-            "Ring R02", "Ring R02_1234", "Ring_R02_1234", "RING_R02",
-            "Smart Ring R02", "Smart Ring R02_1234", "Colmi Smart Ring R02",
-            // Generic QRing companion app branding
-            "QRing", "QRING", "qring", "Q-Ring", "Q Ring", "Q_Ring",
-            "QRing_1234", "QRing_A1B2", "QRING_ABCD", "QRing-1234", "QRing 1234",
-            "Q-Ring_1234", "Q Ring 1234", "COLMI QRing", "COLMI QRing_1234",
-            "QRing Pro", "QRing_Pro", "QRing Plus",
-        )
-        for (name in r02Names) {
-            val model = WearableModel.modelForAdvertisedName(name)
-            assertNotNull("expected model for $name", model)
-            assertEquals("expected COLMI_R02 id for $name", WearableModel.COLMI_R02.id, model?.id)
-            assertEquals("expected COLMI_R02 family for $name", RingDeviceType.COLMI_R02, model?.family)
-        }
     }
 
     @Test
@@ -430,38 +386,5 @@ class PairingMatchingTest {
         assertEquals("colmi-smarthealth", WearableModel.modelForAdvertisedName("Ale-Hop2211 E1C7")?.id)
         // And the R100 routes to the CRP driver family, not to Colmi's.
         assertEquals(RingDeviceType.CRP, WearableModel.modelForAdvertisedName("R100")?.family)
-    }
-
-    @Test
-    fun `candidate devices with unknown deviceType are included alongside family matches`() {
-        val oldRing = RingBLEClient.DiscoveredRing(
-            id = "AA:BB:CC:DD:EE:01",
-            name = "R02_OLD",
-            rssi = -85,
-            isLikelyRing = true,
-            deviceType = RingDeviceType.COLMI_R02,
-        )
-        val newRingCandidate = RingBLEClient.DiscoveredRing(
-            id = "AA:BB:CC:DD:EE:02",
-            name = "Smart Device",
-            rssi = -55,
-            isLikelyRing = false,
-            deviceType = null,
-        )
-        val otherFamilyRing = RingBLEClient.DiscoveredRing(
-            id = "AA:BB:CC:DD:EE:03",
-            name = "JRING_1234",
-            rssi = -60,
-            isLikelyRing = true,
-            deviceType = RingDeviceType.JRING,
-        )
-        val discovered = listOf(oldRing, newRingCandidate, otherFamilyRing)
-        val matches = discovered.filter { it.deviceType == RingDeviceType.COLMI_R02 }
-        val candidates = discovered.filter { it.deviceType == null }
-        val presented = (matches + candidates).ifEmpty { discovered }
-
-        assertEquals(listOf(oldRing, newRingCandidate), presented)
-        assertTrue(presented.contains(newRingCandidate))
-        assertFalse(presented.contains(otherFamilyRing))
     }
 }
