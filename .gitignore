@@ -4,9 +4,10 @@ build/
 dist/
 *.keystore
 *.jks
-*.keystore
-*.jks
+.idea/
+.kotlin/
+app/release/
+gradle/gradle-daemon-jvm.properties
 .DS_Store
 app/.DS_Store
 gradle/.DS_Store
-.DS_Store
