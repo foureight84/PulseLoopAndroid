@@ -819,7 +819,8 @@ class RingBLEClient(
             family = coordinator.deviceType,
         )?.id
         installDriver(coordinator)
-        updateState { copy(activeWearableModelID = resolvedModelID, diagnostics = emptyList()) }
+        setActiveModel(resolvedModelID)
+        updateState { copy(diagnostics = emptyList()) }
         recordDiagnostic("connect ${advertisedName ?: "unknown"}")
         connectingStartedAt = System.currentTimeMillis()
         updateState { copy(connectionState = RingConnectionState.CONNECTING) }
@@ -841,6 +842,22 @@ class RingBLEClient(
             target.connectGatt(context, false, gattCallback)
         }
     }
+
+    /**
+     * Record the exact model for this connection and add its per-model capabilities
+     * ([com.pulseloop.wearables.WearableModel.extraCapabilities]) to the active set. Additive like
+     * [refineActiveCapabilities], and only for a model of the installed family; [installDriver]
+     * resets the set to the family baseline, so a re-route never inherits the old model's extras.
+     */
+    private fun setActiveModel(modelID: String?) {
+        val extras = modelExtraCapabilities(modelID)
+        updateState { copy(activeWearableModelID = modelID, activeCapabilities = activeCapabilities + extras) }
+    }
+
+    private fun modelExtraCapabilities(modelID: String?): Set<WearableCapability> =
+        com.pulseloop.wearables.WearableModel.model(modelID)
+            ?.takeIf { it.family == activeCoordinator?.deviceType }
+            ?.extraCapabilities.orEmpty()
 
     /** True only when the connected model is one we deliberately OS-bond (currently the R09 and
      *  the R11/Yawell R11). See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
@@ -1409,7 +1426,7 @@ class RingBLEClient(
                     selectedModelID = _state.value.activeWearableModelID,
                     family = RingDeviceType.COLMI_R02,
                 )?.id ?: com.pulseloop.wearables.WearableModel.COLMI_R02.id
-                updateState { copy(activeWearableModelID = remodel) }
+                setActiveModel(remodel)
             }
 
             // Post-connect re-route (issue #29), CRP-firmware sibling of the Colmi case above: the
@@ -1441,7 +1458,7 @@ class RingBLEClient(
                     selectedModelID = _state.value.activeWearableModelID,
                     family = RingDeviceType.CRP,
                 )?.id ?: com.pulseloop.wearables.WearableModel.COLMI_R11_CRP.id
-                updateState { copy(activeWearableModelID = remodel) }
+                setActiveModel(remodel)
             }
 
             // Post-connect re-route (issue #29), the *inverse* of the two above: `connectTo`'s
@@ -1467,7 +1484,7 @@ class RingBLEClient(
                     selectedModelID = _state.value.activeWearableModelID,
                     family = RingDeviceType.JRING,
                 )?.id ?: com.pulseloop.wearables.WearableModel.JRING.id
-                updateState { copy(activeWearableModelID = remodel) }
+                setActiveModel(remodel)
             }
 
             val driver = activeDriver ?: return
@@ -1768,7 +1785,7 @@ class RingBLEClient(
                 com.pulseloop.wearables.WearableModel.model(prev)?.family ==
                     activeCoordinator?.deviceType
             }
-            if (modelID != resolvedID) updateState { copy(activeWearableModelID = modelID) }
+            if (modelID != resolvedID) setActiveModel(modelID)
             val editor = prefs.edit()
                 .putString(LAST_PERIPHERAL_KEY, device.address)
                 .putString(LAST_DEVICE_TYPE_KEY, activeCoordinator?.deviceType?.name)
@@ -1790,7 +1807,7 @@ class RingBLEClient(
                         deviceType = coord.deviceType,
                         wearableModelID = modelID,
                         advertisedName = activeAdvertisedName ?: connectingName,
-                        capabilities = coord.capabilities,
+                        capabilities = coord.capabilities + modelExtraCapabilities(modelID),
                     )
                 )
             }

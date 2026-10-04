@@ -214,6 +214,12 @@ interface RingSyncEngine {
     fun stopSpO2()
     fun startHRV() {}
     fun stopHRV() {}
+    /** True when this family measures HRV/stress/temperature on demand by streaming values until
+     *  stopped ([startSpotVital]) rather than through [startHRV]'s first-value poll. */
+    val streamsSpotVitals: Boolean get() = false
+    fun startSpotVital(vital: SpotVital) {}
+    /** Stop what [startSpotVital] began; [settled] is the reading the app settled on (null = none). */
+    fun stopSpotVital(vital: SpotVital, settled: Double?) {}
     fun startBloodPressure() {}
     fun stopBloodPressure() {}
     /** Combined measurement: HR + systolic + diastolic + SpO₂ + fatigue + stress + blood sugar + HRV. No-op if unsupported. */

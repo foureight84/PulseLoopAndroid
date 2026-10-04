@@ -54,6 +54,12 @@ object RingEventBridge {
             else listOf(PulseEvent.StressSample(decoded.value, decoded._timestamp, decoded.isHistory))
         }
 
+        is RingDecodedEvent.SpotVitalSample ->
+            listOf(PulseEvent.SpotVitalSample(decoded.vital, decoded.value, decoded._timestamp))
+
+        is RingDecodedEvent.SpotVitalNoReading ->
+            listOf(PulseEvent.SpotVitalNoReading(decoded.vital, decoded._timestamp))
+
         is RingDecodedEvent.HrvSample -> {
             if (decoded.value !in hrvRange) emptyList()
             else listOf(PulseEvent.HrvSample(decoded.value, decoded._timestamp))

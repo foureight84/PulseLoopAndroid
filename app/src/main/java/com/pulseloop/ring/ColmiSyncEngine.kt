@@ -817,6 +817,19 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.manualSpO2(enable = false))
     }
 
+    override val streamsSpotVitals: Boolean = true
+
+    override fun startSpotVital(vital: SpotVital) {
+        writer?.enqueue(encoder.spotVital(vital, enable = true))
+    }
+
+    override fun stopSpotVital(vital: SpotVital, settled: Double?) {
+        // Same teardown as stopSpO2: `0x6A` stops the ring's whole realtime engine, HR included.
+        manualHRActive = false
+        val lastRaw = settled?.let { ColmiDecoder.spotVitalRaw(vital, it) } ?: 0
+        writer?.enqueue(encoder.spotVital(vital, enable = false, lastRaw = lastRaw))
+    }
+
     override fun findDevice() {
         writer?.enqueue(encoder.findDevice())
     }

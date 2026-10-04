@@ -22,6 +22,17 @@ enum class MeasurementKind(val key: String, val unit: String) {
 }
 
 /**
+ * A vital the ring measures on demand by **streaming** values until it is stopped — QRing's manual
+ * HRV, stress and temperature screens (`HrvActivity`, `DayPressureFragment`, `TemperatureActivity`
+ * in decompiled-qring-official/). Distinct from the all-day history of the same kinds.
+ */
+enum class SpotVital(val kind: MeasurementKind) {
+    HRV(MeasurementKind.HRV),
+    STRESS(MeasurementKind.STRESS),
+    TEMPERATURE(MeasurementKind.TEMPERATURE),
+}
+
+/**
  * Ported from [SleepStage] in PulseModels.swift.
  */
 enum class SleepStage {
@@ -76,6 +87,8 @@ sealed class RingDecodedEvent {
         is MeasurementComplete -> this._timestamp
         is SleepTimeline -> this._timestamp
         is HistoryMeasurement -> this._timestamp
+        is SpotVitalSample -> this._timestamp
+        is SpotVitalNoReading -> this._timestamp
         is StressSample -> this._timestamp
         is HrvSample -> this._timestamp
         is TemperatureSample -> this._timestamp
@@ -317,6 +330,31 @@ sealed class RingDecodedEvent {
         override val kind = "measurement_rejected"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"mode":$mode}"""
+    }
+
+    /**
+     * One value streamed during an on-demand [SpotVital] measurement. Deliberately not a
+     * [StressSample]/[HrvSample]/[TemperatureSample]: those are stored as they arrive, and a spot
+     * measurement's output is one settled reading, not the stream it settled from (issue #60).
+     */
+    data class SpotVitalSample(
+        val vital: SpotVital,
+        val value: Double,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "spot_vital_sample"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"vital":"${vital.name}","value":$value}"""
+    }
+
+    /** The ring ended an on-demand [SpotVital] measurement with an error (not worn / no contact). */
+    data class SpotVitalNoReading(
+        val vital: SpotVital,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "spot_vital_no_reading"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"vital":"${vital.name}"}"""
     }
 
     data class StressSample(

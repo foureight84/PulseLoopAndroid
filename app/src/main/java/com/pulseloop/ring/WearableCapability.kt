@@ -42,7 +42,11 @@ enum class WearableCapability(val key: String) {
     MEASUREMENT_INTERVAL("measurementInterval"),
 
     // YCBT history-only metric.
-    VO2MAX("vo2max");
+    VO2MAX("vo2max"),
+
+    // On-demand stress and temperature (QRing's manual measure screens; Colmi `0x69` types 8/11).
+    MANUAL_STRESS("manualStress"),
+    MANUAL_TEMPERATURE("manualTemperature");
 
     companion object {
         fun fromCsv(csv: String): Set<WearableCapability> =

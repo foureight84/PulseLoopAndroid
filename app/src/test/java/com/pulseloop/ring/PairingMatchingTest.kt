@@ -58,6 +58,19 @@ class PairingMatchingTest {
     }
 
     @Test
+    fun `only the hardware-validated Ring 2 Pro adds on-demand HRV stress and temperature`() {
+        val streamed = setOf(
+            WearableCapability.MANUAL_HRV,
+            WearableCapability.MANUAL_STRESS,
+            WearableCapability.MANUAL_TEMPERATURE,
+        )
+        assertEquals(streamed, WearableModel.COLMI_RING_2_PRO.extraCapabilities)
+        for (model in WearableModel.CATALOG - WearableModel.COLMI_RING_2_PRO) {
+            assertTrue("${model.id} has unvalidated extras", model.extraCapabilities.isEmpty())
+        }
+    }
+
+    @Test
     fun `colmi matches by service uuid for generic names`() {
         val adv = AdvertisementInfo(listOf(ColmiUUIDs.SERVICE_V1), null)
         assertTrue(ColmiCoordinator.matches("Unlabeled", adv))

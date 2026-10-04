@@ -4,6 +4,7 @@ import androidx.annotation.DrawableRes
 import androidx.compose.ui.graphics.Color
 import com.pulseloop.R
 import com.pulseloop.ring.RingDeviceType
+import com.pulseloop.ring.WearableCapability
 import com.pulseloop.ui.theme.PulseColors
 
 /**
@@ -38,6 +39,14 @@ data class WearableModel(
      * §5a. Expand this only when a model is shown to need it on real hardware.
      */
     val requiresOsBond: Boolean = false,
+    /**
+     * Capabilities this model has beyond its family's [com.pulseloop.ring.WearableCoordinator.capabilities],
+     * added to the connected ring's set when this model is resolved. For features the family's
+     * protocol carries but nothing on the wire says a given ring supports — QRing decides those
+     * from a server-side per-model feature list, not from the `0x3C` reply. Same rule as
+     * [requiresOsBond]: add a model only once it is shown to work on real hardware.
+     */
+    val extraCapabilities: Set<WearableCapability> = emptySet(),
 ) {
     companion object {
         /**
@@ -84,8 +93,14 @@ data class WearableModel(
         // Ring 2 Pro advertises its full marketing name with no `_<hex>` serial (hardware capture,
         // 2026-10-03). QRing drives it over the same UART/big-data pair as the rest of this family
         // and does not OS-bond it. Reports hardware `RY10H…`. Art is QRing's own device picture.
+        // On-demand HRV / stress / temperature (`0x69` types 10/8/11) captured from QRing on it.
         val COLMI_RING_2_PRO = colmi("colmi-ring-2-pro", "Colmi Ring 2 Pro", "Colmi",
-            "^COLMI Ring 2 Pro$", R.drawable.ring_colmi_ring_2_pro)
+            "^COLMI Ring 2 Pro$", R.drawable.ring_colmi_ring_2_pro,
+            extraCapabilities = setOf(
+                WearableCapability.MANUAL_HRV,
+                WearableCapability.MANUAL_STRESS,
+                WearableCapability.MANUAL_TEMPERATURE,
+            ))
 
         /**
          * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
@@ -209,12 +224,14 @@ data class WearableModel(
             pattern: String,
             @DrawableRes imageRes: Int?,
             requiresOsBond: Boolean = false,
+            extraCapabilities: Set<WearableCapability> = emptySet(),
         ) = WearableModel(
             id = id, displayName = name, brand = brand, family = RingDeviceType.COLMI_R02,
             tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Stress · Temp · Sleep",
             advertisedNamePatterns = listOf(pattern),
             imageRes = imageRes,
             requiresOsBond = requiresOsBond,
+            extraCapabilities = extraCapabilities,
         )
 
         private fun ycbt(

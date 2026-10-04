@@ -36,6 +36,12 @@ object ColmiDecoder {
                 val readingType = v[1]
                 val errorCode = v[2].toInt()
                 val value = v[3].toInt()
+                ColmiCommandID.spotVital(readingType)?.let { vital ->
+                    // QRing's measure screens: errCode 1 = not worn; a value of 0 is warm-up.
+                    if (errorCode != 0) return listOf(RingDecodedEvent.SpotVitalNoReading(vital, now))
+                    if (value <= 0) return emptyList()
+                    return listOf(RingDecodedEvent.SpotVitalSample(vital, spotVitalValue(vital, value), now))
+                }
                 if (readingType == ColmiCommandID.RT_SPO2) {
                     // error!=0 ends the run — surface it so a spot measurement fails fast
                     // instead of idling out its full window (mirrors the HR path below).
@@ -71,6 +77,19 @@ object ColmiDecoder {
             ColmiCommandID.BP_READ -> decodeBpResponse(v, now)
             else -> listOf(RingDecodedEvent.CommandAck(commandId = v[0]))
         }
+    }
+
+    /** A streamed on-demand value in its unit. Temperature is `raw / 10 + 20` °C, as QRing shows
+     *  it (`TemperatureActivity`: `value * 1.0f / 10 + 20`) and as the history path decodes it. */
+    fun spotVitalValue(vital: SpotVital, raw: Int): Double = when (vital) {
+        SpotVital.TEMPERATURE -> raw / 10.0 + 20.0
+        SpotVital.HRV, SpotVital.STRESS -> raw.toDouble()
+    }
+
+    /** Inverse of [spotVitalValue], for the stop frame that hands the ring back its reading. */
+    fun spotVitalRaw(vital: SpotVital, value: Double): Int = when (vital) {
+        SpotVital.TEMPERATURE -> kotlin.math.round((value - 20.0) * 10.0).toInt()
+        SpotVital.HRV, SpotVital.STRESS -> kotlin.math.round(value).toInt()
     }
 
     private fun decodeBpResponse(v: List<UByte>, now: Instant): List<RingDecodedEvent> {
