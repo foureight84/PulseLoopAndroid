@@ -101,13 +101,11 @@ fun PairingScreen(
     var selectedIndex by remember(selectedBrand) { mutableIntStateOf(0) }
     val selectedModel = models.getOrNull(selectedIndex.coerceIn(0, models.size - 1)) ?: WearableModel.JRING
 
-    // Discovered rings: prioritize matches for the selected model's family, but also include
-    // unclassified candidate devices so a replacement ring with a new or generic identifier
-    // is never hidden by an already-recognized older ring.
+    // Discovered rings whose matched family equals the selected model's family, falling back
+    // to all named devices if nothing matches yet so the user is never stuck.
     val matchingRings = remember(state.discovered, selectedModel.family) {
         val matches = state.discovered.filter { it.deviceType == selectedModel.family }
-        val candidates = state.discovered.filter { it.deviceType == null }
-        (matches + candidates).ifEmpty { state.discovered }
+        matches.ifEmpty { state.discovered }
     }
 
     val connected = state.connectionState == RingConnectionState.CONNECTED
@@ -135,14 +133,9 @@ fun PairingScreen(
         if (isLooking && !connected) bleClient.startScanning()
     }
 
-    // Enter pairing mode on appear (pauses background auto-reconnect to old ring),
-    // and stop scanning / exit pairing mode on dispose.
+    // Reset so a re-appear doesn't show a frozen scan.
     DisposableEffect(Unit) {
-        bleClient.setPairingMode(true)
-        onDispose {
-            bleClient.stopScanning()
-            bleClient.setPairingMode(false)
-        }
+        onDispose { bleClient.stopScanning() }
     }
 
     // Keep the scan card on-screen. Embedded in the onboarding wizard, the step
@@ -194,7 +187,6 @@ fun PairingScreen(
                         state = state,
                         selectedModel = selectedModel,
                         matchingRings = matchingRings,
-                        lastKnownRingId = bleClient.lastKnownIdentifier,
                         onSelectRing = { bleClient.connectTo(it, selectedModelID = selectedModel.id) },
                         onStop = {
                             isLooking = false
@@ -437,7 +429,6 @@ private fun ScanningCard(
     state: RingBLEClient.BLEState,
     selectedModel: WearableModel,
     matchingRings: List<RingBLEClient.DiscoveredRing>,
-    lastKnownRingId: String? = null,
     onSelectRing: (String) -> Unit,
     onStop: () -> Unit,
 ) {
@@ -472,10 +463,7 @@ private fun ScanningCard(
         }
 
         matchingRings.forEach { ring ->
-            DiscoveredRingRow(
-                ring = ring,
-                isPreviouslyPaired = ring.id == lastKnownRingId,
-            ) { onSelectRing(ring.id) }
+            DiscoveredRingRow(ring) { onSelectRing(ring.id) }
         }
 
         if (matchingRings.isEmpty()) {
@@ -491,11 +479,7 @@ private fun ScanningCard(
 }
 
 @Composable
-private fun DiscoveredRingRow(
-    ring: RingBLEClient.DiscoveredRing,
-    isPreviouslyPaired: Boolean = false,
-    onClick: () -> Unit,
-) {
+private fun DiscoveredRingRow(ring: RingBLEClient.DiscoveredRing, onClick: () -> Unit) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -531,28 +515,12 @@ private fun DiscoveredRingRow(
                 tint = if (ring.isLikelyRing) PulseColors.accent else PulseColors.textMuted,
             )
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        ring.name,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = PulseColors.textPrimary,
-                    )
-                    if (isPreviouslyPaired) {
-                        Text(
-                            "Previously paired",
-                            fontSize = 10.sp,
-                            color = PulseColors.textMuted,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(PulseColors.elevated)
-                                .padding(horizontal = 4.dp, vertical = 1.dp),
-                        )
-                    }
-                }
+                Text(
+                    ring.name,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = PulseColors.textPrimary,
+                )
                 ring.deviceType?.let { type ->
                     // Exact model when the advertised name identifies one, else the family (iOS #49).
                     Text(
