@@ -12,8 +12,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
 import com.pulseloop.coach.config.CoachProviderMode
 import com.pulseloop.coach.config.CoachProviderSettingsStore
+import com.pulseloop.health.HealthConnectAvailability
+import com.pulseloop.health.HealthConnectSdk
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.ring.WearableCapability
 import com.pulseloop.settings.ApiKeyStore
@@ -85,7 +88,10 @@ fun SettingsScreen(
         androidx.health.connect.client.PermissionController.createRequestPermissionResultContract()
     ) { granted ->
         if (granted.isNotEmpty()) {
-            // Granted — proceed with the backfill the user asked for.
+            // Granted — now it is safe to persist "phone" and run the backfill. A6: the
+            // preference is written only after permission is confirmed, so an interrupted
+            // flow cannot leave the app claiming a source it can't read from.
+            stepSourcePrefs.stepSource = "phone"
             scope.launch(Dispatchers.IO) {
                 try {
                     com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
@@ -95,10 +101,9 @@ fun SettingsScreen(
                 }
             }
         } else {
-            // Declined. Revert the toggle so the UI doesn't claim a source the app
-            // cannot actually read from.
+            // Declined. Do NOT persist "phone". Revert the UI toggle so it doesn't claim
+            // a source the app cannot read from.
             stepSource = "ring"
-            stepSourcePrefs.stepSource = "ring"
         }
     }
 
@@ -193,13 +198,33 @@ fun SettingsScreen(
                     trailingValue = if (stepSource == "phone") "Phone" else "Ring"
                 ) {
                     val newSource = if (stepSource == "ring") "phone" else "ring"
-                    stepSource = newSource
-                    stepSourcePrefs.stepSource = newSource
-                    if (newSource == "phone") {
+                    stepSource = newSource  // optimistic UI; persisted only once proven valid
+                    if (newSource == "ring") {
+                        // Ring is always safe — no external dependency to verify.
+                        stepSourcePrefs.stepSource = "ring"
+                    } else {
+                        // Switching to Phone. A6: verify HC availability and permission
+                        // BEFORE persisting. The old flow saved "phone" first and reverted
+                        // on failure, so an interrupted run left the app claiming a source
+                        // it couldn't read from, which then dropped the ring's live totals.
                         scope.launch {
-                            // Check the permission state on IO — getOrCreate() hits the
-                            // disk the first time, and getGrantedPermissions() crosses
-                            // into the Health Connect service.
+                            val availability = withContext(Dispatchers.IO) {
+                                HealthConnectSdk.availability(context)
+                            }
+                            if (availability != HealthConnectAvailability.AVAILABLE) {
+                                Toast.makeText(
+                                    context,
+                                    when (availability) {
+                                        HealthConnectAvailability.PROVIDER_UPDATE_REQUIRED ->
+                                            "Health Connect needs an update before phone steps can be used."
+                                        else ->
+                                            "Health Connect isn't available on this device."
+                                    },
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                stepSource = "ring"  // revert the optimistic flip
+                                return@launch
+                            }
                             val readSteps = androidx.health.connect.client.permission.HealthPermission
                                 .getReadPermission(androidx.health.connect.client.records.StepsRecord::class)
                             val hasPermission = withContext(Dispatchers.IO) {
@@ -212,19 +237,19 @@ fun SettingsScreen(
                                 }
                             }
                             if (hasPermission) {
-                                // Already granted — backfill now.
+                                // Already granted — persist and backfill now.
+                                stepSourcePrefs.stepSource = "phone"
                                 withContext(Dispatchers.IO) {
                                     try {
                                         com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
                                     } catch (_: Exception) {
-                                        // A failed backfill just leaves the ring's data in
-                                        // place for historical days. Nothing user-visible
-                                        // to report.
+                                        // A failed backfill just leaves the ring's data
+                                        // in place for historical days.
                                     }
                                 }
                             } else {
-                                // Not granted — ask. The launcher's callback above
-                                // handles the granted/declined outcome.
+                                // Not granted — ask. The launcher's callback persists
+                                // "phone" only once permission is confirmed.
                                 healthConnectPermissionLauncher.launch(setOf(readSteps))
                             }
                         }
