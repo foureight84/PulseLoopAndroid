@@ -189,7 +189,8 @@ class MainActivity : ComponentActivity() {
      * totals off forever.
      */
     private fun refreshPhoneSteps() {
-        if (StepSourcePrefs(this).stepSource != "phone") return
+        val prefs = StepSourcePrefs(this)
+        if (prefs.stepSource != "phone") return
 
         lifecycleScope.launch(Dispatchers.IO) {
             val manager = PhoneStepManager(this@MainActivity)
@@ -203,7 +204,19 @@ class MainActivity : ComponentActivity() {
                 )
                 return@launch
             }
-            manager.refreshHistoricalDays()
+            // A10: the 30-day historical backfill runs at most once per local day. It has to
+            // run today's refresh on every foreground — the phone has been walking since the
+            // last one — but re-reading 30 days of Health Connect on every resume, writing
+            // every row's updatedAt forward, and having the exporter re-select and re-export
+            // the whole tail is wasted work. The toggle in SettingsScreen still calls
+            // refreshHistoricalDays() directly and is not throttled: an explicit user action
+            // should always run.
+            val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+            if (prefs.lastBackfillDay != today) {
+                if (manager.refreshHistoricalDays()) {
+                    prefs.lastBackfillDay = today
+                }
+            }
         }
     }
 }

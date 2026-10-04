@@ -580,6 +580,11 @@ class EventPersistenceSubscriber(
      * counter, the phone's value is authoritative for the day, and shouldn't get stuck at a
      * stale higher number if the user switched the toggle mid-day.
      *
+     * **No-op when the day already holds this exact phone value.** See the check at the top
+     * of the body: rewriting a row with the same content bumps `updatedAt`, which the
+     * Health Connect exporter selects by — so an unchanged step count would re-export the
+     * same Health Connect record and re-fire the persistence callbacks on every foreground.
+     *
      * **Leaves `calories` and `distanceMeters` untouched.** Calories are not a device-reported
      * figure for phone-sourced days; they come from
      * [com.pulseloop.service.DailyCalorieEstimator] (weight, HR, workouts, buckets), and
@@ -593,6 +598,16 @@ class EventPersistenceSubscriber(
     private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         val existing = db.activityDailyDao().byDay(dayStart)
+
+        // A10: no-op when the day already holds this exact phone value. On every foreground
+        // the phone reader re-publishes today's total (and, once a day, the 30-day backfill),
+        // and without this check every pass would touch `updatedAt` — which ActivityExporter
+        // selects by, so a no-op write re-selects the row, re-exports its Health Connect
+        // record, and fires the persistence callbacks (widget refresh) again. Steps are the
+        // phone reader's only contribution (distance/calories handled elsewhere), so an
+        // unchanged step count means the row is already correct.
+        if (existing != null && existing.steps == steps && existing.source == "phone") return
+
         val now = System.currentTimeMillis()
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = "phone")).copy(
