@@ -220,7 +220,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun refreshPhoneSteps() {
         val prefs = StepSourcePrefs(this)
-        if (prefs.stepSource != "phone") return
+        if (prefs.stepSource != StepSourcePrefs.SOURCE_PHONE) return
 
         lifecycleScope.launch(Dispatchers.IO) {
             val manager = PhoneStepManager(this@MainActivity)

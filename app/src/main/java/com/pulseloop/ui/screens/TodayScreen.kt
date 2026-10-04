@@ -79,7 +79,7 @@ fun TodayScreen(
                 // Also refresh phone steps from Health Connect — otherwise pulling to
                 // refresh syncs the ring but leaves the activity tile showing a stale
                 // step count. No-op unless the user's step source is set to "Phone".
-                if (stepSourcePrefs.stepSource == "phone") {
+                if (stepSourcePrefs.stepSource == StepSourcePrefs.SOURCE_PHONE) {
                     PhoneStepManager(context).refresh()
                 }
                 kotlinx.coroutines.delay(1500)
@@ -120,8 +120,8 @@ fun TodayScreen(
     val visibleKeys = allSupported.filter { !prefs.isHidden(it, MetricScope.TODAY) }.map { it.key }.toSet()
     val visibleOrdered: List<DashboardCard> = run {
         val base = if (editState.editing) editState.liveOrder
-            else prefsStore.resolvedOrder(visibleKeys, DashboardCard.todayDefault.map { it.key }, MetricScope.TODAY)
-                .mapNotNull { DashboardCard.fromKey(it) }
+        else prefsStore.resolvedOrder(visibleKeys, DashboardCard.todayDefault.map { it.key }, MetricScope.TODAY)
+            .mapNotNull { DashboardCard.fromKey(it) }
         base.filter { it.key in visibleKeys }
     }
     val hiddenCards = allSupported.filter { prefs.isHidden(it, MetricScope.TODAY) }
@@ -399,7 +399,7 @@ private fun deriveHero(state: TodayViewModel.TodayState, sleep: SleepViewModel.S
     val series = state.steps7d.map { it.toDouble() }
     val prior = series.dropLast(1)
     val base = if (prior.isNotEmpty() && prior.average() > 0) prior.average()
-        else if (series.isNotEmpty()) series.average() else 0.0
+    else if (series.isNotEmpty()) series.average() else 0.0
     val stepsDelta = if (base == 0.0) 0 else (((steps - base) / base) * 100).toInt()
 
     val title = when {

@@ -20,7 +20,7 @@ class StepSourcePrefs(context: Context) {
         .getSharedPreferences("pulseloop_prefs", Context.MODE_PRIVATE)
 
     var stepSource: String
-        get() = prefs.getString(KEY_STEP_SOURCE, "ring") ?: "ring"
+        get() = prefs.getString(KEY_STEP_SOURCE, SOURCE_RING) ?: SOURCE_RING
         set(value) { prefs.edit().putString(KEY_STEP_SOURCE, value).apply() }
 
     /**
@@ -34,6 +34,15 @@ class StepSourcePrefs(context: Context) {
         set(value) { prefs.edit().putLong(KEY_LAST_BACKFILL_DAY, value).apply() }
 
     companion object {
+        /**
+         * The two valid values of [stepSource]. Every call site that reads or writes the
+         * preference — or that compares an `activity_daily.source` value it wrote — refers
+         * to one of these rather than a bare `"ring"` / `"phone"` literal, so the string is
+         * defined in exactly one place.
+         */
+        const val SOURCE_RING = "ring"
+        const val SOURCE_PHONE = "phone"
+
         private const val KEY_STEP_SOURCE = "step_source"
         private const val KEY_LAST_BACKFILL_DAY = "last_backfill_day"
     }

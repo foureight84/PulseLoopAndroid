@@ -7,6 +7,7 @@ import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.settings.QuietHoursPrefs
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ring.*
 import kotlinx.coroutines.*
 
@@ -73,7 +74,7 @@ class EventPersistenceSubscriber(
      */
     private val stepSourceIsPhone: Boolean
         get() {
-            if (stepSourcePrefs.stepSource != "phone") return false
+            if (stepSourcePrefs.stepSource != StepSourcePrefs.SOURCE_PHONE) return false
             val last = lastPhoneStepAt
             if (last == 0L) return false
             return System.currentTimeMillis() - last < PHONE_STEP_GRACE_MS
@@ -550,7 +551,7 @@ class EventPersistenceSubscriber(
                 // (this path only runs when [stepSourceIsPhone] is false), reset the marker so
                 // the row's source reflects its current owner. Other sources
                 // ("ring_history", "manual_recording", "hr_and_manual") are preserved.
-                source = if (existing.source == "phone") "ring" else existing.source,
+                source = if (existing.source == StepSourcePrefs.SOURCE_PHONE) StepSourcePrefs.SOURCE_RING else existing.source,
                 steps = if (stale) steps
                 else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
                 // A bucket carries no calorie field, so there is nothing to subtract from the
@@ -568,7 +569,7 @@ class EventPersistenceSubscriber(
         } else {
             db.activityDailyDao().upsert(ActivityDailyEntity(
                 date = dayStart, steps = steps, calories = calories,
-                distanceMeters = distanceM, source = "ring",
+                distanceMeters = distanceM, source = StepSourcePrefs.SOURCE_RING,
             ))
         }
     }
@@ -606,13 +607,13 @@ class EventPersistenceSubscriber(
         // record, and fires the persistence callbacks (widget refresh) again. Steps are the
         // phone reader's only contribution (distance/calories handled elsewhere), so an
         // unchanged step count means the row is already correct.
-        if (existing != null && existing.steps == steps && existing.source == "phone") return
+        if (existing != null && existing.steps == steps && existing.source == StepSourcePrefs.SOURCE_PHONE) return
 
         val now = System.currentTimeMillis()
         db.activityDailyDao().upsert(
-            (existing ?: ActivityDailyEntity(date = dayStart, source = "phone")).copy(
+            (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
                 steps = steps,
-                source = "phone",
+                source = StepSourcePrefs.SOURCE_PHONE,
                 syncedAt = now,
                 updatedAt = now,
             )
@@ -698,7 +699,7 @@ class EventPersistenceSubscriber(
         // reader has gone stale, the ring's bucket sum must be allowed to retake the day;
         // otherwise a single toggle to Phone would suppress the ring's totals for those days
         // permanently.
-        val dayOwnedByPhone = existing?.source == "phone" && stepSourceIsPhone
+        val dayOwnedByPhone = existing?.source == StepSourcePrefs.SOURCE_PHONE && stepSourceIsPhone
         val skipDailyTotal = dayOwnedByPhone || (stepSourceIsPhone && isToday)
         if (!skipDailyTotal) {
             db.activityDailyDao().upsert(

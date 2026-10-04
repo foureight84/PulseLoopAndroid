@@ -4,6 +4,7 @@ import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.MealType
 import androidx.health.connect.client.records.SleepSessionRecord
 import com.pulseloop.ring.SleepStage
+import com.pulseloop.settings.StepSourcePrefs
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -36,7 +37,7 @@ object HealthConnectTypeMappings {
      *   the two halves of the same fix. See `ActivityExporter.build` for the filtering call
      *   site.
      */
-    val EXCLUDED_SOURCES = setOf("demo", "mock", "phone")
+    val EXCLUDED_SOURCES = setOf("demo", "mock", StepSourcePrefs.SOURCE_PHONE)
 
     const val HOUR_MS = 3_600_000L
 

@@ -44,7 +44,7 @@ object DailyCalorieEstimator {
      * device-reported figure — the phone reader supplies steps only — so it must not be treated
      * as one by [deviceReportedCalories].
      */
-    const val PHONE_SOURCE = "phone"
+    const val PHONE_SOURCE = com.pulseloop.settings.StepSourcePrefs.SOURCE_PHONE
 
     data class Profile(val sex: String?, val age: Int?, val weightKg: Double?, val heightCm: Double?)
 

@@ -91,7 +91,7 @@ fun SettingsScreen(
             // Granted — now it is safe to persist "phone" and run the backfill. A6: the
             // preference is written only after permission is confirmed, so an interrupted
             // flow cannot leave the app claiming a source it can't read from.
-            stepSourcePrefs.stepSource = "phone"
+            stepSourcePrefs.stepSource = StepSourcePrefs.SOURCE_PHONE
             scope.launch(Dispatchers.IO) {
                 try {
                     com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
@@ -103,7 +103,7 @@ fun SettingsScreen(
         } else {
             // Declined. Do NOT persist "phone". Revert the UI toggle so it doesn't claim
             // a source the app cannot read from.
-            stepSource = "ring"
+            stepSource = StepSourcePrefs.SOURCE_RING
         }
     }
 
@@ -195,13 +195,13 @@ fun SettingsScreen(
                     icon = Icons.Filled.Timeline,
                     tint = PulseColors.accent,
                     title = "Data Source",
-                    trailingValue = if (stepSource == "phone") "Phone" else "Ring"
+                    trailingValue = if (stepSource == StepSourcePrefs.SOURCE_PHONE) "Phone" else "Ring"
                 ) {
-                    val newSource = if (stepSource == "ring") "phone" else "ring"
+                    val newSource = if (stepSource == StepSourcePrefs.SOURCE_RING) StepSourcePrefs.SOURCE_PHONE else StepSourcePrefs.SOURCE_RING
                     stepSource = newSource  // optimistic UI; persisted only once proven valid
-                    if (newSource == "ring") {
+                    if (newSource == StepSourcePrefs.SOURCE_RING) {
                         // Ring is always safe — no external dependency to verify.
-                        stepSourcePrefs.stepSource = "ring"
+                        stepSourcePrefs.stepSource = StepSourcePrefs.SOURCE_RING
                     } else {
                         // Switching to Phone. A6: verify HC availability and permission
                         // BEFORE persisting. The old flow saved "phone" first and reverted
@@ -222,7 +222,7 @@ fun SettingsScreen(
                                     },
                                     Toast.LENGTH_LONG,
                                 ).show()
-                                stepSource = "ring"  // revert the optimistic flip
+                                stepSource = StepSourcePrefs.SOURCE_RING // revert the optimistic flip
                                 return@launch
                             }
                             val readSteps = androidx.health.connect.client.permission.HealthPermission
@@ -238,7 +238,7 @@ fun SettingsScreen(
                             }
                             if (hasPermission) {
                                 // Already granted — persist and backfill now.
-                                stepSourcePrefs.stepSource = "phone"
+                                stepSourcePrefs.stepSource = StepSourcePrefs.SOURCE_PHONE
                                 withContext(Dispatchers.IO) {
                                     try {
                                         com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()

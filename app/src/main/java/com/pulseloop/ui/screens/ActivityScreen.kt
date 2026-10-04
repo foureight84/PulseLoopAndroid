@@ -241,7 +241,7 @@ fun ActivityScreen(
         // beneath that total reads as a bug — the sum of the records does not match the header
         // above them, and deleting one has no effect on a total the ring no longer owns.
         // Toggling back to "Ring" restores the card.
-        if (stepSourcePrefs.stepSource != "phone") {
+        if (stepSourcePrefs.stepSource != com.pulseloop.settings.StepSourcePrefs.SOURCE_PHONE) {
             item {
                 ActivityRecordsCard(
                     viewModel = viewModel,
