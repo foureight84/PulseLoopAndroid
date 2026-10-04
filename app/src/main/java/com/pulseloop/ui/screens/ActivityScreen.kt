@@ -44,6 +44,7 @@ import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ui.components.ActivityMeta
 import com.pulseloop.ui.components.ActivityRing
 import com.pulseloop.ui.components.ActivityRings
@@ -79,6 +80,10 @@ fun ActivityScreen(
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
     val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
+    // Read the step-source preference once per composition. Cheap enough to read
+    // unconditionally (plain SharedPreferences, no crypto), and re-read on every entry to
+    // the screen so a toggle made in Settings is reflected on return.
+    val stepSourcePrefs = remember { StepSourcePrefs(context) }
     val scope = rememberCoroutineScope()
     var pickerOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
@@ -230,13 +235,21 @@ fun ActivityScreen(
         // The blocks behind today's total, each removable (issue #70). Under the summary rather
         // than beside it: it answers "why is that number wrong", which is a question you only ask
         // after reading the number.
-        item {
-            ActivityRecordsCard(
-                viewModel = viewModel,
-                units = units,
-                dayStart = shownDayStart(state),
-                dayLabel = shownDayLabel(state),
-            )
+        //
+        // Hidden when the step source is "Phone": the Records list is the ring's intraday
+        // bucket log, and while the phone owns the daily total, showing ring-derived blocks
+        // beneath that total reads as a bug — the sum of the records does not match the header
+        // above them, and deleting one has no effect on a total the ring no longer owns.
+        // Toggling back to "Ring" restores the card.
+        if (stepSourcePrefs.stepSource != "phone") {
+            item {
+                ActivityRecordsCard(
+                    viewModel = viewModel,
+                    units = units,
+                    dayStart = shownDayStart(state),
+                    dayLabel = shownDayLabel(state),
+                )
+            }
         }
         item { Spacer(Modifier.height(64.dp)) }
     }
