@@ -57,6 +57,14 @@ object RingEventBridge {
         is RingDecodedEvent.SpotVitalSample ->
             listOf(PulseEvent.SpotVitalSample(decoded.vital, decoded.value, decoded._timestamp))
 
+        is RingDecodedEvent.RealtimeStopAck -> when (decoded.readingType) {
+            ColmiCommandID.RT_HEART_RATE.toInt() ->
+                listOf(PulseEvent.RealtimeStreamStopped(MeasurementKind.HEART_RATE, decoded._timestamp))
+            ColmiCommandID.RT_SPO2.toInt() ->
+                listOf(PulseEvent.RealtimeStreamStopped(MeasurementKind.SPO2, decoded._timestamp))
+            else -> emptyList()
+        }
+
         is RingDecodedEvent.SpotVitalNoReading ->
             listOf(PulseEvent.SpotVitalNoReading(decoded.vital, decoded._timestamp))
 

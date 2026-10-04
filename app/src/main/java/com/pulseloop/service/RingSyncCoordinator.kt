@@ -139,7 +139,19 @@ class RingSyncCoordinator(
      * row for the reading the stream already stored.
      */
     private fun gateLiveSamples(kind: MeasurementKind, closed: Boolean) {
+        if (closed) liveGateReopen.disarm(kind)   // a new leg owns the gate again
         PulseEventBus.publishBlocking(PulseEvent.LiveSampleGate(kind, closed))
+    }
+
+    private val liveGateReopen = LiveGateReopen()
+
+    /** Reopen [kind]'s gate when the ring acknowledges the stop, or after a timeout. */
+    private fun reopenGateAfterStream(kind: MeasurementKind) {
+        val token = liveGateReopen.arm(kind)
+        scope.launch {
+            delay(LiveGateReopen.TIMEOUT_MS)
+            if (liveGateReopen.onTimeout(kind, token)) gateLiveSamples(kind, closed = false)
+        }
     }
 
     val connectionState: RingConnectionState get() = client.state.value.connectionState
@@ -726,20 +738,22 @@ class RingSyncCoordinator(
             result = if (aborted) null else hrWindow.settled(ringChoosesLastSample = completedByRing)
         } finally {
             spot.end(spotToken)
+            // Reopen once the ring has finished sending, not when the leg ends — see
+            // [LiveGateReopen]. Armed before the stop so its acknowledgement always finds it.
+            // Unconditional: this leg closed the gate, so it owes the reopen even where a workout
+            // started underneath it — leaving it closed would silently drop that workout's samples
+            // for the rest of the session.
+            reopenGateAfterStream(MeasurementKind.HEART_RATE)
             // Always switch the optical sensor off — even if the caller's coroutine is
             // cancelled (e.g. the user navigates away mid-measurement) — or the ring keeps pulsing.
             engine?.stopHeartRate()
             // The stop also tears down the workout's realtime stream; bring it straight back.
             restartWorkoutHeartRateIfActive()
             hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
-            // Reopen the gate BEFORE publishing, or the one reading worth keeping is the one
-            // reading dropped; both travel the bus in this order. Unconditional: this leg closed
-            // the gate, so it owes the reopen even where a workout started underneath it — leaving
-            // it closed would silently drop that workout's samples for the rest of the session.
-            gateLiveSamples(MeasurementKind.HEART_RATE, closed = false)
             // The measurement's actual output, stored once. A failed measurement stores
             // nothing — "we couldn't read it" is not a heart rate. An aborted leg has no result,
-            // so a workout that interrupted this one publishes nothing here either.
+            // so a workout that interrupted this one publishes nothing here either. It is
+            // `spot = true`, which the persistence gate lets through while still closed.
             result?.let { settled ->
                 PulseEventBus.publishBlocking(
                     PulseEvent.HeartRateSample(
@@ -793,13 +807,13 @@ class RingSyncCoordinator(
             }
         } finally {
             spot.end(spotToken)
+            reopenGateAfterStream(MeasurementKind.SPO2)   // see measureHR
             engine?.stopSpO2()   // stop the sensor even on cancellation (see measureHR)
             restartWorkoutHeartRateIfActive()   // the stop preempts the workout's HR stream
             spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
-            // Reopen the gate before publishing, or the one reading worth keeping is dropped.
-            gateLiveSamples(MeasurementKind.SPO2, closed = false)
             // The measurement's actual output, stored once — and what the card then shows, so the
             // settled value is on screen rather than whichever sample happened to arrive last.
+            // `spot = true` passes the still-closed gate.
             result?.let { settled ->
                 PulseEventBus.publishBlocking(
                     PulseEvent.Spo2Result(
@@ -1007,6 +1021,11 @@ class RingSyncCoordinator(
             }
             is PulseEvent.HrvSample -> {
                 if (hrvState == MeasureState.MEASURING) latestHrvValue = event.value
+            }
+            // The ring's stop acknowledgement trails its last streamed frame, so from here the
+            // kind's live samples are real again (see LiveGateReopen).
+            is PulseEvent.RealtimeStreamStopped -> {
+                if (liveGateReopen.onStreamStopped(event.kind)) gateLiveSamples(event.kind, closed = false)
             }
             is PulseEvent.SpotVitalSample -> {
                 if (vitalState(event.vital) == MeasureState.MEASURING) {

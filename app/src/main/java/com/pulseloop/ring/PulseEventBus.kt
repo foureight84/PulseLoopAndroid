@@ -125,6 +125,8 @@ sealed class PulseEvent {
      *  the coordinator settles the run and publishes the one reading as a sample event above. */
     data class SpotVitalSample(val vital: SpotVital, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class SpotVitalNoReading(val vital: SpotVital, val timestamp: java.time.Instant) : PulseEvent()
+    /** The ring has stopped streaming [kind] and sent everything it will send for that run. */
+    data class RealtimeStreamStopped(val kind: MeasurementKind, val timestamp: java.time.Instant) : PulseEvent()
     data class TemperatureSample(val celsius: Double, val timestamp: java.time.Instant, val isHistory: Boolean = false) : PulseEvent()
     data class SleepTimeline(
         val timestamp: java.time.Instant,

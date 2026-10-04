@@ -418,6 +418,7 @@ class EventPersistenceSubscriber(
             // the one reading as an HrvSample/StressSample/TemperatureSample (issue #60's rule).
             is PulseEvent.SpotVitalSample -> {}
             is PulseEvent.SpotVitalNoReading -> {}
+            is PulseEvent.RealtimeStreamStopped -> {}
             is PulseEvent.WearState -> {} // Product orchestration only (fast-fail a measure); not persisted.
             // Both persisted by DiagnosticsSubscriber, which also stamps and bounds them.
             is PulseEvent.RawPacket -> {}

@@ -469,8 +469,8 @@ working measurement into a minute-long stare at a progress bar. Families without
 "first plausible value wins" for SpO2.
 
 **A spot measurement's output is one reading, not a stream.** While one is settling, the
-coordinator closes a gate on that kind's live samples and reopens it before publishing the settled
-value once, `spot = true`. The gate is a **bus event** (`PulseEvent.LiveSampleGate`), not a shared
+coordinator closes a gate on that kind's live samples and publishes the settled value once,
+`spot = true` (which the closed gate lets through). The gate is a **bus event** (`PulseEvent.LiveSampleGate`), not a shared
 flag: `EventPersistenceSubscriber` collects behind the ring on its own dispatcher, so a flag read at
 write time let every sample already queued in the bus through the moment it flipped — the event is
 ordered against the samples it governs. Before any of this, every converging PPG estimate was stored
@@ -478,6 +478,14 @@ as its own heart-rate row stamped with the moment it arrived — a failed measur
 train of readings that were never the user's heart rate (this is what prompted issue #60). A live
 *workout* is the opposite case: there the stream **is** the data, so a measurement that runs during
 one neither closes the gate nor publishes a second row for a reading the stream already stored.
+
+**The gate reopens when the ring stops sending, not when the leg ends** (`LiveGateReopen`). Told to
+stop, a Colmi ring sends one more `0x69` reading and only then its `0x6A` acknowledgement — in
+QRing's captures and ours alike. Reopening as the leg ended put that trailing reading on an open
+gate, so every Colmi HR and SpO₂ spot measurement stored **two** rows a few hundred ms apart (HR
+85 + 86, SpO₂ 98 + 98 on a Ring 2 Pro). The leg now arms the reopen before sending its stop, and
+the ring's acknowledgement (`PulseEvent.RealtimeStreamStopped`) pays it; a 2 s timeout covers a
+family that sends none. Don't move the reopen back to the end of the leg to "simplify" it.
 
 **A spot HR measurement is refused while a workout is running.** The live-sample gate is one switch
 per kind, so whichever of the two closed it decides whether the other's samples are stored, and the

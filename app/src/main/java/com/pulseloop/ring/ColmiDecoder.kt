@@ -72,6 +72,8 @@ object ColmiDecoder {
             }
             ColmiCommandID.REALTIME_HEART_RATE_ERROR ->
                 listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
+            ColmiCommandID.REALTIME_STOP ->
+                listOf(RingDecodedEvent.RealtimeStopAck(readingType = v[1].toInt(), _timestamp = now))
             ColmiCommandID.SPORT_NOTIFY -> decodeSportNotify(v, now)
             ColmiCommandID.NOTIFICATION -> decodeNotification(v, now)
             ColmiCommandID.BP_READ -> decodeBpResponse(v, now)

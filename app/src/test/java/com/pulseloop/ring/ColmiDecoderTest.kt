@@ -560,6 +560,26 @@ class ColmiDecoderTest {
     }
 
     @Test
+    fun `the ring's 0x6A stop acknowledgement decodes, maps to its kind, and is masked`() {
+        // Captured order after a Ring 2 Pro SpO₂ stop: 6a03 out, trailing 690300620100…, then this.
+        val ack = ColmiDecoder.decodeNormal(hexToBytes("6a0362000000000000000000000000cf")).single()
+        assertEquals(ColmiCommandID.RT_SPO2.toInt(), (ack as RingDecodedEvent.RealtimeStopAck).readingType)
+        assertEquals(
+            listOf(MeasurementKind.SPO2),
+            RingEventBridge.eventsFor(ack).map { (it as PulseEvent.RealtimeStreamStopped).kind },
+        )
+        val hrAck = ColmiDecoder.decodeNormal(hexToBytes("6a0156000000000000000000000000c1")).single()
+        assertEquals(
+            listOf(MeasurementKind.HEART_RATE),
+            RingEventBridge.eventsFor(hrAck).map { (it as PulseEvent.RealtimeStreamStopped).kind },
+        )
+        // It carries the final reading, so a diagnostics export must not show it in clear.
+        assertEquals("6a", com.pulseloop.diagnostics.DiagnosticsRedactor.maskPacketHex("6a0362000000000000000000000000cf", ack.kind).take(2))
+        assertNotEquals("6a0362000000000000000000000000cf",
+            com.pulseloop.diagnostics.DiagnosticsRedactor.maskPacketHex("6a0362000000000000000000000000cf", ack.kind))
+    }
+
+    @Test
     fun `spot vital raw value round-trips, temperature included`() {
         assertEquals(168, ColmiDecoder.spotVitalRaw(SpotVital.TEMPERATURE, 36.8))
         assertEquals(36.9, ColmiDecoder.spotVitalValue(SpotVital.TEMPERATURE, 169), 1e-9)
