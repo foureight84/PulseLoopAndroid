@@ -45,24 +45,11 @@ class EventPersistenceSubscriber(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
-    /** Cached step-source preference. Re-read at most once per second so a toggle
-     *  change in Settings propagates without creating a fresh EncryptedSharedPreferences
-     *  instance for every activity event (which would be extremely slow during a sync). */
-    private var cachedStepSourceIsPhone: Boolean = false
-    private var cachedStepSourceAt: Long = 0L
+    /** The user's step-source preference. Plain SharedPreferences under the hood — cheap
+     *  enough to read directly on every activity event, so no in-memory cache is needed. */
+    private val stepSourcePrefs = com.pulseloop.settings.StepSourcePrefs(context)
     private val stepSourceIsPhone: Boolean
-        get() {
-            val now = System.currentTimeMillis()
-            if (now - cachedStepSourceAt > 1000L) {
-                cachedStepSourceIsPhone = try {
-                    com.pulseloop.settings.ApiKeyStore(context).stepSource == "phone"
-                } catch (_: Exception) {
-                    false
-                }
-                cachedStepSourceAt = now
-            }
-            return cachedStepSourceIsPhone
-        }
+        get() = stepSourcePrefs.stepSource == "phone"
 
     // Battery-history throttle (iOS #61b) — in-memory, so the first reading after each (re)launch
     // always records; a change or a 30-min floor logs a fresh row otherwise, keeping the table to a

@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.pulseloop.health.HealthConnectPermissionReconcile
 import com.pulseloop.notifications.CoachNotifications
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.strava.StravaAuth
 import com.pulseloop.strava.StravaTokenStore
 import com.pulseloop.ui.PulseLoopApp
@@ -183,8 +184,7 @@ class MainActivity : ComponentActivity() {
      * already declined.
      */
     private fun refreshPhoneSteps() {
-        val apiKeyStore = com.pulseloop.settings.ApiKeyStore(this)
-        if (apiKeyStore.stepSource != "phone") return
+        if (StepSourcePrefs(this).stepSource != "phone") return
 
         lifecycleScope.launch(Dispatchers.IO) {
             val manager = PhoneStepManager(this@MainActivity)

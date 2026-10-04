@@ -17,6 +17,7 @@ import com.pulseloop.coach.config.CoachProviderSettingsStore
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.ring.WearableCapability
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ui.components.DeviceHeroCard
 import com.pulseloop.ui.components.SettingsRowItem
 import com.pulseloop.ui.components.SettingsSection
@@ -39,6 +40,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val keyStore = remember { ApiKeyStore(context) }
+    val stepSourcePrefs = remember { StepSourcePrefs(context) }
     val providerStore = remember { CoachProviderSettingsStore(context) }
     val db = remember { PulseLoopDatabase.getInstance(context) }
     val scope = rememberCoroutineScope()
@@ -56,7 +58,7 @@ fun SettingsScreen(
     // recomposes this hub, so toggles made there are reflected immediately.
     val coachEnabled = keyStore.coachEnabled
     val developerUnlocked = keyStore.developerUnlocked
-    var stepSource by remember { mutableStateOf(keyStore.stepSource) }
+    var stepSource by remember { mutableStateOf(stepSourcePrefs.stepSource) }
 
     // Provider-aware AI Coach summary — mirrors iOS `coachTrailing` (no Apple on-device
     // mode on Android; hosted providers show the selected model slug).
@@ -96,7 +98,7 @@ fun SettingsScreen(
             // Declined. Revert the toggle so the UI doesn't claim a source the app
             // cannot actually read from.
             stepSource = "ring"
-            keyStore.stepSource = "ring"
+            stepSourcePrefs.stepSource = "ring"
         }
     }
 
@@ -192,7 +194,7 @@ fun SettingsScreen(
                 ) {
                     val newSource = if (stepSource == "ring") "phone" else "ring"
                     stepSource = newSource
-                    keyStore.stepSource = newSource
+                    stepSourcePrefs.stepSource = newSource
                     if (newSource == "phone") {
                         scope.launch {
                             // Check the permission state on IO — getOrCreate() hits the

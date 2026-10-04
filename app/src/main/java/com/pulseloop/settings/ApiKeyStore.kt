@@ -9,6 +9,9 @@ import com.pulseloop.service.GlucoseUnit
  * Ported from OpenAIKeychainStore in the iOS app.
  * Stores the OpenAI API key securely using EncryptedSharedPreferences
  * (Android equivalent of iOS Keychain).
+ *
+ * Non-sensitive UI preferences like `stepSource` live in [StepSourcePrefs] instead — the
+ * encryption layer is expensive enough to avoid using it for values that don't need it.
  */
 class ApiKeyStore(context: Context) {
     private val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
@@ -46,10 +49,6 @@ class ApiKeyStore(context: Context) {
     var liveMeasurementsEnabled: Boolean
         get() = prefs.getBoolean(KEY_LIVE_MEASUREMENTS, false)
         set(value) { prefs.edit().putBoolean(KEY_LIVE_MEASUREMENTS, value).apply() }
-
-    var stepSource: String
-        get() = prefs.getString(KEY_STEP_SOURCE, "ring") ?: "ring"
-        set(value) { prefs.edit().putString(KEY_STEP_SOURCE, value).apply() }
 
     /** Opt-in city-level location + weather context for the coach (iOS #65d). Off by default —
      *  turning it on triggers a location-permission request from the Settings toggle. */
@@ -189,7 +188,6 @@ class ApiKeyStore(context: Context) {
         private const val KEY_WEB_SEARCH = "web_search_enabled"
         private const val KEY_WRITE_TOOLS = "write_tools_enabled"
         private const val KEY_LIVE_MEASUREMENTS = "live_measurements_enabled"
-        private const val KEY_STEP_SOURCE = "step_source"
         private const val KEY_ENVIRONMENT_CONTEXT = "environment_context_enabled"
         private const val KEY_NOTIFICATIONS = "notifications_enabled"
         private const val KEY_BATTERY_ALERTS = "battery_alerts_enabled"

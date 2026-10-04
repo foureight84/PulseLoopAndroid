@@ -19,6 +19,7 @@ import com.pulseloop.service.MetricKind
 import com.pulseloop.service.MetricZone
 import com.pulseloop.service.VitalsThresholdEngine
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.ui.components.*
 import com.pulseloop.ui.dashboard.CustomizeCardsButton
@@ -66,6 +67,7 @@ fun TodayScreen(
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
     val keyStore = remember { ApiKeyStore(context) }
+    val stepSourcePrefs = remember { StepSourcePrefs(context) }
     val units = keyStore.resolvedUnitSystem
     val coachEnabled = keyStore.coachEnabled
     val pullRefreshState = rememberPullRefreshState(
@@ -77,7 +79,7 @@ fun TodayScreen(
                 // Also refresh phone steps from Health Connect — otherwise pulling to
                 // refresh syncs the ring but leaves the activity tile showing a stale
                 // step count. No-op unless the user's step source is set to "Phone".
-                if (keyStore.stepSource == "phone") {
+                if (stepSourcePrefs.stepSource == "phone") {
                     PhoneStepManager(context).refresh()
                 }
                 kotlinx.coroutines.delay(1500)
