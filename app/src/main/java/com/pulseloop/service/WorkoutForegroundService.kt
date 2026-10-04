@@ -1,12 +1,16 @@
 package com.pulseloop.service
 
+import android.Manifest
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -58,8 +62,38 @@ class WorkoutForegroundService : Service() {
             ACTION_FINISH -> { finishWithSummary(intent); return START_NOT_STICKY }
             else -> applyLiveExtras(intent)
         }
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // On Android 14+ startForeground() must be told which of the manifest's declared types
+        // this run actually uses, or the platform applies *every* declared type — and the
+        // `location` type requires ACCESS_FINE_LOCATION to be granted, so an indoor-workout
+        // user who declined the optional location permission would crash here with a
+        // SecurityException. Pass the type explicitly and include `location` only when the
+        // permission is actually held. Without it the workout still records HR and duration;
+        // it just can't record a GPS route (which it couldn't without permission anyway).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, buildNotification(), foregroundServiceType())
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
         return START_STICKY
+    }
+
+    /**
+     * The FGS types this service actually uses for the current run.
+     *
+     * The manifest declares `health|location` so both are permitted, but the platform verifies
+     * each type's required permission at startForeground() time. Include `location` only when
+     * ACCESS_FINE_LOCATION is held, so a decline (it's optional for indoor workouts) doesn't
+     * turn into a SecurityException. `health` always applies — ACTIVITY_RECOGNITION is
+     * requested before a workout can start, and without it the `health` type itself would
+     * fail the platform check.
+     */
+    private fun foregroundServiceType(): Int {
+        var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED) {
+            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        return type
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
