@@ -48,8 +48,36 @@ class EventPersistenceSubscriber(
     /** The user's step-source preference. Plain SharedPreferences under the hood — cheap
      *  enough to read directly on every activity event, so no in-memory cache is needed. */
     private val stepSourcePrefs = com.pulseloop.settings.StepSourcePrefs(context)
+
+    /**
+     * Millis of the last successful [PulseEvent.PhoneStepsUpdate] this subscriber saw — i.e.
+     * the last time the phone reader actually managed to publish a value. 0 until the first
+     * successful read after process start, and reset to 0 on
+     * [PulseEvent.PhoneStepSourceUnavailable].
+     */
+    private var lastPhoneStepAt: Long = 0L
+
+    /**
+     * True when the phone source should win over the ring. Requires **both** the user's
+     * preference and recent evidence the phone reader is working — a successful
+     * [PulseEvent.PhoneStepsUpdate] within [PHONE_STEP_GRACE_MS].
+     *
+     * Without the freshness check, a revoked READ_STEPS, a removed HC provider, or a device
+     * with no step writer would leave the preference stuck on "phone" while
+     * [com.pulseloop.PhoneStepManager.refresh] silently failed, dropping the ring's live
+     * totals and freezing today's count with no path back. The grace period covers a long
+     * gap between app opens while still catching a real failure within a day.
+     *
+     * Read on every ring activity event, so the check is deliberately non-suspend and
+     * allocation-free — a plain timestamp comparison.
+     */
     private val stepSourceIsPhone: Boolean
-        get() = stepSourcePrefs.stepSource == "phone"
+        get() {
+            if (stepSourcePrefs.stepSource != "phone") return false
+            val last = lastPhoneStepAt
+            if (last == 0L) return false
+            return System.currentTimeMillis() - last < PHONE_STEP_GRACE_MS
+        }
 
     // Battery-history throttle (iOS #61b) — in-memory, so the first reading after each (re)launch
     // always records; a change or a 30-min floor logs a fresh row otherwise, keeping the table to a
@@ -400,7 +428,16 @@ class EventPersistenceSubscriber(
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.PhoneStepsUpdate -> {
+                // Fresh phone value — refresh the health timestamp that gates the ring
+                // fallback (see [stepSourceIsPhone]).
+                lastPhoneStepAt = System.currentTimeMillis()
                 upsertActivityDailyFromPhone(event.timestamp.toEpochMilli(), event.steps)
+            }
+            is PulseEvent.PhoneStepSourceUnavailable -> {
+                // A5: the phone reader just failed. Reset the health marker so [stepSourceIsPhone]
+                // stops gating the ring's live totals off; the ring fills in until the
+                // phone reader recovers on a later foreground.
+                lastPhoneStepAt = 0L
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
@@ -509,6 +546,11 @@ class EventPersistenceSubscriber(
             val deletion = com.pulseloop.data.ActivityBucketDeletion
             val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
+                // A4: if the row was previously marked "phone" and the ring is now writing
+                // (this path only runs when [stepSourceIsPhone] is false), reset the marker so
+                // the row's source reflects its current owner. Other sources
+                // ("ring_history", "manual_recording", "hr_and_manual") are preserved.
+                source = if (existing.source == "phone") "ring" else existing.source,
                 steps = if (stale) steps
                 else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
                 // A bucket carries no calorie field, so there is nothing to subtract from the
@@ -635,7 +677,13 @@ class EventPersistenceSubscriber(
         //   2. The day's existing row is already marked source = "phone" (past days the
         //      backfill already wrote — the phone's total for that day is authoritative and
         //      must not be clobbered by the ring's bucket sum).
-        val dayOwnedByPhone = existing?.source == "phone"
+        // A4: "owned" means the row was written by the phone AND the phone source is still
+        // currently winning (the same condition [stepSourceIsPhone] checks — user preference
+        // plus recent successful reads). If the user has switched back to Ring, or the phone
+        // reader has gone stale, the ring's bucket sum must be allowed to retake the day;
+        // otherwise a single toggle to Phone would suppress the ring's totals for those days
+        // permanently.
+        val dayOwnedByPhone = existing?.source == "phone" && stepSourceIsPhone
         val skipDailyTotal = dayOwnedByPhone || (stepSourceIsPhone && isToday)
         if (!skipDailyTotal) {
             db.activityDailyDao().upsert(
@@ -911,6 +959,13 @@ class EventPersistenceSubscriber(
         /** How far back [spotReadings] is primed from the table on first use. */
         const val SPOT_LOOKBACK_MS = 7L * 24 * 60 * 60_000
         private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+
+        /**
+         * How long the subscriber trusts a "phone" preference without a successful phone read
+         * before falling back to the ring (see [stepSourceIsPhone]). Covers a long gap
+         * between app opens while still catching a real failure within a day.
+         */
+        private const val PHONE_STEP_GRACE_MS = 12L * 3_600_000L
     }
 }
 

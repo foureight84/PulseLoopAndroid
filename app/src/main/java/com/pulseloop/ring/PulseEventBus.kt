@@ -76,6 +76,16 @@ sealed class PulseEvent {
         val timestamp: java.time.Instant,
         val steps: Int,
     ) : PulseEvent()
+
+    /**
+     * The phone step reader failed to produce a value this pass — Health Connect unreachable,
+     * or READ_STEPS not granted. Published by [com.pulseloop.MainActivity.refreshPhoneSteps]
+     * on a `refresh()` false return, so [com.pulseloop.service.EventPersistenceSubscriber] can
+     * stop gating the ring's live totals off (see its `stepSourceIsPhone`) and let the ring
+     * fill in until the phone reader recovers. Without this, a revoked permission would drop
+     * the ring's contributions indefinitely while the preference still read "phone".
+     */
+    data object PhoneStepSourceUnavailable : PulseEvent()
     /**
      * [spot] marks the one settled reading a spot measurement publishes for itself (issue #60);
      * false for the ring's live stream. [ringWillLogIt] additionally says this ring writes that

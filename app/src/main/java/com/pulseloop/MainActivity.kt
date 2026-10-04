@@ -182,13 +182,27 @@ class MainActivity : ComponentActivity() {
      * Source, on the user's explicit action — never from here, so neither app
      * launch nor return-to-foreground re-triggers a dialog the user may have
      * already declined.
+     *
+     * On failure, publishes [PulseEvent.PhoneStepSourceUnavailable] so the
+     * persistence layer can fall back to the ring (A5) — a phone mode that
+     * cannot actually read steps must not silently gate the ring's own
+     * totals off forever.
      */
     private fun refreshPhoneSteps() {
         if (StepSourcePrefs(this).stepSource != "phone") return
 
         lifecycleScope.launch(Dispatchers.IO) {
             val manager = PhoneStepManager(this@MainActivity)
-            if (!manager.refresh()) return@launch
+            if (!manager.refresh()) {
+                // A5: the phone reader couldn't produce a value — permission revoked, the
+                // provider uninstalled, or a device with no Health Connect. Signal the
+                // persistence layer so it stops gating the ring's live totals off; without
+                // this, the preference staying on "phone" would freeze today's count.
+                com.pulseloop.ring.PulseEventBus.publishBlocking(
+                    com.pulseloop.ring.PulseEvent.PhoneStepSourceUnavailable
+                )
+                return@launch
+            }
             manager.refreshHistoricalDays()
         }
     }
