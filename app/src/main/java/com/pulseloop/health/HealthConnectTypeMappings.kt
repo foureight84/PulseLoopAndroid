@@ -24,9 +24,19 @@ import java.time.ZoneOffset
  */
 object HealthConnectTypeMappings {
 
-    /** [com.pulseloop.data.entity.MeasurementEntity.sourceRaw] values that must never reach
-     *  Health Connect (mirrors iOS, which never exports demo/mock data). */
-    val EXCLUDED_SOURCES = setOf("demo", "mock")
+    /**
+     * `source` / `sourceRaw` values whose rows must never be exported to Health Connect.
+     *
+     * - `demo`, `mock`: seeded placeholder data (mirrors iOS, which never exports demo/mock).
+     * - `phone`: a phone-sourced daily total is *Health Connect's own data* — the phone reader
+     *   got it from Health Connect in the first place. Re-exporting it would create a
+     *   self-feedback loop: PulseLoop writes the phone's step count back, then reads it back
+     *   as if it were the phone's, then writes it again. [com.pulseloop.PhoneStepManager] also
+     *   filters PulseLoop's own origin out at read time; this exclusion and that filter are
+     *   the two halves of the same fix. See `ActivityExporter.build` for the filtering call
+     *   site.
+     */
+    val EXCLUDED_SOURCES = setOf("demo", "mock", "phone")
 
     const val HOUR_MS = 3_600_000L
 

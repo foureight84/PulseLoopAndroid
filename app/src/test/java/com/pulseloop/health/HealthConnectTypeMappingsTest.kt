@@ -366,4 +366,18 @@ class HealthConnectTypeMappingsTest {
         val out = HealthConnectTypeMappings.normalizeSleepStages(s0, s1, listOf(span(-120, -60), span(300, 360)))
         assertTrue(out.isEmpty())
     }
+
+    // ── EXCLUDED_SOURCES ──
+
+    @Test
+    fun excludedSourcesCoversDemoMockAndPhone() {
+        // "phone" is excluded so PulseLoop does not re-export Health Connect's own step total
+        // back into Health Connect, where the phone reader would pick it up as if it were the
+        // phone's own — the self-feedback loop this constant (and PhoneStepManager's origin
+        // subtraction) exist to break. `demo`/`mock` are excluded because they are not real
+        // data. See the KDoc on HealthConnectTypeMappings.EXCLUDED_SOURCES.
+        assertTrue(HealthConnectTypeMappings.EXCLUDED_SOURCES.contains("demo"))
+        assertTrue(HealthConnectTypeMappings.EXCLUDED_SOURCES.contains("mock"))
+        assertTrue(HealthConnectTypeMappings.EXCLUDED_SOURCES.contains("phone"))
+    }
 }
