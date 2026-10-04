@@ -43,7 +43,7 @@ class PairingMatchingTest {
         val names = listOf(
             "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
             "COLMI R10_xyz", "COLMI R12_x", "R05_1A2B", "R10_DEAD", "R11_BEEF",
-            "R11C_BEEF", "H59_anything",
+            "R11C_BEEF", "H59_anything", "COLMI Ring 2 Pro",
         )
         for (name in names) {
             assertTrue("expected Colmi match for $name", colmiMatches(name))
@@ -163,6 +163,7 @@ class PairingMatchingTest {
             "COLMI R10_xyz" to "colmi-r10",
             "R11C_BEEF" to "colmi-r11",
             "COLMI R12_x" to "colmi-r12",
+            "COLMI Ring 2 Pro" to "colmi-ring-2-pro",
             "R05_1A2B" to "yawell-r05",
             "R10_DEAD" to "yawell-r10",
             "R11_BEEF" to "yawell-r11",

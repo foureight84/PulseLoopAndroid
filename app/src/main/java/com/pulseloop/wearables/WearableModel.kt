@@ -81,6 +81,11 @@ data class WearableModel(
         val COLMI_R11 = colmi("colmi-r11", "Colmi R11", "Colmi", "^R11C_[0-9A-F]{4}$", R.drawable.ring_yawell_r11,
             requiresOsBond = true)
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
+        // Ring 2 Pro advertises its full marketing name with no `_<hex>` serial (hardware capture,
+        // 2026-10-03). QRing drives it over the same UART/big-data pair as the rest of this family
+        // and does not OS-bond it. Reports hardware `RY10H…`. Art is QRing's own device picture.
+        val COLMI_RING_2_PRO = colmi("colmi-ring-2-pro", "Colmi Ring 2 Pro", "Colmi",
+            "^COLMI Ring 2 Pro$", R.drawable.ring_colmi_ring_2_pro)
 
         /**
          * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
@@ -228,7 +233,7 @@ data class WearableModel(
         /** Every supported model. The pairing screen groups by brand and sorts each tab alphabetically. */
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
-            COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
+            COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12, COLMI_RING_2_PRO,
             YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP, R100, RWFIT,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
