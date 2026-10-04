@@ -34,7 +34,7 @@ class PhoneStepManager(private val context: Context) {
 
     /**
      * Query Health Connect for today's step total and publish it as a
-     * [PulseEvent.PhoneStepsUpdate]. Returns true when a value was published,
+     * [PulseEvent.PhoneStepsUpdate]. Returns true when the query succeeded,
      * false when Health Connect is unavailable or the read permission has not
      * been granted yet.
      */
@@ -69,6 +69,13 @@ class PhoneStepManager(private val context: Context) {
         }
 
         val steps = response[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0
+        // Just after midnight, or on a phone with no step writer in Health Connect, the
+        // aggregate returns null and becomes 0. Publishing 0 would clobber the ring's
+        // only valid record for the day and mark the row source = "phone", which then
+        // also blocks the ring's bucket-derived total for today. Skip the publish and
+        // let the ring's number stand until the phone has actually counted some steps.
+        // The query itself succeeded, so still return true.
+        if (steps <= 0) return true
         PulseEventBus.publishBlocking(
             PulseEvent.PhoneStepsUpdate(
                 timestamp = now,
