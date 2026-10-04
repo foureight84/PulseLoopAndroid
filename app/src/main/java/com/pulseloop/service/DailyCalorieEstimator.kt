@@ -38,6 +38,14 @@ object DailyCalorieEstimator {
      */
     const val RING_HISTORY_SOURCE = "ring_history"
 
+    /**
+     * The `source` value [com.pulseloop.service.EventPersistenceSubscriber] writes for a
+     * phone-sourced day. Like `ring_history`, the row's `calories` column is not a
+     * device-reported figure — the phone reader supplies steps only — so it must not be treated
+     * as one by [deviceReportedCalories].
+     */
+    const val PHONE_SOURCE = "phone"
+
     data class Profile(val sex: String?, val age: Int?, val weightKg: Double?, val heightCm: Double?)
 
     /** Mifflin-St Jeor BMR (kcal/day), clamped at 0 like iOS's `mifflinBMR`. */
@@ -83,9 +91,16 @@ object DailyCalorieEstimator {
      * This was inverted on first port (it returned the value *only* for `ring_history`, and ignored
      * genuine device calories from every other source), which made the estimate replace real data
      * and real data replace the estimate.
+     *
+     * A `phone`-sourced row is excluded for the same reason as `ring_history`: the phone reader
+     * supplies steps only, so its `calories` column is never a device-reported figure — it's
+     * either the estimator's own fill-in or the hardcoded `steps * 0.04` placeholder this fork
+     * wrote before that path existed. Excluding it lets [effectiveCalories] fall through to
+     * `estimatedActiveCalories` on the same row.
      */
     fun deviceReportedCalories(day: ActivityDailyEntity): Double? =
-        if (day.source == RING_HISTORY_SOURCE || day.calories <= 0.0) null else day.calories
+        if (day.source == RING_HISTORY_SOURCE || day.source == PHONE_SOURCE || day.calories <= 0.0) null
+        else day.calories
 
     /**
      * What to display: the device's own figure when it reported one, else the estimated **total** —
@@ -137,7 +152,7 @@ object DailyCalorieEstimator {
         val buckets = db.activityBucketDao().byDay(dayStart)
         val workouts = db.activitySessionDao().recent(WORKOUT_SCAN_LIMIT).filter {
             it.statusRaw == "finished" && it.endedAt != null &&
-                it.startedAt < dayEnd && it.endedAt!! > dayStart
+                    it.startedAt < dayEnd && it.endedAt!! > dayStart
         }
 
         val active = estimateNetActive(
@@ -227,7 +242,7 @@ object DailyCalorieEstimator {
             if (bucket.steps <= 0) continue
             val bucketEnd = bucket.startEpoch + (BUCKET_DURATION_SECONDS * 1000).toLong()
             val keepFraction = 1.0 -
-                overlapSeconds(Window(bucket.startEpoch, bucketEnd), covered) / BUCKET_DURATION_SECONDS
+                    overlapSeconds(Window(bucket.startEpoch, bucketEnd), covered) / BUCKET_DURATION_SECONDS
             if (keepFraction <= 0.0) continue
             val durationMinutes = BUCKET_DURATION_SECONDS / 60.0
             val cadence = bucket.steps / durationMinutes

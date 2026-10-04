@@ -362,6 +362,12 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
     // WeeklyGoalCard keeps reading state.today — a week widget is about the live week.
     val today = state.daySummary ?: state.today
     val distValue = today?.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
+    // Read the effective calories from the ViewModel rather than the row's raw `calories`
+    // column: the estimator's figure is what the Today card shows, and reading the column
+    // here would surface a phone row's stale hardcoded placeholder (or a ring's pre-toggle
+    // value) as if it were a real total. Same read path as TodayViewModel's, so the two
+    // screens cannot disagree.
+    val calories = state.effectiveCalories
     Row(
         Modifier
             .fillMaxWidth()
@@ -377,13 +383,13 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
                 SummaryMetric("Steps", today?.steps?.let { Formats.count(it) } ?: "—", null, PulseColors.steps, Modifier.weight(1f))
                 SummaryMetric("Distance", distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
             }
-            SummaryMetric("Calories", today?.calories?.let { Formats.count(it.toInt()) } ?: "—", if (today?.calories != null) "cal" else null, PulseColors.calories)
+            SummaryMetric("Calories", calories?.let { Formats.count(it.toInt()) } ?: "—", if (calories != null) "cal" else null, PulseColors.calories)
         }
         ActivityRings(
             rings = listOf(
                 ActivityRing(today?.steps?.toDouble(), state.stepGoal.toDouble(), PulseColors.steps),
                 ActivityRing(today?.distanceMeters, state.distanceGoalMeters, PulseColors.distance),
-                ActivityRing(today?.calories, state.caloriesGoal.toDouble(), PulseColors.calories),
+                ActivityRing(calories, state.caloriesGoal.toDouble(), PulseColors.calories),
             ),
             size = 112.dp,
             strokeWidth = 11.dp,

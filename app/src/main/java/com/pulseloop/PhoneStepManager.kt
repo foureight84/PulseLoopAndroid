@@ -29,14 +29,18 @@ import java.time.ZoneId
  *
  * This class has no long-lived listeners or timers — it queries on demand, when the
  * app comes to the foreground. Zero battery cost while the app is closed.
+ *
+ * Only `steps` is published. Distance and calories are not the phone reader's job:
+ * calories come from [com.pulseloop.service.DailyCalorieEstimator], and workout
+ * distance from [com.pulseloop.service.ActivityRollup]. Baking either into the event
+ * would overwrite those paths on write.
  */
 class PhoneStepManager(private val context: Context) {
 
     /**
      * Query Health Connect for today's step total and publish it as a
-     * [PulseEvent.PhoneStepsUpdate]. Returns true when the query succeeded,
-     * false when Health Connect is unavailable or the read permission has not
-     * been granted yet.
+     * [PulseEvent.PhoneStepsUpdate]. Returns true when the query succeeded, false when
+     * Health Connect is unavailable or the read permission has not been granted yet.
      */
     suspend fun refresh(): Boolean {
         val client = try {
@@ -80,8 +84,6 @@ class PhoneStepManager(private val context: Context) {
             PulseEvent.PhoneStepsUpdate(
                 timestamp = now,
                 steps = steps,
-                distanceMeters = steps * 0.7,
-                calories = steps * 0.04,
             )
         )
         return true
@@ -164,8 +166,6 @@ class PhoneStepManager(private val context: Context) {
                         .atZone(ZoneId.systemDefault())
                         .toInstant(),
                     steps = steps,
-                    distanceMeters = steps * 0.7,
-                    calories = steps * 0.04,
                 )
             )
         }

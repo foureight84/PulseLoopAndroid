@@ -400,12 +400,7 @@ class EventPersistenceSubscriber(
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.PhoneStepsUpdate -> {
-                upsertActivityDailyFromPhone(
-                    event.timestamp.toEpochMilli(),
-                    event.steps,
-                    event.calories,
-                    event.distanceMeters,
-                )
+                upsertActivityDailyFromPhone(event.timestamp.toEpochMilli(), event.steps)
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
@@ -537,25 +532,54 @@ class EventPersistenceSubscriber(
     }
 
     /**
-     * Persist the phone's pedometer count for today. Overwrites rather than ratchets:
-     * unlike the ring's cumulative counter, the phone's "today" value is authoritative
-     * and shouldn't get stuck at a stale higher number from the ring if the user
-     * switched the toggle mid-day.
+     * Persist the phone's step count for one day.
+     *
+     * **Overwrites** `steps` and `source` unconditionally — unlike the ring's cumulative
+     * counter, the phone's value is authoritative for the day, and shouldn't get stuck at a
+     * stale higher number if the user switched the toggle mid-day.
+     *
+     * **Leaves `calories` and `distanceMeters` untouched.** Calories are not a device-reported
+     * figure for phone-sourced days; they come from
+     * [com.pulseloop.service.DailyCalorieEstimator] (weight, HR, workouts, buckets), and
+     * writing a hardcoded kcal-per-step here would make
+     * [DailyCalorieEstimator.deviceReportedCalories] return that value and short-circuit the
+     * estimator entirely. Distance is credited by
+     * [com.pulseloop.service.ActivityRollup.credit] for GPS workouts — overwriting it here
+     * would clobber that contribution. Both fields keep whatever the row already had (0.0 on a
+     * freshly created phone row), which lets the estimator's figure surface.
      */
-    private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int, calories: Double, distanceM: Double) {
+    private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         val existing = db.activityDailyDao().byDay(dayStart)
         val now = System.currentTimeMillis()
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = "phone")).copy(
                 steps = steps,
-                calories = calories,
-                distanceMeters = distanceM,
                 source = "phone",
                 syncedAt = now,
                 updatedAt = now,
             )
         )
+
+        // Recompute the day's active calories now that the row exists. The estimator reads
+        // the day's row, its HR samples, workouts, and step buckets from the DB, so this
+        // must run after the upsert above. Without it, phone-only days would show no
+        // calorie figure — the ring-sync path (`recomputeCalorieEstimates`) only touches
+        // the last 7 days and only runs when the ring syncs, which a phone-only user
+        // never triggers.
+        val profile = db.userProfileDao().get()
+        if (profile != null) {
+            DailyCalorieEstimator.recompute(
+                dayStart = dayStart,
+                db = db,
+                profile = DailyCalorieEstimator.Profile(
+                    sex = profile.sex,
+                    age = profile.age,
+                    weightKg = profile.weightKg,
+                    heightCm = profile.heightCm,
+                ),
+            )
+        }
     }
 
     /**

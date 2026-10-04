@@ -429,6 +429,16 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         val shownDay: Long = 0,
         /** The shown day's totals (the summary card); `today` stays live for the week widget. */
         val daySummary: ActivityDailyEntity? = null,
+        /**
+         * Effective calories for the shown day: the ring's own figure when it reported one,
+         * else [DailyCalorieEstimator.effectiveCalories] (BMR accrued through the day so far
+         * plus the net active estimate). Mirrors [TodayViewModel]'s read path so the Today
+         * card and the Activity card cannot disagree about what a day's calories are — a
+         * `phone`-sourced row would otherwise show its raw `calories` column, which is either
+         * the estimator's own fill-in or the stale placeholder written before that path
+         * existed.
+         */
+        val effectiveCalories: Double? = null,
         val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
         val activeMinutesGoal: Int = 45,
         val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
@@ -467,7 +477,21 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         }
         viewModelScope.launch {
             shownDayStart.flatMapLatest { day -> db.activityDailyDao().byDayFlow(day) }.collect { day ->
-                _state.update { it.copy(daySummary = day) }
+                // Effective calories for the shown day — same read path as the Today card
+                // (see TodayViewModel's init), so both screens agree. Reading `day.calories`
+                // straight off the row would surface the ring's value for ring modes, but
+                // for phone-sourced rows it would show the estimator's own fill-in — or, on
+                // older rows, the hardcoded `steps * 0.04` placeholder — as if it were a
+                // device-reported figure. [DailyCalorieEstimator.effectiveCalories] handles
+                // both cases: device figure when there is one, else BMR + active estimate.
+                val profile = db.userProfileDao().get()?.let {
+                    DailyCalorieEstimator.Profile(it.sex, it.age, it.weightKg, it.heightCm)
+                }
+                val calories = day?.let { row ->
+                    profile?.let { DailyCalorieEstimator.effectiveCalories(row, it) }
+                        ?: DailyCalorieEstimator.deviceReportedCalories(row)
+                }
+                _state.update { it.copy(daySummary = day, effectiveCalories = calories) }
             }
         }
         viewModelScope.launch {

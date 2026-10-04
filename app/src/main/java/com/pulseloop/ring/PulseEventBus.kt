@@ -63,11 +63,18 @@ sealed class PulseEvent {
     /** Steps counted by the phone's own pedometer, published by the app's [PhoneStepManager]
      *  when the user has chosen "phone" as their step source. Distinct from [ActivityUpdate],
      *  which carries the ring's cumulative counter. */
+    /** Steps counted by the phone's own pedometer, published by the app's [PhoneStepManager]
+     *  when the user has chosen "phone" as their step source. Distinct from [ActivityUpdate],
+     *  which carries the ring's cumulative counter.
+     *
+     *  Only `steps` is carried. Distance and calories are deliberately not baked in here:
+     *  calories come from [com.pulseloop.service.DailyCalorieEstimator] (which needs the
+     *  user's weight, HR, and workout history), and workout distance is credited to the
+     *  day by [com.pulseloop.service.ActivityRollup]. Writing either from this event would
+     *  overwrite what those paths computed. */
     data class PhoneStepsUpdate(
         val timestamp: java.time.Instant,
         val steps: Int,
-        val distanceMeters: Double,
-        val calories: Double,
     ) : PulseEvent()
     /**
      * [spot] marks the one settled reading a spot measurement publishes for itself (issue #60);
