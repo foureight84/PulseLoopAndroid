@@ -115,6 +115,18 @@ class VitalsZoneModelTest {
     private fun samples(values: List<Double>, stepMs: Long = 3_600_000L): List<VitalSample> =
         values.mapIndexed { i, v -> VitalSample(timestampMs = i * stepMs, value = v) }
 
+    /**
+     * Epoch millis at [hour]:[minute] on the given local calendar date. Using an explicit
+     * local date-time (rather than raw millis) keeps the tests' calendar-date arithmetic
+     * stable regardless of the JVM's default timezone, which the assertions depend on because
+     * [BaselineStats.compute] resolves dates via `ZoneId.systemDefault()`.
+     */
+    private fun epochMs(year: Int, month: Int, day: Int, hour: Int = 12, minute: Int = 0): Long =
+        java.time.LocalDateTime.of(year, month, day, hour, minute)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+
     @Test
     fun baselineNeedsAtLeastTwoPositiveValues() {
         assertNull(BaselineStats.compute(emptyList()))
@@ -138,11 +150,90 @@ class VitalsZoneModelTest {
 
     @Test
     fun baselineSpanDaysComesFromTimestamps() {
-        // Two samples exactly 2 days apart.
+        // Two readings two calendar dates apart touch three dates: start, the day between,
+        // end. Before the +1 fix this reported 2 — the *difference* between the endpoint
+        // dates — which undercounted and made a full week of daily readings report 6 and fail
+        // `isEstablished`'s `spanDays >= 7` gate. See the KDoc on [BaselineStats.spanDays].
         val stats = BaselineStats.compute(
-            listOf(VitalSample(0L, 50.0), VitalSample(2 * 86_400_000L, 60.0)),
+            listOf(
+                VitalSample(epochMs(2026, 1, 1), 50.0),
+                VitalSample(epochMs(2026, 1, 3), 60.0),
+            ),
+        )!!
+        assertEquals(3.0, stats.spanDays, 1e-9)
+    }
+
+    @Test
+    fun baselineSpanDaysIsOneForReadingsOnTheSameCalendarDate() {
+        // Morning and evening on the same date touch one date, not zero.
+        val stats = BaselineStats.compute(
+            listOf(
+                VitalSample(epochMs(2026, 1, 1, hour = 8), 50.0),
+                VitalSample(epochMs(2026, 1, 1, hour = 20), 55.0),
+            ),
+        )!!
+        assertEquals(1.0, stats.spanDays, 1e-9)
+    }
+
+    @Test
+    fun baselineSpanDaysAcrossMidnightCountsBothDates() {
+        // 23:59 → 00:01: two distinct calendar dates, even though only two minutes elapsed.
+        val stats = BaselineStats.compute(
+            listOf(
+                VitalSample(epochMs(2026, 1, 1, hour = 23, minute = 59), 50.0),
+                VitalSample(epochMs(2026, 1, 2, hour = 0, minute = 1), 55.0),
+            ),
         )!!
         assertEquals(2.0, stats.spanDays, 1e-9)
+    }
+
+    @Test
+    fun baselineSpanDaysIsSevenForAWeekOfDailyReadings() {
+        // The case that used to read 6 and fail the gate: seven consecutive local dates.
+        val week = (1..7).map { day ->
+            VitalSample(epochMs(2026, 1, day), 50.0 + day)
+        }
+        val stats = BaselineStats.compute(week)!!
+        assertEquals(7.0, stats.spanDays, 1e-9)
+    }
+
+    @Test
+    fun baselineSpanDaysIsSixForSixDailyReadings() {
+        // Six consecutive dates still read 6 — the fix must not over-correct into calling
+        // a six-day window a full week.
+        val days = (1..6).map { day ->
+            VitalSample(epochMs(2026, 1, day), 50.0 + day)
+        }
+        val stats = BaselineStats.compute(days)!!
+        assertEquals(6.0, stats.spanDays, 1e-9)
+    }
+
+    @Test
+    fun baselineSpanDaysIsEightForTwoDatesSevenApart() {
+        // Two readings seven calendar dates apart touch eight dates: the endpoints plus the
+        // six full days between them. Elapsed time is ~7 days; calendar dates touched is 8.
+        val stats = BaselineStats.compute(
+            listOf(
+                VitalSample(epochMs(2026, 1, 1), 50.0),
+                VitalSample(epochMs(2026, 1, 8), 60.0),
+            ),
+        )!!
+        assertEquals(8.0, stats.spanDays, 1e-9)
+    }
+
+    @Test
+    fun baselineEstablishedOnAWeekOfContinuousWear() {
+        // 28 readings over 7 local dates (4/day): spanDays = 7, sampleCount = 28, gate opens.
+        // The pair (7, 20) is exactly what `isEstablished` requires.
+        val readings = (1..7).flatMap { day ->
+            (0 until 4).map { hourOffset ->
+                VitalSample(epochMs(2026, 1, day, hour = 6 + hourOffset * 4), 50.0 + day)
+            }
+        }
+        val stats = BaselineStats.compute(readings)!!
+        assertEquals(7.0, stats.spanDays, 1e-9)
+        assertEquals(28, stats.sampleCount)
+        assertTrue(stats.isEstablished)
     }
 
     @Test

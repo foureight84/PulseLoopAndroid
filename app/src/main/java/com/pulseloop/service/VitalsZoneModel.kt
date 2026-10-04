@@ -311,6 +311,10 @@ data class VitalSample(
  * (deviation from the user's own typical range), not absolute. [isEstablished] gates the
  * "Building baseline" state — under the dashboard's 24h fetch this is usually false; the detail
  * screen (30-day fetch) produces a real baseline.
+ *
+ * [spanDays] counts the **calendar dates the sample window touches**, not the elapsed
+ * difference between its endpoints: Mon-to-Sun is 7, not 6. The gate in [isEstablished]
+ * reads "a full week of wear", and a week of daily readings should satisfy it.
  */
 data class BaselineStats(
     val mean: Double,
@@ -335,11 +339,18 @@ data class BaselineStats(
             val sd = sqrt(variance)
             val first = samples.minOfOrNull { it.timestampMs }
             val last = samples.maxOfOrNull { it.timestampMs }
+            // Calendar dates the window touches: Mon-to-Sun reads 7, not 6. `ChronoUnit.DAYS
+            // .between(Mon, Sun)` returns 6 — the *difference* between two dates, not the count
+            // of dates — so a full week of daily readings still reported 6 and still failed the
+            // `spanDays >= 7` gate in `isEstablished`. Adding 1 gives the count of calendar
+            // dates the window spans, which is what the gate has always meant by "a full week
+            // of wear".
             val spanDays = if (first != null && last != null) {
-                java.time.temporal.ChronoUnit.DAYS.between(
-                    java.time.Instant.ofEpochMilli(first).atZone(java.time.ZoneId.systemDefault()).toLocalDate(),
-                    java.time.Instant.ofEpochMilli(last).atZone(java.time.ZoneId.systemDefault()).toLocalDate(),
-                ).toDouble()
+                val firstDate = java.time.Instant.ofEpochMilli(first)
+                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                val lastDate = java.time.Instant.ofEpochMilli(last)
+                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                (java.time.temporal.ChronoUnit.DAYS.between(firstDate, lastDate) + 1).toDouble()
             } else 0.0
             return BaselineStats(
                 mean = mean,
