@@ -758,7 +758,11 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         // Compute it once here and hand it to the card factory so the main Vitals screen and
         // the detail screen agree.
         val hrvBaseline = if (caps.contains(WearableCapability.HRV)) {
-            val hrvSamples = db.measurementDao().range(
+            // `rangeReal`, not `range`: the baseline drives the HRV card's reference zones,
+            // and letting seeded demo rows into it would compute a real user's zones from a
+            // mix of fake and real readings (DemoDataPolicy — real wins). With no real HRV
+            // yet, the baseline is null and the card correctly shows "Building baseline".
+            val hrvSamples = db.measurementDao().rangeReal(
                 MeasurementKind.HRV.name,
                 now - 30L * 86_400_000L,
                 now,
@@ -1190,7 +1194,9 @@ class VitalDetailViewModel(
         val kind = engineKind(metricKey) ?: return null
         val base = MetricThresholdTable.forKey(metricKey) ?: return null
         val baseline = if (kind == com.pulseloop.service.MetricKind.HRV) {
-            val hrvSamples = db.measurementDao().range(
+            // `rangeReal` — same reason as VitalsViewModel's 30-day baseline: this drives the
+            // reference zones on the HRV detail chart, and demo rows must not blend into it.
+            val hrvSamples = db.measurementDao().rangeReal(
                 MeasurementKind.HRV.name,
                 System.currentTimeMillis() - 30L * 86_400_000L,
                 System.currentTimeMillis(),
@@ -1430,8 +1436,9 @@ class VitalDetailViewModel(
             // fixed 30-day lookback so the baseline always reflects recent history regardless
             // of which period the user is viewing.
             val baseline = if (metric == "hrv") {
+                // `rangeReal`, not `range`: demo HRV rows must not feed the reference zones.
                 val baselineWindowStart = System.currentTimeMillis() - 30L * 86_400_000L
-                val baselineSamples = dao.range(
+                val baselineSamples = dao.rangeReal(
                     kindName, baselineWindowStart, System.currentTimeMillis(),
                 )
                 com.pulseloop.service.BaselineStats.compute(
