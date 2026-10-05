@@ -51,31 +51,36 @@ class EventPersistenceSubscriber(
     private val stepSourcePrefs = com.pulseloop.settings.StepSourcePrefs(context)
 
     /**
-     * Millis of the last successful [PulseEvent.PhoneStepsUpdate] this subscriber saw — i.e.
-     * the last time the phone reader actually managed to publish a value. 0 until the first
-     * successful read after process start, and reset to 0 on
-     * [PulseEvent.PhoneStepSourceUnavailable].
+     * True when the user has selected "phone" as their step source. Purely a preference
+     * read — no runtime-health check. This is the gate for *past* days already marked
+     * `source = "phone"`: their step total was accurate when the phone backfill wrote it,
+     * and a phone reader that is momentarily failing (or a process that has only just
+     * started) must not let the ring rewrite history. Switching back to Ring releases
+     * the past days because [preferenceIsPhone] then reads `false`.
      */
-    private var lastPhoneStepAt: Long = 0L
+    private val preferenceIsPhone: Boolean
+        get() = stepSourcePrefs.stepSource == StepSourcePrefs.SOURCE_PHONE
 
     /**
-     * True when the phone source should win over the ring. Requires **both** the user's
-     * preference and recent evidence the phone reader is working — a successful
-     * [PulseEvent.PhoneStepsUpdate] within [PHONE_STEP_GRACE_MS].
+     * True when the phone source should win *today* and suppress the ring's live totals.
+     * Requires both the preference **and** recent evidence the phone reader is working —
+     * a successful read within [PHONE_STEP_GRACE_MS].
      *
      * Without the freshness check, a revoked READ_STEPS, a removed HC provider, or a device
      * with no step writer would leave the preference stuck on "phone" while
-     * [com.pulseloop.PhoneStepManager.refresh] silently failed, dropping the ring's live
-     * totals and freezing today's count with no path back. The grace period covers a long
-     * gap between app opens while still catching a real failure within a day.
+     * [com.pulseloop.PhoneStepManager.refresh] silently failed, freezing today's count with
+     * no path back. The grace period covers a long gap between app opens while still
+     * catching a real failure within a day.
      *
-     * Read on every ring activity event, so the check is deliberately non-suspend and
-     * allocation-free — a plain timestamp comparison.
+     * The freshness timestamp is read from [com.pulseloop.settings.StepSourcePrefs] — not
+     * an in-memory field — specifically so the value survives a process restart. When it
+     * was in memory only, every cold start had a window before the first phone read during
+     * which the ring's next sync could overwrite today's `source` and total.
      */
     private val stepSourceIsPhone: Boolean
         get() {
-            if (stepSourcePrefs.stepSource != StepSourcePrefs.SOURCE_PHONE) return false
-            val last = lastPhoneStepAt
+            if (!preferenceIsPhone) return false
+            val last = stepSourcePrefs.lastPhoneStepSuccessAt
             if (last == 0L) return false
             return System.currentTimeMillis() - last < PHONE_STEP_GRACE_MS
         }
@@ -429,16 +434,18 @@ class EventPersistenceSubscriber(
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
             is PulseEvent.PhoneStepsUpdate -> {
-                // Fresh phone value — refresh the health timestamp that gates the ring
-                // fallback (see [stepSourceIsPhone]).
-                lastPhoneStepAt = System.currentTimeMillis()
+                // Fresh phone value — refresh the persisted health timestamp that gates
+                // the ring's live-total suppression and today's daily-total skip (see
+                // [stepSourceIsPhone]). Persisted so a process restart doesn't reset it.
+                stepSourcePrefs.lastPhoneStepSuccessAt = System.currentTimeMillis()
                 upsertActivityDailyFromPhone(event.timestamp.toEpochMilli(), event.steps)
             }
             is PulseEvent.PhoneStepSourceUnavailable -> {
-                // A5: the phone reader just failed. Reset the health marker so [stepSourceIsPhone]
-                // stops gating the ring's live totals off; the ring fills in until the
-                // phone reader recovers on a later foreground.
-                lastPhoneStepAt = 0L
+                // A5: the phone reader just failed. Reset the health marker so
+                // [stepSourceIsPhone] stops gating today's ring fallback; the ring fills in
+                // until the phone reader recovers on a later foreground. Past days already
+                // marked `phone` are unaffected — they gate on [preferenceIsPhone].
+                stepSourcePrefs.lastPhoneStepSuccessAt = 0L
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
@@ -586,15 +593,19 @@ class EventPersistenceSubscriber(
      * Health Connect exporter selects by — so an unchanged step count would re-export the
      * same Health Connect record and re-fire the persistence callbacks on every foreground.
      *
-     * **Leaves `calories` and `distanceMeters` untouched.** Calories are not a device-reported
-     * figure for phone-sourced days; they come from
-     * [com.pulseloop.service.DailyCalorieEstimator] (weight, HR, workouts, buckets), and
-     * writing a hardcoded kcal-per-step here would make
+     * **Distance is recomputed from steps × stride.** The step card's distance reading
+     * represents distance from stepping, not from workouts — a cycling ride's GPS kilometres
+     * belong on the workout's own summary, not on the day's step tile. Stride is 0.414 ×
+     * height (the same model [DailyCalorieEstimator.intermittentWalkMET] uses for its walking
+     * tiers); falls back to 0.7 m/step when height is unknown. Overwriting is deliberate: a
+     * stale ring-bucket value or a previously credited GPS workout distance (via
+     * [com.pulseloop.service.ActivityRollup.credit]) must not leak into the phone-owned total.
+     *
+     * **Calories are left untouched.** They come from
+     * [com.pulseloop.service.DailyCalorieEstimator] (weight, HR, workouts, buckets). Writing
+     * a hardcoded kcal-per-step here would make
      * [DailyCalorieEstimator.deviceReportedCalories] return that value and short-circuit the
-     * estimator entirely. Distance is credited by
-     * [com.pulseloop.service.ActivityRollup.credit] for GPS workouts — overwriting it here
-     * would clobber that contribution. Both fields keep whatever the row already had (0.0 on a
-     * freshly created phone row), which lets the estimator's figure surface.
+     * estimator entirely.
      */
     private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
@@ -605,14 +616,23 @@ class EventPersistenceSubscriber(
         // and without this check every pass would touch `updatedAt` — which ActivityExporter
         // selects by, so a no-op write re-selects the row, re-exports its Health Connect
         // record, and fires the persistence callbacks (widget refresh) again. Steps are the
-        // phone reader's only contribution (distance/calories handled elsewhere), so an
-        // unchanged step count means the row is already correct.
+        // phone reader's only contribution (calories handled below), so an unchanged step
+        // count means the row is already correct.
         if (existing != null && existing.steps == steps && existing.source == StepSourcePrefs.SOURCE_PHONE) return
+
+        // Distance from the phone's step count. Height-unknown falls back to 0.7 m/step
+        // (average adult stride) — mirrors the fallback style of
+        // DailyCalorieEstimator.intermittentWalkMET, which returns a generic walking MET
+        // rather than assuming a stride from the 170 cm default.
+        val heightCm = db.userProfileDao().get()?.heightCm
+        val strideMeters = if (heightCm != null && heightCm > 0) 0.414 * heightCm / 100.0 else 0.7
+        val distanceMeters = steps * strideMeters
 
         val now = System.currentTimeMillis()
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
                 steps = steps,
+                distanceMeters = distanceMeters,
                 source = StepSourcePrefs.SOURCE_PHONE,
                 syncedAt = now,
                 updatedAt = now,
@@ -693,13 +713,21 @@ class EventPersistenceSubscriber(
         //   2. The day's existing row is already marked source = "phone" (past days the
         //      backfill already wrote — the phone's total for that day is authoritative and
         //      must not be clobbered by the ring's bucket sum).
-        // A4: "owned" means the row was written by the phone AND the phone source is still
-        // currently winning (the same condition [stepSourceIsPhone] checks — user preference
-        // plus recent successful reads). If the user has switched back to Ring, or the phone
-        // reader has gone stale, the ring's bucket sum must be allowed to retake the day;
-        // otherwise a single toggle to Phone would suppress the ring's totals for those days
-        // permanently.
-        val dayOwnedByPhone = existing?.source == StepSourcePrefs.SOURCE_PHONE && stepSourceIsPhone
+        // Ownership of a `phone`-marked row splits by day:
+        //  - PAST DAYS gate on the *preference* ([preferenceIsPhone]). A past day's total was
+        //    accurate when the phone backfill wrote it; a reader that is momentarily failing
+        //    — or a process that has only just started and hasn't published yet — must not
+        //    let the ring rewrite that. Switching back to Ring releases the day because
+        //    [preferenceIsPhone] then reads false, which is A4's intended semantics.
+        //  - TODAY gates on [stepSourceIsPhone], which adds the reader-health requirement.
+        //    If the phone reader is failing, today must be able to fall back to the ring or
+        //    today's count would freeze. When the reader recovers, the next PhoneStepsUpdate
+        //    re-marks today `phone` and the ring's next bucket sync skips it again.
+        val dayOwnedByPhone = if (isToday) {
+            existing?.source == StepSourcePrefs.SOURCE_PHONE && stepSourceIsPhone
+        } else {
+            existing?.source == StepSourcePrefs.SOURCE_PHONE && preferenceIsPhone
+        }
         val skipDailyTotal = dayOwnedByPhone || (stepSourceIsPhone && isToday)
         if (!skipDailyTotal) {
             db.activityDailyDao().upsert(
