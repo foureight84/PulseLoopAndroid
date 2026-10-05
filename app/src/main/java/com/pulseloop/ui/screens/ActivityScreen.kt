@@ -44,6 +44,7 @@ import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ui.components.ActivityMeta
 import com.pulseloop.ui.components.ActivityRing
 import com.pulseloop.ui.components.ActivityRings
@@ -79,6 +80,10 @@ fun ActivityScreen(
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
     val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
+    // Read the step-source preference once per composition. Cheap enough to read
+    // unconditionally (plain SharedPreferences, no crypto), and re-read on every entry to
+    // the screen so a toggle made in Settings is reflected on return.
+    val stepSourcePrefs = remember { StepSourcePrefs(context) }
     val scope = rememberCoroutineScope()
     var pickerOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
@@ -230,13 +235,21 @@ fun ActivityScreen(
         // The blocks behind today's total, each removable (issue #70). Under the summary rather
         // than beside it: it answers "why is that number wrong", which is a question you only ask
         // after reading the number.
-        item {
-            ActivityRecordsCard(
-                viewModel = viewModel,
-                units = units,
-                dayStart = shownDayStart(state),
-                dayLabel = shownDayLabel(state),
-            )
+        //
+        // Hidden when the step source is "Phone": the Records list is the ring's intraday
+        // bucket log, and while the phone owns the daily total, showing ring-derived blocks
+        // beneath that total reads as a bug — the sum of the records does not match the header
+        // above them, and deleting one has no effect on a total the ring no longer owns.
+        // Toggling back to "Ring" restores the card.
+        if (stepSourcePrefs.stepSource != com.pulseloop.settings.StepSourcePrefs.SOURCE_PHONE) {
+            item {
+                ActivityRecordsCard(
+                    viewModel = viewModel,
+                    units = units,
+                    dayStart = shownDayStart(state),
+                    dayLabel = shownDayLabel(state),
+                )
+            }
         }
         item { Spacer(Modifier.height(64.dp)) }
     }
@@ -362,6 +375,12 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
     // WeeklyGoalCard keeps reading state.today — a week widget is about the live week.
     val today = state.daySummary ?: state.today
     val distValue = today?.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
+    // Read the effective calories from the ViewModel rather than the row's raw `calories`
+    // column: the estimator's figure is what the Today card shows, and reading the column
+    // here would surface a phone row's stale hardcoded placeholder (or a ring's pre-toggle
+    // value) as if it were a real total. Same read path as TodayViewModel's, so the two
+    // screens cannot disagree.
+    val calories = state.effectiveCalories
     Row(
         Modifier
             .fillMaxWidth()
@@ -377,13 +396,13 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
                 SummaryMetric("Steps", today?.steps?.let { Formats.count(it) } ?: "—", null, PulseColors.steps, Modifier.weight(1f))
                 SummaryMetric("Distance", distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
             }
-            SummaryMetric("Calories", today?.calories?.let { Formats.count(it.toInt()) } ?: "—", if (today?.calories != null) "cal" else null, PulseColors.calories)
+            SummaryMetric("Calories", calories?.let { Formats.count(it.toInt()) } ?: "—", if (calories != null) "cal" else null, PulseColors.calories)
         }
         ActivityRings(
             rings = listOf(
                 ActivityRing(today?.steps?.toDouble(), state.stepGoal.toDouble(), PulseColors.steps),
                 ActivityRing(today?.distanceMeters, state.distanceGoalMeters, PulseColors.distance),
-                ActivityRing(today?.calories, state.caloriesGoal.toDouble(), PulseColors.calories),
+                ActivityRing(calories, state.caloriesGoal.toDouble(), PulseColors.calories),
             ),
             size = 112.dp,
             strokeWidth = 11.dp,

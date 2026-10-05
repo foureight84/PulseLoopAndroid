@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.pulseloop.health.HealthConnectPermissionReconcile
 import com.pulseloop.notifications.CoachNotifications
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.strava.StravaAuth
 import com.pulseloop.strava.StravaTokenStore
 import com.pulseloop.ui.PulseLoopApp
@@ -25,6 +26,13 @@ import kotlinx.coroutines.launch
  *   - Android 12+: BLUETOOTH_SCAN + BLUETOOTH_CONNECT
  *   - Android < 12: ACCESS_FINE_LOCATION (for BLE scanning)
  *   - Android 13+: POST_NOTIFICATIONS
+ *
+ * Health Connect READ_STEPS is deliberately **not** requested here — it is
+ * requested only from the Step Source row in Settings, on the user's explicit
+ * action. This means users on the default "Ring" step source never see the
+ * prompt, and users who declined are not asked again on every foreground.
+ * ACTIVITY_RECOGNITION is not requested at all: the fork reads steps from
+ * Health Connect, never from the raw hardware step counter.
  */
 class MainActivity : ComponentActivity() {
 
@@ -68,6 +76,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Re-request on resume in case user granted in Settings
         requestAllPermissions()
+        refreshPhoneSteps()
         if (hasAllBlePermissions() && hasNotificationPermission()) {
             CoachNotifications.schedule(this)
         }
@@ -193,4 +202,51 @@ class MainActivity : ComponentActivity() {
     private fun hasFineLocation() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Refresh today's phone step count and backfill the last 30 days from
+     * Health Connect, when the user's step source is set to "Phone".
+     *
+     * If the Health Connect read permission is missing, this quietly returns
+     * without prompting. The permission is requested from Settings → Step
+     * Source, on the user's explicit action — never from here, so neither app
+     * launch nor return-to-foreground re-triggers a dialog the user may have
+     * already declined.
+     *
+     * On failure, publishes [PulseEvent.PhoneStepSourceUnavailable] so the
+     * persistence layer can fall back to the ring (A5) — a phone mode that
+     * cannot actually read steps must not silently gate the ring's own
+     * totals off forever.
+     */
+    private fun refreshPhoneSteps() {
+        val prefs = StepSourcePrefs(this)
+        if (prefs.stepSource != StepSourcePrefs.SOURCE_PHONE) return
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val manager = PhoneStepManager(this@MainActivity)
+            if (!manager.refresh()) {
+                // A5: the phone reader couldn't produce a value — permission revoked, the
+                // provider uninstalled, or a device with no Health Connect. Signal the
+                // persistence layer so it stops gating the ring's live totals off; without
+                // this, the preference staying on "phone" would freeze today's count.
+                com.pulseloop.ring.PulseEventBus.publishBlocking(
+                    com.pulseloop.ring.PulseEvent.PhoneStepSourceUnavailable
+                )
+                return@launch
+            }
+            // A10: the 30-day historical backfill runs at most once per local day. It has to
+            // run today's refresh on every foreground — the phone has been walking since the
+            // last one — but re-reading 30 days of Health Connect on every resume, writing
+            // every row's updatedAt forward, and having the exporter re-select and re-export
+            // the whole tail is wasted work. The toggle in SettingsScreen still calls
+            // refreshHistoricalDays() directly and is not throttled: an explicit user action
+            // should always run.
+            val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+            if (prefs.lastBackfillDay != today) {
+                if (manager.refreshHistoricalDays()) {
+                    prefs.lastBackfillDay = today
+                }
+            }
+        }
+    }
 }

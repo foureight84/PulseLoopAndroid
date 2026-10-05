@@ -7,6 +7,7 @@ import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.settings.QuietHoursPrefs
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ring.*
 import kotlinx.coroutines.*
 
@@ -44,6 +45,40 @@ class EventPersistenceSubscriber(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
+
+    /** The user's step-source preference. Plain SharedPreferences under the hood — cheap
+     *  enough to read directly on every activity event, so no in-memory cache is needed. */
+    private val stepSourcePrefs = StepSourcePrefs(context)
+
+    /**
+     * Millis of the last successful [PulseEvent.PhoneStepsUpdate] this subscriber saw — i.e.
+     * the last time the phone reader actually managed to publish a value. 0 until the first
+     * successful read after process start, and reset to 0 on
+     * [PulseEvent.PhoneStepSourceUnavailable].
+     */
+    private var lastPhoneStepAt: Long = 0L
+
+    /**
+     * True when the phone source should win over the ring. Requires **both** the user's
+     * preference and recent evidence the phone reader is working — a successful
+     * [PulseEvent.PhoneStepsUpdate] within [PHONE_STEP_GRACE_MS].
+     *
+     * Without the freshness check, a revoked READ_STEPS, a removed HC provider, or a device
+     * with no step writer would leave the preference stuck on "phone" while
+     * [com.pulseloop.PhoneStepManager.refresh] silently failed, dropping the ring's live
+     * totals and freezing today's count with no path back. The grace period covers a long
+     * gap between app opens while still catching a real failure within a day.
+     *
+     * Read on every ring activity event, so the check is deliberately non-suspend and
+     * allocation-free — a plain timestamp comparison.
+     */
+    private val stepSourceIsPhone: Boolean
+        get() {
+            if (stepSourcePrefs.stepSource != StepSourcePrefs.SOURCE_PHONE) return false
+            val last = lastPhoneStepAt
+            if (last == 0L) return false
+            return System.currentTimeMillis() - last < PHONE_STEP_GRACE_MS
+        }
 
     // Battery-history throttle (iOS #61b) — in-memory, so the first reading after each (re)launch
     // always records; a change or a 30-min floor logs a fresh row otherwise, keeping the table to a
@@ -84,6 +119,7 @@ class EventPersistenceSubscriber(
         is PulseEvent.TemperatureSample,
         is PulseEvent.ActivityUpdate,
         is PulseEvent.ActivityBucket,
+        is PulseEvent.PhoneStepsUpdate,
         is PulseEvent.SleepTimeline -> true
         else -> false
     }
@@ -381,7 +417,11 @@ class EventPersistenceSubscriber(
                 else db.measurementDao().insert(measurement)
             }
             is PulseEvent.ActivityUpdate -> {
-                upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
+                // When the user picks the phone as their step source, ignore the ring's
+                // live activity totals so its over-counted steps don't land in the DB.
+                if (!stepSourceIsPhone) {
+                    upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
+                }
             }
             is PulseEvent.ActivityBucket -> {
                 // Per-slice ring history: upserted by timestamp + the day total recomputed as the
@@ -389,6 +429,18 @@ class EventPersistenceSubscriber(
                 // through upsertActivityDaily's max() ratchet collapsed a history day's total to
                 // its single largest bucket. Calories omitted (unverified ring field).
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
+            }
+            is PulseEvent.PhoneStepsUpdate -> {
+                // Fresh phone value — refresh the persisted health timestamp that gates the
+                // ring fallback (see [stepSourceIsPhone]).
+                lastPhoneStepAt = System.currentTimeMillis()
+                upsertActivityDailyFromPhone(event.timestamp.toEpochMilli(), event.steps)
+            }
+            is PulseEvent.PhoneStepSourceUnavailable -> {
+                // A5: the phone reader just failed. Reset the health marker so [stepSourceIsPhone]
+                // stops gating the ring's live totals off; the ring fills in until the
+                // phone reader recovers on a later foreground.
+                lastPhoneStepAt = 0L
             }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
@@ -491,15 +543,20 @@ class EventPersistenceSubscriber(
             val deletion = com.pulseloop.data.ActivityBucketDeletion
             val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
+                // A4: if the row was previously marked "phone" and the ring is now writing
+                // (this path only runs when [stepSourceIsPhone] is false), reset the marker so
+                // the row's source reflects its current owner. Other sources
+                // ("ring_history", "manual_recording", "hr_and_manual") are preserved.
+                source = if (existing.source == StepSourcePrefs.SOURCE_PHONE) StepSourcePrefs.SOURCE_RING else existing.source,
                 steps = if (stale) steps
-                    else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
+                else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
                 // A bucket carries no calorie field, so there is nothing to subtract from the
                 // ring's own figure — the deletion drops it and the app's estimate takes over
                 // (see [com.pulseloop.data.ActivityBucketDeletion]). Ratcheting here would put it
                 // straight back.
                 calories = if (stale) calories
-                    else if (hasDeletion) existing.calories
-                    else maxOf(existing.calories, calories),
+                else if (hasDeletion) existing.calories
+                else maxOf(existing.calories, calories),
                 distanceMeters = if (stale) distanceM else deletion.ratchetAgainstRing(
                     existing.distanceMeters, distanceM, existing.deletedDistanceMeters,
                 ),
@@ -508,9 +565,50 @@ class EventPersistenceSubscriber(
         } else {
             db.activityDailyDao().upsert(ActivityDailyEntity(
                 date = dayStart, steps = steps, calories = calories,
-                distanceMeters = distanceM, source = "ring",
+                distanceMeters = distanceM, source = StepSourcePrefs.SOURCE_RING,
             ))
         }
+    }
+
+    /**
+     * Persist the phone's step count for one day.
+     *
+     * **Overwrites** `steps` and `source` unconditionally. Distance is derived from the
+     * user's height (stride ≈ 0.414 × height, the same model
+     * [DailyCalorieEstimator.intermittentWalkMET] uses; falls back to 0.7 m/step when
+     * height is unknown). Calories are left at 0.0 so that
+     * [DailyCalorieEstimator.deviceReportedCalories] returns null and the display falls
+     * through to the estimator's own figure — which is the whole point of not writing
+     * `steps * 0.04` here.
+     *
+     * A no-op when the day already holds this exact phone value: on every foreground the
+     * phone reader re-publishes today's total, and without the guard every pass would touch
+     * `updatedAt` (which ActivityExporter selects by) and re-export the same HC record.
+     */
+    private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        val existing = db.activityDailyDao().byDay(dayStart)
+
+        if (existing != null && existing.steps == steps && existing.source == StepSourcePrefs.SOURCE_PHONE) return
+
+        val profile = db.userProfileDao().get()
+        val heightCm = profile?.heightCm
+        val strideMeters = if (heightCm != null && heightCm > 0) 0.414 * heightCm / 100.0 else 0.7
+        val distanceMeters = steps * strideMeters
+
+        val now = System.currentTimeMillis()
+        db.activityDailyDao().upsert(
+            (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
+                steps = steps,
+                distanceMeters = distanceMeters,
+                // Clear any stale ring calories; the estimator writes the real figure to
+                // `estimatedActiveCalories` on the next sync.
+                calories = 0.0,
+                source = StepSourcePrefs.SOURCE_PHONE,
+                syncedAt = now,
+                updatedAt = now,
+            )
+        )
     }
 
     /**
@@ -555,15 +653,25 @@ class EventPersistenceSubscriber(
         val isToday = dayStart == com.pulseloop.util.TimeUtil.startOfTodayLocal()
         val stale = existing != null && existing.steps > 200_000
         val ratchet = isToday && existing != null && !stale
-        db.activityDailyDao().upsert(
-            (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
-                steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
-                distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
-                source = if (ratchet) existing!!.source else "ring_history",
-                syncedAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis(),
+        // A4: "owned" means the row was written by the phone AND the phone source is still
+        // currently winning (the same condition [stepSourceIsPhone] checks — user preference
+        // plus recent successful reads). If the user has switched back to Ring, or the phone
+        // reader has gone stale, the ring's bucket sum must be allowed to retake the day;
+        // otherwise a single toggle to Phone would suppress the ring's totals for those days
+        // permanently.
+        val dayOwnedByPhone = existing?.source == StepSourcePrefs.SOURCE_PHONE && stepSourceIsPhone
+        val skipDailyTotal = dayOwnedByPhone || (stepSourceIsPhone && isToday)
+        if (!skipDailyTotal) {
+            db.activityDailyDao().upsert(
+                (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
+                    steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
+                    distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
+                    source = if (ratchet) existing!!.source else "ring_history",
+                    syncedAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis(),
+                )
             )
-        )
+        }
     }
 
     private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
@@ -683,7 +791,7 @@ class EventPersistenceSubscriber(
         val matched: List<Pair<Segment, SleepSessionEntity?>> = segments.map { seg ->
             val best = available.maxByOrNull { overlap(seg.start, seg.end, it.startAt, it.endAt) }
             if (best != null && (overlap(seg.start, seg.end, best.startAt, best.endAt) > 0L ||
-                    best.startAt in seg.start..seg.end)) {
+                        best.startAt in seg.start..seg.end)) {
                 available.remove(best)
                 seg to best
             } else {
@@ -790,7 +898,7 @@ class EventPersistenceSubscriber(
      * Matches the official app's scoring.
      */
     private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
-        // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
+    // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
         // same banding, so one function owns it.
         sleepStageScore(deepMin, totalMin)
 
@@ -827,6 +935,13 @@ class EventPersistenceSubscriber(
         /** How far back [spotReadings] is primed from the table on first use. */
         const val SPOT_LOOKBACK_MS = 7L * 24 * 60 * 60_000
         private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+
+        /**
+         * How long the subscriber trusts a "phone" preference without a successful phone read
+         * before falling back to the ring (see [stepSourceIsPhone]). Covers a long gap
+         * between app opens while still catching a real failure within a day.
+         */
+        private const val PHONE_STEP_GRACE_MS = 12L * 3_600_000L
     }
 }
 

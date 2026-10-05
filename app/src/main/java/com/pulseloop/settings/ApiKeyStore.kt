@@ -9,6 +9,9 @@ import com.pulseloop.service.GlucoseUnit
  * Ported from OpenAIKeychainStore in the iOS app.
  * Stores the OpenAI API key securely using EncryptedSharedPreferences
  * (Android equivalent of iOS Keychain).
+ *
+ * Non-sensitive UI preferences like `stepSource` live in [StepSourcePrefs] instead — the
+ * encryption layer is expensive enough to avoid using it for values that don't need it.
  */
 class ApiKeyStore(context: Context) {
     private val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
