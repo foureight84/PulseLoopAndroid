@@ -15,6 +15,9 @@ import com.pulseloop.health.HealthConnectPrefsStore
 import com.pulseloop.health.HealthConnectWatermarks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -324,11 +327,59 @@ object DataArchiveService {
 
     suspend fun exportToFile(context: Context, db: PulseLoopDatabase): Uri? = withContext(Dispatchers.Default) {
         val archive = exportArchive(db)
-        val jsonStr = json.encodeToString(PulseArchive.serializer(), archive)
         val name = "pulseloop-export-${dateFmt.format(Date())}.json"
         val file = java.io.File(context.cacheDir, name)
-        file.writeText(jsonStr)
+        // Write the top-level object incrementally, one section at a time, so peak memory is
+        // bounded by the largest single section rather than the whole archive. The previous
+        // encodeToString held the entire JSON in one String, which OOMs past a certain DB
+        // size (observed at 262 MB). Field order in a JSON object does not matter to the
+        // decoder, so hand-rolling the outer braces is safe.
+        file.bufferedWriter().use { w ->
+            w.write("{\n")
+            w.write("\"formatVersion\":${archive.formatVersion},\n")
+            w.write("\"exportedAt\":${archive.exportedAt},\n")
+            w.write("\"appVersion\":${json.encodeToString(String.serializer(), archive.appVersion)},\n")
+            w.write("\"counts\":${json.encodeToString(MapSerializer(String.serializer(), Int.serializer()), archive.counts)}")
+            writeSection(w, "devices", archive.devices, DeviceDTO.serializer())
+            writeSection(w, "measurements", archive.measurements, MeasurementDTO.serializer())
+            writeSection(w, "activityDaily", archive.activityDaily, ActivityDailyDTO.serializer())
+            writeSection(w, "activityBuckets", archive.activityBuckets, ActivityBucketDTO.serializer())
+            writeSection(w, "batterySamples", archive.batterySamples, BatterySampleDTO.serializer())
+            writeSection(w, "deviceMeasurementConfigs", archive.deviceMeasurementConfigs, DeviceMeasurementConfigDTO.serializer())
+            writeSection(w, "activitySessions", archive.activitySessions, ActivitySessionDTO.serializer())
+            writeSection(w, "activityGpsPoints", archive.activityGpsPoints, ActivityGpsPointDTO.serializer())
+            writeSection(w, "activityEvents", archive.activityEvents, ActivityEventDTO.serializer())
+            writeSection(w, "activitySamples", archive.activitySamples, ActivitySampleDTO.serializer())
+            writeSection(w, "activitySensorPolls", archive.activitySensorPolls, ActivitySensorPollDTO.serializer())
+            writeSection(w, "sleepSessions", archive.sleepSessions, SleepSessionDTO.serializer())
+            writeSection(w, "sleepStageBlocks", archive.sleepStageBlocks, SleepStageBlockDTO.serializer())
+            writeSection(w, "coachConversations", archive.coachConversations, CoachConversationDTO.serializer())
+            writeSection(w, "coachMessages", archive.coachMessages, CoachMessageDTO.serializer())
+            writeSection(w, "coachMemories", archive.coachMemories, CoachMemoryDTO.serializer())
+            writeSection(w, "coachToolCalls", archive.coachToolCalls, CoachToolCallDTO.serializer())
+            writeSection(w, "userProfiles", archive.userProfiles, UserProfileDTO.serializer())
+            writeSection(w, "userGoals", archive.userGoals, UserGoalDTO.serializer())
+            writeSection(w, "rawPackets", archive.rawPackets, RawPacketDTO.serializer())
+            writeSection(w, "derivedUpdates", archive.derivedUpdates, DerivedUpdateDTO.serializer())
+            writeSection(w, "coachSummaries", archive.coachSummaries, CoachSummaryDTO.serializer())
+            writeSection(w, "wearableLogs", archive.wearableLogs, WearableLogDTO.serializer())
+            writeSection(w, "coachNotificationRecords", archive.coachNotificationRecords, CoachNotificationRecordDTO.serializer())
+            writeSection(w, "mealEntries", archive.mealEntries, MealEntryDTO.serializer())
+            writeSection(w, "foodProducts", archive.foodProducts, CachedFoodProductDTO.serializer())
+            writeSection(w, "measurementDeletions", archive.measurementDeletions, MeasurementDeletionDTO.serializer())
+            w.write("\n}\n")
+        }
         androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }
+
+    private fun <T> writeSection(
+        w: java.io.Writer,
+        key: String,
+        items: List<T>,
+        serializer: kotlinx.serialization.KSerializer<T>,
+    ) {
+        w.write(",\n\"$key\":")
+        w.write(json.encodeToString(ListSerializer(serializer), items))
     }
 
     suspend fun importFile(context: Context, uri: Uri, db: PulseLoopDatabase): PulseArchive = withContext(Dispatchers.Default) {
