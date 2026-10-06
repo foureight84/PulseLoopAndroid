@@ -4,7 +4,6 @@ import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.MealType
 import androidx.health.connect.client.records.SleepSessionRecord
 import com.pulseloop.ring.SleepStage
-import com.pulseloop.settings.StepSourcePrefs
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -26,18 +25,25 @@ import java.time.ZoneOffset
 object HealthConnectTypeMappings {
 
     /**
-     * `source` / `sourceRaw` values whose rows must never be exported to Health Connect.
+     * `source` / `sourceRaw` values whose rows must never be exported to Health Connect —
+     * seeded placeholder data (mirrors iOS, which never exports demo/mock).
      *
-     * - `demo`, `mock`: seeded placeholder data (mirrors iOS, which never exports demo/mock).
-     * - `phone`: a phone-sourced daily total is *Health Connect's own data* — the phone reader
-     *   got it from Health Connect in the first place. Re-exporting it would create a
-     *   self-feedback loop: PulseLoop writes the phone's step count back, then reads it back
-     *   as if it were the phone's, then writes it again. [com.pulseloop.PhoneStepManager] also
-     *   filters PulseLoop's own origin out at read time; this exclusion and that filter are
-     *   the two halves of the same fix. See `ActivityExporter.build` for the filtering call
-     *   site.
+     * `"phone"` used to be listed here as well, to break a self-feedback loop: back when the
+     * phone write path overwrote `activity_daily.steps` — the very column this exporter reads —
+     * PulseLoop would re-export Health Connect's own data back to Health Connect, and the phone
+     * reader would then read it back as if it were the phone's. Under the separate-column design
+     * (PR #98) the phone's step count lives in `phoneSteps`, which this exporter never reads, so
+     * the loop is broken by construction and the exclusion is gone. `PhoneStepManager`'s
+     * own-origin subtraction at read time is unaffected and still runs — it cleans up the
+     * historic exports that already exist in Health Connect.
+     *
+     * A phone-first day (`source == "phone"`, `steps == 0`, `calories == 0.0`,
+     * `distanceMeters == 0.0`) still produces no record, and does so on its own merits: every
+     * metric fails its plausibility guard (`isPlausibleSteps` floors at 1, the other two at
+     * strictly > 0), so the day drops through the same path as any other empty day. It no
+     * longer needs a source-based shortcut to be skipped.
      */
-    val EXCLUDED_SOURCES = setOf("demo", "mock", StepSourcePrefs.SOURCE_PHONE)
+    val EXCLUDED_SOURCES = setOf("demo", "mock")
 
     const val HOUR_MS = 3_600_000L
 
