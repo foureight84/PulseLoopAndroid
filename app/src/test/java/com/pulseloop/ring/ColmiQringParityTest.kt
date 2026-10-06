@@ -315,6 +315,25 @@ class ColmiQringParityTest {
     }
 
     @Test
+    fun `Ring 2 Pro hardware nap frame decodes to the span QRing shows`() {
+        // Captured 2026-10-06 08:03 (HCI snoop, QRing sync); QRing shows "Sporadic naps
+        // 04:36 AM~07:03 AM 02H27M" and an empty action-39 main sleep for the same day.
+        val payload = byteArrayOf(
+            0x01, 0x00, 0x12, 0x14, 0x01, 0xa7.toByte(), 0x01,
+            0x02, 0x23, 0x03, 0x19, 0x02, 0x11, 0x04, 0x0c, 0x02, 0x18, 0x03, 0x14, 0x02, 0x0e,
+        )
+        val events = ColmiDecoder.decodeBigData(
+            bigData(ColmiCommandID.BIG_DATA_SLEEP_LUNCH, payload), zone = zone)
+        val nap = events.single() as RingDecodedEvent.SleepTimeline
+        assertEquals(
+            java.time.LocalDate.now(zone).atTime(4, 36).atZone(zone).toInstant(), nap._timestamp)
+        assertEquals(147, nap.stages.size)
+        assertEquals(90, nap.stages.count { it == SleepStage.LIGHT })
+        assertEquals(45, nap.stages.count { it == SleepStage.DEEP })
+        assertEquals(12, nap.stages.count { it == SleepStage.REM })
+    }
+
+    @Test
     fun `lunch sleep completion does not advance the history pipeline`() {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
