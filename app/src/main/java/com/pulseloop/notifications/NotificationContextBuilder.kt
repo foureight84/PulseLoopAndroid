@@ -23,6 +23,8 @@ object NotificationContextBuilder {
         db: PulseLoopDatabase,
         now: Long = System.currentTimeMillis(),
         environment: EnvironmentContext? = null,
+        /** When true, today's steps come from [ActivityDailyEntity.phoneSteps] (Path B, PR #98). */
+        preferPhone: Boolean = false,
     ): NotificationContextPacket {
         val cutoff = now - 12 * 3600_000L
 
@@ -30,9 +32,13 @@ object NotificationContextBuilder {
         val goal = db.userGoalDao().get()
         val device = db.deviceDao().current()
 
-        // Today's activity
+        // Today's activity. Steps are picked at read time by the user's step-source preference
+        // (Path B, PR #98) — a phone-mode evening check-in should quote the phone's count, not
+        // the ring's. Distance and calories stay as the ring wrote them, matching every other
+        // display read site.
         val todayStart = localStartOfDay(now)
         val todayActivity = db.activityDailyDao().byDay(todayStart)
+        val todaySteps = todayActivity?.displaySteps(preferPhone)
 
         // Latest sleep
         val latestSleep = db.sleepSessionDao().recent(1).firstOrNull()
@@ -93,7 +99,7 @@ object NotificationContextBuilder {
                 exerciseDaysWeekly = goal?.workoutsPerWeek ?: 4,
             ),
             today = NotificationContextPacket.DayContext(
-                steps = todayActivity?.steps,
+                steps = todaySteps,
                 calories = todayActivity?.calories,
                 distanceMeters = todayActivity?.distanceMeters,
                 activeMinutes = todayActivity?.activeMinutes,
