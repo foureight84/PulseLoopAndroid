@@ -126,13 +126,18 @@ fun PulseLoopApp() {
         }
 
         // ── ViewModels ───────────────────────────────────────────────────
-        val todayVM = remember { TodayViewModel(db, apiKeyStore) }
+        val stepSourcePrefs = remember { com.pulseloop.settings.StepSourcePrefs(context) }
+        val todayVM = remember { TodayViewModel(db, apiKeyStore, stepSourcePrefs) }
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
         val sleepVM = remember {
             val appContext = context.applicationContext
-            SleepViewModel(db, gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) })
+            SleepViewModel(
+                db,
+                gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) },
+                stepSourcePrefs = stepSourcePrefs,
+            )
         }
-        val activityVM = remember { ActivityViewModel(db) }
+        val activityVM = remember { ActivityViewModel(db, stepSourcePrefs) }
         val weatherContextService = remember { com.pulseloop.coach.context.WeatherContextService(context) }
         val coachVM = remember {
             CoachViewModel(
