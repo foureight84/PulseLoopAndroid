@@ -77,6 +77,11 @@ data class ActivityDailyEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val date: Long,                 // epoch millis, start of day
     val steps: Int = 0,
+    /** Phone-sourced step count for this day (Health Connect), stored separately from [steps].
+     *  Null = no phone value written for this day. The display picks between [steps] and
+     *  [phoneSteps] at read time based on the user's step-source preference; neither column
+     *  overwrites the other, so switching source is reversible. */
+    val phoneSteps: Int? = null,
     val calories: Double = 0.0,
     val distanceMeters: Double = 0.0,
     val activeMinutes: Int = 0,
