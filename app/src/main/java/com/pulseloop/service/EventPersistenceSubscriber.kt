@@ -571,40 +571,43 @@ class EventPersistenceSubscriber(
     }
 
     /**
-     * Persist the phone's step count for one day.
+     * Persist the phone's step count for one day, in its own column.
      *
-     * **Overwrites** `steps` and `source` unconditionally. Distance is derived from the
-     * user's height (stride ≈ 0.414 × height, the same model
-     * [DailyCalorieEstimator.intermittentWalkMET] uses; falls back to 0.7 m/step when
-     * height is unknown). Calories are left at 0.0 so that
-     * [DailyCalorieEstimator.deviceReportedCalories] returns null and the display falls
-     * through to the estimator's own figure — which is the whole point of not writing
-     * `steps * 0.04` here.
+     * Under the separate-column design ([ActivityDailyEntity.phoneSteps]), an existing row is
+     * updated in **one column only**: `phoneSteps`. `steps`, `distanceMeters`, `calories`, and
+     * `source` are left exactly as the ring wrote them. The display picks between `steps` and
+     * `phoneSteps` at read time based on the user's step-source preference, so switching source
+     * is a read-time choice, not a destructive write: the ring's totals are never clobbered and
+     * switching back is instant.
      *
-     * A no-op when the day already holds this exact phone value: on every foreground the
-     * phone reader re-publishes today's total, and without the guard every pass would touch
-     * `updatedAt` (which ActivityExporter selects by) and re-export the same HC record.
+     * A brand-new row (phone wrote first, ring hasn't yet) is created with
+     * `source = "phone"` for two reasons:
+     *  - so the day is visible in the "real" DAO queries
+     *    (`source NOT IN ('demo','mock')`) even before the ring has data for it, and
+     *  - so the row — which has `steps = 0` — stays out of the Health Connect export via
+     *    [com.pulseloop.health.HealthConnectTypeMappings.EXCLUDED_SOURCES]. The old design
+     *    needed that exclusion to break a self-feedback loop (the phone's value used to land
+     *    in `steps`, the exported column); under the separate-column design the loop is broken
+     *    by construction, and the exclusion is now only about not exporting a 0-step record.
+     *
+     * Later ring writes preserve that source — see [upsertActivityDaily]. The old "overwrite
+     * source and reset it back to ring on next ring write" dance is gone; nothing needs it any
+     * more.
+     *
+     * A no-op when the day already holds this exact phone value: on every foreground the phone
+     * reader re-publishes today's total, and without the guard every pass would touch `updatedAt`
+     * (which ActivityExporter selects by) and re-export the same HC record.
      */
     private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         val existing = db.activityDailyDao().byDay(dayStart)
 
-        if (existing != null && existing.steps == steps && existing.source == StepSourcePrefs.SOURCE_PHONE) return
-
-        val profile = db.userProfileDao().get()
-        val heightCm = profile?.heightCm
-        val strideMeters = if (heightCm != null && heightCm > 0) 0.414 * heightCm / 100.0 else 0.7
-        val distanceMeters = steps * strideMeters
+        if (existing != null && existing.phoneSteps == steps) return
 
         val now = System.currentTimeMillis()
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
-                steps = steps,
-                distanceMeters = distanceMeters,
-                // Clear any stale ring calories; the estimator writes the real figure to
-                // `estimatedActiveCalories` on the next sync.
-                calories = 0.0,
-                source = StepSourcePrefs.SOURCE_PHONE,
+                phoneSteps = steps,
                 syncedAt = now,
                 updatedAt = now,
             )
