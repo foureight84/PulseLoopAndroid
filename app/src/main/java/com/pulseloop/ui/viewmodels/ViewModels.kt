@@ -21,6 +21,7 @@ import com.pulseloop.service.SleepScoreResult
 import com.pulseloop.service.UserPhysiologyProfile
 import com.pulseloop.service.VitalSample
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.MetricThresholds
@@ -33,11 +34,41 @@ import java.time.Instant
 import java.time.ZoneId
 
 /**
+ * The user's step-source preference, read at each DB emission rather than observed as a
+ * Flow: plain SharedPreferences reads are cheap, and this matches how
+ * [com.pulseloop.service.EventPersistenceSubscriber] reads the same preference.
+ */
+private fun StepSourcePrefs.preferPhone(): Boolean = stepSource == StepSourcePrefs.SOURCE_PHONE
+
+/**
+ * The step count a screen should show for this day under the user's step-source preference
+ * (Path B read-time selection, PR #98). Ring mode shows the ring's own column; phone mode shows
+ * [ActivityDailyEntity.phoneSteps] when the phone has a value for the day, falling back to the
+ * ring's column when it does not — so a day the phone never backfilled still shows something.
+ */
+private fun ActivityDailyEntity.displaySteps(preferPhone: Boolean): Int =
+    if (preferPhone) phoneSteps ?: steps else steps
+
+/**
+ * The whole entity a screen should show, with `steps` projected for display under the user's
+ * step-source preference. Only `steps` is rewritten; `distanceMeters`, `calories`, and the rest
+ * of the row are left as the ring wrote them (Path B — see PR #98's design notes). Callers that
+ * hold a whole row in their state ([ActivityViewModel]) use this; callers that only need the
+ * scalar use [displaySteps].
+ */
+private fun ActivityDailyEntity.forDisplay(preferPhone: Boolean): ActivityDailyEntity =
+    if (preferPhone && phoneSteps != null) copy(steps = phoneSteps!!) else this
+
+/**
  * TodayViewModel — reads Room data for the Today dashboard.
  * Ported from MetricsService.buildTodaySummary in PulseServices.swift.
  * Uses reactive Flow queries so live ring data appears immediately.
  */
-class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
+class TodayViewModel(
+    db: PulseLoopDatabase,
+    private val apiKeyStore: ApiKeyStore? = null,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     // Local midnight, not UTC — the Today dashboard rolls over at the device's local
     // midnight so daily stats line up with how the rest of the app keys per-day rows.
     private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
@@ -96,7 +127,7 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
                         ?: DailyCalorieEstimator.deviceReportedCalories(row)
                 }
                 _state.update { it.copy(
-                    steps = activity?.steps,
+                    steps = activity?.displaySteps(stepSourcePrefs.preferPhone()),
                     calories = calories,
                     distanceMeters = activity?.distanceMeters,
                     activeMinutes = activity?.activeMinutes,
@@ -119,7 +150,7 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         // 7-day step series for the hero delta (oldest→newest; DAO returns newest-first).
         viewModelScope.launch {
             db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(steps7d = days.reversed().map { d -> d.steps }) }
+                _state.update { it.copy(steps7d = days.reversed().map { d -> d.displaySteps(stepSourcePrefs.preferPhone()) }) }
             }
         }
         // Today's coach summary card (kind="today", scopeKey=local date).
@@ -202,7 +233,10 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
  * Day view anchors on the *reference night* (before 4 AM local = yesterday's night);
  * Week/Month/Year anchor on the last recorded session so history still surfaces.
  */
-class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
+class SleepViewModel(
+    private val db: PulseLoopDatabase,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
         // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
@@ -265,7 +299,10 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             blocksCache.getOrPut(id) { db.sleepStageBlockDao().forSession(id) }
         // aggregateCoach/averageScore take a synchronous lookup; pre-warm the cache first.
         val goal = try { db.userGoalDao().get()?.sleepMinutes } catch (_: Exception) { null }
-        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
+        val steps = try {
+            db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())
+                ?.displaySteps(stepSourcePrefs.preferPhone())
+        } catch (_: Exception) { null }
 
         // ── Today tile (never moves with Day-view navigation) ──
         val todayReference = TimeUtil.referenceNightLocal()
@@ -413,7 +450,10 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
  * ActivityViewModel — reads Room data for the Activity screen.
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
+class ActivityViewModel(
+    db: PulseLoopDatabase,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     data class ActivityState(
         val recentDays: List<ActivityDailyEntity> = emptyList(),
         /** All finished sessions, newest first (drives Today + the history sheet). */
@@ -467,12 +507,13 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
     init {
         viewModelScope.launch {
             db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(recentDays = days) }
+                val preferPhone = stepSourcePrefs.preferPhone()
+                _state.update { it.copy(recentDays = days.map { d -> d.forDisplay(preferPhone) }) }
             }
         }
         viewModelScope.launch {
             currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { day ->
-                _state.update { it.copy(today = day) }
+                _state.update { it.copy(today = day?.forDisplay(stepSourcePrefs.preferPhone())) }
             }
         }
         viewModelScope.launch {
@@ -491,7 +532,12 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
                     profile?.let { DailyCalorieEstimator.effectiveCalories(row, it) }
                         ?: DailyCalorieEstimator.deviceReportedCalories(row)
                 }
-                _state.update { it.copy(daySummary = day, effectiveCalories = calories) }
+                _state.update {
+                    it.copy(
+                        daySummary = day?.forDisplay(stepSourcePrefs.preferPhone()),
+                        effectiveCalories = calories,
+                    )
+                }
             }
         }
         viewModelScope.launch {
