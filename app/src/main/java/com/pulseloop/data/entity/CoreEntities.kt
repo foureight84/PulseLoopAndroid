@@ -105,7 +105,27 @@ data class ActivityDailyEntity(
      */
     val deletedSteps: Int = 0,
     val deletedDistanceMeters: Double = 0.0,
-)
+) {
+    /**
+     * The step count a screen should show for this day under the user's step-source preference
+     * (Path B read-time selection, PR #98). Ring mode shows the ring's own column; phone mode
+     * shows [phoneSteps] when the phone has a value for the day, falling back to the ring's
+     * column when it does not — so a day the phone never backfilled still shows something.
+     */
+    fun displaySteps(preferPhone: Boolean): Int =
+        if (preferPhone) phoneSteps ?: steps else steps
+
+    /**
+     * The whole entity a screen should show, with `steps` projected for display under the user's
+     * step-source preference. Only `steps` is rewritten; `distanceMeters`, `calories`, and the
+     * rest of the row are left as the ring wrote them (Path B — see PR #98's design notes).
+     * Callers that hold a whole row in their state (e.g.
+     * [com.pulseloop.ui.viewmodels.ActivityViewModel]) use this; callers that only need the
+     * scalar use [displaySteps].
+     */
+    fun forDisplay(preferPhone: Boolean): ActivityDailyEntity =
+        if (preferPhone && phoneSteps != null) copy(steps = phoneSteps) else this
+}
 
 /**
  * Ported from [ActivityBucketSample] in PulseModels.swift.

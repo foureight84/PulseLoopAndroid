@@ -105,7 +105,8 @@ object WidgetSnapshotPublisher {
             try {
                 val db = PulseLoopDatabase.getInstance(context)
                 val keyStore = ApiKeyStore(context)
-                val snapshot = buildSnapshot(db, keyStore)
+                val preferPhone = com.pulseloop.settings.StepSourcePrefs(context).preferPhone()
+                val snapshot = buildSnapshot(db, keyStore, preferPhone)
 
                 // Content comparison with a fixed timestamp (iOS `.distantPast` trick).
                 val hash = WidgetSnapshotCodec.encode(snapshot.copy(generatedAt = 0)).hashCode()
@@ -152,7 +153,11 @@ object WidgetSnapshotPublisher {
      * activity tile's unit conversion/formatting — so a widget tile is pixel- and label-identical
      * to its Today tile at publish time.
      */
-    suspend fun buildSnapshot(db: PulseLoopDatabase, keyStore: ApiKeyStore?): WidgetSnapshot {
+    suspend fun buildSnapshot(
+        db: PulseLoopDatabase,
+        keyStore: ApiKeyStore?,
+        preferPhone: Boolean = false,
+    ): WidgetSnapshot {
         val nowMs = System.currentTimeMillis()
         val units = keyStore?.resolvedUnitSystem ?: UnitSystem.METRIC
         val vitals = VitalsViewModel.buildState(db, keyStore)
@@ -180,18 +185,24 @@ object WidgetSnapshotPublisher {
         return WidgetSnapshot(
             generatedAt = nowMs / 1000L,
             dayStart = TimeUtil.startOfTodayLocal() / 1000L,
-            activity = activityPayload(db, units),
+            activity = activityPayload(db, units, preferPhone),
             sleep = sleepPayload(db),
             metrics = metrics,
         )
     }
 
     /** Replicates the Today activity tile's value derivations (unit conversion, formatting). */
-    private suspend fun activityPayload(db: PulseLoopDatabase, units: UnitSystem): WidgetActivityPayload {
+    private suspend fun activityPayload(
+        db: PulseLoopDatabase,
+        units: UnitSystem,
+        preferPhone: Boolean,
+    ): WidgetActivityPayload {
         val today = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal()) } catch (_: Exception) { null }
         val goal = try { db.userGoalDao().get() } catch (_: Exception) { null }
 
-        val steps = today?.steps
+        // Read-time column pick (Path B, PR #98): the ring's `steps` unless the user has chosen
+        // the phone AND the phone has a value for the day. Matches the app's Today tile.
+        val steps = today?.displaySteps(preferPhone)
         val calories = today?.calories
         val distanceDisplay = today?.distanceMeters?.let { UnitConverter.distance(it, units) }
 

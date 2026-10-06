@@ -34,32 +34,6 @@ import java.time.Instant
 import java.time.ZoneId
 
 /**
- * The user's step-source preference, read at each DB emission rather than observed as a
- * Flow: plain SharedPreferences reads are cheap, and this matches how
- * [com.pulseloop.service.EventPersistenceSubscriber] reads the same preference.
- */
-private fun StepSourcePrefs.preferPhone(): Boolean = stepSource == StepSourcePrefs.SOURCE_PHONE
-
-/**
- * The step count a screen should show for this day under the user's step-source preference
- * (Path B read-time selection, PR #98). Ring mode shows the ring's own column; phone mode shows
- * [ActivityDailyEntity.phoneSteps] when the phone has a value for the day, falling back to the
- * ring's column when it does not — so a day the phone never backfilled still shows something.
- */
-private fun ActivityDailyEntity.displaySteps(preferPhone: Boolean): Int =
-    if (preferPhone) phoneSteps ?: steps else steps
-
-/**
- * The whole entity a screen should show, with `steps` projected for display under the user's
- * step-source preference. Only `steps` is rewritten; `distanceMeters`, `calories`, and the rest
- * of the row are left as the ring wrote them (Path B — see PR #98's design notes). Callers that
- * hold a whole row in their state ([ActivityViewModel]) use this; callers that only need the
- * scalar use [displaySteps].
- */
-private fun ActivityDailyEntity.forDisplay(preferPhone: Boolean): ActivityDailyEntity =
-    if (preferPhone && phoneSteps != null) copy(steps = phoneSteps!!) else this
-
-/**
  * TodayViewModel — reads Room data for the Today dashboard.
  * Ported from MetricsService.buildTodaySummary in PulseServices.swift.
  * Uses reactive Flow queries so live ring data appears immediately.

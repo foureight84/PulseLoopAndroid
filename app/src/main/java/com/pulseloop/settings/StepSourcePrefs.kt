@@ -24,6 +24,14 @@ class StepSourcePrefs(context: Context) {
         set(value) { prefs.edit().putString(KEY_STEP_SOURCE, value).apply() }
 
     /**
+     * True when the user has chosen the phone as the step source. The read-time column selection
+     * (Path B, PR #98) branches on this: [ActivityDailyEntity.displaySteps] returns
+     * [ActivityDailyEntity.phoneSteps] when this is true and a phone value exists for the day,
+     * and [ActivityDailyEntity.steps] otherwise.
+     */
+    fun preferPhone(): Boolean = stepSource == SOURCE_PHONE
+
+    /**
      * Local-midnight epoch millis of the last day on which the phone step reader ran a
      * successful 30-day backfill. 0 means "never run". Read/written only from
      * [com.pulseloop.MainActivity.refreshPhoneSteps] — the Settings toggle intentionally
