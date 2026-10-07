@@ -62,6 +62,17 @@ class PhoneStepManager(private val context: Context) {
      * Query Health Connect for today's step total and publish it as a
      * [PulseEvent.PhoneStepsUpdate]. Returns true when the query succeeded, false when
      * Health Connect is unavailable or the read permission has not been granted yet.
+     *
+     * **Today always publishes, including 0.** A day's phone total of 0 is a real state —
+     * just after midnight, before the phone has counted anything, the correct phone-mode
+     * display is 0, not yesterday's ring total still sitting in the `steps` column. Under
+     * the separate-column design ([ActivityDailyEntity.phoneSteps]), publishing 0 to
+     * `phoneSteps` is how "today's phone value is 0" becomes visible: `displaySteps` picks
+     * `phoneSteps` when it is non-null and falls back to the ring only when the phone has
+     * never written for the day. Skipping the 0 would leave today's `phoneSteps` null and
+     * the display showing the ring's stale value — the exact midnight gap the previous
+     * ownership-tracking design produced. `upsertActivityDailyFromPhone` is a no-op when
+     * the value is unchanged, so re-publishing the same 0 on every foreground is free.
      */
     suspend fun refresh(): Boolean {
         val client = try {
@@ -90,26 +101,26 @@ class PhoneStepManager(private val context: Context) {
         } catch (_: Exception) {
             return false
         }
-        if (foreignOrigins.isEmpty()) {
-            // No phone step source has records for today. Skip the publish so the ring's
-            // value for today stands; the query itself succeeded, so return true.
-            return true
-        }
 
-        val steps = try {
-            client.aggregate(
-                AggregateRequest(
-                    metrics = setOf(StepsRecord.COUNT_TOTAL),
-                    timeRangeFilter = range,
-                    dataOriginFilter = foreignOrigins,
-                )
-            )[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0
-        } catch (_: Exception) {
-            return false
+        val steps = if (foreignOrigins.isEmpty()) {
+            // No foreign origin has written steps today yet — a normal state just after
+            // midnight, and also the permanent state on a phone with no step writer. Either
+            // way today's phone total is 0. `aggregate` with an empty `dataOriginFilter`
+            // means "all origins", not "none", so it must not be called here.
+            0
+        } else {
+            try {
+                client.aggregate(
+                    AggregateRequest(
+                        metrics = setOf(StepsRecord.COUNT_TOTAL),
+                        timeRangeFilter = range,
+                        dataOriginFilter = foreignOrigins,
+                    )
+                )[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0
+            } catch (_: Exception) {
+                return false
+            }
         }
-        // An aggregate of 0 with a non-empty origin set is possible but rare (origins have
-        // records, all of which total 0). Skip the publish for the same reason as above.
-        if (steps <= 0) return true
 
         PulseEventBus.publishBlocking(
             PulseEvent.PhoneStepsUpdate(
@@ -127,9 +138,10 @@ class PhoneStepManager(private val context: Context) {
      * show the phone's numbers rather than whatever the ring recorded.
      *
      * Days where Health Connect has no phone-step records are skipped — those days fall back
-     * to the ring's data, which is the only source available for them. A day where the phone
-     * walked zero steps would publish `0` and clobber the ring's only valid record for that
-     * day, so the `steps <= 0` guard skips those buckets entirely.
+     * to the ring's data, which is the only source available for them. Unlike today's read
+     * ([refresh], which always publishes including 0), a past day with no phone records is
+     * genuinely unknown: the phone may not have been tracking then, so a 0 would wrongly hide
+     * a ring day that does have data. Only today's 0 is meaningful.
      *
      * **Three Health Connect quirks handled here:**
      *
