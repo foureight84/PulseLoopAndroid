@@ -504,12 +504,13 @@ class EventPersistenceSubscriber(
             val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
                 // A row the phone created first (`source == "phone"`) flips to `"ring"` when the
-                // ring writes — the `source` column still has two consumers downstream: the
-                // Health Connect exporter (via `HealthConnectTypeMappings.EXCLUDED_SOURCES`) and
-                // [DailyCalorieEstimator.deviceReportedCalories]. Both read it as "who last wrote
-                // these columns", so once the ring has supplied `steps`/`calories`/`distance`,
-                // the row belongs to the ring. Other sources ("ring_history", "manual_recording",
-                // "hr_and_manual") are preserved as before.
+                // ring writes. The `source` column still has two downstream consumers —
+                // `HealthConnectTypeMappings.EXCLUDED_SOURCES` (which filters demo/mock, not
+                // phone) and [DailyCalorieEstimator.deviceReportedCalories] — but only the latter
+                // cares about `"phone"`, and it reads the column as "who last wrote these data
+                // columns". So once the ring has supplied `steps`/`calories`/`distance`, the row
+                // belongs to the ring and the estimator must see it that way. Other sources
+                // ("ring_history", "manual_recording", "hr_and_manual") are preserved as before.
                 source = if (existing.source == StepSourcePrefs.SOURCE_PHONE) StepSourcePrefs.SOURCE_RING else existing.source,
                 steps = if (stale) steps
                 else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
@@ -536,22 +537,23 @@ class EventPersistenceSubscriber(
     /**
      * Persist the phone's step count for one day, in its own column.
      *
-     * Under the separate-column design ([ActivityDailyEntity.phoneSteps]), an existing row is
-     * updated in **one column only**: `phoneSteps`. `steps`, `distanceMeters`, `calories`, and
-     * `source` are left exactly as the ring wrote them. The display picks between `steps` and
-     * `phoneSteps` at read time based on the user's step-source preference, so switching source
-     * is a read-time choice, not a destructive write: the ring's totals are never clobbered and
-     * switching back is instant.
+     * Under the separate-column design ([ActivityDailyEntity.phoneSteps]), an existing row's
+     * **data columns** are untouched except for `phoneSteps`: `steps`, `distanceMeters`,
+     * `calories`, and `source` are left exactly as the ring wrote them. (`syncedAt` and
+     * `updatedAt` also move — metadata, not data; `updatedAt` is what ActivityExporter selects
+     * on.) The display picks between `steps` and `phoneSteps` at read time based on the user's
+     * step-source preference, so switching source is a read-time choice, not a destructive
+     * write: the ring's totals are never clobbered and switching back is instant.
      *
      * A brand-new row (phone wrote first, ring hasn't yet) is created with
-     * `source = "phone"` for two reasons:
-     *  - so the day is visible in the "real" DAO queries
-     *    (`source NOT IN ('demo','mock')`) even before the ring has data for it, and
-     *  - so the row — which has `steps = 0` — stays out of the Health Connect export via
-     *    [com.pulseloop.health.HealthConnectTypeMappings.EXCLUDED_SOURCES]. The old design
-     *    needed that exclusion to break a self-feedback loop (the phone's value used to land
-     *    in `steps`, the exported column); under the separate-column design the loop is broken
-     *    by construction, and the exclusion is now only about not exporting a 0-step record.
+     * `source = "phone"` so the day is visible in the "real" DAO queries
+     * (`source NOT IN ('demo','mock')`) even before the ring has data for it. The old design
+     * also needed the source label to keep the row out of the Health Connect export, via
+     * `HealthConnectTypeMappings.EXCLUDED_SOURCES` — that exclusion is gone (the phone's value
+     * used to land in `steps`, the exported column; under the separate-column design the
+     * self-feedback loop is broken by construction). A phone-first day still produces no HC
+     * record: it carries `steps = 0`, and `isPlausibleSteps` floors at 1, so the plausibility
+     * guards skip it regardless of source.
      *
      * Later ring writes preserve that source — see [upsertActivityDaily]. The old "overwrite
      * source and reset it back to ring on next ring write" dance is gone; nothing needs it any
