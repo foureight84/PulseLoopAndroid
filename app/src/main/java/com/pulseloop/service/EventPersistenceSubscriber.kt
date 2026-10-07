@@ -564,17 +564,7 @@ class EventPersistenceSubscriber(
     private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
         val existing = db.activityDailyDao().byDay(dayStart)
-
-        if (existing != null && existing.phoneSteps == steps) return
-
-        val now = System.currentTimeMillis()
-        db.activityDailyDao().upsert(
-            (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
-                phoneSteps = steps,
-                syncedAt = now,
-                updatedAt = now,
-            )
-        )
+        phoneStepRow(existing, dayStart, steps)?.let { db.activityDailyDao().upsert(it) }
     }
 
     /**
@@ -896,6 +886,38 @@ class EventPersistenceSubscriber(
         private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
     }
 }
+
+/**
+ * The row a [PulseEvent.PhoneStepsUpdate] should write for one day — or null when it would be a
+ * no-op.
+ *
+ * Pure, so the phone write's column-only contract can be tested without a Room instance (same
+ * pattern as the sleep-merge helpers below). The contract, all of which is asserted in
+ * `EventPersistencePhoneWriteTest`:
+ *
+ *  - **Only three columns change on an existing row:** `phoneSteps`, `syncedAt`, `updatedAt`.
+ *    `steps`, `calories`, `distanceMeters`, and `source` are carried through untouched — that is
+ *    what makes switching step source reversible.
+ *  - **A brand-new row is created with `source = "phone"`**, so the day is visible in the "real"
+ *    DAO queries even before the ring has data for it.
+ *  - **Writing the same value twice is a no-op** (returns null): the phone reader re-publishes
+ *    today's total on every foreground, and without this guard each pass would bump `updatedAt`
+ *    — which `ActivityExporter` selects by — and re-export the same record.
+ *  - **`phoneSteps = 0` is a real value, distinct from null.** `null → 0` writes (the midnight
+ *    gap: the phone has begun counting and counted zero); `0 → 0` is a no-op.
+ */
+internal fun phoneStepRow(
+    existing: ActivityDailyEntity?,
+    dayStart: Long,
+    steps: Int,
+    now: Long = System.currentTimeMillis(),
+): ActivityDailyEntity? =
+    if (existing != null && existing.phoneSteps == steps) null
+    else (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
+        phoneSteps = steps,
+        syncedAt = now,
+        updatedAt = now,
+    )
 
 /**
  * Is this reading one the ring will hand back from its own history, so that the two copies have to
