@@ -162,6 +162,9 @@ object RingEventBridge {
 
         // Half a frame carries nothing to act on; it exists only so the raw-packet log can mask it.
         is RingDecodedEvent.FramePending -> emptyList()
+
+        // An out-of-band vital result carries no reading; it exists only so the log can mask it.
+        is RingDecodedEvent.RejectedVitalResult -> emptyList()
     }
 
     /** The one plausibility band per kind — history rows and on-demand spot readings alike. */
