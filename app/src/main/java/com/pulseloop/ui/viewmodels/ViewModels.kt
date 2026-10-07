@@ -451,8 +451,20 @@ class ActivityViewModel(
          * `phone`-sourced row would otherwise show its raw `calories` column, which is either
          * the estimator's own fill-in or the stale placeholder written before that path
          * existed.
+         *
+         * This is the *total* figure (basal + active), which is what the Calories metric text
+         * shows. The calorie goal ring reads [effectiveActiveCalories] instead — the stored
+         * goal is an active-energy goal ([UserGoalEntity.calories] KDoc), so a ring drawn
+         * against this total would sit near-full from the moment the day begins.
          */
         val effectiveCalories: Double? = null,
+        /**
+         * The active-energy portion of the shown day's calories — the ring's own reported
+         * figure when it has one, else [DailyCalorieEstimator.effectiveActiveCalories].
+         * Drives the calorie goal ring, whose goal ([UserGoalEntity.calories]) is in the same
+         * active-energy units. Null when the row has neither a device figure nor an estimate.
+         */
+        val effectiveActiveCalories: Double? = null,
         val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
         val activeMinutesGoal: Int = 45,
         val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
@@ -506,10 +518,15 @@ class ActivityViewModel(
                     profile?.let { DailyCalorieEstimator.effectiveCalories(row, it) }
                         ?: DailyCalorieEstimator.deviceReportedCalories(row)
                 }
+                // The active-energy read: no profile needed — this is either the device's own
+                // figure or the stored estimate, both already net of BMR. See the state field's
+                // KDoc for why the ring uses this and the metric text does not.
+                val activeCalories = day?.let { DailyCalorieEstimator.effectiveActiveCalories(it) }
                 _state.update {
                     it.copy(
                         daySummary = day?.forDisplay(stepSourcePrefs.preferPhone()),
                         effectiveCalories = calories,
+                        effectiveActiveCalories = activeCalories,
                     )
                 }
             }

@@ -237,10 +237,10 @@ fun ActivityScreen(
         // after reading the number.
         //
         // Hidden when the step source is "Phone": the Records list is the ring's intraday
-        // bucket log, and while the phone owns the daily total, showing ring-derived blocks
-        // beneath that total reads as a bug — the sum of the records does not match the header
-        // above them, and deleting one has no effect on a total the ring no longer owns.
-        // Toggling back to "Ring" restores the card.
+        // bucket log, and under Path B the header above it is the phone's total (chosen at
+        // read time from `phoneSteps`), so the records no longer sum to the number they sit
+        // under — reading as a bug rather than a detail view. Deleting a ring bucket would
+        // also not move the phone-sourced total. Toggling back to "Ring" restores the card.
         if (stepSourcePrefs.stepSource != com.pulseloop.settings.StepSourcePrefs.SOURCE_PHONE) {
             item {
                 ActivityRecordsCard(
@@ -380,7 +380,12 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
     // here would surface a phone row's stale hardcoded placeholder (or a ring's pre-toggle
     // value) as if it were a real total. Same read path as TodayViewModel's, so the two
     // screens cannot disagree.
+    //
+    // `calories` is the day's *total* (basal + active) — what the Calories metric shows, same
+    // as Today. The goal ring reads the active-only figure instead: UserGoal.calories is an
+    // active-energy goal, so a ring drawn against the total would sit near full from midnight.
     val calories = state.effectiveCalories
+    val activeCalories = state.effectiveActiveCalories
     Row(
         Modifier
             .fillMaxWidth()
@@ -402,7 +407,7 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
             rings = listOf(
                 ActivityRing(today?.steps?.toDouble(), state.stepGoal.toDouble(), PulseColors.steps),
                 ActivityRing(today?.distanceMeters, state.distanceGoalMeters, PulseColors.distance),
-                ActivityRing(calories, state.caloriesGoal.toDouble(), PulseColors.calories),
+                ActivityRing(activeCalories, state.caloriesGoal.toDouble(), PulseColors.calories),
             ),
             size = 112.dp,
             strokeWidth = 11.dp,
@@ -885,8 +890,8 @@ private fun ActivityRecordsCard(
             text = {
                 Text(
                     "${Formats.count(bucket.steps)} steps at ${timeOf(bucket.startEpoch)}." +
-                        "\n\nThe day's total drops by that much. This can't be undone, and the record " +
-                        "stays deleted the next time this day syncs.",
+                            "\n\nThe day's total drops by that much. This can't be undone, and the record " +
+                            "stays deleted the next time this day syncs.",
                 )
             },
             confirmButton = {
