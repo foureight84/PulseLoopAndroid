@@ -76,6 +76,7 @@ import com.pulseloop.service.ZoneSeverity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.settings.UnitSystem
+import com.pulseloop.settings.ZenModeListener
 import com.pulseloop.ui.components.DeviceHeroStatus
 import com.pulseloop.ui.components.ZoneLineChart
 import com.pulseloop.ui.theme.PulseColors
@@ -1619,10 +1620,30 @@ private fun QuietHoursCard() {
     val context = LocalContext.current
     val prefs = remember { QuietHoursPrefs(context) }
     var enabled by remember { mutableStateOf(prefs.enabled) }
+    var gateByZenMode by remember {
+        mutableStateOf(prefs.gateByZenMode && ZenModeListener.isAccessGranted(context))
+    }
     var start by remember { mutableStateOf(prefs.startMinutes) }
     var end by remember { mutableStateOf(prefs.endMinutes) }
     // "start" | "end" while a picker is open.
     var picking by remember { mutableStateOf<String?>(null) }
+    var showPermissionDialog by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = ZenModeListener.isAccessGranted(context)
+                if (prefs.gateByZenMode && !granted) {
+                    prefs.gateByZenMode = false
+                    ZenModeListener.setEnabled(context, false)
+                }
+                gateByZenMode = prefs.gateByZenMode && granted
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -1645,6 +1666,51 @@ private fun QuietHoursCard() {
             )
             if (enabled) {
                 Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            "Track Bedtime / DND mode",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            "Automatically align quiet hours with Android's Bedtime or Do Not Disturb mode.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = gateByZenMode,
+                        onCheckedChange = { desired ->
+                            if (desired) {
+                                ZenModeListener.setEnabled(context, true)
+                                if (ZenModeListener.isAccessGranted(context)) {
+                                    gateByZenMode = true
+                                    prefs.gateByZenMode = true
+                                } else {
+                                    showPermissionDialog = true
+                                }
+                            } else {
+                                gateByZenMode = false
+                                prefs.gateByZenMode = false
+                                ZenModeListener.setEnabled(context, false)
+                            }
+                        },
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (gateByZenMode) "Fallback schedule (used when no Bedtime/DND mode was active):"
+                    else "Quiet hours schedule:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = { picking = "start" }, modifier = Modifier.weight(1f)) {
                         Text("From ${formatMinutesOfDay(start)}")
@@ -1655,6 +1721,46 @@ private fun QuietHoursCard() {
                 }
             }
         }
+    }
+
+    if (showPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { showPermissionDialog = false },
+            title = { Text("Permission required") },
+            text = {
+                Text(
+                    "To log when Bedtime or Do Not Disturb turns on and off while PulseLoop is " +
+                        "in the background, Android requires Notification access. PulseLoop only " +
+                        "listens for Mode changes and does not read your notifications.\n\n" +
+                        "If the switch is greyed out, open PulseLoop's App info, tap ⋮ → " +
+                        "Allow restricted settings, then come back here.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPermissionDialog = false
+                    try {
+                        val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                            android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                                .putExtra(
+                                    android.provider.Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                                    ZenModeListener.component(context).flattenToString(),
+                                )
+                        } else {
+                            android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                        }
+                        context.startActivity(intent)
+                        prefs.gateByZenMode = true
+                    } catch (_: Exception) {}
+                }) { Text("Open Settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showPermissionDialog = false
+                    if (!prefs.gateByZenMode) ZenModeListener.setEnabled(context, false)
+                }) { Text("Cancel") }
+            },
+        )
     }
 
     picking?.let { which ->

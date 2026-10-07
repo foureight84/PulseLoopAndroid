@@ -102,6 +102,24 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Quiet hours Bedtime/DND mode (issue #83): records Mode transitions as they happen.
+             Disabled until the user opts in (ZenModeListener.setEnabled), so the app is not
+             listed under Notification access otherwise; it filters out every notification type
+             and only uses onInterruptionFilterChanged. -->
+        <service
+            android:name=".settings.ZenModeListener"
+            android:enabled="false"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.notification.disabled_filter_types"
+                android:value="conversations|alerting|ongoing|silent" />
+        </service>
+
         <!-- Phase 6: Workout foreground service -->
         <service
             android:name=".service.WorkoutForegroundService"
@@ -143,6 +161,7 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_dual_info" />
         </receiver>
+
         <activity
             android:name=".widgets.WidgetConfigActivity"
             android:exported="true"
