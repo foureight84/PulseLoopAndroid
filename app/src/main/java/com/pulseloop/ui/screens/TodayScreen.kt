@@ -14,10 +14,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pulseloop.PhoneStepManager
 import com.pulseloop.service.MetricKind
 import com.pulseloop.service.MetricZone
 import com.pulseloop.service.VitalsThresholdEngine
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.ui.components.*
 import com.pulseloop.ui.dashboard.CustomizeCardsButton
@@ -65,6 +67,7 @@ fun TodayScreen(
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
     val keyStore = remember { ApiKeyStore(context) }
+    val stepSourcePrefs = remember { StepSourcePrefs(context) }
     val units = keyStore.resolvedUnitSystem
     val coachEnabled = keyStore.coachEnabled
     val pullRefreshState = rememberPullRefreshState(
@@ -73,6 +76,12 @@ fun TodayScreen(
             isRefreshing = true
             scope.launch {
                 coordinator?.pullToRefresh()
+                // Also refresh phone steps from Health Connect — otherwise pulling to
+                // refresh syncs the ring but leaves the activity tile showing a stale
+                // step count. No-op unless the user's step source is set to "Phone".
+                if (stepSourcePrefs.stepSource == StepSourcePrefs.SOURCE_PHONE) {
+                    PhoneStepManager(context).refresh()
+                }
                 kotlinx.coroutines.delay(1500)
                 isRefreshing = false
             }
@@ -111,8 +120,8 @@ fun TodayScreen(
     val visibleKeys = allSupported.filter { !prefs.isHidden(it, MetricScope.TODAY) }.map { it.key }.toSet()
     val visibleOrdered: List<DashboardCard> = run {
         val base = if (editState.editing) editState.liveOrder
-            else prefsStore.resolvedOrder(visibleKeys, DashboardCard.todayDefault.map { it.key }, MetricScope.TODAY)
-                .mapNotNull { DashboardCard.fromKey(it) }
+        else prefsStore.resolvedOrder(visibleKeys, DashboardCard.todayDefault.map { it.key }, MetricScope.TODAY)
+            .mapNotNull { DashboardCard.fromKey(it) }
         base.filter { it.key in visibleKeys }
     }
     val hiddenCards = allSupported.filter { prefs.isHidden(it, MetricScope.TODAY) }
@@ -390,7 +399,7 @@ private fun deriveHero(state: TodayViewModel.TodayState, sleep: SleepViewModel.S
     val series = state.steps7d.map { it.toDouble() }
     val prior = series.dropLast(1)
     val base = if (prior.isNotEmpty() && prior.average() > 0) prior.average()
-        else if (series.isNotEmpty()) series.average() else 0.0
+    else if (series.isNotEmpty()) series.average() else 0.0
     val stepsDelta = if (base == 0.0) 0 else (((steps - base) / base) * 100).toInt()
 
     val title = when {

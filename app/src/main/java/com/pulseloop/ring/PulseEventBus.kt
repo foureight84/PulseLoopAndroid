@@ -8,6 +8,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -64,15 +65,38 @@ sealed class PulseEvent {
             if (this === other) return true
             if (other !is RawPacket) return false
             return direction == other.direction && data.contentEquals(other.data) &&
-                decoded == other.decoded && deviceType == other.deviceType
+                    decoded == other.decoded && deviceType == other.deviceType
         }
         override fun hashCode(): Int =
             31 * (31 * (31 * direction.hashCode() + data.contentHashCode()) + decoded.hashCode()) +
-                (deviceType?.hashCode() ?: 0)
+                    (deviceType?.hashCode() ?: 0)
     }
     data class ActivityUpdate(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double, val calories: Double) : PulseEvent()
     data class ActivityBucket(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double) : PulseEvent()
     data object ActivitySyncReset : PulseEvent()
+    /** Steps counted by the phone's own pedometer, published by the app's
+     *  [com.pulseloop.PhoneStepManager] when the user has chosen "phone" as their step source.
+     *  Distinct from [ActivityUpdate], which carries the ring's cumulative counter.
+     *
+     *  Only `steps` is carried. Distance and calories are deliberately not baked in here:
+     *  calories come from [com.pulseloop.service.DailyCalorieEstimator] (which needs the
+     *  user's weight, HR, and workout history), and workout distance is credited to the
+     *  day by [com.pulseloop.service.ActivityRollup]. Writing either from this event would
+     *  overwrite what those paths computed. */
+    data class PhoneStepsUpdate(
+        val timestamp: java.time.Instant,
+        val steps: Int,
+    ) : PulseEvent()
+
+    /**
+     * The phone step reader failed to produce a value this pass — Health Connect unreachable,
+     * or READ_STEPS not granted. Published by [com.pulseloop.MainActivity.refreshPhoneSteps]
+     * on a `refresh()` false return, so [com.pulseloop.service.EventPersistenceSubscriber] can
+     * stop gating the ring's live totals off (see its `stepSourceIsPhone`) and let the ring
+     * fill in until the phone reader recovers. Without this, a revoked permission would drop
+     * the ring's contributions indefinitely while the preference still read "phone".
+     */
+    data object PhoneStepSourceUnavailable : PulseEvent()
     /**
      * [spot] marks the one settled reading a spot measurement publishes for itself (issue #60);
      * false for the ring's live stream. [ringWillLogIt] additionally says this ring writes that
@@ -161,6 +185,14 @@ object PulseEventBus {
 
     init {
         dispatchScope.launch {
+            // Hold events until at least one subscriber is attached. On cold start,
+            // MainActivity.onResume runs refreshPhoneSteps() before PulseLoopApp's
+            // LaunchedEffect has called persistence.start() — the composition hasn't run
+            // yet. With replay = 0, events published in that window are emitted to zero
+            // subscribers and lost, including today's PhoneStepsUpdate and every backfill
+            // event. Waiting here defers the drain until the subscriber exists; once it
+            // does, the whole backlog is delivered in order.
+            _events.subscriptionCount.first { it > 0 }
             // The bus is process-long and single-drained: an uncaught throw here would kill the
             // dispatcher and silently stop every subscriber for the rest of the process (the
             // SupervisorJob does not restart it). Isolate each emit so one bad event can't do that.

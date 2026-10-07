@@ -147,10 +147,11 @@ fun PulseLoopApp() {
         }
 
         // ── ViewModels ───────────────────────────────────────────────────
-        val todayVM = remember { TodayViewModel(db, apiKeyStore) }
+        val stepSourcePrefs = remember { com.pulseloop.settings.StepSourcePrefs(context) }
+        val todayVM = remember { TodayViewModel(db, apiKeyStore, stepSourcePrefs) }
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
-        val sleepVM = remember { SleepViewModel(db) }
-        val activityVM = remember { ActivityViewModel(db) }
+        val sleepVM = remember { SleepViewModel(db, stepSourcePrefs) }
+        val activityVM = remember { ActivityViewModel(db, stepSourcePrefs) }
         val weatherContextService = remember { com.pulseloop.coach.context.WeatherContextService(context) }
         val coachVM = remember {
             CoachViewModel(

@@ -24,8 +24,25 @@ import java.time.ZoneOffset
  */
 object HealthConnectTypeMappings {
 
-    /** [com.pulseloop.data.entity.MeasurementEntity.sourceRaw] values that must never reach
-     *  Health Connect (mirrors iOS, which never exports demo/mock data). */
+    /**
+     * `source` / `sourceRaw` values whose rows must never be exported to Health Connect —
+     * seeded placeholder data (mirrors iOS, which never exports demo/mock).
+     *
+     * `"phone"` used to be listed here as well, to break a self-feedback loop: back when the
+     * phone write path overwrote `activity_daily.steps` — the very column this exporter reads —
+     * PulseLoop would re-export Health Connect's own data back to Health Connect, and the phone
+     * reader would then read it back as if it were the phone's. Under the separate-column design
+     * (PR #98) the phone's step count lives in `phoneSteps`, which this exporter never reads, so
+     * the loop is broken by construction and the exclusion is gone. `PhoneStepManager`'s
+     * own-origin subtraction at read time is unaffected and still runs — it cleans up the
+     * historic exports that already exist in Health Connect.
+     *
+     * A phone-first day (`source == "phone"`, `steps == 0`, `calories == 0.0`,
+     * `distanceMeters == 0.0`) still produces no record, and does so on its own merits: every
+     * metric fails its plausibility guard (`isPlausibleSteps` floors at 1, the other two at
+     * strictly > 0), so the day drops through the same path as any other empty day. It no
+     * longer needs a source-based shortcut to be skipped.
+     */
     val EXCLUDED_SOURCES = setOf("demo", "mock")
 
     const val HOUR_MS = 3_600_000L

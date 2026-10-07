@@ -21,6 +21,7 @@ import com.pulseloop.service.SleepScoreResult
 import com.pulseloop.service.UserPhysiologyProfile
 import com.pulseloop.service.VitalSample
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.MetricThresholds
@@ -37,7 +38,11 @@ import java.time.ZoneId
  * Ported from MetricsService.buildTodaySummary in PulseServices.swift.
  * Uses reactive Flow queries so live ring data appears immediately.
  */
-class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
+class TodayViewModel(
+    db: PulseLoopDatabase,
+    private val apiKeyStore: ApiKeyStore? = null,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     // Local midnight, not UTC — the Today dashboard rolls over at the device's local
     // midnight so daily stats line up with how the rest of the app keys per-day rows.
     private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
@@ -96,7 +101,7 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
                         ?: DailyCalorieEstimator.deviceReportedCalories(row)
                 }
                 _state.update { it.copy(
-                    steps = activity?.steps,
+                    steps = activity?.displaySteps(stepSourcePrefs.preferPhone()),
                     calories = calories,
                     distanceMeters = activity?.distanceMeters,
                     activeMinutes = activity?.activeMinutes,
@@ -119,7 +124,7 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         // 7-day step series for the hero delta (oldest→newest; DAO returns newest-first).
         viewModelScope.launch {
             db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(steps7d = days.reversed().map { d -> d.steps }) }
+                _state.update { it.copy(steps7d = days.reversed().map { d -> d.displaySteps(stepSourcePrefs.preferPhone()) }) }
             }
         }
         // Today's coach summary card (kind="today", scopeKey=local date).
@@ -202,7 +207,10 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
  * Day view anchors on the *reference night* (before 4 AM local = yesterday's night);
  * Week/Month/Year anchor on the last recorded session so history still surfaces.
  */
-class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
+class SleepViewModel(
+    private val db: PulseLoopDatabase,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
         // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
@@ -265,7 +273,10 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             blocksCache.getOrPut(id) { db.sleepStageBlockDao().forSession(id) }
         // aggregateCoach/averageScore take a synchronous lookup; pre-warm the cache first.
         val goal = try { db.userGoalDao().get()?.sleepMinutes } catch (_: Exception) { null }
-        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
+        val steps = try {
+            db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())
+                ?.displaySteps(stepSourcePrefs.preferPhone())
+        } catch (_: Exception) { null }
 
         // ── Today tile (never moves with Day-view navigation) ──
         val todayReference = TimeUtil.referenceNightLocal()
@@ -428,7 +439,10 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
  * ActivityViewModel — reads Room data for the Activity screen.
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
+class ActivityViewModel(
+    db: PulseLoopDatabase,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     data class ActivityState(
         val recentDays: List<ActivityDailyEntity> = emptyList(),
         /** All finished sessions, newest first (drives Today + the history sheet). */
@@ -444,6 +458,28 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         val shownDay: Long = 0,
         /** The shown day's totals (the summary card); `today` stays live for the week widget. */
         val daySummary: ActivityDailyEntity? = null,
+        /**
+         * Effective calories for the shown day: the ring's own figure when it reported one,
+         * else [DailyCalorieEstimator.effectiveCalories] (BMR accrued through the day so far
+         * plus the net active estimate). Mirrors [TodayViewModel]'s read path so the Today
+         * card and the Activity card cannot disagree about what a day's calories are — a
+         * `phone`-sourced row would otherwise show its raw `calories` column, which is either
+         * the estimator's own fill-in or the stale placeholder written before that path
+         * existed.
+         *
+         * This is the *total* figure (basal + active), which is what the Calories metric text
+         * shows. The calorie goal ring reads [effectiveActiveCalories] instead — the stored
+         * goal is an active-energy goal ([UserGoalEntity.calories] KDoc), so a ring drawn
+         * against this total would sit near-full from the moment the day begins.
+         */
+        val effectiveCalories: Double? = null,
+        /**
+         * The active-energy portion of the shown day's calories — the ring's own reported
+         * figure when it has one, else [DailyCalorieEstimator.effectiveActiveCalories].
+         * Drives the calorie goal ring, whose goal ([UserGoalEntity.calories]) is in the same
+         * active-energy units. Null when the row has neither a device figure nor an estimate.
+         */
+        val effectiveActiveCalories: Double? = null,
         val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
         val activeMinutesGoal: Int = 45,
         val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
@@ -472,17 +508,42 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
     init {
         viewModelScope.launch {
             db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(recentDays = days) }
+                val preferPhone = stepSourcePrefs.preferPhone()
+                _state.update { it.copy(recentDays = days.map { d -> d.forDisplay(preferPhone) }) }
             }
         }
         viewModelScope.launch {
             currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { day ->
-                _state.update { it.copy(today = day) }
+                _state.update { it.copy(today = day?.forDisplay(stepSourcePrefs.preferPhone())) }
             }
         }
         viewModelScope.launch {
             shownDayStart.flatMapLatest { day -> db.activityDailyDao().byDayFlow(day) }.collect { day ->
-                _state.update { it.copy(daySummary = day) }
+                // Effective calories for the shown day — same read path as the Today card
+                // (see TodayViewModel's init), so both screens agree. Reading `day.calories`
+                // straight off the row would surface the ring's value for ring modes, but
+                // for phone-sourced rows it would show the estimator's own fill-in — or, on
+                // older rows, the hardcoded `steps * 0.04` placeholder — as if it were a
+                // device-reported figure. [DailyCalorieEstimator.effectiveCalories] handles
+                // both cases: device figure when there is one, else BMR + active estimate.
+                val profile = db.userProfileDao().get()?.let {
+                    DailyCalorieEstimator.Profile(it.sex, it.age, it.weightKg, it.heightCm)
+                }
+                val calories = day?.let { row ->
+                    profile?.let { DailyCalorieEstimator.effectiveCalories(row, it) }
+                        ?: DailyCalorieEstimator.deviceReportedCalories(row)
+                }
+                // The active-energy read: no profile needed — this is either the device's own
+                // figure or the stored estimate, both already net of BMR. See the state field's
+                // KDoc for why the ring uses this and the metric text does not.
+                val activeCalories = day?.let { DailyCalorieEstimator.effectiveActiveCalories(it) }
+                _state.update {
+                    it.copy(
+                        daySummary = day?.forDisplay(stepSourcePrefs.preferPhone()),
+                        effectiveCalories = calories,
+                        effectiveActiveCalories = activeCalories,
+                    )
+                }
             }
         }
         viewModelScope.launch {
