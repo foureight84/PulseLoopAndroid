@@ -576,14 +576,14 @@ class EventPersistenceSubscriber(
         var effectiveTs = ts
         var effectiveStages = stages
 
-        // Quiet-hours gate (issue #79, #83), opt-in and off by default: the record is trimmed to the
+        // Quiet-hours gate (issue #79), opt-in and off by default: the record is trimmed to the
         // minutes inside the window before any write — the still-wrist/sofa case — rather than
         // judged by its start, because the ring often runs the sofa hour and the real night as one
         // record. Already-imported nights are untouched (this never deletes), and the gate is read
         // per record so a settings change takes effect on the next packet, not the next launch.
         val quiet = QuietHoursPrefs(context)
         if (quiet.enabled) {
-            val kept = quiet.keptMinutesForRecord(effectiveTs, effectiveStages.size, context)
+            val kept = QuietHoursPrefs.keptMinutes(effectiveTs, effectiveStages.size, quiet.startMinutes, quiet.endMinutes)
                 ?: return
             effectiveTs = effectiveTs + kept.first * 60_000L
             effectiveStages = effectiveStages.subList(kept.first, kept.last + 1)

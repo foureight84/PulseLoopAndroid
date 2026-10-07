@@ -42,23 +42,8 @@ class PulseLoopApplication : Application() {
                 if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_STOP) {
                     WidgetSnapshotPublisher.publish(this)
                 }
-                if (event == Lifecycle.Event.ON_START) {
-                    com.pulseloop.settings.ZenModeTracker.recordCurrentFilter(this)
-                }
             },
         )
         WidgetRefreshWorker.schedule(this)
-
-        // Quiet-hours Bedtime/DND mode tracking (issue #83).
-        try {
-            val zenFilter = android.content.IntentFilter(android.app.NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
-            androidx.core.content.ContextCompat.registerReceiver(
-                this,
-                com.pulseloop.settings.ZenModeReceiver(),
-                zenFilter,
-                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
-            )
-            com.pulseloop.settings.ZenModeTracker.recordCurrentFilter(this)
-        } catch (_: Exception) {}
     }
 }
