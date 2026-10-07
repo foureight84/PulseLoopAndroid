@@ -75,19 +75,7 @@ class PhoneStepManager(private val context: Context) {
      * the value is unchanged, so re-publishing the same 0 on every foreground is free.
      */
     suspend fun refresh(): Boolean {
-        val client = try {
-            HealthConnectClient.getOrCreate(context)
-        } catch (_: Exception) {
-            return false
-        }
-
-        val readStepsPermission = HealthPermission.getReadPermission(StepsRecord::class)
-        val granted = try {
-            client.permissionController.getGrantedPermissions()
-        } catch (_: Exception) {
-            return false
-        }
-        if (readStepsPermission !in granted) return false
+        val client = clientWithStepsPermission(context) ?: return false
 
         val now = Instant.now()
         val startOfDayMs = TimeUtil.startOfDayLocal(System.currentTimeMillis())
@@ -164,19 +152,7 @@ class PhoneStepManager(private val context: Context) {
      * @return true if the query succeeded (even if some days were empty), false on failure.
      */
     suspend fun refreshHistoricalDays(daysBack: Long = 30): Boolean {
-        val client = try {
-            HealthConnectClient.getOrCreate(context)
-        } catch (_: Exception) {
-            return false
-        }
-
-        val readStepsPermission = HealthPermission.getReadPermission(StepsRecord::class)
-        val granted = try {
-            client.permissionController.getGrantedPermissions()
-        } catch (_: Exception) {
-            return false
-        }
-        if (readStepsPermission !in granted) return false
+        val client = clientWithStepsPermission(context) ?: return false
 
         // Anchor the range to local midnight so each bucket is exactly one calendar day.
         // endLocal is tomorrow-midnight (exclusive upper bound); startLocal is the first
@@ -246,5 +222,44 @@ class PhoneStepManager(private val context: Context) {
             )
         ).records
         return records.map { it.metadata.dataOrigin }.toSet() - ownOrigin
+    }
+
+    companion object {
+        /**
+         * READ_STEPS permission string, resolved once. Referenced by the reads above (through
+         * [clientWithStepsPermission]) and by [com.pulseloop.ui.screens.SettingsScreen]'s Step
+         * Source row (to test whether the permission is already granted before asking, and to
+         * verify the permission-result callback was granted *this* permission).
+         */
+        val READ_STEPS_PERMISSION: String =
+            HealthPermission.getReadPermission(StepsRecord::class)
+
+        /**
+         * The Health Connect client if READ_STEPS is granted, else null. Null means: HC is
+         * unavailable on this device, the client could not be constructed, the permission
+         * query threw, or READ_STEPS is simply not granted. Callers in the phone step path
+         * treat all four the same way — a silent no-op that leaves the ring's own data in
+         * place.
+         */
+        suspend fun clientWithStepsPermission(context: Context): HealthConnectClient? {
+            val client = try {
+                HealthConnectClient.getOrCreate(context)
+            } catch (_: Exception) {
+                return null
+            }
+            val granted = try {
+                client.permissionController.getGrantedPermissions()
+            } catch (_: Exception) {
+                return null
+            }
+            return if (READ_STEPS_PERMISSION in granted) client else null
+        }
+
+        /**
+         * True when READ_STEPS is granted — the Settings Step Source row's "already granted"
+         * check, so its async HC preamble isn't a third copy of [clientWithStepsPermission]'s.
+         */
+        suspend fun hasStepsPermission(context: Context): Boolean =
+            clientWithStepsPermission(context) != null
     }
 }

@@ -31,16 +31,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * READ_STEPS permission string, resolved once. Referenced by both the Step Source row's
- * "switch to Phone" path (to test whether the permission is already granted before
- * asking) and the permission-result launcher's callback (to verify the user actually
- * granted *this* permission, not some other one).
- */
-private val READ_STEPS_PERMISSION: String =
-    androidx.health.connect.client.permission.HealthPermission
-        .getReadPermission(androidx.health.connect.client.records.StepsRecord::class)
-
-/**
  * Ported from SettingsView.swift (iOS #49 rehaul).
  * Top-level Settings: a hero ring-device card over grouped sections of navigation rows. Each
  * row pushes a focused detail screen (see SettingsSubScreens.kt); the old inline cards moved
@@ -103,7 +93,7 @@ fun SettingsScreen(
     val healthConnectPermissionLauncher = rememberLauncherForActivityResult(
         androidx.health.connect.client.PermissionController.createRequestPermissionResultContract()
     ) { granted ->
-        if (READ_STEPS_PERMISSION in granted) {
+        if (com.pulseloop.PhoneStepManager.READ_STEPS_PERMISSION in granted) {
             // Granted — now it is safe to persist "phone" and run the backfill. A6: the
             // preference is written only after permission is confirmed, so an interrupted
             // flow cannot leave the app claiming a source it can't read from.
@@ -246,13 +236,7 @@ fun SettingsScreen(
                                 return@launch
                             }
                             val hasPermission = withContext(Dispatchers.IO) {
-                                try {
-                                    val client = androidx.health.connect.client.HealthConnectClient
-                                        .getOrCreate(context)
-                                    READ_STEPS_PERMISSION in client.permissionController.getGrantedPermissions()
-                                } catch (_: Exception) {
-                                    false
-                                }
+                                com.pulseloop.PhoneStepManager.hasStepsPermission(context)
                             }
                             if (hasPermission) {
                                 // Re-check intent immediately before persisting: the user
@@ -273,7 +257,9 @@ fun SettingsScreen(
                             } else {
                                 // Not granted — ask. The launcher's callback persists
                                 // "phone" only once permission is confirmed.
-                                healthConnectPermissionLauncher.launch(setOf(READ_STEPS_PERMISSION))
+                                healthConnectPermissionLauncher.launch(
+                                    setOf(com.pulseloop.PhoneStepManager.READ_STEPS_PERMISSION)
+                                )
                             }
                         }
                     }
