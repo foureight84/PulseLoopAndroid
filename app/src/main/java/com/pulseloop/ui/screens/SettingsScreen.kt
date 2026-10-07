@@ -25,6 +25,7 @@ import com.pulseloop.ui.components.DeviceHeroCard
 import com.pulseloop.ui.components.SettingsRowItem
 import com.pulseloop.ui.components.SettingsSection
 import com.pulseloop.ui.theme.PulseColors
+import com.pulseloop.util.TimeUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -90,6 +91,12 @@ fun SettingsScreen(
     // point, so a user who declines is not asked again until they touch the toggle
     // once more. If the dialog is declined, the toggle reverts to "Ring" so the UI
     // never claims a source the app cannot actually read from.
+    //
+    // The explicit backfill here marks `lastBackfillDay` before launching: returning from
+    // the permission sheet fires MainActivity.onResume, whose automatic refreshPhoneSteps()
+    // would otherwise see the throttle stale and run the same 30-day backfill a second time.
+    // The toggle is not throttled — an explicit user action always runs — but it *does*
+    // update the throttle so the automatic path doesn't immediately repeat the work.
     val healthConnectPermissionLauncher = rememberLauncherForActivityResult(
         androidx.health.connect.client.PermissionController.createRequestPermissionResultContract()
     ) { granted ->
@@ -98,6 +105,7 @@ fun SettingsScreen(
             // preference is written only after permission is confirmed, so an interrupted
             // flow cannot leave the app claiming a source it can't read from.
             stepSourcePrefs.stepSource = StepSourcePrefs.SOURCE_PHONE
+            stepSourcePrefs.lastBackfillDay = TimeUtil.startOfTodayLocal()
             scope.launch(Dispatchers.IO) {
                 try {
                     com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
@@ -244,8 +252,12 @@ fun SettingsScreen(
                                 // was in flight, and cancellation is cooperative — this
                                 // coroutine can reach here with the cancel flag set.
                                 if (stepSource != StepSourcePrefs.SOURCE_PHONE) return@launch
-                                // Already granted — persist and backfill now.
+                                // Already granted — persist and backfill now. Same throttle
+                                // update as the permission-sheet callback: without it, the
+                                // next onResume's automatic refreshPhoneSteps() would see the
+                                // throttle stale and run this same 30-day backfill again.
                                 stepSourcePrefs.stepSource = StepSourcePrefs.SOURCE_PHONE
+                                stepSourcePrefs.lastBackfillDay = TimeUtil.startOfTodayLocal()
                                 withContext(Dispatchers.IO) {
                                     try {
                                         com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
