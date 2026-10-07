@@ -8,6 +8,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -178,6 +179,14 @@ object PulseEventBus {
 
     init {
         dispatchScope.launch {
+            // Hold events until at least one subscriber is attached. On cold start,
+            // MainActivity.onResume runs refreshPhoneSteps() before PulseLoopApp's
+            // LaunchedEffect has called persistence.start() — the composition hasn't run
+            // yet. With replay = 0, events published in that window are emitted to zero
+            // subscribers and lost, including today's PhoneStepsUpdate and every backfill
+            // event. Waiting here defers the drain until the subscriber exists; once it
+            // does, the whole backlog is delivered in order.
+            _events.subscriptionCount.first { it > 0 }
             // The bus is process-long and single-drained: an uncaught throw here would kill the
             // dispatcher and silently stop every subscriber for the rest of the process (the
             // SupervisorJob does not restart it). Isolate each emit so one bad event can't do that.
