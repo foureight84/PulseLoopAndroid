@@ -223,6 +223,7 @@ data class SleepRecordRun(
     val endAt: Long,
     val blocks: List<SleepStageBlockEntity>,
 ) {
+    val recordStartAt: Long get() = blocks.firstOrNull { it.recordStartAt > 0L }?.recordStartAt ?: startAt
     val asleepMinutes: Int get() = asleepMinutes(blocks)
     val spanMinutes: Int get() = ((endAt - startAt) / 60_000L).toInt().coerceAtLeast(0)
 }

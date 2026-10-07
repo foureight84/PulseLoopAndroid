@@ -763,6 +763,48 @@ interface MeasurementDeletionDao {
         })
     }
 
+    /**
+     * Remember an edited ring sleep record's adjusted boundaries (issue #82).
+     */
+    suspend fun recordSleepEdit(dayStart: Long, recordStartAt: Long, newStartAt: Long, newEndAt: Long) {
+        deleteSleepEdit(dayStart, recordStartAt)
+        insertAll(listOf(
+            MeasurementDeletionEntity(
+                measurementId = sleepEditId(dayStart, recordStartAt, newStartAt, newEndAt),
+                kindRaw = SLEEP_EDIT_KIND,
+                timestamp = recordStartAt,
+            )
+        ))
+    }
+
+    @Query("DELETE FROM measurement_deletions WHERE kindRaw = 'SLEEP_RECORD_EDIT' AND measurementId LIKE 'sleep:edit:' || :dayStart || ':' || :recordStartAt || ':%'")
+    suspend fun deleteSleepEdit(dayStart: Long, recordStartAt: Long)
+
+    @Query("SELECT measurementId FROM measurement_deletions WHERE kindRaw = 'SLEEP_RECORD_EDIT' AND measurementId LIKE 'sleep:edit:' || :dayStart || ':' || :recordStartAt || ':%' LIMIT 1")
+    suspend fun getSleepEditId(dayStart: Long, recordStartAt: Long): String?
+
+    suspend fun getSleepEdit(dayStart: Long, recordStartAt: Long): SleepRecordEditBounds? {
+        val id = getSleepEditId(dayStart, recordStartAt) ?: return null
+        return parseSleepEditId(id)
+    }
+
+    /**
+     * Remember an entirely deleted ring sleep record. Prevents head/tail stages from resurrecting
+     * if the record was previously trimmed via an edit before deletion.
+     */
+    suspend fun recordSleepRecordDeleted(dayStart: Long, recordStartAt: Long) {
+        insertAll(listOf(
+            MeasurementDeletionEntity(
+                measurementId = sleepRecordDeleteId(dayStart, recordStartAt),
+                kindRaw = SLEEP_RECORD_DELETE_KIND,
+                timestamp = recordStartAt,
+            )
+        ))
+    }
+
+    suspend fun isSleepRecordDeleted(dayStart: Long, recordStartAt: Long): Boolean =
+        isDeleted(sleepRecordDeleteId(dayStart, recordStartAt))
+
     companion object {
         /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
          *  A measurement whose id starts with this is one the ring can hand us again. */
@@ -784,10 +826,43 @@ interface MeasurementDeletionDao {
         /** `kindRaw` for a sleep-record tombstone — a name no measurement kind can collide with. */
         const val SLEEP_RECORD_KIND = "SLEEP_RECORD_BLOCK"
 
+        /** Key prefix for an edited ring sleep record's trimmed boundaries (issue #82). */
+        const val SLEEP_EDIT_PREFIX = "sleep:edit:"
+        /** `kindRaw` for a sleep-record boundary edit tombstone. */
+        const val SLEEP_EDIT_KIND = "SLEEP_RECORD_EDIT"
+
+        /** Key prefix for an entirely deleted ring sleep record. */
+        const val SLEEP_RECORD_DELETE_PREFIX = "sleep:record:"
+        /** `kindRaw` for an entirely deleted sleep record tombstone. */
+        const val SLEEP_RECORD_DELETE_KIND = "SLEEP_RECORD_DELETE"
+
+        /** The tombstone key for an entirely deleted sleep record. */
+        fun sleepRecordDeleteId(dayStart: Long, recordStartAt: Long): String =
+            "$SLEEP_RECORD_DELETE_PREFIX$dayStart:$recordStartAt"
+
         /** The tombstone key for the bucket starting at [startEpoch]. */
         fun activityBucketId(startEpoch: Long): String = "$ACTIVITY_ID_PREFIX$startEpoch"
 
         /** The tombstone key for the sleep stage block starting at [startAt] on waking day [dayStart]. */
         fun sleepBlockId(dayStart: Long, startAt: Long): String = "$SLEEP_ID_PREFIX$dayStart:$startAt"
+
+        /** The tombstone key for an edited sleep record boundary. */
+        fun sleepEditId(dayStart: Long, recordStartAt: Long, newStartAt: Long, newEndAt: Long): String =
+            "$SLEEP_EDIT_PREFIX$dayStart:$recordStartAt:$newStartAt:$newEndAt"
+
+        fun parseSleepEditId(id: String): SleepRecordEditBounds? {
+            val parts = id.split(":")
+            if (parts.size >= 6 && parts[0] == "sleep" && parts[1] == "edit") {
+                val start = parts[4].toLongOrNull() ?: return null
+                val end = parts[5].toLongOrNull() ?: return null
+                return SleepRecordEditBounds(start, end)
+            }
+            return null
+        }
     }
 }
+
+data class SleepRecordEditBounds(
+    val newStartAt: Long,
+    val newEndAt: Long,
+)
