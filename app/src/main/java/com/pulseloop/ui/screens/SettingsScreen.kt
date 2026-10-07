@@ -26,8 +26,19 @@ import com.pulseloop.ui.components.SettingsRowItem
 import com.pulseloop.ui.components.SettingsSection
 import com.pulseloop.ui.theme.PulseColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * READ_STEPS permission string, resolved once. Referenced by both the Step Source row's
+ * "switch to Phone" path (to test whether the permission is already granted before
+ * asking) and the permission-result launcher's callback (to verify the user actually
+ * granted *this* permission, not some other one).
+ */
+private val READ_STEPS_PERMISSION: String =
+    androidx.health.connect.client.permission.HealthPermission
+        .getReadPermission(androidx.health.connect.client.records.StepsRecord::class)
 
 /**
  * Ported from SettingsView.swift (iOS #49 rehaul).
@@ -63,6 +74,11 @@ fun SettingsScreen(
     val developerUnlocked = keyStore.developerUnlocked
     var stepSource by remember { mutableStateOf(stepSourcePrefs.stepSource) }
 
+    // In-flight "switch to Phone" attempt. Cancelled before each new attempt so a
+    // rapid Ring → Phone → Ring toggle cannot have an older attempt's async HC
+    // checks land after the user's latest intent and re-persist "phone".
+    var switchJob by remember { mutableStateOf<Job?>(null) }
+
     // Provider-aware AI Coach summary — mirrors iOS `coachTrailing` (no Apple on-device
     // mode on Android; hosted providers show the selected model slug).
     val coachTrailing = if (!coachEnabled) "Off" else when (providerStore.providerMode) {
@@ -87,7 +103,7 @@ fun SettingsScreen(
     val healthConnectPermissionLauncher = rememberLauncherForActivityResult(
         androidx.health.connect.client.PermissionController.createRequestPermissionResultContract()
     ) { granted ->
-        if (granted.isNotEmpty()) {
+        if (READ_STEPS_PERMISSION in granted) {
             // Granted — now it is safe to persist "phone" and run the backfill. A6: the
             // preference is written only after permission is confirmed, so an interrupted
             // flow cannot leave the app claiming a source it can't read from.
@@ -199,6 +215,10 @@ fun SettingsScreen(
                 ) {
                     val newSource = if (stepSource == StepSourcePrefs.SOURCE_RING) StepSourcePrefs.SOURCE_PHONE else StepSourcePrefs.SOURCE_RING
                     stepSource = newSource  // optimistic UI; persisted only once proven valid
+                    // Cancel any previous in-flight attempt: the user's latest tap is the
+                    // only intent that matters, and a stale attempt must not persist
+                    // "phone" after the user has since flipped back to Ring.
+                    switchJob?.cancel()
                     if (newSource == StepSourcePrefs.SOURCE_RING) {
                         // Ring is always safe — no external dependency to verify.
                         stepSourcePrefs.stepSource = StepSourcePrefs.SOURCE_RING
@@ -207,7 +227,7 @@ fun SettingsScreen(
                         // BEFORE persisting. The old flow saved "phone" first and reverted
                         // on failure, so an interrupted run left the app claiming a source
                         // it couldn't read from, which then dropped the ring's live totals.
-                        scope.launch {
+                        switchJob = scope.launch {
                             val availability = withContext(Dispatchers.IO) {
                                 HealthConnectSdk.availability(context)
                             }
@@ -225,18 +245,21 @@ fun SettingsScreen(
                                 stepSource = StepSourcePrefs.SOURCE_RING // revert the optimistic flip
                                 return@launch
                             }
-                            val readSteps = androidx.health.connect.client.permission.HealthPermission
-                                .getReadPermission(androidx.health.connect.client.records.StepsRecord::class)
                             val hasPermission = withContext(Dispatchers.IO) {
                                 try {
                                     val client = androidx.health.connect.client.HealthConnectClient
                                         .getOrCreate(context)
-                                    readSteps in client.permissionController.getGrantedPermissions()
+                                    READ_STEPS_PERMISSION in client.permissionController.getGrantedPermissions()
                                 } catch (_: Exception) {
                                     false
                                 }
                             }
                             if (hasPermission) {
+                                // Re-check intent immediately before persisting: the user
+                                // may have flipped back to Ring while the permission query
+                                // was in flight, and cancellation is cooperative — this
+                                // coroutine can reach here with the cancel flag set.
+                                if (stepSource != StepSourcePrefs.SOURCE_PHONE) return@launch
                                 // Already granted — persist and backfill now.
                                 stepSourcePrefs.stepSource = StepSourcePrefs.SOURCE_PHONE
                                 withContext(Dispatchers.IO) {
@@ -250,7 +273,7 @@ fun SettingsScreen(
                             } else {
                                 // Not granted — ask. The launcher's callback persists
                                 // "phone" only once permission is confirmed.
-                                healthConnectPermissionLauncher.launch(setOf(readSteps))
+                                healthConnectPermissionLauncher.launch(setOf(READ_STEPS_PERMISSION))
                             }
                         }
                     }
