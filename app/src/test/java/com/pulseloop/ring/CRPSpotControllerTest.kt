@@ -3,6 +3,7 @@ package com.pulseloop.ring
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
@@ -22,6 +23,8 @@ import java.time.Instant
  * - Cancellation while in-flight sends stop when connected
  * - Isolation from history traffic
  * - Preservation of sourceRaw = "spot_result"
+ * - A start dispatched before the listener would have run still starts the countdown
+ * - A start that never leaves the queue fails after the dispatch timeout
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class CRPSpotControllerTest {
@@ -433,5 +436,63 @@ class CRPSpotControllerTest {
         val result = deferred.await()
         assertEquals(72, result)
         assertFalse(controller.isMeasuring)
+    }
+
+    /**
+     * On an idle queue the start can be dispatched, and its outgoing packet published, before a
+     * normally dispatched listener has subscribed. The bus does not replay, so the countdown never
+     * started and, with a ring that stays silent, the measurement never ended.
+     */
+    @Test
+    fun `start dispatched before the listener runs still starts the countdown`() = runTest {
+        val writes = mutableListOf<ByteArray>()
+        val events = MutableSharedFlow<PulseEvent>(extraBufferCapacity = 16)
+        val controller = CRPSpotController(
+            sendWrite = { data ->
+                writes.add(data)
+                events.tryEmit(outgoing(data))  // dispatched synchronously, as on an idle queue
+            },
+            cancelQueuedWrite = { false },
+            isConnected = { true },
+            events = events,
+            publishEvent = {},
+        )
+
+        val deferred = async { controller.measureHeartRate(timeoutSeconds = 30) }
+        runCurrent()
+        assertEquals(30, controller.countdownRemaining.value)
+
+        // The ring never answers: the measurement must still end at its deadline.
+        advanceTimeBy(31_000)
+        runCurrent()
+        assertNull(deferred.await())
+        assertArrayEquals(stopHR, writes.last())
+    }
+
+    @Test
+    fun `start that never leaves the queue fails after the dispatch timeout without a stop`() = runTest {
+        val writes = mutableListOf<ByteArray>()
+        val events = MutableSharedFlow<PulseEvent>()
+        val controller = CRPSpotController(
+            sendWrite = { writes.add(it) },
+            cancelQueuedWrite = { predicate -> writes.any(predicate) },  // still queued: removed
+            isConnected = { true },
+            events = events,
+            publishEvent = {},
+        )
+
+        val deferred = async { controller.measureSpO2() }
+        runCurrent()
+        advanceTimeBy(CRPSpotController.DISPATCH_TIMEOUT_SECONDS * 1000L - 1)
+        runCurrent()
+        assertTrue(deferred.isActive)
+
+        advanceTimeBy(2)
+        runCurrent()
+        assertNull(deferred.await())
+        assertFalse(controller.isMeasuring)
+        assertNull(controller.countdownRemaining.value)
+        assertEquals(1, writes.size)  // the start only; it was purged from the queue, so no stop
+        assertArrayEquals(startSpO2, writes.single())
     }
 }
