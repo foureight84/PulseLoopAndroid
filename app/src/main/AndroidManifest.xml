@@ -21,6 +21,9 @@
     <!-- Phase 7: Notifications for coach check-ins (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Quiet hours Bedtime/DND mode access (issue #83) -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <!-- Phase 9 (iOS #96 stage A): barcode scanner. The scanner screen falls back to a
          message when the permission is denied or no camera exists (iOS
          BarcodeScannerSheet.swift:20-39), so the camera is NOT required. -->
@@ -143,6 +146,7 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_dual_info" />
         </receiver>
+
         <activity
             android:name=".widgets.WidgetConfigActivity"
             android:exported="true"
