@@ -340,13 +340,23 @@ fun VitalsScreen(
                     // caller of the BP and HRV legs in the app, so replacing it with HR + SpO₂
                     // buttons took manual BP and HRV away from a ring that advertises them — they
                     // get their own control rather than disappearing.
+                    // A ring that streams HRV gets it on its own control in the row below.
+                    val hrvOnRemaining = coordinator.canMeasureHrv && !coordinator.streamsSpotVitals
                     val remainingLegsLabel = when {
-                        coordinator.canMeasureBloodPressure && coordinator.canMeasureHrv -> "BP & HRV"
+                        coordinator.canMeasureBloodPressure && hrvOnRemaining -> "BP & HRV"
                         coordinator.canMeasureBloodPressure -> "BP"
-                        coordinator.canMeasureHrv -> "HRV"
+                        hrvOnRemaining -> "HRV"
                         else -> null
                     }
+                    // On-demand HRV / stress / temperature, one control each (issue #66's rule).
+                    val spotVitals = coordinator.measurableSpotVitals
                     if (separateLegs) {
+                      // Stacked, not side by side: this sits in the header Row beside the title,
+                      // so a second Row here would be laid out horizontally and crush the title.
+                      Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                      ) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 enabled = !measuring,
@@ -401,6 +411,31 @@ fun VitalsScreen(
                                 }
                             }
                         }
+                        if (spotVitals.isNotEmpty()) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                for (vital in spotVitals) {
+                                    val label = vital.label
+                                    Button(
+                                        enabled = !measuring,
+                                        // Three to a row beside the title: tighter than the default 24 dp.
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                        onClick = {
+                                            runMeasurement(
+                                                coordinator.spotVitalMeasureSeconds, label,
+                                                caption = "Keep still — measuring ${vital.description}…",
+                                                failed = { coordinator.vitalState(vital) == failedState },
+                                            ) { coordinator.measureVitalOnly(vital) }
+                                        },
+                                    ) {
+                                        Text(
+                                            if (measuring && measuringLabel == label) "$label ${remaining}s" else label,
+                                            color = androidx.compose.ui.graphics.Color.White,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                      }
                     } else {
                     Button(
                         enabled = !measuring,

@@ -29,8 +29,11 @@ class RingSyncCoordinator(
         private set
     var spo2State: MeasureState = MeasureState.IDLE
         private set
-    var hrvState: MeasureState = MeasureState.IDLE
-        private set
+    /** One state per [SpotVital]; HRV's is also [hrvState], which the non-streaming HRV leg drives. */
+    private val spotVitalStates = java.util.concurrent.ConcurrentHashMap<SpotVital, MeasureState>()
+    var hrvState: MeasureState
+        get() = vitalState(SpotVital.HRV)
+        private set(value) = setVitalState(SpotVital.HRV, value)
     var bloodPressureState: MeasureState = MeasureState.IDLE
         private set
     var combinedState: MeasureState = MeasureState.IDLE
@@ -102,6 +105,10 @@ class RingSyncCoordinator(
     /** The SpO2 samples of the measurement in flight, and the rule for settling them — see
      *  [Spo2SampleWindow]. Only consulted for a family that says when it has finished. */
     private val spo2Window = Spo2SampleWindow()
+    /** The streamed values of an on-demand HRV/stress/temperature run — see [SpotVitalWindow]. */
+    private val spotVitalWindow = SpotVitalWindow()
+    /** The ring ended the [SpotVital] run in flight with an error before any value arrived. */
+    @Volatile private var spotVitalNoReading: SpotVital? = null
     /** The refusal fast-fail gate for spot measurements (iOS `c8969a4`) — the ring's `03 2f`
      *  verdict can only ever abort the measurement it names, while it is actually running. */
     private val spot = SpotMeasurementGate()
@@ -131,7 +138,30 @@ class RingSyncCoordinator(
      * row for the reading the stream already stored.
      */
     private fun gateLiveSamples(kind: MeasurementKind, closed: Boolean) {
+        if (closed) liveGateReopen.disarm(kind)   // a new leg owns the gate again
         PulseEventBus.publishBlocking(PulseEvent.LiveSampleGate(kind, closed))
+    }
+
+    private val liveGateReopen = LiveGateReopen()
+
+    /**
+     * Send a spot leg's [stop] and reopen [kind]'s gate once the ring has finished sending: on its
+     * acknowledgement, or after a timeout — but only when the engine says one is coming
+     * ([RingSyncEngine.stopAwaitsAck]). A family that never acknowledges, or a stop that sent
+     * nothing, reopens at once; waiting there would only drop the next ~2 s of a workout's samples.
+     * Armed before the stop so the acknowledgement always finds it.
+     */
+    private fun stopAndReopenGate(kind: MeasurementKind, stop: () -> Unit) {
+        val token = liveGateReopen.arm(kind)
+        stop()
+        if (engine?.stopAwaitsAck(kind) != true) {
+            if (liveGateReopen.onStreamStopped(kind)) gateLiveSamples(kind, closed = false)
+            return
+        }
+        scope.launch {
+            delay(LiveGateReopen.TIMEOUT_MS)
+            if (liveGateReopen.onTimeout(kind, token)) gateLiveSamples(kind, closed = false)
+        }
     }
 
     val connectionState: RingConnectionState get() = client.state.value.connectionState
@@ -158,9 +188,14 @@ class RingSyncCoordinator(
             if (caps.contains(WearableCapability.MANUAL_HEART_RATE)) total += hrMeasureSeconds.toInt()
             if (caps.contains(WearableCapability.MANUAL_SPO2)) total += spo2MeasureSeconds.toInt()
             if (caps.contains(WearableCapability.MANUAL_BLOOD_PRESSURE)) total += BP_MEASURE_SECONDS
-            if (caps.contains(WearableCapability.MANUAL_HRV)) total += HRV_MEASURE_SECONDS
+            if (caps.contains(WearableCapability.MANUAL_HRV)) total += hrvMeasureSeconds
+            if (caps.contains(WearableCapability.MANUAL_STRESS)) total += SPOT_VITAL_MEASURE_SECONDS
+            if (caps.contains(WearableCapability.MANUAL_TEMPERATURE)) total += SPOT_VITAL_MEASURE_SECONDS
             return total
         }
+    /** The HRV leg's ceiling: a streaming family runs QRing's longer window. */
+    private val hrvMeasureSeconds: Int
+        get() = if (streamsSpotVitals) SPOT_VITAL_MEASURE_SECONDS else HRV_MEASURE_SECONDS
     /** The SpO₂ leg's ceiling for the ring that is actually connected (issue #59 RC-2). */
     private val spo2MeasureSeconds: Long get() = (engine?.spotSpo2Seconds ?: SPO2_MEASURE_SECONDS).toLong()
 
@@ -186,7 +221,8 @@ class RingSyncCoordinator(
      */
     val spotMeasureInProgress: Boolean
         get() = hrState == MeasureState.MEASURING || spo2State == MeasureState.MEASURING ||
-            hrvState == MeasureState.MEASURING || bloodPressureState == MeasureState.MEASURING
+            bloodPressureState == MeasureState.MEASURING ||
+            SpotVital.entries.any { vitalState(it) == MeasureState.MEASURING }   // HRV included
     private val combinedMeasureSeconds = COMBINED_MEASURE_SECONDS.toLong()
 
     companion object {
@@ -200,6 +236,9 @@ class RingSyncCoordinator(
         const val SPO2_MEASURE_SECONDS = RingSyncEngine.DEFAULT_SPOT_SPO2_SECONDS
         const val BP_MEASURE_SECONDS = 40
         const val HRV_MEASURE_SECONDS = 40
+        /** Ceiling for a streamed HRV/stress/temperature run — QRing's `CountDownTimer(75000L, …)`.
+         *  A run normally ends ~30 s in, once the ring goes quiet ([SpotVitalWindow]). */
+        const val SPOT_VITAL_MEASURE_SECONDS = 75
         /** Intentional UX upper bound for sequential HR + SpO₂ + BP + HRV; drives the countdown.
          *  Derived from the legs so the countdown can't desync when one is tuned. Post-#66 the
          *  HR leg samples its full window by design, so this is a real bound, not slack. This is
@@ -515,6 +554,8 @@ class RingSyncCoordinator(
         if (caps.contains(WearableCapability.MANUAL_SPO2)) measureSpO2()
         if (caps.contains(WearableCapability.MANUAL_BLOOD_PRESSURE)) measureBloodPressure()
         if (caps.contains(WearableCapability.MANUAL_HRV)) measureHRV()
+        if (caps.contains(WearableCapability.MANUAL_STRESS)) measureVital(SpotVital.STRESS)
+        if (caps.contains(WearableCapability.MANUAL_TEMPERATURE)) measureVital(SpotVital.TEMPERATURE)
     }
 
     /**
@@ -560,7 +601,40 @@ class RingSyncCoordinator(
             return
         }
         if (canMeasureBloodPressure) measureBloodPressure()
-        if (canMeasureHrv) measureHRV()
+        // A streaming family's HRV has its own control beside stress and temperature.
+        if (canMeasureHrv && !streamsSpotVitals) measureHRV()
+    }
+
+    /**
+     * One on-demand HRV / stress / temperature measurement on its own control (issue #66's rule:
+     * a user after one vital is not held for the others). Refused while another leg holds the
+     * sensor, and refused for a vital this ring doesn't offer.
+     */
+    suspend fun measureVitalOnly(vital: SpotVital): Double? {
+        if (spotMeasureInProgress) return null
+        if (vital !in measurableSpotVitals) return null
+        if (!isConnected) { setVitalState(vital, MeasureState.IDLE); return null }
+        return measureVital(vital)
+    }
+
+    /** True for a family that measures HRV/stress/temperature by streaming ([RingSyncEngine.streamsSpotVitals]). */
+    val streamsSpotVitals: Boolean get() = engine?.streamsSpotVitals == true
+
+    /** The streamed vitals the connected ring offers as their own controls, in display order. */
+    val measurableSpotVitals: List<SpotVital>
+        get() {
+            if (!streamsSpotVitals) return emptyList()
+            val caps = client.state.value.activeCapabilities
+            return SpotVital.entries.filter { it.capability in caps }
+        }
+
+    /** Countdown for one streamed vital on its own. */
+    val spotVitalMeasureSeconds: Int get() = SPOT_VITAL_MEASURE_SECONDS + 3
+
+    fun vitalState(vital: SpotVital): MeasureState = spotVitalStates[vital] ?: MeasureState.IDLE
+
+    private fun setVitalState(vital: SpotVital, state: MeasureState) {
+        spotVitalStates[vital] = state
     }
 
     /** Whether each separate control should be offered at all, for the connected ring. */
@@ -578,7 +652,7 @@ class RingSyncCoordinator(
         get() {
             var total = 3
             if (canMeasureBloodPressure) total += BP_MEASURE_SECONDS
-            if (canMeasureHrv) total += HRV_MEASURE_SECONDS
+            if (canMeasureHrv && !streamsSpotVitals) total += HRV_MEASURE_SECONDS
             return total
         }
 
@@ -662,18 +736,18 @@ class RingSyncCoordinator(
             spot.end(spotToken)
             // Always switch the optical sensor off — even if the caller's coroutine is
             // cancelled (e.g. the user navigates away mid-measurement) — or the ring keeps pulsing.
-            engine?.stopHeartRate()
+            // Reopen the gate once the ring has finished sending, not when the leg ends — see
+            // [LiveGateReopen]. Unconditional: this leg closed the gate, so it owes the reopen even
+            // where a workout started underneath it — leaving it closed would silently drop that
+            // workout's samples for the rest of the session.
+            stopAndReopenGate(MeasurementKind.HEART_RATE) { engine?.stopHeartRate() }
             // The stop also tears down the workout's realtime stream; bring it straight back.
             restartWorkoutHeartRateIfActive()
             hrState = if (result != null) MeasureState.DONE else MeasureState.FAILED
-            // Reopen the gate BEFORE publishing, or the one reading worth keeping is the one
-            // reading dropped; both travel the bus in this order. Unconditional: this leg closed
-            // the gate, so it owes the reopen even where a workout started underneath it — leaving
-            // it closed would silently drop that workout's samples for the rest of the session.
-            gateLiveSamples(MeasurementKind.HEART_RATE, closed = false)
             // The measurement's actual output, stored once. A failed measurement stores
             // nothing — "we couldn't read it" is not a heart rate. An aborted leg has no result,
-            // so a workout that interrupted this one publishes nothing here either.
+            // so a workout that interrupted this one publishes nothing here either. It is
+            // `spot = true`, which the persistence gate lets through while still closed.
             result?.let { settled ->
                 PulseEventBus.publishBlocking(
                     PulseEvent.HeartRateSample(
@@ -727,13 +801,13 @@ class RingSyncCoordinator(
             }
         } finally {
             spot.end(spotToken)
-            engine?.stopSpO2()   // stop the sensor even on cancellation (see measureHR)
+            // Stop the sensor even on cancellation, and reopen the gate after it (see measureHR).
+            stopAndReopenGate(MeasurementKind.SPO2) { engine?.stopSpO2() }
             restartWorkoutHeartRateIfActive()   // the stop preempts the workout's HR stream
             spo2State = if (result != null) MeasureState.DONE else MeasureState.FAILED
-            // Reopen the gate before publishing, or the one reading worth keeping is dropped.
-            gateLiveSamples(MeasurementKind.SPO2, closed = false)
             // The measurement's actual output, stored once — and what the card then shows, so the
             // settled value is on screen rather than whichever sample happened to arrive last.
+            // `spot = true` passes the still-closed gate.
             result?.let { settled ->
                 PulseEventBus.publishBlocking(
                     PulseEvent.Spo2Result(
@@ -771,6 +845,7 @@ class RingSyncCoordinator(
     }
 
     suspend fun measureHRV(): Int? {
+        if (streamsSpotVitals) return measureVital(SpotVital.HRV)?.let { kotlin.math.round(it).toInt() }
         if (hrvState == MeasureState.MEASURING) return null
         if (!isConnected) { hrvState = MeasureState.FAILED; return null }
         hrvState = MeasureState.MEASURING
@@ -790,6 +865,60 @@ class RingSyncCoordinator(
             engine?.stopHRV()
             restartWorkoutHeartRateIfActive()
             hrvState = if (result != null) MeasureState.DONE else MeasureState.FAILED
+        }
+        return result
+    }
+
+    /**
+     * An on-demand HRV / stress / temperature run on a family that streams them (Colmi `0x69`
+     * types 10/8/11). Ends on [SpotVitalWindow]'s rule — the ring has gone quiet after streaming —
+     * or at the ceiling, taking whatever last value arrived; fails on the ring's not-worn error or
+     * a dropped link. The streamed values are never stored (they travel as
+     * [PulseEvent.SpotVitalSample]); the one settled reading is published once at the end, so this
+     * leg needs no live-sample gate.
+     */
+    private suspend fun measureVital(vital: SpotVital): Double? {
+        if (vitalState(vital) == MeasureState.MEASURING) return null
+        setVitalState(vital, MeasureState.IDLE)   // see measureHR: no stale verdict on a refusal
+        if (!isConnected) { setVitalState(vital, MeasureState.FAILED); measureDisconnected = true; return null }
+        // Refused during a workout, like measureHR: `0x69 <type>` takes over the ring's single
+        // realtime engine, so the workout would lose its bpm for the whole run — and on the `0x69 01`
+        // fallback stream its keepalive re-arms heart rate ~30 s in, wrecking this run as well.
+        if (workoutHRActive) return null
+        setVitalState(vital, MeasureState.MEASURING)
+        measureNotWorn = false
+        measureDisconnected = false
+        spotVitalNoReading = null
+        spotVitalWindow.begin(vital)
+        engine?.startSpotVital(vital)
+        var result: Double? = null
+        try {
+            var aborted = false
+            for (i in 0 until SPOT_VITAL_MEASURE_SECONDS * 2) {   // 0.5 s granularity
+                if (spotVitalNoReading == vital) { aborted = true; break }
+                if (!isConnected) { aborted = true; measureDisconnected = true; break }
+                // A workout started inside the run and now owns the realtime engine (see measureHR).
+                if (workoutHRActive) { aborted = true; break }
+                if (spotVitalWindow.isSettled(System.currentTimeMillis())) break
+                delay(500)
+            }
+            result = if (aborted) null else spotVitalWindow.settled
+        } finally {
+            // Stop the sensor even on cancellation (see measureHR); the stop hands the ring back
+            // the reading, as QRing's does.
+            engine?.stopSpotVital(vital, result)
+            restartWorkoutHeartRateIfActive()   // `0x6A` preempts the workout's HR stream
+            setVitalState(vital, if (result != null) MeasureState.DONE else MeasureState.FAILED)
+            result?.let { settled ->
+                val now = java.time.Instant.now()
+                PulseEventBus.publishBlocking(
+                    when (vital) {
+                        SpotVital.HRV -> PulseEvent.HrvSample(kotlin.math.round(settled).toInt(), now)
+                        SpotVital.STRESS -> PulseEvent.StressSample(kotlin.math.round(settled).toInt(), now)
+                        SpotVital.TEMPERATURE -> PulseEvent.TemperatureSample(settled, now)
+                    }
+                )
+            }
         }
         return result
     }
@@ -893,6 +1022,23 @@ class RingSyncCoordinator(
             }
             is PulseEvent.HrvSample -> {
                 if (hrvState == MeasureState.MEASURING) latestHrvValue = event.value
+            }
+            // The ring's stop acknowledgement trails its last streamed frame, so from here the
+            // kind's live samples are real again (see LiveGateReopen).
+            is PulseEvent.RealtimeStreamStopped -> {
+                if (liveGateReopen.onStreamStopped(event.kind)) gateLiveSamples(event.kind, closed = false)
+            }
+            is PulseEvent.SpotVitalSample -> {
+                if (vitalState(event.vital) == MeasureState.MEASURING) {
+                    spotVitalWindow.collect(event.vital, event.value, System.currentTimeMillis())
+                }
+            }
+            is PulseEvent.SpotVitalNoReading -> {
+                // Only before any value: a late error must not turn a reading into a failure.
+                if (vitalState(event.vital) == MeasureState.MEASURING && !spotVitalWindow.receivedReading) {
+                    spotVitalNoReading = event.vital
+                    measureNotWorn = true
+                }
             }
             is PulseEvent.BloodPressureSample -> {
                 if (bloodPressureState == MeasureState.MEASURING) {

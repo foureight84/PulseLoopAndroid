@@ -80,6 +80,20 @@ object ColmiCommandID {
     // From the colmi_r02_client RealTimeReading enum.
     const val RT_HEART_RATE: UByte = 0x01u
     const val RT_SPO2: UByte = 0x03u
+    // On-demand HRV / stress / temperature (QRing `StartHeartRateReq.TYPE_PRESSURE` = 8,
+    // `TYPE_HRV` = 10, `TYPE_BODY_TEMPERATURE` = 11), confirmed on a Ring 2 Pro capture.
+    const val RT_STRESS: UByte = 0x08u
+    const val RT_HRV: UByte = 0x0Au
+    const val RT_TEMPERATURE: UByte = 0x0Bu
+
+    fun readingType(vital: SpotVital): UByte = when (vital) {
+        SpotVital.HRV -> RT_HRV
+        SpotVital.STRESS -> RT_STRESS
+        SpotVital.TEMPERATURE -> RT_TEMPERATURE
+    }
+
+    fun spotVital(readingType: UByte): SpotVital? = SpotVital.entries.firstOrNull { readingType(it) == readingType }
+
     // Real-time start action (0x69 payload byte 1). Stopping does NOT use an action byte
     // on 0x69 — it must be the separate CMD_STOP_REAL_TIME (0x6A) frame.
     const val RT_ACTION_START: UByte = 0x01u
