@@ -8,6 +8,7 @@ import com.pulseloop.data.DataRepairs
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.diagnostics.CrashLogger
 import com.pulseloop.diagnostics.DiagnosticsSubscriber
+import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.widgets.WidgetRefreshWorker
 import com.pulseloop.widgets.WidgetSnapshotPublisher
 import kotlinx.coroutines.CoroutineScope
@@ -42,23 +43,14 @@ class PulseLoopApplication : Application() {
                 if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_STOP) {
                     WidgetSnapshotPublisher.publish(this)
                 }
-                if (event == Lifecycle.Event.ON_START) {
+                // Bedtime/DND (issue #83): reconcile the window log with the current Mode in case
+                // the listener was unbound across an edge. The listener records the edges.
+                if (event == Lifecycle.Event.ON_START && QuietHoursPrefs.isZenTrackingActive(this)) {
                     com.pulseloop.settings.ZenModeTracker.recordCurrentFilter(this)
                 }
             },
         )
         WidgetRefreshWorker.schedule(this)
 
-        // Quiet-hours Bedtime/DND mode tracking (issue #83).
-        try {
-            val zenFilter = android.content.IntentFilter(android.app.NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
-            androidx.core.content.ContextCompat.registerReceiver(
-                this,
-                com.pulseloop.settings.ZenModeReceiver(),
-                zenFilter,
-                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
-            )
-            com.pulseloop.settings.ZenModeTracker.recordCurrentFilter(this)
-        } catch (_: Exception) {}
     }
 }

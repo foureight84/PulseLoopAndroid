@@ -12,8 +12,8 @@ data class ZenWindow(
 /**
  * Tracks Android's Bedtime / Do Not Disturb / Zen mode quiet windows (issue #83).
  *
- * Recorded via [ZenModeReceiver] when `ACTION_INTERRUPTION_FILTER_CHANGED` fires,
- * and checked on app launch/resume and before sleep import.
+ * Recorded by [ZenModeListener] at each transition, and reconciled with the current Mode on
+ * app start.
  */
 object ZenModeTracker {
     private const val PREFS_NAME = "zen_mode_history"
@@ -32,10 +32,9 @@ object ZenModeTracker {
             filter == NotificationManager.INTERRUPTION_FILTER_ALARMS
 
     fun isZenModeActive(context: Context): Boolean {
+        // Reading the filter needs no permission; only changing it needs policy access.
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        if (nm != null && nm.isNotificationPolicyAccessGranted) {
-            return isZenModeActive(nm.currentInterruptionFilter)
-        }
+        if (nm != null) return isZenModeActive(nm.currentInterruptionFilter)
         return try {
             val zenMode = Settings.Global.getInt(context.contentResolver, "zen_mode", 0)
             zenMode > 0

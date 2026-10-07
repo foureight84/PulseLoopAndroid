@@ -76,6 +76,7 @@ import com.pulseloop.service.ZoneSeverity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.settings.UnitSystem
+import com.pulseloop.settings.ZenModeListener
 import com.pulseloop.ui.components.DeviceHeroStatus
 import com.pulseloop.ui.components.ZoneLineChart
 import com.pulseloop.ui.theme.PulseColors
@@ -1620,7 +1621,7 @@ private fun QuietHoursCard() {
     val prefs = remember { QuietHoursPrefs(context) }
     var enabled by remember { mutableStateOf(prefs.enabled) }
     var gateByZenMode by remember {
-        mutableStateOf(prefs.gateByZenMode && QuietHoursPrefs.isNotificationPolicyAccessGranted(context))
+        mutableStateOf(prefs.gateByZenMode && ZenModeListener.isAccessGranted(context))
     }
     var start by remember { mutableStateOf(prefs.startMinutes) }
     var end by remember { mutableStateOf(prefs.endMinutes) }
@@ -1632,9 +1633,10 @@ private fun QuietHoursCard() {
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                val granted = QuietHoursPrefs.isNotificationPolicyAccessGranted(context)
+                val granted = ZenModeListener.isAccessGranted(context)
                 if (prefs.gateByZenMode && !granted) {
                     prefs.gateByZenMode = false
+                    ZenModeListener.setEnabled(context, false)
                 }
                 gateByZenMode = prefs.gateByZenMode && granted
             }
@@ -1685,7 +1687,8 @@ private fun QuietHoursCard() {
                         checked = gateByZenMode,
                         onCheckedChange = { desired ->
                             if (desired) {
-                                if (QuietHoursPrefs.isNotificationPolicyAccessGranted(context)) {
+                                ZenModeListener.setEnabled(context, true)
+                                if (ZenModeListener.isAccessGranted(context)) {
                                     gateByZenMode = true
                                     prefs.gateByZenMode = true
                                 } else {
@@ -1694,6 +1697,7 @@ private fun QuietHoursCard() {
                             } else {
                                 gateByZenMode = false
                                 prefs.gateByZenMode = false
+                                ZenModeListener.setEnabled(context, false)
                             }
                         },
                     )
@@ -1725,21 +1729,36 @@ private fun QuietHoursCard() {
             title = { Text("Permission required") },
             text = {
                 Text(
-                    "Android requires Do Not Disturb / Notification Policy Access to detect " +
-                        "when Bedtime or Do Not Disturb mode is active.",
+                    "To log when Bedtime or Do Not Disturb turns on and off while PulseLoop is " +
+                        "in the background, Android requires Notification access. PulseLoop only " +
+                        "listens for Mode changes and does not read your notifications.\n\n" +
+                        "If the switch is greyed out, open PulseLoop's App info, tap ⋮ → " +
+                        "Allow restricted settings, then come back here.",
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     showPermissionDialog = false
                     try {
-                        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                        val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                            android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                                .putExtra(
+                                    android.provider.Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                                    ZenModeListener.component(context).flattenToString(),
+                                )
+                        } else {
+                            android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                        }
+                        context.startActivity(intent)
                         prefs.gateByZenMode = true
                     } catch (_: Exception) {}
                 }) { Text("Open Settings") }
             },
             dismissButton = {
-                TextButton(onClick = { showPermissionDialog = false }) { Text("Cancel") }
+                TextButton(onClick = {
+                    showPermissionDialog = false
+                    if (!prefs.gateByZenMode) ZenModeListener.setEnabled(context, false)
+                }) { Text("Cancel") }
             },
         )
     }

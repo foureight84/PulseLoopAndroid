@@ -65,15 +65,13 @@ class QuietHoursPrefs(context: Context) {
         const val DEFAULT_START = 22 * 60
         const val DEFAULT_END = 7 * 60
 
-        fun isNotificationPolicyAccessGranted(context: Context): Boolean {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
-                ?: return false
-            return nm.isNotificationPolicyAccessGranted
-        }
+        /** Bedtime/DND gating is on and the [ZenModeListener] has Notification access. */
+        fun isZenTrackingActive(context: Context): Boolean =
+            QuietHoursPrefs(context).gateByZenMode && ZenModeListener.isAccessGranted(context)
 
         /**
          * Which minutes of a ring record to keep given user preferences.
-         * If [gateByZenMode] is enabled and policy access is granted, filters against recorded
+         * If [gateByZenMode] is enabled and Notification access is granted, filters against recorded
          * Bedtime/DND quiet windows. If no quiet windows exist for the waking day, falls back
          * to the configured clock window.
          */
@@ -85,7 +83,7 @@ class QuietHoursPrefs(context: Context) {
             zone: ZoneId = ZoneId.systemDefault(),
         ): IntRange? {
             if (!prefs.enabled) return 0 until minutes
-            if (prefs.gateByZenMode && isNotificationPolicyAccessGranted(context)) {
+            if (prefs.gateByZenMode && ZenModeListener.isAccessGranted(context)) {
                 val wakingDay = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
                 val dayStart = wakingDay - 12 * 3600_000L
                 val dayEnd = wakingDay + 36 * 3600_000L
