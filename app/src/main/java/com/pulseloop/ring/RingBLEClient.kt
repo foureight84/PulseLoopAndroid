@@ -848,6 +848,12 @@ class RingBLEClient(
      * ([com.pulseloop.wearables.WearableModel.extraCapabilities]) to the active set. Additive like
      * [refineActiveCapabilities], and only for a model of the installed family; [installDriver]
      * resets the set to the family baseline, so a re-route never inherits the old model's extras.
+     *
+     * The extras are granted only when the ring's own name identifies that model. [WearableModel.resolve]
+     * falls back to the carousel choice (and CONNECTED to the last known model), which is fine for
+     * the picture and the bond allowlist but not for features: a ring matched by service UUID while
+     * the carousel sits on the Ring 2 Pro would otherwise get HRV / stress / temperature controls it
+     * was never shown to support, each running its 75 s ceiling before failing.
      */
     private fun setActiveModel(modelID: String?) {
         val extras = modelExtraCapabilities(modelID)
@@ -857,6 +863,11 @@ class RingBLEClient(
     private fun modelExtraCapabilities(modelID: String?): Set<WearableCapability> =
         com.pulseloop.wearables.WearableModel.model(modelID)
             ?.takeIf { it.family == activeCoordinator?.deviceType }
+            ?.takeIf {
+                com.pulseloop.wearables.WearableModel.modelForAdvertisedName(
+                    activeAdvertisedName ?: connectingName,
+                )?.id == it.id
+            }
             ?.extraCapabilities.orEmpty()
 
     /** True only when the connected model is one we deliberately OS-bond (currently the R09 and

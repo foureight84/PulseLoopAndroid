@@ -25,11 +25,19 @@ enum class MeasurementKind(val key: String, val unit: String) {
  * A vital the ring measures on demand by **streaming** values until it is stopped — QRing's manual
  * HRV, stress and temperature screens (`HrvActivity`, `DayPressureFragment`, `TemperatureActivity`
  * in decompiled-qring-official/). Distinct from the all-day history of the same kinds.
+ *
+ * Everything that varies per vital lives here, so adding one is one new entry:
+ * [capability] gates its control, [label] names the button and [description] the caption.
  */
-enum class SpotVital(val kind: MeasurementKind) {
-    HRV(MeasurementKind.HRV),
-    STRESS(MeasurementKind.STRESS),
-    TEMPERATURE(MeasurementKind.TEMPERATURE),
+enum class SpotVital(
+    val kind: MeasurementKind,
+    val capability: WearableCapability,
+    val label: String,
+    val description: String,
+) {
+    HRV(MeasurementKind.HRV, WearableCapability.MANUAL_HRV, "HRV", "heart rate variability"),
+    STRESS(MeasurementKind.STRESS, WearableCapability.MANUAL_STRESS, "Stress", "stress"),
+    TEMPERATURE(MeasurementKind.TEMPERATURE, WearableCapability.MANUAL_TEMPERATURE, "Temp", "temperature"),
 }
 
 /**

@@ -40,7 +40,7 @@ object RingEventBridge {
             listOf(PulseEvent.Spo2Result(decoded.value, decoded._timestamp))
 
         is RingDecodedEvent.HistoryMeasurement -> {
-            if (!isPlausibleHistoryMeasurement(decoded.kind_field, decoded.value)) emptyList()
+            if (!isPlausible(decoded.kind_field, decoded.value)) emptyList()
             // A ring's on-device log can still hold records stamped under a previous clock — e.g.
             // a jring that logged against a UTC RTC before the app started setting it to local
             // time. Those decode hours into the future. Drop anything outside the history horizon
@@ -164,7 +164,8 @@ object RingEventBridge {
         is RingDecodedEvent.FramePending -> emptyList()
     }
 
-    private fun isPlausibleHistoryMeasurement(kind: MeasurementKind, value: Double): Boolean {
+    /** The one plausibility band per kind — history rows and on-demand spot readings alike. */
+    fun isPlausible(kind: MeasurementKind, value: Double): Boolean {
         if (!value.isFinite()) return false
         return when (kind) {
             MeasurementKind.HEART_RATE -> value.toInt() in hrRange

@@ -21,7 +21,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.ring.RingDeviceType
-import com.pulseloop.ring.SpotVital
 import com.pulseloop.service.MetricKind
 import com.pulseloop.ui.components.TrendChart
 import com.pulseloop.ui.components.ZoneLineChart
@@ -415,16 +414,7 @@ fun VitalsScreen(
                         if (spotVitals.isNotEmpty()) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 for (vital in spotVitals) {
-                                    val label = when (vital) {
-                                        SpotVital.HRV -> "HRV"
-                                        SpotVital.STRESS -> "Stress"
-                                        SpotVital.TEMPERATURE -> "Temp"
-                                    }
-                                    val what = when (vital) {
-                                        SpotVital.HRV -> "heart rate variability"
-                                        SpotVital.STRESS -> "stress"
-                                        SpotVital.TEMPERATURE -> "temperature"
-                                    }
+                                    val label = vital.label
                                     Button(
                                         enabled = !measuring,
                                         // Three to a row beside the title: tighter than the default 24 dp.
@@ -432,7 +422,7 @@ fun VitalsScreen(
                                         onClick = {
                                             runMeasurement(
                                                 coordinator.spotVitalMeasureSeconds, label,
-                                                caption = "Keep still — measuring $what…",
+                                                caption = "Keep still — measuring ${vital.description}…",
                                                 failed = { coordinator.vitalState(vital) == failedState },
                                             ) { coordinator.measureVitalOnly(vital) }
                                         },

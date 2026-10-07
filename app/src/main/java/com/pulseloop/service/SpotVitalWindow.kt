@@ -1,5 +1,6 @@
 package com.pulseloop.service
 
+import com.pulseloop.ring.RingEventBridge
 import com.pulseloop.ring.SpotVital
 
 /**
@@ -34,7 +35,7 @@ class SpotVitalWindow {
 
     /** Keep [value] if it belongs to the run in flight and is plausible; returns whether it was kept. */
     fun collect(vital: SpotVital, value: Double, atMs: Long): Boolean = synchronized(lock) {
-        if (vital != this.vital || value !in plausible(vital)) return false
+        if (vital != this.vital || !RingEventBridge.isPlausible(vital.kind, value)) return false
         last = value
         lastAtMs = atMs
         true
@@ -53,12 +54,5 @@ class SpotVitalWindow {
     companion object {
         /** QRing's `postDelayed(…, 1000)`. */
         const val QUIET_MS = 1_000L
-
-        /** The same bands `RingEventBridge` applies to the stored kinds. */
-        fun plausible(vital: SpotVital): ClosedFloatingPointRange<Double> = when (vital) {
-            SpotVital.HRV -> 1.0..300.0
-            SpotVital.STRESS -> 1.0..100.0
-            SpotVital.TEMPERATURE -> 30.0..45.0
-        }
     }
 }

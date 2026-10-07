@@ -541,6 +541,9 @@ class ColmiDecoderTest {
         assertTrue(ColmiDecoder.decodeNormal(hexToBytes("690b0000000000000000000000000074")).isEmpty())
         val error = ColmiDecoder.decodeNormal(ColmiPacket.frame(byteArrayOf(0x69, 0x08, 0x01))).single()
         assertEquals(SpotVital.STRESS, (error as RingDecodedEvent.SpotVitalNoReading).vital)
+        // A health frame like its siblings, so a diagnostics export masks it.
+        val hex = "690801320000000000000000000000a4"
+        assertNotEquals(hex, com.pulseloop.diagnostics.DiagnosticsRedactor.maskPacketHex(hex, error.kind))
     }
 
     @Test
@@ -557,6 +560,9 @@ class ColmiDecoderTest {
         assertArrayEquals(hexToBytes("690b25"), ColmiEncoder.spotVital(SpotVital.TEMPERATURE, enable = true))
         // Stop hands the ring back its reading: captured `6a0a2b…` after an HRV run settling on 43.
         assertArrayEquals(hexToBytes("6a0a2b00"), ColmiEncoder.spotVital(SpotVital.HRV, enable = false, lastRaw = 43))
+        assertArrayEquals(hexToBytes("6a083200"), ColmiEncoder.spotVital(SpotVital.STRESS, enable = false, lastRaw = 50))
+        // Temperature's stop never carries the value: QRing's stopTemperatureCheck() = 6a 0b 00 00.
+        assertArrayEquals(hexToBytes("6a0b0000"), ColmiEncoder.spotVital(SpotVital.TEMPERATURE, enable = false, lastRaw = 168))
     }
 
     @Test

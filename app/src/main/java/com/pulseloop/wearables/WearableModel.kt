@@ -44,7 +44,8 @@ data class WearableModel(
      * added to the connected ring's set when this model is resolved. For features the family's
      * protocol carries but nothing on the wire says a given ring supports — QRing decides those
      * from a server-side per-model feature list, not from the `0x3C` reply. Same rule as
-     * [requiresOsBond]: add a model only once it is shown to work on real hardware.
+     * [requiresOsBond]: add a model only once it is shown to work on real hardware. Granted only
+     * when the ring's advertised name identifies this model, never from the carousel fallback.
      */
     val extraCapabilities: Set<WearableCapability> = emptySet(),
 ) {

@@ -12,7 +12,10 @@ import com.pulseloop.ring.MeasurementKind
  * (HR 85 + 86, SpO₂ 98 + 98 on a Ring 2 Pro; QRing's own capture shows the same frame order).
  *
  * So the leg arms a reopen instead, paid by whichever comes first: the ring's acknowledgement
- * ([onStreamStopped]) or a timeout ([onTimeout]) for a family that sends none. A new leg on the
+ * ([onStreamStopped]) or a timeout ([onTimeout]) for one that never arrives. Only a stop the ring
+ * will acknowledge waits at all (`RingSyncEngine.stopAwaitsAck`); every other stop pays the reopen
+ * straight away, since a family that never acknowledges would otherwise drop ~2 s of a workout's
+ * samples after every leg. A new leg on the
  * same kind takes ownership of the gate again ([disarm]), so a late acknowledgement or timeout
  * from the previous run cannot open it under the new one.
  */
@@ -47,8 +50,8 @@ class LiveGateReopen {
     }
 
     companion object {
-        /** Captured acknowledgements land 100–250 ms after the stop; this only bounds a family
-         *  that never sends one. */
+        /** Captured acknowledgements land 100–250 ms after the stop; this only bounds one that
+         *  was expected and never came. */
         const val TIMEOUT_MS = 2_000L
     }
 }

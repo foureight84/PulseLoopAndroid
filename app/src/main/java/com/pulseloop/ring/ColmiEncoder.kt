@@ -180,8 +180,11 @@ object ColmiEncoder {
     /**
      * On-demand HRV / stress / temperature, the same `0x69`/`0x6A` pair as [manualSpO2] with the
      * vital's reading type. Start is QRing's `StartHeartRateReq.getSimpleReq(type)` =
-     * `[0x69, type, 0x25]`. Stop carries the last raw value the ring streamed, as the HR stop does,
-     * so the ring's own log records it; the ring echoes its final value back in the `0x6A` ack.
+     * `[0x69, type, 0x25]`. The HRV and stress stops carry the last raw value the ring streamed, as
+     * the HR stop does (`StopHeartRateReq.stopHrv(b)` / `stopPressure(b)`), so the ring's own log
+     * records it; the ring echoes its final value back in the `0x6A` ack. Temperature does not:
+     * QRing's `stopTemperatureCheck()` is a fixed `[0x6A, 0x0B, 0, 0]` at every call site in
+     * `TemperatureActivity`, so [lastRaw] is ignored for it.
      */
     fun spotVital(vital: SpotVital, enable: Boolean, lastRaw: Int = 0): ByteArray = if (enable) {
         byteArrayOf(ColmiCommandID.MANUAL_HEART_RATE.toByte(), ColmiCommandID.readingType(vital).toByte(), 0x25)
@@ -189,7 +192,7 @@ object ColmiEncoder {
         byteArrayOf(
             ColmiCommandID.REALTIME_STOP.toByte(),
             ColmiCommandID.readingType(vital).toByte(),
-            lastRaw.coerceIn(0, 255).toByte(), 0x00,
+            if (vital == SpotVital.TEMPERATURE) 0x00 else lastRaw.coerceIn(0, 255).toByte(), 0x00,
         )
     }
 

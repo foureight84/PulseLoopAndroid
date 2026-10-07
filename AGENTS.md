@@ -484,8 +484,12 @@ stop, a Colmi ring sends one more `0x69` reading and only then its `0x6A` acknow
 QRing's captures and ours alike. Reopening as the leg ended put that trailing reading on an open
 gate, so every Colmi HR and SpO₂ spot measurement stored **two** rows a few hundred ms apart (HR
 85 + 86, SpO₂ 98 + 98 on a Ring 2 Pro). The leg now arms the reopen before sending its stop, and
-the ring's acknowledgement (`PulseEvent.RealtimeStreamStopped`) pays it; a 2 s timeout covers a
-family that sends none. Don't move the reopen back to the end of the leg to "simplify" it.
+the ring's acknowledgement (`PulseEvent.RealtimeStreamStopped`) pays it, with a 2 s timeout in case
+it never comes. The wait is opt-in per stop: only when the engine reports that the stop it just sent
+will be acknowledged (`RingSyncEngine.stopAwaitsAck`, Colmi only). Every other family — and a Colmi
+stop that sent nothing — reopens at once, because waiting there would drop the first ~2 s of a
+workout's samples after every leg. Don't move the reopen back to the end of the leg to "simplify"
+it, and don't make the timeout unconditional.
 
 **A spot HR measurement is refused while a workout is running.** The live-sample gate is one switch
 per kind, so whichever of the two closed it decides whether the other's samples are stored, and the
@@ -494,7 +498,9 @@ dropped for the length of the leg, or — if the workout started inside it — t
 samples were stored as workout rows and its settled value never published. A workout starting mid-leg
 now aborts the leg, and the gate is reopened unconditionally in the `finally` because the leg is what
 closed it; leaving it closed would silently drop that workout's samples for the rest of the session.
-The workout screen is already showing live bpm, so refusing costs nothing. No unit test:
+The workout screen is already showing live bpm, so refusing costs nothing. Streamed HRV / stress /
+temperature (`measureVital`) is refused and aborted the same way, for a blunter reason: `0x69 <type>`
+takes over the ring's one realtime engine, so the workout would get no bpm at all. No unit test:
 `RingSyncCoordinator` needs a BLE client and has no harness.
 
 ## The terminal block is the authority on a history transfer, not the header (issue #69)
