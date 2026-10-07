@@ -7,6 +7,7 @@ import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.AggregateRequest
+import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.pulseloop.ring.PulseEvent
 import com.pulseloop.ring.PulseEventBus
@@ -36,21 +37,24 @@ import java.time.ZoneId
  * distance from [com.pulseloop.service.ActivityRollup]. Baking either into the event
  * would overwrite those paths on write.
  *
- * **Every read subtracts PulseLoop's own origin.** PulseLoop exports its own daily step
- * totals to Health Connect (`ActivityExporter`), so a naive aggregate would include our
- * own earlier exports — the ring's daily total fed back to the phone path, or the
- * phone's own total plus the ring's. Both reads therefore run twice: once with no origin
- * filter (all origins), once filtered to PulseLoop's own package, and the second is
- * subtracted from the first. `ActivityExporter` also skips `source == "phone"` rows,
- * which stops the loop from growing; this read-side subtraction cleans up the exports
- * that already exist.
+ * **Every read excludes PulseLoop's own origin.** PulseLoop exports its own daily step
+ * totals to Health Connect (`ActivityExporter`), so an aggregate that included our own
+ * origin would feed the ring's (or a previous phone-mode run's) exported value back
+ * into the phone path — the exported total plus the real one, or the exported total
+ * published as "phone steps" on a day the phone has no source. Health Connect's
+ * `aggregate` de-duplicates overlapping records by priority rather than summing, so a
+ * manual subtraction of our own aggregate (the previous approach) can't work: the
+ * unfiltered aggregate picks our own export as the priority winner, and subtracting it
+ * then zeroes out the real phone total on any day PulseLoop has exported. Instead we
+ * **read the record origins, drop our own package, and pass the remaining origins to
+ * `aggregate`'s `dataOriginFilter`** — HC's de-duplication then runs over foreign
+ * sources only, which is the intended pool.
  */
 class PhoneStepManager(private val context: Context) {
 
     /**
-     * PulseLoop's own origin, as Health Connect identifies it. Passed as the
-     * `dataOriginFilter` for the "own contribution" aggregate that gets subtracted from
-     * the unfiltered one — see the class KDoc.
+     * PulseLoop's own origin, as Health Connect identifies it. Excluded from the origins
+     * discovered for a read — see the class KDoc.
      */
     private val ownOrigin: Set<DataOrigin> = setOf(DataOrigin(context.packageName))
 
@@ -77,24 +81,36 @@ class PhoneStepManager(private val context: Context) {
         val now = Instant.now()
         val startOfDayMs = TimeUtil.startOfDayLocal(System.currentTimeMillis())
         val startOfDay = Instant.ofEpochMilli(startOfDayMs)
+        val range = TimeRangeFilter.between(startOfDay, now)
 
-        // Two aggregates and a subtraction: all origins minus PulseLoop's own contribution.
-        // See the class KDoc for why. The result is floored at 0 because a momentarily
-        // inconsistent pairing of the two calls could otherwise produce a negative step
-        // count — not a value we would ever want to publish.
-        val allSteps = aggregateToday(client, startOfDay, now, dataOriginFilter = emptySet())
-            ?: return false
-        val ownSteps = aggregateToday(client, startOfDay, now, dataOriginFilter = ownOrigin)
-            ?: return false
-        val steps = (allSteps - ownSteps).coerceAtLeast(0)
+        // Discover foreign origins writing steps today; aggregate only over them. See the
+        // class KDoc for why HC's own subtraction doesn't work.
+        val foreignOrigins = try {
+            foreignStepOrigins(client, range)
+        } catch (_: Exception) {
+            return false
+        }
+        if (foreignOrigins.isEmpty()) {
+            // No phone step source has records for today. Skip the publish so the ring's
+            // value for today stands; the query itself succeeded, so return true.
+            return true
+        }
 
-        // Just after midnight, or on a phone with no step writer in Health Connect, the
-        // aggregate returns null and becomes 0. Publishing 0 would clobber the ring's
-        // only valid record for the day and mark the row source = "phone", which then
-        // also blocks the ring's bucket-derived total for today. Skip the publish and
-        // let the ring's number stand until the phone has actually counted some steps.
-        // The query itself succeeded, so still return true.
+        val steps = try {
+            client.aggregate(
+                AggregateRequest(
+                    metrics = setOf(StepsRecord.COUNT_TOTAL),
+                    timeRangeFilter = range,
+                    dataOriginFilter = foreignOrigins,
+                )
+            )[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0
+        } catch (_: Exception) {
+            return false
+        }
+        // An aggregate of 0 with a non-empty origin set is possible but rare (origins have
+        // records, all of which total 0). Skip the publish for the same reason as above.
         if (steps <= 0) return true
+
         PulseEventBus.publishBlocking(
             PulseEvent.PhoneStepsUpdate(
                 timestamp = now,
@@ -102,27 +118,6 @@ class PhoneStepManager(private val context: Context) {
             )
         )
         return true
-    }
-
-    /**
-     * One aggregate over today's `StepsRecord`s, filtered to [dataOriginFilter] when
-     * non-empty. Returns null on any client error so the caller can short-circuit.
-     */
-    private suspend fun aggregateToday(
-        client: HealthConnectClient,
-        startOfDay: Instant,
-        now: Instant,
-        dataOriginFilter: Set<DataOrigin>,
-    ): Int? = try {
-        client.aggregate(
-            AggregateRequest(
-                metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = TimeRangeFilter.between(startOfDay, now),
-                dataOriginFilter = dataOriginFilter,
-            )
-        )[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0
-    } catch (_: Exception) {
-        null
     }
 
     /**
@@ -150,11 +145,8 @@ class PhoneStepManager(private val context: Context) {
      *    today's data. We anchor the range to local midnight so every bucket is exactly one
      *    calendar day.
      *
-     * 3. Every emitted total is the **difference** between the unfiltered aggregate and the
-     *    PulseLoop-only aggregate — see the class KDoc. The two calls share the range and
-     *    slicer, so their buckets line up by `startTime`; a bucket present only in the
-     *    unfiltered result is a day where PulseLoop has no records, so the subtraction is
-     *    just the unfiltered value.
+     * 3. Origins are discovered from the raw records first, then the aggregate runs with
+     *    `dataOriginFilter` set to the foreign origins only — see the class KDoc for why.
      *
      * @param daysBack how many days of history to backfill (default 30).
      * @return true if the query succeeded (even if some days were empty), false on failure.
@@ -181,47 +173,36 @@ class PhoneStepManager(private val context: Context) {
         val todayStart: LocalDateTime = LocalDate.now().atStartOfDay()
         val endLocal: LocalDateTime = todayStart.plusDays(1)
         val startLocal: LocalDateTime = todayStart.minusDays(daysBack - 1)
+        val range = TimeRangeFilter.between(startLocal, endLocal)
 
-        // Two aggregateGroupByPeriod calls, same range and slicer, differing only in the
-        // origin filter. See the class KDoc.
-        val allBuckets = try {
+        // Discover foreign origins across the whole window; aggregate only over them. See
+        // the class KDoc for why HC's own subtraction doesn't work.
+        val foreignOrigins = try {
+            foreignStepOrigins(client, range)
+        } catch (_: Exception) {
+            return false
+        }
+        if (foreignOrigins.isEmpty()) return true
+
+        val buckets = try {
             client.aggregateGroupByPeriod(
                 AggregateGroupByPeriodRequest(
                     metrics = setOf(StepsRecord.COUNT_TOTAL),
-                    timeRangeFilter = TimeRangeFilter.between(startLocal, endLocal),
+                    timeRangeFilter = range,
                     timeRangeSlicer = Period.ofDays(1),
-                    dataOriginFilter = emptySet(),
+                    dataOriginFilter = foreignOrigins,
                 )
             )
         } catch (_: Exception) {
             return false
         }
-        val ownBuckets = try {
-            client.aggregateGroupByPeriod(
-                AggregateGroupByPeriodRequest(
-                    metrics = setOf(StepsRecord.COUNT_TOTAL),
-                    timeRangeFilter = TimeRangeFilter.between(startLocal, endLocal),
-                    timeRangeSlicer = Period.ofDays(1),
-                    dataOriginFilter = ownOrigin,
-                )
-            )
-        } catch (_: Exception) {
-            return false
-        }
-        // Index PulseLoop's own per-day totals by bucket start time so the subtraction below
-        // is a single map lookup per bucket. A bucket only in `allBuckets` is a day where
-        // PulseLoop has no records — the subtraction is just `all - 0`.
-        val ownByStart: Map<LocalDateTime, Int> = ownBuckets.associate { bucket ->
-            bucket.startTime to (bucket.result[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0)
-        }
 
-        // Each bucket is one day's total. The bucket's startTime marks the beginning of the
-        // period it covers (local midnight). Map each non-empty bucket to a PhoneStepsUpdate
-        // so the persistence layer overwrites the corresponding activity_daily row.
-        for (bucket in allBuckets) {
-            val all = bucket.result[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0
-            val own = ownByStart[bucket.startTime] ?: 0
-            val steps = (all - own).coerceAtLeast(0)
+        // Each bucket is one day's total over the foreign origins. The bucket's startTime
+        // marks the beginning of the period it covers (local midnight). Map each non-empty
+        // bucket to a PhoneStepsUpdate so the persistence layer overwrites the corresponding
+        // activity_daily row.
+        for (bucket in buckets) {
+            val steps = bucket.result[StepsRecord.COUNT_TOTAL]?.toInt() ?: 0
             // Skip empty days: publishing 0 would clobber the ring's only valid record for
             // that day. Leaving the day untouched lets it fall back to the ring's data.
             if (steps <= 0) continue
@@ -235,5 +216,23 @@ class PhoneStepManager(private val context: Context) {
             )
         }
         return true
+    }
+
+    /**
+     * The set of Health Connect origins writing `StepsRecord`s in [timeRangeFilter], minus
+     * PulseLoop's own. The result is passed as `dataOriginFilter` to the aggregates above so
+     * HC's priority-based de-duplication runs over foreign sources only — see the class KDoc.
+     */
+    private suspend fun foreignStepOrigins(
+        client: HealthConnectClient,
+        timeRangeFilter: TimeRangeFilter,
+    ): Set<DataOrigin> {
+        val records = client.readRecords(
+            ReadRecordsRequest(
+                recordType = StepsRecord::class,
+                timeRangeFilter = timeRangeFilter,
+            )
+        ).records
+        return records.map { it.metadata.dataOrigin }.toSet() - ownOrigin
     }
 }
