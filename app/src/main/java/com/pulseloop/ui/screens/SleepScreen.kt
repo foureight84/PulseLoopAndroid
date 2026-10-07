@@ -15,16 +15,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.*
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
@@ -1000,6 +1004,7 @@ private fun SleepRecordsCard(
     val context = androidx.compose.ui.platform.LocalContext.current
     // Two-step delete (the vitals/activity pattern): a row's trash icon arms the confirm dialog.
     var pendingRun by remember { mutableStateOf<com.pulseloop.service.SleepRecordRun?>(null) }
+    var editingRun by remember { mutableStateOf<com.pulseloop.service.SleepRecordRun?>(null) }
     VisualizationCard(
         eyebrow = "Records",
         // One run only happens on a carousel page, which may be a nap rather than a night.
@@ -1026,6 +1031,15 @@ private fun SleepRecordsCard(
                             "Asleep ${SleepFormat.duration(run.asleepMinutes)}",
                             fontSize = 12.sp,
                             color = PulseColors.textMuted,
+                        )
+                    }
+                    // Edit start/end boundaries (issue #82).
+                    IconButton(onClick = { editingRun = run }) {
+                        Icon(
+                            Icons.Filled.Edit,
+                            contentDescription = "Edit this record's times",
+                            tint = PulseColors.textMuted,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                     // The escape hatch (issue #78): the ring opened a record on a still wrist —
@@ -1057,6 +1071,24 @@ private fun SleepRecordsCard(
         }
     }
 
+    editingRun?.let { run ->
+        SleepRecordEditDialog(
+            run = run,
+            onDismiss = { editingRun = null },
+            onSave = { newStart, newEnd ->
+                editingRun = null
+                scope.launch {
+                    val updated = viewModel?.editSleepRecord(session.id, run.recordStartAt, newStart, newEnd) ?: false
+                    if (!updated) {
+                        android.widget.Toast.makeText(
+                            context, "Couldn't update this record", android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+        )
+    }
+
     pendingRun?.let { run ->
         AlertDialog(
             onDismissRequest = { pendingRun = null },
@@ -1071,7 +1103,7 @@ private fun SleepRecordsCard(
                 TextButton(onClick = {
                     pendingRun = null
                     scope.launch {
-                        val removed = viewModel?.deleteSleepRecord(session.id, run.startAt) ?: false
+                        val removed = viewModel?.deleteSleepRecord(session.id, run.recordStartAt) ?: false
                         if (!removed) {
                             android.widget.Toast.makeText(
                                 context, "Couldn't delete this record", android.widget.Toast.LENGTH_SHORT,
@@ -1085,4 +1117,136 @@ private fun SleepRecordsCard(
             },
         )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SleepRecordEditDialog(
+    run: com.pulseloop.service.SleepRecordRun,
+    onDismiss: () -> Unit,
+    onSave: (newStartAt: Long, newEndAt: Long) -> Unit,
+) {
+    val zone = remember { java.time.ZoneId.systemDefault() }
+    var currentStart by remember { mutableStateOf(run.startAt) }
+    var currentEnd by remember { mutableStateOf(run.endAt) }
+    var pickingTime by remember { mutableStateOf<String?>(null) } // "start" or "end"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit sleep record") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Adjust start or end time to trim this record. Stages outside the new range will be removed.",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = PulseColors.textMuted,
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { pickingTime = "start" },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Start: ${SleepFormat.clockTime(currentStart)}")
+                    }
+                    OutlinedButton(
+                        onClick = { pickingTime = "end" },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("End: ${SleepFormat.clockTime(currentEnd)}")
+                    }
+                }
+                if (currentStart >= currentEnd) {
+                    Text(
+                        "Start time must be before end time.",
+                        color = PulseColors.danger,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(currentStart, currentEnd) },
+                enabled = currentStart < currentEnd && (currentStart != run.startAt || currentEnd != run.endAt),
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+
+    pickingTime?.let { which ->
+        val targetTs = if (which == "start") currentStart else currentEnd
+        val zdt = java.time.Instant.ofEpochMilli(targetTs).atZone(zone)
+        val timeState = rememberTimePickerState(
+            initialHour = zdt.hour,
+            initialMinute = zdt.minute,
+            is24Hour = android.text.format.DateFormat.is24HourFormat(androidx.compose.ui.platform.LocalContext.current),
+        )
+
+        AlertDialog(
+            onDismissRequest = { pickingTime = null },
+            title = { Text(if (which == "start") "Adjust start time" else "Adjust end time") },
+            text = { TimePicker(state = timeState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val resolved = resolveAdjustedTime(targetTs, run.startAt, run.endAt, timeState.hour, timeState.minute, zone)
+                        .coerceIn(run.startAt, run.endAt)
+                    if (which == "start") {
+                        currentStart = resolved
+                    } else {
+                        currentEnd = resolved
+                    }
+                    pickingTime = null
+                }) { Text("Done") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pickingTime = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/**
+ * Resolves the epoch millis for an adjusted time within/near a sleep record [recordStart]..[recordEnd].
+ * Evaluates candidate calendar dates and selects the one that places the time within or closest to
+ * [recordStart]..[recordEnd], breaking ties with proximity to [targetTs].
+ */
+internal fun resolveAdjustedTime(
+    targetTs: Long,
+    recordStart: Long,
+    recordEnd: Long,
+    hour: Int,
+    minute: Int,
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): Long {
+    val startZdt = java.time.Instant.ofEpochMilli(recordStart).atZone(zone)
+    val endZdt = java.time.Instant.ofEpochMilli(recordEnd).atZone(zone)
+
+    val startDate = startZdt.toLocalDate()
+    val endDate = endZdt.toLocalDate()
+    val candidates = listOf(
+        startDate.minusDays(1),
+        startDate,
+        endDate,
+        endDate.plusDays(1),
+    ).distinct().map { date ->
+        date.atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
+    }
+
+    fun distanceToRecord(c: Long): Long = when {
+        c < recordStart -> recordStart - c
+        c > recordEnd -> c - recordEnd
+        else -> 0L
+    }
+
+    return candidates.minWith(
+        compareBy<Long> { distanceToRecord(it) }
+            .thenBy { kotlin.math.abs(it - targetTs) }
+    )
 }
