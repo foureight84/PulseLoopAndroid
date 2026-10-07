@@ -334,6 +334,27 @@ class ColmiQringParityTest {
     }
 
     @Test
+    fun `Ring 2 Pro hardware night frame decodes on the main sleep action`() {
+        // Captured 2026-10-07 09:33 (HCI snoop, PulseLoop sync); a session over 180 minutes lands
+        // on action 39 with action 62 empty. PulseLoop showed 2:30 AM to 9:14 AM, 6h 44m.
+        val payload = byteArrayOf(
+            0x01, 0x00, 0x22, 0x96.toByte(), 0x00, 0x2a, 0x02,
+            0x02, 0x24, 0x03, 0x1e, 0x02, 0x0f, 0x04, 0x11, 0x02, 0x21, 0x03, 0x10, 0x02, 0x17,
+            0x04, 0x13, 0x02, 0x33, 0x03, 0x0b, 0x02, 0x38, 0x04, 0x11, 0x02, 0x20, 0x03, 0x18,
+            0x02, 0x18,
+        )
+        val events = ColmiDecoder.decodeBigData(
+            bigData(ColmiCommandID.BIG_DATA_SLEEP, payload), zone = zone)
+        val night = events.single() as RingDecodedEvent.SleepTimeline
+        assertEquals(
+            java.time.LocalDate.now(zone).atTime(2, 30).atZone(zone).toInstant(), night._timestamp)
+        assertEquals(404, night.stages.size)
+        assertEquals(270, night.stages.count { it == SleepStage.LIGHT })
+        assertEquals(81, night.stages.count { it == SleepStage.DEEP })
+        assertEquals(53, night.stages.count { it == SleepStage.REM })
+    }
+
+    @Test
     fun `lunch sleep completion does not advance the history pipeline`() {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
