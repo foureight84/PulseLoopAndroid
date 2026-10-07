@@ -414,6 +414,11 @@ class EventPersistenceSubscriber(
             is PulseEvent.HeartRateComplete -> {}
             is PulseEvent.Spo2Complete -> {}
             is PulseEvent.MeasurementRejected -> {} // Product orchestration only; no persistence.
+            // A streamed spot value is not a reading: the coordinator settles the run and publishes
+            // the one reading as an HrvSample/StressSample/TemperatureSample (issue #60's rule).
+            is PulseEvent.SpotVitalSample -> {}
+            is PulseEvent.SpotVitalNoReading -> {}
+            is PulseEvent.RealtimeStreamStopped -> {}
             is PulseEvent.WearState -> {} // Product orchestration only (fast-fail a measure); not persisted.
             // Both persisted by DiagnosticsSubscriber, which also stamps and bounds them.
             is PulseEvent.RawPacket -> {}

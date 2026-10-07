@@ -514,6 +514,84 @@ class ColmiDecoderTest {
         assertEquals(30.toByte(), ColmiEncoder.autoHeartRate(enabled = true, intervalMinutes = 33)[3])
     }
 
+    // MARK: On-demand HRV / stress / temperature (Ring 2 Pro QRing capture, 2026-10-03)
+
+    @Test
+    fun `streamed HRV stress and temperature frames decode as spot samples, not heart rate`() {
+        val now = Instant.parse("2026-10-04T06:24:50Z")
+        fun single(hex: String) = ColmiDecoder.decodeNormal(hexToBytes(hex), now).single()
+
+        val hrv = single("690a002b00000000000000000000009e") as RingDecodedEvent.SpotVitalSample
+        assertEquals(SpotVital.HRV, hrv.vital)
+        assertEquals(43.0, hrv.value, 0.0)
+
+        val stress = single("6908001e00000000000000000000008f") as RingDecodedEvent.SpotVitalSample
+        assertEquals(SpotVital.STRESS, stress.vital)
+        assertEquals(30.0, stress.value, 0.0)
+
+        // raw 0xa8 = 168 → 168 / 10 + 20, as QRing's TemperatureActivity shows it.
+        val temp = single("690b00a800000000000000000000001c") as RingDecodedEvent.SpotVitalSample
+        assertEquals(SpotVital.TEMPERATURE, temp.vital)
+        assertEquals(36.8, temp.value, 1e-9)
+    }
+
+    @Test
+    fun `spot vital warm-up frames decode to nothing and an error frame to no-reading`() {
+        assertTrue(ColmiDecoder.decodeNormal(hexToBytes("690a0000000000000000000000000073")).isEmpty())
+        assertTrue(ColmiDecoder.decodeNormal(hexToBytes("690b0000000000000000000000000074")).isEmpty())
+        val error = ColmiDecoder.decodeNormal(ColmiPacket.frame(byteArrayOf(0x69, 0x08, 0x01))).single()
+        assertEquals(SpotVital.STRESS, (error as RingDecodedEvent.SpotVitalNoReading).vital)
+        // A health frame like its siblings, so a diagnostics export masks it.
+        val hex = "690801320000000000000000000000a4"
+        assertNotEquals(hex, com.pulseloop.diagnostics.DiagnosticsRedactor.maskPacketHex(hex, error.kind))
+    }
+
+    @Test
+    fun `a heart-rate stream frame still decodes as heart rate`() {
+        val hr = ColmiDecoder.decodeNormal(hexToBytes("690100590000000000000000000000c3")).single()
+        assertEquals(89, (hr as RingDecodedEvent.HeartRateSample).bpm)
+    }
+
+    @Test
+    fun `spot vital start and stop frames match QRing`() {
+        // Start = StartHeartRateReq.getSimpleReq(type) as captured: 69 0a 25 / 69 08 25 / 69 0b 25.
+        assertArrayEquals(hexToBytes("690a25"), ColmiEncoder.spotVital(SpotVital.HRV, enable = true))
+        assertArrayEquals(hexToBytes("690825"), ColmiEncoder.spotVital(SpotVital.STRESS, enable = true))
+        assertArrayEquals(hexToBytes("690b25"), ColmiEncoder.spotVital(SpotVital.TEMPERATURE, enable = true))
+        // Stop hands the ring back its reading: captured `6a0a2b…` after an HRV run settling on 43.
+        assertArrayEquals(hexToBytes("6a0a2b00"), ColmiEncoder.spotVital(SpotVital.HRV, enable = false, lastRaw = 43))
+        assertArrayEquals(hexToBytes("6a083200"), ColmiEncoder.spotVital(SpotVital.STRESS, enable = false, lastRaw = 50))
+        // Temperature's stop never carries the value: QRing's stopTemperatureCheck() = 6a 0b 00 00.
+        assertArrayEquals(hexToBytes("6a0b0000"), ColmiEncoder.spotVital(SpotVital.TEMPERATURE, enable = false, lastRaw = 168))
+    }
+
+    @Test
+    fun `the ring's 0x6A stop acknowledgement decodes, maps to its kind, and is masked`() {
+        // Captured order after a Ring 2 Pro SpO₂ stop: 6a03 out, trailing 690300620100…, then this.
+        val ack = ColmiDecoder.decodeNormal(hexToBytes("6a0362000000000000000000000000cf")).single()
+        assertEquals(ColmiCommandID.RT_SPO2.toInt(), (ack as RingDecodedEvent.RealtimeStopAck).readingType)
+        assertEquals(
+            listOf(MeasurementKind.SPO2),
+            RingEventBridge.eventsFor(ack).map { (it as PulseEvent.RealtimeStreamStopped).kind },
+        )
+        val hrAck = ColmiDecoder.decodeNormal(hexToBytes("6a0156000000000000000000000000c1")).single()
+        assertEquals(
+            listOf(MeasurementKind.HEART_RATE),
+            RingEventBridge.eventsFor(hrAck).map { (it as PulseEvent.RealtimeStreamStopped).kind },
+        )
+        // It carries the final reading, so a diagnostics export must not show it in clear.
+        assertEquals("6a", com.pulseloop.diagnostics.DiagnosticsRedactor.maskPacketHex("6a0362000000000000000000000000cf", ack.kind).take(2))
+        assertNotEquals("6a0362000000000000000000000000cf",
+            com.pulseloop.diagnostics.DiagnosticsRedactor.maskPacketHex("6a0362000000000000000000000000cf", ack.kind))
+    }
+
+    @Test
+    fun `spot vital raw value round-trips, temperature included`() {
+        assertEquals(168, ColmiDecoder.spotVitalRaw(SpotVital.TEMPERATURE, 36.8))
+        assertEquals(36.9, ColmiDecoder.spotVitalValue(SpotVital.TEMPERATURE, 169), 1e-9)
+        assertEquals(43, ColmiDecoder.spotVitalRaw(SpotVital.HRV, 43.0))
+    }
+
     // MARK: Helpers
 
     private fun hexToBytes(hex: String): ByteArray =
