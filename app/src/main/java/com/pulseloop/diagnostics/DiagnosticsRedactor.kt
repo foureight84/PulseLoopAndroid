@@ -26,7 +26,7 @@ object DiagnosticsRedactor {
     private val HEALTH_KINDS = setOf(
         "activity", "activity_bucket", "hr_sample", "spo2_progress", "spo2_result",
         "sleep_timeline", "history_measurement", "stress_sample", "hrv_sample", "temperature_sample",
-        "sport_telemetry",
+        "sport_telemetry", "spot_vital_sample", "spot_vital_no_reading", "realtime_stop_ack",
         // A live vital result outside its plausible band: no reading, but the byte is still a value.
         "rejected_vital_result",
         // Half of a frame still being reassembled (RingDecodedEvent.FramePending). Masked because

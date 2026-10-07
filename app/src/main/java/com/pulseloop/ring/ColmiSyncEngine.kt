@@ -88,6 +88,8 @@ class ColmiSyncEngine(
     private var realtimeKeepaliveJob: Job? = null
     @Volatile private var manualHRActive = false
     private var manualSpO2Active = false
+    /** Kinds whose `0x6A` stop went out and whose acknowledgement is still owed — see [stopAwaitsAck]. */
+    private val stopsAwaitingAck = java.util.Collections.synchronizedSet(mutableSetOf<MeasurementKind>())
 
     /**
      * This ring answered the `0x1E` realtime-HR request with a `0x9E` error frame, so the session
@@ -785,6 +787,7 @@ class ColmiSyncEngine(
         realtimeKeepaliveJob?.cancel(); realtimeKeepaliveJob = null
         if (manualHRActive) {
             manualHRActive = false
+            stopsAwaitingAck += MeasurementKind.HEART_RATE
             writer?.enqueue(encoder.manualHeartRate(enable = false, lastBpm = lastManualBpm))
         }
         if (!realtimeHRActive) return
@@ -793,6 +796,7 @@ class ColmiSyncEngine(
     }
 
     override fun measureHeartRateSpot() {
+        stopsAwaitingAck -= MeasurementKind.HEART_RATE
         manualHRActive = true
         lastManualBpm = 0
         writer?.enqueue(encoder.manualHeartRate(enable = true))
@@ -802,6 +806,7 @@ class ColmiSyncEngine(
         // On-demand live SpO₂ via the real-time command (0x69/3). The ring streams
         // [0x69, 3, error, value] frames decoded to Spo2Result. (Historical SpO₂ is a
         // separate big-data path, requestSpo2(), used by the startup history sync.)
+        stopsAwaitingAck -= MeasurementKind.SPO2
         manualSpO2Active = true
         writer?.enqueue(encoder.manualSpO2(enable = true))
     }
@@ -814,7 +819,25 @@ class ColmiSyncEngine(
         // the HR bookkeeping with it, or that restart short-circuits on a stream the ring has
         // already stopped and the workout shows no bpm until the idle keepalive re-arms.
         manualHRActive = false
+        stopsAwaitingAck += MeasurementKind.SPO2
         writer?.enqueue(encoder.manualSpO2(enable = false))
+    }
+
+    // The ring answers each `0x6A <type>` with its own `0x6A` acknowledgement, after the trailing
+    // `0x69` frame — but only a stop that was actually sent is answered.
+    override fun stopAwaitsAck(kind: MeasurementKind): Boolean = stopsAwaitingAck.remove(kind)
+
+    override val streamsSpotVitals: Boolean = true
+
+    override fun startSpotVital(vital: SpotVital) {
+        writer?.enqueue(encoder.spotVital(vital, enable = true))
+    }
+
+    override fun stopSpotVital(vital: SpotVital, settled: Double?) {
+        // Same teardown as stopSpO2: `0x6A` stops the ring's whole realtime engine, HR included.
+        manualHRActive = false
+        val lastRaw = settled?.let { ColmiDecoder.spotVitalRaw(vital, it) } ?: 0
+        writer?.enqueue(encoder.spotVital(vital, enable = false, lastRaw = lastRaw))
     }
 
     override fun findDevice() {

@@ -21,6 +21,14 @@ class SleepRecordDeletionTest {
         override suspend fun isDeleted(id: String) = id in rows
         override suspend fun isSpotDeleted(kind: String, from: Long, to: Long) = false
         override suspend fun isActivityBucketDeleted(id: String) = id in rows
+        override suspend fun deleteSleepEdit(dayStart: Long, recordStartAt: Long) {
+            val prefix = "sleep:edit:$dayStart:$recordStartAt:"
+            rows.keys.filter { it.startsWith(prefix) }.forEach { rows.remove(it) }
+        }
+        override suspend fun getSleepEditId(dayStart: Long, recordStartAt: Long): String? {
+            val prefix = "sleep:edit:$dayStart:$recordStartAt:"
+            return rows.keys.firstOrNull { it.startsWith(prefix) }
+        }
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }
@@ -151,5 +159,141 @@ class SleepRecordDeletionTest {
     @Test
     fun `deleting every record restates nothing`() {
         assertTrue(SleepRecordDeletion.planRestate(session, emptyList()).isEmpty())
+    }
+
+    // ── Sleep record edits (issue #82) ──────────────────────────────────
+
+    @Test
+    fun `a sleep record edit stores and parses new bounds correctly`() = runTest {
+        val dao = FakeDeletionDao()
+        val recordStart = wakingDay + 0L
+        val newStart = wakingDay + 15 * 60_000L
+        val newEnd = wakingDay + 45 * 60_000L
+
+        dao.recordSleepEdit(wakingDay, recordStart, newStart, newEnd)
+
+        val edit = dao.getSleepEdit(wakingDay, recordStart)
+        org.junit.Assert.assertNotNull(edit)
+        assertEquals(newStart, edit!!.newStartAt)
+        assertEquals(newEnd, edit.newEndAt)
+    }
+
+    @Test
+    fun `editing the same record replaces previous edit bounds`() = runTest {
+        val dao = FakeDeletionDao()
+        val recordStart = wakingDay + 0L
+        dao.recordSleepEdit(wakingDay, recordStart, wakingDay + 10 * 60_000L, wakingDay + 50 * 60_000L)
+        dao.recordSleepEdit(wakingDay, recordStart, wakingDay + 20 * 60_000L, wakingDay + 40 * 60_000L)
+
+        val edit = dao.getSleepEdit(wakingDay, recordStart)
+        org.junit.Assert.assertNotNull(edit)
+        assertEquals(wakingDay + 20 * 60_000L, edit!!.newStartAt)
+        assertEquals(wakingDay + 40 * 60_000L, edit.newEndAt)
+    }
+
+    @Test
+    fun `deleting an edited record clears its edit tombstone`() = runTest {
+        val dao = FakeDeletionDao()
+        val recordStart = wakingDay + 0L
+        dao.recordSleepEdit(wakingDay, recordStart, wakingDay + 10 * 60_000L, wakingDay + 50 * 60_000L)
+        org.junit.Assert.assertNotNull(dao.getSleepEdit(wakingDay, recordStart))
+
+        dao.deleteSleepEdit(wakingDay, recordStart)
+        org.junit.Assert.assertNull(dao.getSleepEdit(wakingDay, recordStart))
+    }
+
+    @Test
+    fun `resolveAdjustedTime handles midnight crossover accurately`() {
+        val zone = java.time.ZoneId.of("UTC")
+        // Start: 2026-10-01 23:08 UTC
+        val start = 1790896080000L
+        // End: 2026-10-02 07:05 UTC
+        val end = 1790924700000L
+
+        // Adjust start to 23:30 (should stay on 2026-10-01)
+        val adjustedStart = com.pulseloop.ui.screens.resolveAdjustedTime(start, start, end, 23, 30, zone)
+        val zdtStart = java.time.Instant.ofEpochMilli(adjustedStart).atZone(zone)
+        assertEquals(2026, zdtStart.year)
+        assertEquals(10, zdtStart.monthValue)
+        assertEquals(1, zdtStart.dayOfMonth)
+        assertEquals(23, zdtStart.hour)
+        assertEquals(30, zdtStart.minute)
+
+        // Adjust start past midnight to 00:15 (should advance to 2026-10-02)
+        val adjustedPastMidnight = com.pulseloop.ui.screens.resolveAdjustedTime(start, start, end, 0, 15, zone)
+        val zdtPast = java.time.Instant.ofEpochMilli(adjustedPastMidnight).atZone(zone)
+        assertEquals(2, zdtPast.dayOfMonth)
+        assertEquals(0, zdtPast.hour)
+        assertEquals(15, zdtPast.minute)
+
+        // Adjust end to 06:45 (should stay on 2026-10-02)
+        val adjustedEnd = com.pulseloop.ui.screens.resolveAdjustedTime(end, start, end, 6, 45, zone)
+        val zdtEnd = java.time.Instant.ofEpochMilli(adjustedEnd).atZone(zone)
+        assertEquals(2, zdtEnd.dayOfMonth)
+        assertEquals(6, zdtEnd.hour)
+        assertEquals(45, zdtEnd.minute)
+    }
+
+    @Test
+    fun `resolveAdjustedTime resolves pre-midnight adjustment for post-midnight start`() {
+        val zone = java.time.ZoneId.of("UTC")
+        // Start: 2026-10-02 00:15 UTC
+        val start = 1790900100000L
+        // End: 2026-10-02 06:30 UTC
+        val end = 1790922600000L
+
+        // Adjust start earlier to 23:45 (should roll back to 2026-10-01)
+        val adjustedStart = com.pulseloop.ui.screens.resolveAdjustedTime(start, start, end, 23, 45, zone)
+        val zdt = java.time.Instant.ofEpochMilli(adjustedStart).atZone(zone)
+        assertEquals(2026, zdt.year)
+        assertEquals(10, zdt.monthValue)
+        assertEquals(1, zdt.dayOfMonth)
+        assertEquals(23, zdt.hour)
+        assertEquals(45, zdt.minute)
+    }
+
+    @Test
+    fun `resolveAdjustedTime resolves morning time near end for early evening start`() {
+        val zone = java.time.ZoneId.of("UTC")
+        // Start: 2026-10-01 19:30 UTC
+        val start = 1790883000000L
+        // End: 2026-10-02 08:00 UTC
+        val end = 1790928000000L
+
+        // Adjust start to 07:45 AM (should select 2026-10-02, not 2026-10-01 07:45 AM)
+        val adjustedStart = com.pulseloop.ui.screens.resolveAdjustedTime(start, start, end, 7, 45, zone)
+        val zdt = java.time.Instant.ofEpochMilli(adjustedStart).atZone(zone)
+        assertEquals(2026, zdt.year)
+        assertEquals(10, zdt.monthValue)
+        assertEquals(2, zdt.dayOfMonth)
+        assertEquals(7, zdt.hour)
+        assertEquals(45, zdt.minute)
+    }
+
+    @Test
+    fun `deleting an edited record sets full record deletion tombstone`() = runTest {
+        val dao = FakeDeletionDao()
+        val recordStart = wakingDay + 0L
+        dao.recordSleepEdit(wakingDay, recordStart, wakingDay + 10 * 60_000L, wakingDay + 50 * 60_000L)
+        dao.deleteSleepEdit(wakingDay, recordStart)
+        dao.recordSleepRecordDeleted(wakingDay, recordStart)
+
+        org.junit.Assert.assertNull(dao.getSleepEdit(wakingDay, recordStart))
+        org.junit.Assert.assertTrue(dao.isSleepRecordDeleted(wakingDay, recordStart))
+    }
+
+    @Test
+    fun `legacy unstamped multi-block record selects all contiguous blocks up to next stamped start`() {
+        val b1 = block(0, 30, -1).copy(recordStartAt = 0L)
+        val b2 = block(30, 30, -1).copy(recordStartAt = 0L)
+        val nextStamped = block(90, 60, 90)
+        val blocks = listOf(b1, b2, nextStamped)
+
+        val targets = blocks.filter { it.recordStartAt > 0L && it.recordStartAt == b1.startAt }.ifEmpty {
+            blocks.filter { it.recordStartAt == 0L && it.startAt >= b1.startAt }
+                .takeWhile { it.startAt < nextStamped.recordStartAt }
+        }
+        assertEquals(2, targets.size)
+        assertEquals(listOf(b1.startAt, b2.startAt), targets.map { it.startAt })
     }
 }

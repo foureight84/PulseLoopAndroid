@@ -504,8 +504,8 @@ working measurement into a minute-long stare at a progress bar. Families without
 ring's one result frame (see the R11 section above).
 
 **A spot measurement's output is one reading, not a stream.** While one is settling, the
-coordinator closes a gate on that kind's live samples and reopens it before publishing the settled
-value once, `spot = true`. The gate is a **bus event** (`PulseEvent.LiveSampleGate`), not a shared
+coordinator closes a gate on that kind's live samples and publishes the settled value once,
+`spot = true` (which the closed gate lets through). The gate is a **bus event** (`PulseEvent.LiveSampleGate`), not a shared
 flag: `EventPersistenceSubscriber` collects behind the ring on its own dispatcher, so a flag read at
 write time let every sample already queued in the bus through the moment it flipped — the event is
 ordered against the samples it governs. Before any of this, every converging PPG estimate was stored
@@ -514,6 +514,18 @@ train of readings that were never the user's heart rate (this is what prompted i
 *workout* is the opposite case: there the stream **is** the data, so a measurement that runs during
 one neither closes the gate nor publishes a second row for a reading the stream already stored.
 
+**The gate reopens when the ring stops sending, not when the leg ends** (`LiveGateReopen`). Told to
+stop, a Colmi ring sends one more `0x69` reading and only then its `0x6A` acknowledgement — in
+QRing's captures and ours alike. Reopening as the leg ended put that trailing reading on an open
+gate, so every Colmi HR and SpO₂ spot measurement stored **two** rows a few hundred ms apart (HR
+85 + 86, SpO₂ 98 + 98 on a Ring 2 Pro). The leg now arms the reopen before sending its stop, and
+the ring's acknowledgement (`PulseEvent.RealtimeStreamStopped`) pays it, with a 2 s timeout in case
+it never comes. The wait is opt-in per stop: only when the engine reports that the stop it just sent
+will be acknowledged (`RingSyncEngine.stopAwaitsAck`, Colmi only). Every other family — and a Colmi
+stop that sent nothing — reopens at once, because waiting there would drop the first ~2 s of a
+workout's samples after every leg. Don't move the reopen back to the end of the leg to "simplify"
+it, and don't make the timeout unconditional.
+
 **A spot HR measurement is refused while a workout is running.** The live-sample gate is one switch
 per kind, so whichever of the two closed it decides whether the other's samples are stored, and the
 leg sampled that decision once at the start. Running both meant either the workout's samples were
@@ -521,7 +533,9 @@ dropped for the length of the leg, or — if the workout started inside it — t
 samples were stored as workout rows and its settled value never published. A workout starting mid-leg
 now aborts the leg, and the gate is reopened unconditionally in the `finally` because the leg is what
 closed it; leaving it closed would silently drop that workout's samples for the rest of the session.
-The workout screen is already showing live bpm, so refusing costs nothing. No unit test:
+The workout screen is already showing live bpm, so refusing costs nothing. Streamed HRV / stress /
+temperature (`measureVital`) is refused and aborted the same way, for a blunter reason: `0x69 <type>`
+takes over the ring's one realtime engine, so the workout would get no bpm at all. No unit test:
 `RingSyncCoordinator` needs a BLE client and has no harness.
 
 ## The terminal block is the authority on a history transfer, not the header (issue #69)

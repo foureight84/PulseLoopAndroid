@@ -43,7 +43,7 @@ class PairingMatchingTest {
         val names = listOf(
             "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
             "COLMI R10_xyz", "COLMI R12_x", "R05_1A2B", "R10_DEAD", "R11_BEEF",
-            "R11C_BEEF", "H59_anything",
+            "R11C_BEEF", "H59_anything", "COLMI Ring 2 Pro",
         )
         for (name in names) {
             assertTrue("expected Colmi match for $name", colmiMatches(name))
@@ -54,6 +54,19 @@ class PairingMatchingTest {
     fun `non-colmi names do not match`() {
         for (name in listOf("SMART_RING", "R10M FCF4", "Mi Band 5", "Galaxy Watch", "R0X_NOPE", "Random")) {
             assertFalse("did not expect Colmi match for $name", colmiMatches(name))
+        }
+    }
+
+    @Test
+    fun `only the hardware-validated Ring 2 Pro adds on-demand HRV stress and temperature`() {
+        val streamed = setOf(
+            WearableCapability.MANUAL_HRV,
+            WearableCapability.MANUAL_STRESS,
+            WearableCapability.MANUAL_TEMPERATURE,
+        )
+        assertEquals(streamed, WearableModel.COLMI_RING_2_PRO.extraCapabilities)
+        for (model in WearableModel.CATALOG - WearableModel.COLMI_RING_2_PRO) {
+            assertTrue("${model.id} has unvalidated extras", model.extraCapabilities.isEmpty())
         }
     }
 
@@ -163,6 +176,7 @@ class PairingMatchingTest {
             "COLMI R10_xyz" to "colmi-r10",
             "R11C_BEEF" to "colmi-r11",
             "COLMI R12_x" to "colmi-r12",
+            "COLMI Ring 2 Pro" to "colmi-ring-2-pro",
             "R05_1A2B" to "yawell-r05",
             "R10_DEAD" to "yawell-r10",
             "R11_BEEF" to "yawell-r11",
