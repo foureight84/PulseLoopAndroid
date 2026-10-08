@@ -160,7 +160,7 @@ object SleepRecordDeletion {
      * row would both disagree with the next sync and let `awakeMinutes` count the hole as a
      * between-record waking (issue #81), turning a deleted 00:25–03:19 into three hours awake.
      */
-    private suspend fun restateSession(
+    internal suspend fun restateSession(
         db: PulseLoopDatabase,
         session: SleepSessionEntity,
         remaining: List<SleepStageBlockEntity>,

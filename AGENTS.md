@@ -423,6 +423,48 @@ supporting evidence as the cause.
   (zaggash) — and for a "measure broken" report, first get a capture of **several** Measure presses
   with the ring snug and still, to separate a contact failure from a real code bug.
 
+## A CRP sleep day turns over at 20:00, not midnight
+
+**A sleep reply's day index counts back from the ring's sleep day, and that day starts at 8 PM.** An
+R11's first night was stored twice: correctly by a morning sync, then exactly one day earlier by an
+evening one, at a time before the ring had been delivered. The vendor dates a `group 2 / cmd 14`
+reply from the moment it syncs: `t3/n.onHistorySleepChange` passes `new Date()` to `f4/e.a`, whose
+`f4/e.e` moves it to tomorrow when `f4/e.h` reads `20 <= HOUR_OF_DAY`, and `j4/h.b` then subtracts
+the day index. So from 20:00 day 0 is the night about to begin and last night is day 1.
+`CRPDecoder.decodeSleep` counted back from the phone's date alone, so every sync after 8 PM filed
+last night under the day before.
+
+Two things follow, and `CRPSleepDayIndexTest` pins both:
+
+- **A record starting at or after 20:00 is the evening before the reply's day**, even when the reply
+  never crosses midnight. Without that, a reply holding only evening sleep (a doze at the desk) was
+  anchored on the evening *after* the waking day, which is in the future at a morning sync.
+- **The constant is 20, not `TimeUtil.wakingDayLocal`'s 19.** That one is iOS's key for grouping
+  stored sessions by waking day; this one is the ring's own boundary, read from the vendor. Merging
+  them would move the decoder off the vendor to match a persistence convention.
+
+**The damage is not limited to a ring's first night.** The background sync runs about every
+30 minutes, so most evenings include a sync after 20:00, and each one filed that morning's night
+24 h early, on top of the night before. The next morning's re-sync restores the real night, but
+`upsertSleepSessionAtomic` only replaces the time range a packet covers. So the copy's blocks
+outside that range stay, and every night grows by whatever the following night covered beyond it.
+
+On the reporter's database, every one of the 37 stray blocks sits inside a block of the next
+waking day's record at exactly +24 h, with the same stage. Their `recordStartAt` is that record's
+minus 24 h. Sunday read 382 minutes asleep against a real 302, because 80 came from Monday's night.
+On the ring's first night there was no earlier night to land on, so the copy stood alone as a whole
+night on a day before the ring arrived.
+
+The decoder fix stops new copies. `SleepDayEarlyCopies` removes the stored ones once, at app start
+(`DataRepairs.repairDayEarlySleepCopiesIfNeeded`). A copy keeps its source record's `recordStartAt`
+minus one calendar day — 24 h, or 23/25 h across DST, since the decoder anchors on local midnight — so
+a record is a copy when the record one day later contains **every** one of its blocks, stage for
+stage. All or nothing per record: two real nights that merely start at the same minute differ in their
+stages. The repair writes **no tombstones**. The copies can't recur, and a tombstone keyed on those
+block starts would sit waiting to suppress genuine sleep. On the reporter's database it removed exactly
+the 37 stray blocks, and every night came back to what an earlier snapshot, taken before the next
+evening's sync, had stored.
+
 ## Spot measurements: the ring's own verdict beats our window (issue #59)
 
 **Read this before touching `HRSampleWindow`, `SpotMeasurementGate`, or `RingSyncCoordinator`'s

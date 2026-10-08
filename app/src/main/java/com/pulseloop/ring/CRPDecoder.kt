@@ -62,6 +62,9 @@ object CRPDecoder {
     private const val SESSION_GAP_MINUTES = 60
     /** CRPHistoryDay caps at 14 days ago; a larger dayIndex is a corrupt reply. */
     private const val MAX_HISTORY_DAY = 14
+    /** Hour the ring's sleep day turns over to the coming night (vendor `f4/e.h`: `20 <= HOUR_OF_DAY`).
+     *  Not [com.pulseloop.util.TimeUtil.wakingDayLocal]'s 19:00, which is iOS's persistence key. */
+    private const val SLEEP_DAY_ROLLOVER_HOUR = 20
     /** NUL — the padding byte some firmwares pad the firmware string with; trimmed, but a control
      *  byte still present after trimming rejects the payload. */
     private const val NUL = '\u0000'
@@ -365,13 +368,16 @@ object CRPDecoder {
      *    (an in-progress sleep). We don't — a completed night always ends on an awake record (which
      *    contributes no sleep), so the only case affected is a sync taken mid-sleep, where we'd
      *    rather show the night up to the last recorded transition than invent minutes up to "now".
-     *  - Session-start anchoring is ours, not the vendor's (its parser keeps minute-of-day only and
-     *    lets the UI place the date from `dayIndex`). We anchor the FIRST record on the wake day
-     *    (`today - dayIndex`) with the same evening-rollover rule as Colmi — a first record later in
-     *    the clock than the last means the night began before midnight — then place every later bout
-     *    by its elapsed offset from that anchor, which carries naps onto the correct day for free.
-     *    NOTE: this assumes `dayIndex` is the WAKE day — verified against a post-midnight capture; an
-     *    evening-start night is not yet capture-confirmed.
+     *  - Session-start anchoring is ours, not the vendor's (its parser keeps minute-of-day only).
+     *    The wake day follows the vendor's dating: `t3/n.onHistorySleepChange` stamps a reply with
+     *    the sync time, `f4/e.e` moves that to tomorrow from [SLEEP_DAY_ROLLOVER_HOUR] on, and
+     *    `j4/h.b` subtracts `dayIndex`. So after 20:00 day 0 is the night about to begin and last
+     *    night is day 1 — counting back from the phone's date alone filed last night a day early.
+     *    The FIRST record is anchored on that wake day, rolled back to the evening before when the
+     *    night crosses midnight (a first record later in the clock than the last, as for Colmi) or
+     *    when it starts at or after the rollover hour, since such sleep belongs to the next day's
+     *    night. Every later bout is placed by its elapsed offset from that anchor, which carries
+     *    naps onto the correct day for free.
      */
     private fun decodeSleep(payload: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent> {
         // [dayIndex] + N*[state,hour,minute]; the vendor rejects any other shape outright.
@@ -413,8 +419,12 @@ object CRPDecoder {
         if (transitions.size < 2) return emptyList()
 
         // Anchor the first record; every bout is then just an offset from it.
-        val startOffset = if (firstMinuteOfDay > lastMinuteOfDay) firstMinuteOfDay - 1440 else firstMinuteOfDay
-        val wakeDay = now.atZone(zone).toLocalDate().minusDays(dayIndex.toLong())
+        val rolloverMinute = SLEEP_DAY_ROLLOVER_HOUR * 60
+        val startsTheEveningBefore = firstMinuteOfDay > lastMinuteOfDay || firstMinuteOfDay >= rolloverMinute
+        val startOffset = if (startsTheEveningBefore) firstMinuteOfDay - 1440 else firstMinuteOfDay
+        val localNow = now.atZone(zone)
+        val ringToday = if (localNow.hour >= SLEEP_DAY_ROLLOVER_HOUR) localNow.toLocalDate().plusDays(1) else localNow.toLocalDate()
+        val wakeDay = ringToday.minusDays(dayIndex.toLong())
         val anchor = wakeDay.atStartOfDay(zone).plusMinutes(startOffset.toLong()).toInstant()
 
         // Pass 2: each transition's state runs until the next; split bouts on a long awake gap.
