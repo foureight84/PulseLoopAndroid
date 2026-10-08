@@ -1,5 +1,8 @@
 package com.pulseloop.ring
 
+import com.pulseloop.data.entity.SleepStageBlockEntity
+import com.pulseloop.service.replaceOverlappingSleepBlocks
+import com.pulseloop.util.TimeUtil
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.Instant
@@ -19,6 +22,8 @@ import java.time.ZoneId
  * next waking day, so a reply's evening records are the evening *before* the day it names.
  *
  * Bouts are one minute long; a 60-minute awake run is the shortest gap [CRPDecoder] splits bouts on.
+ * The last test follows four syncs through to stored blocks, to show how a day-early copy pads the
+ * night before as well as creating one on an empty day.
  */
 class CRPSleepDayIndexTest {
 
@@ -28,6 +33,10 @@ class CRPSleepDayIndexTest {
     private val sundayMorning = Instant.parse("2026-09-27T09:00:00Z")
     private val sundayJustBefore8pm = Instant.parse("2026-09-27T19:59:00Z")
     private val sundayEvening = Instant.parse("2026-09-27T21:00:00Z")
+    private val sundayLate = Instant.parse("2026-09-27T23:30:00Z")
+    private val mondayMorning = Instant.parse("2026-09-28T09:00:00Z")
+    private val mondayEvening = Instant.parse("2026-09-28T21:00:00Z")
+    private val tuesdayMorning = Instant.parse("2026-09-29T09:00:00Z")
 
     private val awake = 0
     private val light = 1
@@ -113,5 +122,90 @@ class CRPSleepDayIndexTest {
     fun `7 - a sync just before 8 pm still reads day 0 as last night`() {
         val bouts = decodeAt(sundayJustBefore8pm, sleepFrame(0, *acrossMidnight))
         assertBouts(listOf("2026-09-26T23:00:00Z", "2026-09-27T00:01:00Z"), bouts)
+    }
+
+    /** The second symptom is not only about today's reply: in an older day's reply, an evening record
+     *  is still the evening before that day. Monday morning, day 1 is Sunday's sleep day, which runs
+     *  from Sat 20:00 to Sun 20:00, so a record starting at 20:00 started on Saturday. */
+    @Test
+    fun `8 - an evening bout at 20_00 in an older day's reply is the evening before that day`() {
+        val bouts = decodeAt(mondayMorning, sleepFrame(1, at(light, 20, 0), at(awake, 20, 1)))
+        assertBouts(listOf("2026-09-26T20:00:00Z"), bouts)
+    }
+
+    /** One minute earlier, the record is still inside the same sleep day, so it stays on that day. */
+    @Test
+    fun `9 - a bout starting at 19_59 stays on its own day`() {
+        val bouts = decodeAt(mondayMorning, sleepFrame(1, at(light, 19, 59), at(awake, 20, 0)))
+        assertBouts(listOf("2026-09-27T19:59:00Z"), bouts)
+    }
+
+    /** After 8 PM, day 0 is the night just beginning. Before the prior-week backfill, day 0 was the only
+     *  day ever requested, and it is dated correctly with or without the 20:00 rule, so the bug could
+     *  not show until the backfill first asked for day 1 after 8 PM. */
+    @Test
+    fun `10 - after 8 pm, day 0 is tonight's sleep`() {
+        val bouts = decodeAt(sundayLate, sleepFrame(0, at(light, 23, 0), at(awake, 23, 1)))
+        assertBouts(listOf("2026-09-27T23:00:00Z"), bouts)
+    }
+
+    /**
+     * How a day-early copy pads the night before, across four ordinary syncs. Sunday's record is
+     * 02:00–02:01; Monday's starts earlier and ends later, 01:59–02:02. The ring re-sends each night,
+     * by day index, on every sync.
+     *
+     * Stored the way the app stores it: each decoded bout joins the blocks of its waking day
+     * ([TimeUtil.wakingDayLocal]) and replaces only the span it covers ([replaceOverlappingSleepBlocks]),
+     * as `EventPersistenceSubscriber.upsertSleepSessionAtomic` does for a CRP record.
+     */
+    @Test
+    fun `11 - four syncs leave each night holding only its own sleep`() {
+        val sundayRecord = arrayOf(at(light, 2, 0), at(awake, 2, 1))
+        val mondayRecord = arrayOf(at(light, 1, 59), at(awake, 2, 2))
+        val nights = mutableMapOf<Long, List<SleepStageBlockEntity>>()
+        fun sync(now: Instant, vararg replies: ByteArray) {
+            for (reply in replies) for (bout in decodeAt(now, reply)) {
+                val start = bout._timestamp.toEpochMilli()
+                val end = start + bout.stages.size * 60_000L
+                val day = TimeUtil.wakingDayLocal(start, utc)
+                nights[day] = replaceOverlappingSleepBlocks(nights[day].orEmpty(), blocksOf(start, bout.stages), start, end)
+            }
+        }
+
+        sync(sundayMorning, sleepFrame(0, *sundayRecord))
+        sync(mondayMorning, sleepFrame(0, *mondayRecord), sleepFrame(1, *sundayRecord))
+        sync(mondayEvening, sleepFrame(1, *mondayRecord), sleepFrame(2, *sundayRecord))
+        sync(tuesdayMorning, sleepFrame(1, *mondayRecord), sleepFrame(2, *sundayRecord))
+
+        fun night(date: String) = nights[Instant.parse("${date}T00:00:00Z").toEpochMilli()].orEmpty()
+            .map { "${Instant.ofEpochMilli(it.startAt)} ${it.durationMinutes}m ${it.stageRaw}" }
+        assertEquals(
+            mapOf(
+                "Sat (before the ring was worn)" to emptyList(),
+                "Sun" to listOf("2026-09-27T02:00:00Z 1m LIGHT"),
+                "Mon" to listOf("2026-09-28T01:59:00Z 3m LIGHT"),
+            ),
+            mapOf(
+                "Sat (before the ring was worn)" to night("2026-09-26"),
+                "Sun" to night("2026-09-27"),
+                "Mon" to night("2026-09-28"),
+            ),
+        )
+    }
+
+    /** One block per run of the same stage, the shape persistence stores a bout in. */
+    private fun blocksOf(start: Long, stages: List<SleepStage>): List<SleepStageBlockEntity> {
+        val blocks = mutableListOf<SleepStageBlockEntity>()
+        var i = 0
+        while (i < stages.size) {
+            var j = i
+            while (j < stages.size && stages[j] == stages[i]) j++
+            blocks += SleepStageBlockEntity(
+                id = "$start-$i", sessionId = "", startAt = start + i * 60_000L, startMinute = i,
+                durationMinutes = j - i, stageRaw = stages[i].name, recordStartAt = start,
+            )
+            i = j
+        }
+        return blocks
     }
 }
