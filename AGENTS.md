@@ -455,7 +455,15 @@ minus 24 h. Sunday read 382 minutes asleep against a real 302, because 80 came f
 On the ring's first night there was no earlier night to land on, so the copy stood alone as a whole
 night on a day before the ring arrived.
 
-This fix stops new copies; it repairs none. Already-stored rows are left to a separate one-off repair.
+The decoder fix stops new copies. `SleepDayEarlyCopies` removes the stored ones once, at app start
+(`DataRepairs.repairDayEarlySleepCopiesIfNeeded`). A copy keeps its source record's `recordStartAt`
+minus one calendar day — 24 h, or 23/25 h across DST, since the decoder anchors on local midnight — so
+a record is a copy when the record one day later contains **every** one of its blocks, stage for
+stage. All or nothing per record: two real nights that merely start at the same minute differ in their
+stages. The repair writes **no tombstones**. The copies can't recur, and a tombstone keyed on those
+block starts would sit waiting to suppress genuine sleep. On the reporter's database it removed exactly
+the 37 stray blocks, and every night came back to what an earlier snapshot, taken before the next
+evening's sync, had stored.
 
 ## Spot measurements: the ring's own verdict beats our window (issue #59)
 
