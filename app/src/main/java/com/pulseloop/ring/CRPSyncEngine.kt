@@ -146,6 +146,8 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
      * Safe to send blind. Each reply is self-describing: `payload[0]` is the ring's own day index,
      * so [CRPDecoder.decodeSleep] dates a night from the reply rather than from what we asked for,
      * and a day the ring has no record of simply produces no reply — the same nothing we get today.
+     * That index counts back from the ring's sleep day, which turns over at 20:00, not midnight:
+     * after 8 PM last night is day 1 (see [CRPDecoder.decodeSleep]).
      *
      * Once per connection, and deliberately short of the decoder's 14-day ceiling: [runStartup] is
      * also the ~30-minute background sync, and this ring funnels the handshake, timing config,
