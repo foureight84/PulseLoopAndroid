@@ -366,4 +366,22 @@ class HealthConnectTypeMappingsTest {
         val out = HealthConnectTypeMappings.normalizeSleepStages(s0, s1, listOf(span(-120, -60), span(300, 360)))
         assertTrue(out.isEmpty())
     }
+
+    // ── EXCLUDED_SOURCES ──
+
+    @Test
+    fun excludedSourcesCoversDemoAndMock() {
+        // Seed/placeholder rows must never leave the app (mirrors iOS).
+        //
+        // `"phone"` used to be in this set as well, to break a Health Connect self-feedback loop
+        // under the old design where the phone wrote its step count into `activity_daily.steps`
+        // — the same column the exporter reads. Under the separate-column design (PR #98) the
+        // phone's value lives in `phoneSteps`, which the exporter never reads, so the loop is
+        // broken by construction and the exclusion is gone. A phone-first day still produces no
+        // record — but via the plausibility guards (`isPlausibleSteps` floors at 1) rather than a
+        // source-based skip. See the KDoc on HealthConnectTypeMappings.EXCLUDED_SOURCES.
+        assertTrue(HealthConnectTypeMappings.EXCLUDED_SOURCES.contains("demo"))
+        assertTrue(HealthConnectTypeMappings.EXCLUDED_SOURCES.contains("mock"))
+        assertFalse(HealthConnectTypeMappings.EXCLUDED_SOURCES.contains("phone"))
+    }
 }

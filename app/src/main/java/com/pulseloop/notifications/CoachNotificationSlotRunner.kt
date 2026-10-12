@@ -458,7 +458,11 @@ private class CoachSlotProductionEngine(
      */
     suspend fun generate(slot: CoachNotificationSlot, now: Long): CoachNotificationContent {
         val environment = WeatherContextService(context).snapshot()
-        val packet = NotificationContextBuilder.build(slot, db, now, environment = environment)
+        // Path B (PR #98): the check-in quotes the step count from the source the user chose.
+        val preferPhone = com.pulseloop.settings.StepSourcePrefs(context).preferPhone()
+        val packet = NotificationContextBuilder.build(
+            slot, db, now, environment = environment, preferPhone = preferPhone,
+        )
 
         // Variety + anti-repeat (iOS #65): a deterministic per-day/slot coaching angle,
         // plus the last few delivered check-ins so the model doesn't repeat itself.

@@ -7,6 +7,7 @@ import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.settings.QuietHoursPrefs
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ring.*
 import kotlinx.coroutines.*
 
@@ -84,6 +85,7 @@ class EventPersistenceSubscriber(
         is PulseEvent.TemperatureSample,
         is PulseEvent.ActivityUpdate,
         is PulseEvent.ActivityBucket,
+        is PulseEvent.PhoneStepsUpdate,
         is PulseEvent.SleepTimeline -> true
         else -> false
     }
@@ -381,6 +383,9 @@ class EventPersistenceSubscriber(
                 else db.measurementDao().insert(measurement)
             }
             is PulseEvent.ActivityUpdate -> {
+                // The ring always writes its own totals, in every mode. Under Path B the phone's
+                // count lives in `phoneSteps`, so there is no ownership conflict to gate on — the
+                // read path picks which column to show at display time.
                 upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
             }
             is PulseEvent.ActivityBucket -> {
@@ -390,6 +395,13 @@ class EventPersistenceSubscriber(
                 // its single largest bucket. Calories omitted (unverified ring field).
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
+            is PulseEvent.PhoneStepsUpdate -> {
+                upsertActivityDailyFromPhone(event.timestamp.toEpochMilli(), event.steps)
+            }
+            // The phone reader just failed. Under Path B, nothing to do here: the ring writes its
+            // own column regardless, and the read-time pick falls back to `steps` when a day has
+            // no `phoneSteps` value. The event still exists on the bus for the debug screen.
+            is PulseEvent.PhoneStepSourceUnavailable -> Unit
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
             }
@@ -496,15 +508,24 @@ class EventPersistenceSubscriber(
             val deletion = com.pulseloop.data.ActivityBucketDeletion
             val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
+                // A row the phone created first (`source == "phone"`) flips to `"ring"` when the
+                // ring writes. The `source` column still has two downstream consumers —
+                // `HealthConnectTypeMappings.EXCLUDED_SOURCES` (which filters demo/mock, not
+                // phone) and [DailyCalorieEstimator.deviceReportedCalories] — but only the latter
+                // cares about `"phone"`, and it reads the column as "who last wrote these data
+                // columns". So once the ring has supplied `steps`/`calories`/`distance`, the row
+                // belongs to the ring and the estimator must see it that way. Other sources
+                // ("ring_history", "manual_recording", "hr_and_manual") are preserved as before.
+                source = if (existing.source == StepSourcePrefs.SOURCE_PHONE) StepSourcePrefs.SOURCE_RING else existing.source,
                 steps = if (stale) steps
-                    else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
+                else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
                 // A bucket carries no calorie field, so there is nothing to subtract from the
                 // ring's own figure — the deletion drops it and the app's estimate takes over
                 // (see [com.pulseloop.data.ActivityBucketDeletion]). Ratcheting here would put it
                 // straight back.
                 calories = if (stale) calories
-                    else if (hasDeletion) existing.calories
-                    else maxOf(existing.calories, calories),
+                else if (hasDeletion) existing.calories
+                else maxOf(existing.calories, calories),
                 distanceMeters = if (stale) distanceM else deletion.ratchetAgainstRing(
                     existing.distanceMeters, distanceM, existing.deletedDistanceMeters,
                 ),
@@ -513,9 +534,44 @@ class EventPersistenceSubscriber(
         } else {
             db.activityDailyDao().upsert(ActivityDailyEntity(
                 date = dayStart, steps = steps, calories = calories,
-                distanceMeters = distanceM, source = "ring",
+                distanceMeters = distanceM, source = StepSourcePrefs.SOURCE_RING,
             ))
         }
+    }
+
+    /**
+     * Persist the phone's step count for one day, in its own column.
+     *
+     * Under the separate-column design ([ActivityDailyEntity.phoneSteps]), an existing row's
+     * **data columns** are untouched except for `phoneSteps`: `steps`, `distanceMeters`,
+     * `calories`, and `source` are left exactly as the ring wrote them. (`syncedAt` and
+     * `updatedAt` also move — metadata, not data; `updatedAt` is what ActivityExporter selects
+     * on.) The display picks between `steps` and `phoneSteps` at read time based on the user's
+     * step-source preference, so switching source is a read-time choice, not a destructive
+     * write: the ring's totals are never clobbered and switching back is instant.
+     *
+     * A brand-new row (phone wrote first, ring hasn't yet) is created with
+     * `source = "phone"` so the day is visible in the "real" DAO queries
+     * (`source NOT IN ('demo','mock')`) even before the ring has data for it. The old design
+     * also needed the source label to keep the row out of the Health Connect export, via
+     * `HealthConnectTypeMappings.EXCLUDED_SOURCES` — that exclusion is gone (the phone's value
+     * used to land in `steps`, the exported column; under the separate-column design the
+     * self-feedback loop is broken by construction). A phone-first day still produces no HC
+     * record: it carries `steps = 0`, and `isPlausibleSteps` floors at 1, so the plausibility
+     * guards skip it regardless of source.
+     *
+     * Later ring writes preserve that source — see [upsertActivityDaily]. The old "overwrite
+     * source and reset it back to ring on next ring write" dance is gone; nothing needs it any
+     * more.
+     *
+     * A no-op when the day already holds this exact phone value: on every foreground the phone
+     * reader re-publishes today's total, and without the guard every pass would touch `updatedAt`
+     * (which ActivityExporter selects by) and re-export the same HC record.
+     */
+    private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        val existing = db.activityDailyDao().byDay(dayStart)
+        phoneStepRow(existing, dayStart, steps)?.let { db.activityDailyDao().upsert(it) }
     }
 
     /**
@@ -560,6 +616,9 @@ class EventPersistenceSubscriber(
         val isToday = dayStart == com.pulseloop.util.TimeUtil.startOfTodayLocal()
         val stale = existing != null && existing.steps > 200_000
         val ratchet = isToday && existing != null && !stale
+        // Under Path B the ring always writes: the phone never occupies `steps`, so there is no
+        // ownership gate to skip this upsert. The phone's value lives in `phoneSteps`, untouched
+        // by anything here.
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
                 steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
@@ -718,7 +777,7 @@ class EventPersistenceSubscriber(
         val matched: List<Pair<Segment, SleepSessionEntity?>> = segments.map { seg ->
             val best = available.maxByOrNull { overlap(seg.start, seg.end, it.startAt, it.endAt) }
             if (best != null && (overlap(seg.start, seg.end, best.startAt, best.endAt) > 0L ||
-                    best.startAt in seg.start..seg.end)) {
+                        best.startAt in seg.start..seg.end)) {
                 available.remove(best)
                 seg to best
             } else {
@@ -830,7 +889,7 @@ class EventPersistenceSubscriber(
      * Matches the official app's scoring.
      */
     private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
-        // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
+    // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
         // same banding, so one function owns it.
         sleepStageScore(deepMin, totalMin)
 
@@ -869,6 +928,38 @@ class EventPersistenceSubscriber(
         private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
     }
 }
+
+/**
+ * The row a [PulseEvent.PhoneStepsUpdate] should write for one day — or null when it would be a
+ * no-op.
+ *
+ * Pure, so the phone write's column-only contract can be tested without a Room instance (same
+ * pattern as the sleep-merge helpers below). The contract, all of which is asserted in
+ * `EventPersistencePhoneWriteTest`:
+ *
+ *  - **Only three columns change on an existing row:** `phoneSteps`, `syncedAt`, `updatedAt`.
+ *    `steps`, `calories`, `distanceMeters`, and `source` are carried through untouched — that is
+ *    what makes switching step source reversible.
+ *  - **A brand-new row is created with `source = "phone"`**, so the day is visible in the "real"
+ *    DAO queries even before the ring has data for it.
+ *  - **Writing the same value twice is a no-op** (returns null): the phone reader re-publishes
+ *    today's total on every foreground, and without this guard each pass would bump `updatedAt`
+ *    — which `ActivityExporter` selects by — and re-export the same record.
+ *  - **`phoneSteps = 0` is a real value, distinct from null.** `null → 0` writes (the midnight
+ *    gap: the phone has begun counting and counted zero); `0 → 0` is a no-op.
+ */
+internal fun phoneStepRow(
+    existing: ActivityDailyEntity?,
+    dayStart: Long,
+    steps: Int,
+    now: Long = System.currentTimeMillis(),
+): ActivityDailyEntity? =
+    if (existing != null && existing.phoneSteps == steps) null
+    else (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
+        phoneSteps = steps,
+        syncedAt = now,
+        updatedAt = now,
+    )
 
 /**
  * Is this reading one the ring will hand back from its own history, so that the two copies have to
