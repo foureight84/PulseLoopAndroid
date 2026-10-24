@@ -8,6 +8,7 @@ import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.ring.*
+import com.pulseloop.widgets.WidgetSnapshotPublisher
 import kotlinx.coroutines.*
 
 /**
@@ -825,6 +826,28 @@ class EventPersistenceSubscriber(
         /** How far back [spotReadings] is primed from the table on first use. */
         const val SPOT_LOOKBACK_MS = 7L * 24 * 60 * 60_000
         private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+
+        @Volatile private var shared: EventPersistenceSubscriber? = null
+
+        /**
+         * The process's one subscriber, started from `PulseLoopApplication.onCreate`.
+         *
+         * It used to be built and started only by the UI's startup (`AppServices` /
+         * `PulseLoopApp`). A process Android launched just to run `RingSyncWorker` never got
+         * there, and the bus keeps no backlog (`replay = 0`), so everything that background sync
+         * pulled from the ring was published to no one and dropped.
+         */
+        fun shared(context: Context): EventPersistenceSubscriber =
+            shared ?: synchronized(this) {
+                shared ?: context.applicationContext.let { app ->
+                    // Every persisted ring-sync batch republishes the widget snapshot (debounced
+                    // 2 s), mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
+                    EventPersistenceSubscriber(
+                        app, PulseLoopDatabase.getInstance(app),
+                        onDataPersisted = { WidgetSnapshotPublisher.publishDebounced(app) },
+                    )
+                }.also { shared = it }
+            }
     }
 }
 

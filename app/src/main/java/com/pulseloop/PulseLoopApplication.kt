@@ -8,6 +8,7 @@ import com.pulseloop.data.DataRepairs
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.diagnostics.CrashLogger
 import com.pulseloop.diagnostics.DiagnosticsSubscriber
+import com.pulseloop.service.EventPersistenceSubscriber
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.widgets.WidgetRefreshWorker
 import com.pulseloop.widgets.WidgetSnapshotPublisher
@@ -31,6 +32,9 @@ class PulseLoopApplication : Application() {
         QuietHoursPrefs.migrateIndependentBedtime(this)
         // Application-scoped so capture runs whether or not the Debug screen is open.
         DiagnosticsSubscriber(PulseLoopDatabase.getInstance(this)).start(appScope)
+        // Same reason, for the ring data itself: a process launched only for RingSyncWorker never
+        // runs the UI's startup, and without a collector its events are dropped.
+        EventPersistenceSubscriber.shared(this).start()
         // One-time cleanup of activity totals corrupted by the old bucket handling; runs off the
         // main thread and is prefs-gated so it executes once. Safe to race the first sync — the
         // ring can't connect before this completes a couple of DELETE statements.

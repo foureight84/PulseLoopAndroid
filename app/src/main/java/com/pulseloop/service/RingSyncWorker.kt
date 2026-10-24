@@ -63,6 +63,10 @@ class RingSyncWorker(
     }
 
     override suspend fun doWork(): Result {
+        // The scheduled spot SpO₂ chain (issue #103) dies if one of its runs is cancelled; this
+        // periodic job is what reliably comes back, so it revives it.
+        ScheduledSpo2Worker.ensureScheduled(applicationContext)
+
         // The foreground app owns the live GATT. An overdue periodic job can start at the same
         // moment as MainActivity after process launch; opening a second client interleaves both
         // command queues and lets this worker's cleanup disconnect the UI-owned session.
