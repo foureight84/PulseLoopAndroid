@@ -816,7 +816,7 @@ class VitalsViewModel(
             bpDiaSamples = bpDia.map { it.value },
             glucoseSamples = gluc.map { it.value + glucoseOffset },
             hrSeries = hr.map { VitalSample(it.timestamp, it.value) },
-            spo2Series = spo2.map { VitalSample(it.timestamp, it.value) },
+            spo2Series = displayedSpo2.map { VitalSample(it.timestamp, it.value) },
             hrvSeries = hrv.map { VitalSample(it.timestamp, it.value) },
             stressSeries = stress.map { VitalSample(it.timestamp, it.value) }.ifEmpty { derivedStressSeries },
             fatigueSeries = fatigue.map { VitalSample(it.timestamp, it.value) },

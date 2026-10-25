@@ -65,4 +65,10 @@ class ScheduledSpo2WorkerTest {
         )
         assertEquals(30, interval)
     }
+
+    @Test
+    fun `syncing and measuring lock flags default to false and are observable`() {
+        assertEquals(false, RingSyncWorker.isSyncing)
+        assertEquals(false, ScheduledSpo2Worker.isMeasuring)
+    }
 }

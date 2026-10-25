@@ -51,6 +51,10 @@ class ScheduledSpo2Worker(
         /** Startup history has to drain before the sensor is taken — the ring serves one thing at a time. */
         private const val SYNC_DRAIN_TIMEOUT_MS = 45_000L
 
+        @Volatile
+        var isMeasuring: Boolean = false
+            internal set
+
         /** After a settings change: replace whatever is queued with the next slot, or cancel. */
         suspend fun reschedule(context: Context) {
             enqueueNext(context, ExistingWorkPolicy.REPLACE)
@@ -141,6 +145,15 @@ class ScheduledSpo2Worker(
     }
 
     private suspend fun measure(db: PulseLoopDatabase) {
+        isMeasuring = true
+        try {
+            measureInternal(db)
+        } finally {
+            isMeasuring = false
+        }
+    }
+
+    private suspend fun measureInternal(db: PulseLoopDatabase) {
         // The app's own link, if it has one: a second client can't connect while it holds GATT.
         AppServices.peek()?.coordinator?.let { coordinator ->
             val ran = withContext(Dispatchers.Main) {
@@ -164,16 +177,24 @@ class ScheduledSpo2Worker(
             client.onConnected = { withContext(Dispatchers.Main) { coordinator.runStartupSequence() } }
             client.connectLastKnown()
 
-            val connected = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
-                while (!coordinator.isConnected) {
-                    if (client.state.value.connectionState == RingConnectionState.DISCONNECTED) {
-                        client.connectLastKnown()
-                    }
+            // If background sync is currently running, pause our connect timeout countdown so we
+            // don't burn the connection budget while sync holds GATT (issue #103).
+            var remainingTimeoutMs = CONNECT_TIMEOUT_MS
+            var syncWaitMs = 60_000L
+            while (!coordinator.isConnected && remainingTimeoutMs > 0) {
+                if (isAppForeground()) return
+                if (RingSyncWorker.isSyncing && syncWaitMs > 0) {
                     delay(1000)
+                    syncWaitMs -= 1000
+                    continue
                 }
-                true
-            } ?: false
-            if (!connected) return
+                if (client.state.value.connectionState == RingConnectionState.DISCONNECTED) {
+                    client.connectLastKnown()
+                }
+                delay(1000)
+                remainingTimeoutMs -= 1000
+            }
+            if (!coordinator.isConnected) return
 
             // runStartupSequence opens the progress just after connect; wait for it to open, then
             // to drain (the same wait factoryResetRing uses before it takes the ring).

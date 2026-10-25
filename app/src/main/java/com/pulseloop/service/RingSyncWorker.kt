@@ -32,6 +32,10 @@ class RingSyncWorker(
         private const val SYNC_TIMEOUT_SECONDS = 45L
         private const val TAG = "RingSyncWorker"
 
+        @Volatile
+        var isSyncing: Boolean = false
+            internal set
+
         /** Schedule periodic background ring sync. Call from MainActivity. */
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<RingSyncWorker>(
@@ -72,6 +76,10 @@ class RingSyncWorker(
         // command queues and lets this worker's cleanup disconnect the UI-owned session.
         if (isAppForeground()) return Result.success()
 
+        // If scheduled spot SpO2 is in flight, yield this periodic sync window — the SpO2 worker
+        // runs startup sync anyway so history is still pulled without fighting over GATT (issue #103).
+        if (ScheduledSpo2Worker.isMeasuring) return Result.success()
+
         val keyStore = ApiKeyStore(applicationContext)
         val db = PulseLoopDatabase.getInstance(applicationContext)
 
@@ -89,6 +97,7 @@ class RingSyncWorker(
         val measurementSettings = loadPersistedMeasurementSettings(db)
         val profileValues = loadPersistedUserProfile(db, keyStore)
 
+        isSyncing = true
         return try {
             withTimeout(SYNC_TIMEOUT_SECONDS * 1000L) {
                 // Connect to last-known ring
@@ -134,6 +143,7 @@ class RingSyncWorker(
         } catch (e: Exception) {
             Result.retry()
         } finally {
+            isSyncing = false
             // This client is worker-owned. Cancel its watchdog as well as closing GATT so it
             // cannot reconnect after doWork() has returned.
             val releasedConnection = bleClient.destroy()
