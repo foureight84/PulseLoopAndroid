@@ -90,10 +90,12 @@ sealed class PulseEvent {
     /**
      * The phone step reader failed to produce a value this pass — Health Connect unreachable,
      * or READ_STEPS not granted. Published by [com.pulseloop.MainActivity.refreshPhoneSteps]
-     * on a `refresh()` false return, so [com.pulseloop.service.EventPersistenceSubscriber] can
-     * stop gating the ring's live totals off (see its `stepSourceIsPhone`) and let the ring
-     * fill in until the phone reader recovers. Without this, a revoked permission would drop
-     * the ring's contributions indefinitely while the preference still read "phone".
+     * on a `refresh()` false return. [com.pulseloop.service.EventPersistenceSubscriber]
+     * handles it by clearing *today's* `phoneSteps` on the `activity_daily` row, so the
+     * display's read-time pick (`phoneSteps ?: steps`) falls back to the ring's live count
+     * instead of showing whatever stale phone value was last written. Historical days keep
+     * their `phoneSteps` — that data was real when collected, and a permission loss today
+     * does not retract it.
      */
     data object PhoneStepSourceUnavailable : PulseEvent()
     /**

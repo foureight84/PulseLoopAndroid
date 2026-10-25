@@ -13,11 +13,15 @@ import org.junit.Test
  * distance. [phoneStepRow] is the pure decision this rests on (same pattern as
  * `EventPersistenceIdentityTest`'s helpers); the Room call around it is one line.
  *
- * The four rules asserted here:
+ * The four [phoneStepRow] rules asserted here:
  *  - only `phoneSteps`/`syncedAt`/`updatedAt` change on an existing row
  *  - a brand-new row is created with `source = "phone"`
  *  - writing the same value twice is a no-op
  *  - `phoneSteps = 0` is a real value distinct from null
+ *
+ * Plus [clearPhoneStepsOnRow]'s contract (review item 4):
+ *  - the returned row differs only in `phoneSteps = null` — no `updatedAt` bump (see item 10)
+ *  - the call is a no-op when `phoneSteps` is already null, or when the row is absent
  */
 class EventPersistencePhoneWriteTest {
 
@@ -93,5 +97,42 @@ class EventPersistencePhoneWriteTest {
         // Not a state we expect in production, but the helper's contract must not confuse
         // "explicit zero" with "no value": only equal-non-null values are the no-op case.
         assertNotNull(phoneStepRow(ringRow(phoneSteps = 0), dayStart, steps = 1))
+    }
+
+    // ── clearPhoneStepsOnRow (review item 4) ─────────────────────────────────
+
+    @Test
+    fun clearPhoneStepsNullsTheColumnWithoutTouchingAnythingElse() {
+        val existing = ringRow(phoneSteps = 8_200, source = "ring").copy(
+            activeMinutes = 42, syncedAt = 500L, updatedAt = 500L,
+        )
+        val cleared = clearPhoneStepsOnRow(existing)!!
+
+        assertNull(cleared.phoneSteps)
+        // Ring data columns untouched:
+        assertEquals(5_000, cleared.steps)
+        assertEquals(210.5, cleared.calories, 0.0)
+        assertEquals(4_321.0, cleared.distanceMeters, 0.0)
+        assertEquals("ring", cleared.source)
+        assertEquals(42, cleared.activeMinutes)
+        // Metadata untouched too: syncedAt is preserved, and updatedAt deliberately is
+        // — ActivityExporter selects on it, and a metadata-only change would re-export
+        // unchanged ring data (item 10's rule).
+        assertEquals(500L, cleared.syncedAt)
+        assertEquals(500L, cleared.updatedAt)
+    }
+
+    @Test
+    fun clearPhoneStepsIsANoOpWhenAlreadyNull() {
+        // Every failed foreground fires PhoneStepSourceUnavailable. Only the first one
+        // (while phoneSteps was non-null) should write; the rest must be no-ops.
+        assertNull(clearPhoneStepsOnRow(ringRow(phoneSteps = null)))
+    }
+
+    @Test
+    fun clearPhoneStepsIsANoOpWhenRowIsAbsent() {
+        // No row for today: nothing to clear. The ring hasn't written and the phone hasn't
+        // either, so display falls back to the null-row default (0 / no data) already.
+        assertNull(clearPhoneStepsOnRow(null))
     }
 }

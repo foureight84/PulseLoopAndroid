@@ -403,10 +403,17 @@ class EventPersistenceSubscriber(
             is PulseEvent.PhoneStepsUpdate -> {
                 upsertActivityDailyFromPhone(event.timestamp.toEpochMilli(), event.steps)
             }
-            // The phone reader just failed. Under Path B, nothing to do here: the ring writes its
-            // own column regardless, and the read-time pick falls back to `steps` when a day has
-            // no `phoneSteps` value. The event still exists on the bus for the debug screen.
-            is PulseEvent.PhoneStepSourceUnavailable -> Unit
+            // The phone reader just failed (permission revoked mid-day, provider gone, HC
+            // unavailable). Clear *today's* phoneSteps so the display's read-time pick falls
+            // back to the ring's live `steps` — otherwise the last value the phone wrote
+            // stays on the Today tile, widget and check-ins for the rest of the day while
+            // the ring's own count climbs unseen. Historical days keep their phoneSteps: a
+            // permission loss today does not retract data that was real when collected.
+            is PulseEvent.PhoneStepSourceUnavailable -> {
+                val dayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+                val existing = db.activityDailyDao().byDay(dayStart)
+                clearPhoneStepsOnRow(existing)?.let { db.activityDailyDao().upsert(it) }
+            }
             is PulseEvent.SleepTimeline -> {
                 upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
             }
@@ -923,6 +930,33 @@ internal fun phoneStepRow(
         syncedAt = now,
         updatedAt = now,
     )
+
+/**
+ * The row a [PulseEvent.PhoneStepSourceUnavailable] should write for today — or null when it
+ * would be a no-op.
+ *
+ * Review item 4, PR #98. When the phone reader fails mid-day (permission revoked, provider
+ * uninstalled, HC unreachable), the last `phoneSteps` value it wrote stays on the row and the
+ * display — which picks `phoneSteps ?: steps` — keeps showing it, hiding the ring's live count
+ * for the rest of the day. Clearing today's `phoneSteps` restores the fallback.
+ *
+ * Pure, so the contract can be tested without Room (same pattern as [phoneStepRow]).
+ *
+ * The contract:
+ *  - **Returns null when the row is absent** — nothing to clear. `source = "phone"` on a
+ *    phone-first row is preserved (see [phoneStepRow]'s KDoc for why that matters).
+ *  - **Returns null when `phoneSteps` is already null** — the row already falls back to the
+ *    ring. Repeated `PhoneStepSourceUnavailable` events are common (every failed foreground),
+ *    and each one must be a no-op after the first.
+ *  - **Returns a copy with only `phoneSteps = null`** — `steps`, `calories`, `distanceMeters`,
+ *    `source`, `syncedAt` and `updatedAt` are untouched. Not bumping `updatedAt` is deliberate:
+ *    [com.pulseloop.health.exporters.ActivityExporter] selects rows by it, and a metadata-only
+ *    change here would re-export unchanged ring data. (This is also review item 10's rule
+ *    applied proactively to this path.)
+ */
+internal fun clearPhoneStepsOnRow(existing: ActivityDailyEntity?): ActivityDailyEntity? =
+    if (existing == null || existing.phoneSteps == null) null
+    else existing.copy(phoneSteps = null)
 
 /**
  * Is this reading one the ring will hand back from its own history, so that the two copies have to
