@@ -82,6 +82,7 @@ object DataArchiveService {
                     estimatedActiveCalories = c.dblOrNull("estimatedActiveCalories"),
                     deletedSteps = c.int_("deletedSteps"),
                     deletedDistanceMeters = c.dbl("deletedDistanceMeters"),
+                    phoneSteps = c.intOrNull("phoneSteps"),
                 )
             },
             activityBuckets = collect("activity_buckets") { c ->
@@ -399,6 +400,7 @@ object DataArchiveService {
                     estimatedActiveCalories = a.estimatedActiveCalories,
                     deletedSteps = a.deletedSteps,
                     deletedDistanceMeters = a.deletedDistanceMeters,
+                    phoneSteps = a.phoneSteps,
                 ))
             }
             for (b in archive.activityBuckets) {
