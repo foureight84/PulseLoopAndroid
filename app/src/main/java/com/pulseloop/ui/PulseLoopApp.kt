@@ -120,6 +120,9 @@ fun PulseLoopApp() {
                         flags = flags,
                         coordinator = coordinator,
                         foodClient = foodClient,
+                        // Review item 5, part 2 of 3 — resolved per turn so a toggle made
+                        // mid-session is reflected on the next tool call.
+                        preferPhone = services.stepSourcePrefs.preferPhone(),
                     )
                 },
             )
