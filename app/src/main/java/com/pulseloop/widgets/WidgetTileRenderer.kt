@@ -439,7 +439,11 @@ class WidgetTileRenderer(private val density: Float) {
         }
         // Zone-colored line, broken across data gaps (90 min — the card-chart gap on 24h ranges).
         val timestampsMs = samples.map { it.t * 1000L }
-        val runs = ZoneLineSplitter.segmentsByGap(timestampsMs, 90 * 60_000L)
+        val minInterval = if (timestampsMs.size >= 2) {
+            (1 until timestampsMs.size).map { timestampsMs[it] - timestampsMs[it - 1] }.filter { it > 0 }.minOrNull()
+        } else null
+        val maxGapMs = ZoneLineSplitter.maxGapMs(24 * 3600_000L, minInterval)
+        val runs = ZoneLineSplitter.segmentsByGap(timestampsMs, maxGapMs)
         runs.forEach { run ->
             if (run.first == run.last) {
                 val s = samples[run.first]

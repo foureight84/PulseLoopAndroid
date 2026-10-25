@@ -55,4 +55,17 @@ class ZoneLineSplitterTest {
         assertEquals(4 * 86_400_000L, ZoneLineSplitter.maxGapMs(30 * 86_400_000L))
         assertEquals(45 * 86_400_000L, ZoneLineSplitter.maxGapMs(365 * 86_400_000L))
     }
+
+    @Test
+    fun `max gap in day view expands for wider measurement intervals`() {
+        val daySpan = 24 * 3600_000L
+        // Default / 60m interval stays 90m
+        assertEquals(90 * 60_000L, ZoneLineSplitter.maxGapMs(daySpan, 60 * 60_000L))
+        // 120m interval expands to 180m (120 * 1.5) so consecutive points stay connected
+        assertEquals(180 * 60_000L, ZoneLineSplitter.maxGapMs(daySpan, 120 * 60_000L))
+        // 180m interval expands to 270m (180 * 1.5)
+        assertEquals(270 * 60_000L, ZoneLineSplitter.maxGapMs(daySpan, 180 * 60_000L))
+        // Multi-day spans ignore sampleIntervalMs
+        assertEquals(36 * 3600_000L, ZoneLineSplitter.maxGapMs(7 * 86_400_000L, 120 * 60_000L))
+    }
 }
