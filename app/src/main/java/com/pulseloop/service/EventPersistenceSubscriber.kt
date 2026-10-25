@@ -55,7 +55,12 @@ class EventPersistenceSubscriber(
 
     fun start() {
         if (job != null) return
-        job = scope.launch {
+        // UNDISPATCHED: the collect call registers its subscriber synchronously, before start()
+        // returns. Without this, `scope.launch` merely schedules the coroutine and there is still
+        // a window between start() returning and the subscriber attaching — which is exactly the
+        // window MainActivity.onResume → refreshPhoneSteps publishes into on a cold start.
+        // Review item 1, PR #98. Idempotent (the `if (job != null)` guard above).
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             PulseEventBus.events.collect { event -> persist(event) }
         }
     }

@@ -196,8 +196,9 @@ fun PulseLoopApp() {
                     }
                 }
 
-                // Start services
-                persistence.start()
+                // Start services. Persistence is already started from PulseLoopApplication.onCreate
+                // (review item 1, PR #98): it must be subscribed before MainActivity.onResume's
+                // refreshPhoneSteps publishes.
                 batteryAlerts.start()
                 coordinator.start()
                 summaryCoordinator.start()
