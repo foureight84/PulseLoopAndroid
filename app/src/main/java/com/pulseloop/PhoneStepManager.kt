@@ -52,6 +52,9 @@ import java.time.ZoneId
  */
 class PhoneStepManager(private val context: Context) {
 
+    /** User prefs including [StepSourcePrefs.hasEverSeenPhoneSteps], which review item 3 relies on. */
+    private val prefs = com.pulseloop.settings.StepSourcePrefs(context)
+
     /**
      * PulseLoop's own origin, as Health Connect identifies it. Excluded from the origins
      * discovered for a read — see the class KDoc.
@@ -91,12 +94,24 @@ class PhoneStepManager(private val context: Context) {
         }
 
         val steps = if (foreignOrigins.isEmpty()) {
-            // No foreign origin has written steps today yet — a normal state just after
-            // midnight, and also the permanent state on a phone with no step writer. Either
-            // way today's phone total is 0. `aggregate` with an empty `dataOriginFilter`
-            // means "all origins", not "none", so it must not be called here.
+            // No foreign origin has written steps today. Two sub-cases, and they are not the
+            // same thing (review item 3, PR #98):
+            //  - the phone has a step writer and it simply hasn't counted anything yet today
+            //    (just after midnight) — publish 0, because that is the honest phone total;
+            //  - the phone has never had a step writer at all — publishing 0 would paint a
+            //    false zero over a real ring day. Leave `phoneSteps` null so the display
+            //    falls back to the ring.
+            // `hasEverSeenPhoneSteps` distinguishes them. `aggregate` with an empty
+            // `dataOriginFilter` means "all origins", not "none", so it must not be called
+            // here regardless.
+            if (!prefs.hasEverSeenPhoneSteps) return true
             0
         } else {
+            // At least one foreign origin writes steps — record the fact so the midnight-gap
+            // path above keeps publishing 0 on later passes, even if this origin stops
+            // writing (a source uninstalled but the phone still in Phone mode: the days
+            // where it did write are real data).
+            prefs.hasEverSeenPhoneSteps = true
             try {
                 client.aggregate(
                     AggregateRequest(
@@ -171,6 +186,9 @@ class PhoneStepManager(private val context: Context) {
             return false
         }
         if (foreignOrigins.isEmpty()) return true
+        // A backfill window with a foreign writer proves a step source exists — see
+        // [StepSourcePrefs.hasEverSeenPhoneSteps]. Same signal as the today read.
+        prefs.hasEverSeenPhoneSteps = true
 
         val buckets = try {
             client.aggregateGroupByPeriod(
