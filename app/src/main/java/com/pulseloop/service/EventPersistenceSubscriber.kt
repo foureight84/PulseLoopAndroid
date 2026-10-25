@@ -556,9 +556,11 @@ class EventPersistenceSubscriber(
      *
      * Under the separate-column design ([ActivityDailyEntity.phoneSteps]), an existing row's
      * **data columns** are untouched except for `phoneSteps`: `steps`, `distanceMeters`,
-     * `calories`, and `source` are left exactly as the ring wrote them. (`syncedAt` and
-     * `updatedAt` also move — metadata, not data; `updatedAt` is what ActivityExporter selects
-     * on.) The display picks between `steps` and `phoneSteps` at read time based on the user's
+     * `calories`, and `source` are left exactly as the ring wrote them. `syncedAt` also moves —
+     * metadata, not data. `updatedAt` is *preserved* (review item 10): it is what
+     * [com.pulseloop.health.exporters.ActivityExporter] selects on, so bumping it for a
+     * `phoneSteps`-only change would re-select the row and re-export unchanged ring data. The
+     * display picks between `steps` and `phoneSteps` at read time based on the user's
      * step-source preference, so switching source is a read-time choice, not a destructive
      * write: the ring's totals are never clobbered and switching back is instant.
      *
@@ -570,15 +572,15 @@ class EventPersistenceSubscriber(
      * used to land in `steps`, the exported column; under the separate-column design the
      * self-feedback loop is broken by construction). A phone-first day still produces no HC
      * record: it carries `steps = 0`, and `isPlausibleSteps` floors at 1, so the plausibility
-     * guards skip it regardless of source.
+     * guards skip it regardless of source. A phone-first row also stamps `updatedAt = now`
+     * (see [phoneStepRow]) so the exporter's watermark query picks it up.
      *
      * Later ring writes preserve that source — see [upsertActivityDaily]. The old "overwrite
      * source and reset it back to ring on next ring write" dance is gone; nothing needs it any
      * more.
      *
      * A no-op when the day already holds this exact phone value: on every foreground the phone
-     * reader re-publishes today's total, and without the guard every pass would touch `updatedAt`
-     * (which ActivityExporter selects by) and re-export the same HC record.
+     * reader re-publishes today's total, so a value that hasn't moved must not produce a write.
      */
     private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
@@ -907,14 +909,16 @@ class EventPersistenceSubscriber(
  * pattern as the sleep-merge helpers below). The contract, all of which is asserted in
  * `EventPersistencePhoneWriteTest`:
  *
- *  - **Only three columns change on an existing row:** `phoneSteps`, `syncedAt`, `updatedAt`.
- *    `steps`, `calories`, `distanceMeters`, and `source` are carried through untouched — that is
- *    what makes switching step source reversible.
- *  - **A brand-new row is created with `source = "phone"`**, so the day is visible in the "real"
- *    DAO queries even before the ring has data for it.
+ *  - **Only two columns change on an existing row:** `phoneSteps` and `syncedAt`. `steps`,
+ *    `calories`, `distanceMeters`, `source`, and `updatedAt` are carried through untouched —
+ *    the first four keep the source switch reversible, and preserving `updatedAt` stops
+ *    [com.pulseloop.health.exporters.ActivityExporter] from re-selecting the row for unchanged
+ *    ring data (review item 10).
+ *  - **A brand-new row is created with `source = "phone"`**, so the day is visible in the
+ *    "real" DAO queries even before the ring has data for it. New rows also stamp
+ *    `updatedAt = now` so a phone-first day is picked up by the exporter's watermark query.
  *  - **Writing the same value twice is a no-op** (returns null): the phone reader re-publishes
- *    today's total on every foreground, and without this guard each pass would bump `updatedAt`
- *    — which `ActivityExporter` selects by — and re-export the same record.
+ *    today's total on every foreground, so a value that hasn't moved must not produce a write.
  *  - **`phoneSteps = 0` is a real value, distinct from null.** `null → 0` writes (the midnight
  *    gap: the phone has begun counting and counted zero); `0 → 0` is a no-op.
  */
@@ -923,13 +927,23 @@ internal fun phoneStepRow(
     dayStart: Long,
     steps: Int,
     now: Long = System.currentTimeMillis(),
-): ActivityDailyEntity? =
-    if (existing != null && existing.phoneSteps == steps) null
-    else (existing ?: ActivityDailyEntity(date = dayStart, source = StepSourcePrefs.SOURCE_PHONE)).copy(
+): ActivityDailyEntity? = when {
+    // No-op when the day already holds this exact phone value.
+    existing != null && existing.phoneSteps == steps -> null
+    // Existing row: phoneSteps and syncedAt only. updatedAt is preserved — ActivityExporter
+    // selects on it, so a metadata-only phone write must not re-select the row and re-export
+    // unchanged ring steps/calories/distance (review item 10).
+    existing != null -> existing.copy(phoneSteps = steps, syncedAt = now)
+    // New phone-first row: updatedAt stamps "this row just appeared" so the exporter picks
+    // it up.
+    else -> ActivityDailyEntity(
+        date = dayStart,
+        source = StepSourcePrefs.SOURCE_PHONE,
         phoneSteps = steps,
         syncedAt = now,
         updatedAt = now,
     )
+}
 
 /**
  * The row a [PulseEvent.PhoneStepSourceUnavailable] should write for today — or null when it

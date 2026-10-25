@@ -14,7 +14,8 @@ import org.junit.Test
  * `EventPersistenceIdentityTest`'s helpers); the Room call around it is one line.
  *
  * The four [phoneStepRow] rules asserted here:
- *  - only `phoneSteps`/`syncedAt`/`updatedAt` change on an existing row
+ *  - only `phoneSteps`/`syncedAt` change on an existing row — `updatedAt` is preserved so the
+ *    exporter does not re-select the row for unchanged ring data (review item 10)
  *  - a brand-new row is created with `source = "phone"`
  *  - writing the same value twice is a no-op
  *  - `phoneSteps = 0` is a real value distinct from null
@@ -43,13 +44,13 @@ class EventPersistencePhoneWriteTest {
     )
 
     @Test
-    fun phoneWriteOnlyTouchesPhoneStepsSyncedAtAndUpdatedAt() {
-        val existing = ringRow()
+    fun phoneWriteTouchesPhoneStepsAndSyncedAtOnly() {
+        val existing = ringRow().copy(updatedAt = 500L)
         val written = phoneStepRow(existing, dayStart, steps = 8_200, now = 999L)!!
 
         assertEquals(8_200, written.phoneSteps)
-        assertEquals(999L, written.syncedAt)
-        assertEquals(999L, written.updatedAt)
+        assertEquals(999L, written.syncedAt)       // syncedAt bumps
+        assertEquals(500L, written.updatedAt)      // preserved — review item 10
 
         // Ring's own columns, untouched:
         assertEquals(5_000, written.steps)
@@ -59,12 +60,28 @@ class EventPersistencePhoneWriteTest {
     }
 
     @Test
+    fun changedPhoneValueAlsoPreservesUpdatedAt() {
+        // The realistic case: an existing day has phoneSteps = 8_200, the user walks 300
+        // more, refresh() publishes 8_500. phoneSteps and syncedAt move; updatedAt must not,
+        // or ActivityExporter re-selects the row and re-exports unchanged ring steps/
+        // calories/distance (review item 10).
+        val existing = ringRow(phoneSteps = 8_200).copy(updatedAt = 500L)
+        val written = phoneStepRow(existing, dayStart, steps = 8_500, now = 999L)!!
+
+        assertEquals(8_500, written.phoneSteps)
+        assertEquals(999L, written.syncedAt)
+        assertEquals(500L, written.updatedAt)
+    }
+
+    @Test
     fun firstPhoneWriteOnADayCreatesRowWithPhoneSource() {
         val written = phoneStepRow(null, dayStart = dayStart, steps = 8_200, now = 999L)!!
 
         assertEquals(dayStart, written.date)
         assertEquals(8_200, written.phoneSteps)
         assertEquals("phone", written.source)
+        assertEquals(999L, written.syncedAt)
+        assertEquals(999L, written.updatedAt)      // new rows stamp updatedAt so the exporter picks them up
         assertEquals(0, written.steps)             // default — nothing has written the ring column yet
         assertEquals(0.0, written.calories, 0.0)   // default
         assertEquals(0.0, written.distanceMeters, 0.0)
