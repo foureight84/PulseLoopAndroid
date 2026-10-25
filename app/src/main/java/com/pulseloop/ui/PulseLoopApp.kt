@@ -142,6 +142,7 @@ fun PulseLoopApp() {
         val coachVM = remember {
             CoachViewModel(
                 db, coachOrchestrator,
+                preferPhone = { stepSourcePrefs.preferPhone() },
                 attachmentPayloads = { refs ->
                     com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
                 },

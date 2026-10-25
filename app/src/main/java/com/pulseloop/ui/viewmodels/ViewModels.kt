@@ -930,6 +930,12 @@ fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFacto
 class CoachViewModel(
     private val db: PulseLoopDatabase,
     private val orchestrator: com.pulseloop.coach.orchestration.CoachOrchestrator,
+    /**
+     * Resolves the current step-source preference (review item 5, PR #98). Injected as a lambda
+     * rather than a `StepSourcePrefs` so the VM stays context-free like [attachmentPayloads];
+     * the lambda is called per turn so a toggle made mid-session is reflected on the next turn.
+     */
+    private val preferPhone: () -> Boolean = { false },
     /** Resolves staged attachment refs to wire payloads (injected so the VM stays context-free). */
     private val attachmentPayloads: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> List<com.pulseloop.coach.attachments.CoachImagePayload> = { emptyList() },
     /** Opt-in city + weather (iOS #65d), injected so the VM stays context-free like [attachmentPayloads]. */
@@ -1099,7 +1105,11 @@ class CoachViewModel(
                 attachmentsJson = com.pulseloop.coach.attachments.CoachAttachmentRef.encode(attachments),
             ))
             try {
-                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db, environment = environmentSnapshot())
+                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(
+                    db,
+                    preferPhone = preferPhone(),
+                    environment = environmentSnapshot(),
+                )
                 // Drop error bubbles: they're app-generated diagnostics (a provider HTTP error),
                 // not real assistant turns. Replaying them as assistant history would feed the
                 // model garbage like "Coach error · HTTP 404 …" as if it had said it.

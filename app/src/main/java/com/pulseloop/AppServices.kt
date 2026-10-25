@@ -35,6 +35,7 @@ class AppServices private constructor(context: Context) {
     val db: PulseLoopDatabase = PulseLoopDatabase.getInstance(context)
     val bleClient = RingBLEClient(context)
     val apiKeyStore = ApiKeyStore(context)
+    val stepSourcePrefs = com.pulseloop.settings.StepSourcePrefs(context)
     val coordinator = RingSyncCoordinator(bleClient, db, apiKeyStore)
     val gpsRecorder = GpsRouteRecorder(context, db)
     val liveWorkout = LiveWorkoutManager(coordinator, db, gpsRecorder, context)
@@ -47,7 +48,7 @@ class AppServices private constructor(context: Context) {
     )
     val batteryAlerts = BatteryAlertMonitor(context)
     val providerStore = CoachProviderSettingsStore(context)
-    val summaryCoordinator = CoachSummaryCoordinator(db, apiKeyStore, providerStore)
+    val summaryCoordinator = CoachSummaryCoordinator(db, apiKeyStore, providerStore, stepSourcePrefs)
 
     // iOS #94: runs the due check-in slot the moment a full sync completes, so a slot the periodic
     // worker skipped for stale data is delivered a few minutes later instead of being lost.
