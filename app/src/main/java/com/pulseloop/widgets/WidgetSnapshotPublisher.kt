@@ -202,7 +202,7 @@ object WidgetSnapshotPublisher {
 
         // Read-time column pick (Path B, PR #98): the ring's `steps` unless the user has chosen
         // the phone AND the phone has a value for the day. Matches the app's Today tile.
-        val steps = today?.displaySteps(preferPhone)
+        val steps = com.pulseloop.data.DisplaySteps.count(today, preferPhone)
         val calories = today?.calories
         val distanceDisplay = today?.distanceMeters?.let { UnitConverter.distance(it, units) }
 

@@ -38,7 +38,7 @@ object NotificationContextBuilder {
         // display read site.
         val todayStart = localStartOfDay(now)
         val todayActivity = db.activityDailyDao().byDay(todayStart)
-        val todaySteps = todayActivity?.displaySteps(preferPhone)
+        val todaySteps = com.pulseloop.data.DisplaySteps.count(todayActivity, preferPhone)
 
         // Latest sleep
         val latestSleep = db.sleepSessionDao().recent(1).firstOrNull()

@@ -111,19 +111,26 @@ data class ActivityDailyEntity(
      * (Path B read-time selection, PR #98). Ring mode shows the ring's own column; phone mode
      * shows [phoneSteps] when the phone has a value for the day, falling back to the ring's
      * column when it does not — so a day the phone never backfilled still shows something.
+     *
+     * `internal` on purpose (review item 5, PR #98). The one production caller is
+     * [com.pulseloop.data.DisplaySteps] — the one place the preference is applied. Leaving
+     * this `public` let each screen, widget, notification and coach path call it directly
+     * and drift; that is the bug the reviewer flagged. New callers use
+     * [com.pulseloop.data.DisplaySteps], not this. Test source sets (same module) can still
+     * exercise it directly.
      */
-    fun displaySteps(preferPhone: Boolean): Int =
+    internal fun displaySteps(preferPhone: Boolean): Int =
         if (preferPhone) phoneSteps ?: steps else steps
 
     /**
      * The whole entity a screen should show, with `steps` projected for display under the user's
      * step-source preference. Only `steps` is rewritten; `distanceMeters`, `calories`, and the
      * rest of the row are left as the ring wrote them (Path B — see PR #98's design notes).
-     * Callers that hold a whole row in their state (e.g.
-     * [com.pulseloop.ui.viewmodels.ActivityViewModel]) use this; callers that only need the
-     * scalar use [displaySteps].
+     *
+     * `internal` for the same reason as [displaySteps] — use
+     * [com.pulseloop.data.DisplaySteps.project].
      */
-    fun forDisplay(preferPhone: Boolean): ActivityDailyEntity =
+    internal fun forDisplay(preferPhone: Boolean): ActivityDailyEntity =
         if (preferPhone && phoneSteps != null) copy(steps = phoneSteps) else this
 }
 

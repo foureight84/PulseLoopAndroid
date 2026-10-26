@@ -103,7 +103,7 @@ class TodayViewModel(
                         ?: DailyCalorieEstimator.deviceReportedCalories(row)
                 }
                 _state.update { it.copy(
-                    steps = activity?.displaySteps(stepSourcePrefs.preferPhone()),
+                    steps = com.pulseloop.data.DisplaySteps.count(activity, stepSourcePrefs.preferPhone()),
                     calories = calories,
                     distanceMeters = activity?.distanceMeters,
                     activeMinutes = activity?.activeMinutes,
@@ -126,7 +126,7 @@ class TodayViewModel(
         // 7-day step series for the hero delta (oldest→newest; DAO returns newest-first).
         viewModelScope.launch {
             db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(steps7d = days.reversed().map { d -> d.displaySteps(stepSourcePrefs.preferPhone()) }) }
+                _state.update { it.copy(steps7d = com.pulseloop.data.DisplaySteps.counts(days.reversed(), stepSourcePrefs.preferPhone())) }
             }
         }
         // Today's coach summary card (kind="today", scopeKey=local date).
@@ -278,8 +278,10 @@ class SleepViewModel(
         // aggregateCoach/averageScore take a synchronous lookup; pre-warm the cache first.
         val goal = try { db.userGoalDao().get()?.sleepMinutes } catch (_: Exception) { null }
         val steps = try {
-            db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())
-                ?.displaySteps(stepSourcePrefs.preferPhone())
+            com.pulseloop.data.DisplaySteps.count(
+                db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal()),
+                stepSourcePrefs.preferPhone(),
+            )
         } catch (_: Exception) { null }
 
         // ── Today tile (never moves with Day-view navigation) ──
@@ -513,12 +515,12 @@ class ActivityViewModel(
         viewModelScope.launch {
             db.activityDailyDao().recentFlow(7).collect { days ->
                 val preferPhone = stepSourcePrefs.preferPhone()
-                _state.update { it.copy(recentDays = days.map { d -> d.forDisplay(preferPhone) }) }
+                _state.update { it.copy(recentDays = com.pulseloop.data.DisplaySteps.project(days, preferPhone)) }
             }
         }
         viewModelScope.launch {
             currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { day ->
-                _state.update { it.copy(today = day?.forDisplay(stepSourcePrefs.preferPhone())) }
+                _state.update { it.copy(today = com.pulseloop.data.DisplaySteps.project(day, stepSourcePrefs.preferPhone())) }
             }
         }
         viewModelScope.launch {
@@ -543,7 +545,7 @@ class ActivityViewModel(
                 val activeCalories = day?.let { DailyCalorieEstimator.effectiveActiveCalories(it) }
                 _state.update {
                     it.copy(
-                        daySummary = day?.forDisplay(stepSourcePrefs.preferPhone()),
+                        daySummary = com.pulseloop.data.DisplaySteps.project(day, stepSourcePrefs.preferPhone()),
                         effectiveCalories = calories,
                         effectiveActiveCalories = activeCalories,
                     )
