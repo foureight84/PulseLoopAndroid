@@ -236,12 +236,21 @@ fun ActivityScreen(
         // than beside it: it answers "why is that number wrong", which is a question you only ask
         // after reading the number.
         //
-        // Hidden when the step source is "Phone": the Records list is the ring's intraday
-        // bucket log, and under Path B the header above it is the phone's total (chosen at
-        // read time from `phoneSteps`), so the records no longer sum to the number they sit
-        // under — reading as a bug rather than a detail view. Deleting a ring bucket would
-        // also not move the phone-sourced total. Toggling back to "Ring" restores the card.
-        if (stepSourcePrefs.stepSource != com.pulseloop.settings.StepSourcePrefs.SOURCE_PHONE) {
+        // Hidden only when the phone is *actually supplying the shown day's steps* (review
+        // item 9, PR #98). The old guard keyed on the user's preference alone, which hid the
+        // card even on days whose `phoneSteps` is null — those days display the ring's total,
+        // so the ring's own buckets are the right records for the number above them, and a
+        // bad bucket in that total needs to be deletable. `phoneOwnsShownDay` asks the two
+        // questions that actually determine it: the preference is Phone, AND the phone wrote
+        // a value for this day. `state.daySummary` is already projected by the ViewModel, so
+        // its `phoneSteps` field is the raw column — untouched by projection.
+        //
+        // On a phone-owned day the records legitimately do not sum to the header (ring
+        // buckets vs. phone total), which reads as a bug rather than a detail view — hide it
+        // for that case. Toggling back to Ring, or landing on a day the phone never
+        // backfilled, restores the card.
+        val phoneOwnsShownDay = stepSourcePrefs.preferPhone() && state.daySummary?.phoneSteps != null
+        if (!phoneOwnsShownDay) {
             item {
                 ActivityRecordsCard(
                     viewModel = viewModel,
