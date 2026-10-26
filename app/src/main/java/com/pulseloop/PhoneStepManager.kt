@@ -228,18 +228,43 @@ class PhoneStepManager(private val context: Context) {
      * The set of Health Connect origins writing `StepsRecord`s in [timeRangeFilter], minus
      * PulseLoop's own. The result is passed as `dataOriginFilter` to the aggregates above so
      * HC's priority-based de-duplication runs over foreign sources only — see the class KDoc.
+     *
+     * **Why this reads raw records (review item 8, PR #98).** Health Connect has no API that
+     * enumerates "the set of origins writing a record type" — `AggregateRequest` and
+     * `AggregateGroupByPeriodRequest` both require a `dataOriginFilter` *up front*, and
+     * there is nothing else in the SDK to discover it. Reading records and inspecting each
+     * `metadata.dataOrigin` is the only option; the cost is intrinsic to the API. Do not
+     * "optimise" this by swapping in an unfiltered aggregate or by subtracting an own-only
+     * aggregate — HC's de-duplication is priority-based, not additive (see the class KDoc),
+     * so either shortcut produces wrong totals.
+     *
+     * **Pagination.** [ReadRecordsRequest] returns one page at a time (default `pageSize`
+     * of 1000) and puts the cursor in `pageToken`. The previous code read a single page and
+     * ignored the token, so an origin that first appeared *after* the first 1000 records
+     * was silently excluded from `dataOriginFilter` — under-counting that source's steps
+     * for the whole range. Loop until `pageToken` is null. In practice a 30-day backfill
+     * window fits in one page for a typical step writer, so the loop collapses to one
+     * round trip; the `pageSize` bump keeps that true for heavier ranges too.
      */
     private suspend fun foreignStepOrigins(
         client: HealthConnectClient,
         timeRangeFilter: TimeRangeFilter,
     ): Set<DataOrigin> {
-        val records = client.readRecords(
-            ReadRecordsRequest(
-                recordType = StepsRecord::class,
-                timeRangeFilter = timeRangeFilter,
+        val origins = mutableSetOf<DataOrigin>()
+        var pageToken: String? = null
+        do {
+            val response = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = StepsRecord::class,
+                    timeRangeFilter = timeRangeFilter,
+                    pageSize = 5_000,
+                    pageToken = pageToken,
+                )
             )
-        ).records
-        return records.map { it.metadata.dataOrigin }.toSet() - ownOrigin
+            response.records.forEach { origins.add(it.metadata.dataOrigin) }
+            pageToken = response.pageToken
+        } while (pageToken != null)
+        return origins - ownOrigin
     }
 
     companion object {
