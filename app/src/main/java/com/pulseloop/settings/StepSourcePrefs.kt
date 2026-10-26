@@ -1,6 +1,11 @@
 package com.pulseloop.settings
 
 import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 /**
  * The user's step-source preference ("ring" or "phone").
@@ -30,6 +35,31 @@ class StepSourcePrefs(context: Context) {
      * and [ActivityDailyEntity.steps] otherwise.
      */
     fun preferPhone(): Boolean = stepSource == SOURCE_PHONE
+
+    /**
+     * [preferPhone] as a hot-observer Flow — emits the current value immediately, then again
+     * whenever [stepSource] is written (via `OnSharedPreferenceChangeListener`).
+     *
+     * Review item 7, PR #98. `preferPhone()` is cheap to read at each DB emission, so the
+     * ViewModels used to consult it inside their `.collect { }` blocks. That meant a toggle
+     * with no accompanying DB write left the screen stale: no flow emits, so the display
+     * keeps the old column until some unrelated row changes. Combining this with the DB
+     * flow in each ViewModel (`combine(dbFlow, preferPhoneFlow())`) makes the display
+     * follow the toggle, not just the data.
+     *
+     * Only fires for [KEY_STEP_SOURCE] writes — `lastBackfillDay` and
+     * `hasEverSeenPhoneSteps` churn is not relevant to what the user sees and must not
+     * re-project the display. [distinctUntilChanged] also swallows a no-op write of the
+     * same value (SharedPreferences fires the listener even on an unchanged `putString`).
+     */
+    fun preferPhoneFlow(): Flow<Boolean> = callbackFlow {
+        trySend(preferPhone())
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == KEY_STEP_SOURCE) trySend(stepSource == SOURCE_PHONE)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
 
     /**
      * Local-midnight epoch millis of the last day on which the phone step reader ran a

@@ -90,7 +90,10 @@ class TodayViewModel(
 
     init {
         viewModelScope.launch {
-            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { activity ->
+            combine(
+                currentDayValues(todayStart, db.activityDailyDao()::byDayFlow),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { activity, preferPhone -> activity to preferPhone }.collect { (activity, preferPhone) ->
                 // iOS #98: the ring's own calorie figure wins when it reported one; otherwise show
                 // the on-device estimate (BMR accrued so far + net active). Reading `calories`
                 // straight off the row would show 0 all day for rings that report none — which is
@@ -103,7 +106,7 @@ class TodayViewModel(
                         ?: DailyCalorieEstimator.deviceReportedCalories(row)
                 }
                 _state.update { it.copy(
-                    steps = com.pulseloop.data.DisplaySteps.count(activity, stepSourcePrefs.preferPhone()),
+                    steps = com.pulseloop.data.DisplaySteps.count(activity, preferPhone),
                     calories = calories,
                     distanceMeters = activity?.distanceMeters,
                     activeMinutes = activity?.activeMinutes,
@@ -125,8 +128,11 @@ class TodayViewModel(
         }
         // 7-day step series for the hero delta (oldest→newest; DAO returns newest-first).
         viewModelScope.launch {
-            db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(steps7d = com.pulseloop.data.DisplaySteps.counts(days.reversed(), stepSourcePrefs.preferPhone())) }
+            combine(
+                db.activityDailyDao().recentFlow(7),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { days, preferPhone -> days to preferPhone }.collect { (days, preferPhone) ->
+                _state.update { it.copy(steps7d = com.pulseloop.data.DisplaySteps.counts(days.reversed(), preferPhone)) }
             }
         }
         // Today's coach summary card (kind="today", scopeKey=local date).
@@ -264,7 +270,13 @@ class SleepViewModel(
     init {
         // Any sleep-table change retriggers a rebuild of the selected range.
         viewModelScope.launch {
-            db.sleepSessionDao().recentFlow(7).collect { sessions ->
+            // Combined with the step-source preference (review item 7, PR #98) so the sleep
+            // coach's step figure follows the toggle without waiting for a sleep-table write.
+            // rebuild() reads preferPhone() fresh each call, so the emit is the entire fix.
+            combine(
+                db.sleepSessionDao().recentFlow(7),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { sessions, _ -> sessions }.collect { sessions ->
                 _state.update { it.copy(recentSessions = sessions) }
                 try { rebuild(_state.value.range) } catch (_: Exception) {}
             }
@@ -513,18 +525,26 @@ class ActivityViewModel(
 
     init {
         viewModelScope.launch {
-            db.activityDailyDao().recentFlow(7).collect { days ->
-                val preferPhone = stepSourcePrefs.preferPhone()
+            combine(
+                db.activityDailyDao().recentFlow(7),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { days, preferPhone -> days to preferPhone }.collect { (days, preferPhone) ->
                 _state.update { it.copy(recentDays = com.pulseloop.data.DisplaySteps.project(days, preferPhone)) }
             }
         }
         viewModelScope.launch {
-            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { day ->
-                _state.update { it.copy(today = com.pulseloop.data.DisplaySteps.project(day, stepSourcePrefs.preferPhone())) }
+            combine(
+                currentDayValues(todayStart, db.activityDailyDao()::byDayFlow),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { day, preferPhone -> day to preferPhone }.collect { (day, preferPhone) ->
+                _state.update { it.copy(today = com.pulseloop.data.DisplaySteps.project(day, preferPhone)) }
             }
         }
         viewModelScope.launch {
-            shownDayStart.flatMapLatest { day -> db.activityDailyDao().byDayFlow(day) }.collect { day ->
+            combine(
+                shownDayStart.flatMapLatest { day -> db.activityDailyDao().byDayFlow(day) },
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { day, preferPhone -> day to preferPhone }.collect { (day, preferPhone) ->
                 // Effective calories for the shown day — same read path as the Today card
                 // (see TodayViewModel's init), so both screens agree. Reading `day.calories`
                 // straight off the row would surface the ring's value for ring modes, but
@@ -545,7 +565,7 @@ class ActivityViewModel(
                 val activeCalories = day?.let { DailyCalorieEstimator.effectiveActiveCalories(it) }
                 _state.update {
                     it.copy(
-                        daySummary = com.pulseloop.data.DisplaySteps.project(day, stepSourcePrefs.preferPhone()),
+                        daySummary = com.pulseloop.data.DisplaySteps.project(day, preferPhone),
                         effectiveCalories = calories,
                         effectiveActiveCalories = activeCalories,
                     )
