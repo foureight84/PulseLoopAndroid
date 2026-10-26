@@ -575,9 +575,14 @@ class EventPersistenceSubscriber(
      * guards skip it regardless of source. A phone-first row also stamps `updatedAt = now`
      * (see [phoneStepRow]) so the exporter's watermark query picks it up.
      *
-     * Later ring writes preserve that source — see [upsertActivityDaily]. The old "overwrite
-     * source and reset it back to ring on next ring write" dance is gone; nothing needs it any
-     * more.
+     * A later ring write flips `source` from `"phone"` to `"ring"` — see [upsertActivityDaily].
+     * That is not a mismatch: `source` means "who last wrote the data columns", and once the
+     * ring has supplied `steps`/`calories`/`distance`, the row belongs to the ring.
+     * [DailyCalorieEstimator.deviceReportedCalories] reads `source` for exactly that question.
+     * The phone's step value is kept visible by the separate `phoneSteps` column, not by the
+     * source label — the old "overwrite source and reset it back to ring on next ring write"
+     * dance existed because the phone used to occupy `steps`; under the separate-column design
+     * nothing needs it any more.
      *
      * A no-op when the day already holds this exact phone value: on every foreground the phone
      * reader re-publishes today's total, so a value that hasn't moved must not produce a write.
@@ -861,7 +866,7 @@ class EventPersistenceSubscriber(
      * Matches the official app's scoring.
      */
     private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
-    // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
+        // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
         // same banding, so one function owns it.
         sleepStageScore(deepMin, totalMin)
 

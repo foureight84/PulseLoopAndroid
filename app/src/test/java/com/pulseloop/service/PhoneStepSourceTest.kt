@@ -20,7 +20,7 @@ import java.time.Instant
  * The read-time source selection itself (`ActivityDailyEntity.displaySteps` / `forDisplay`) is
  * covered in `app/src/test/java/com/pulseloop/data/ActivityDailyDisplayTest.kt`. The phone
  * write's column-only behaviour is covered (Room-backed) in
- * `app/src/test/java/com/pulseloop/service/EventPersistenceSubscriberPhoneWriteTest.kt`.
+ * `app/src/test/java/com/pulseloop/service/EventPersistencePhoneWriteTest.kt`.
  * The EXCLUDED_SOURCES assertion that used to live here was superseded by
  * `HealthConnectTypeMappingsTest.excludedSourcesCoversDemoAndMock` in commit 41beee0 — `"phone"`
  * was dropped from the set, so the old assertion was simply wrong.
