@@ -44,6 +44,7 @@ import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ui.components.ActivityMeta
 import com.pulseloop.ui.components.ActivityRing
 import com.pulseloop.ui.components.ActivityRings
@@ -79,6 +80,10 @@ fun ActivityScreen(
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
     val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
+    // Read the step-source preference once per composition. Cheap enough to read
+    // unconditionally (plain SharedPreferences, no crypto), and re-read on every entry to
+    // the screen so a toggle made in Settings is reflected on return.
+    val stepSourcePrefs = remember { StepSourcePrefs(context) }
     val scope = rememberCoroutineScope()
     var pickerOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
@@ -230,13 +235,30 @@ fun ActivityScreen(
         // The blocks behind today's total, each removable (issue #70). Under the summary rather
         // than beside it: it answers "why is that number wrong", which is a question you only ask
         // after reading the number.
-        item {
-            ActivityRecordsCard(
-                viewModel = viewModel,
-                units = units,
-                dayStart = shownDayStart(state),
-                dayLabel = shownDayLabel(state),
-            )
+        //
+        // Hidden only when the phone is *actually supplying the shown day's steps* (review
+        // item 9, PR #98). The old guard keyed on the user's preference alone, which hid the
+        // card even on days whose `phoneSteps` is null — those days display the ring's total,
+        // so the ring's own buckets are the right records for the number above them, and a
+        // bad bucket in that total needs to be deletable. `phoneOwnsShownDay` asks the two
+        // questions that actually determine it: the preference is Phone, AND the phone wrote
+        // a value for this day. `state.daySummary` is already projected by the ViewModel, so
+        // its `phoneSteps` field is the raw column — untouched by projection.
+        //
+        // On a phone-owned day the records legitimately do not sum to the header (ring
+        // buckets vs. phone total), which reads as a bug rather than a detail view — hide it
+        // for that case. Toggling back to Ring, or landing on a day the phone never
+        // backfilled, restores the card.
+        val phoneOwnsShownDay = stepSourcePrefs.preferPhone() && state.daySummary?.phoneSteps != null
+        if (!phoneOwnsShownDay) {
+            item {
+                ActivityRecordsCard(
+                    viewModel = viewModel,
+                    units = units,
+                    dayStart = shownDayStart(state),
+                    dayLabel = shownDayLabel(state),
+                )
+            }
         }
         item { Spacer(Modifier.height(64.dp)) }
     }
@@ -363,6 +385,17 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
     // WeeklyGoalCard keeps reading state.today — a week widget is about the live week.
     val today = state.daySummary
     val distValue = today?.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
+    // Read the effective calories from the ViewModel rather than the row's raw `calories`
+    // column: the estimator's figure is what the Today card shows, and reading the column
+    // here would surface a phone row's stale hardcoded placeholder (or a ring's pre-toggle
+    // value) as if it were a real total. Same read path as TodayViewModel's, so the two
+    // screens cannot disagree.
+    //
+    // `calories` is the day's *total* (basal + active) — what the Calories metric shows, same
+    // as Today. The goal ring reads the active-only figure instead: UserGoal.calories is an
+    // active-energy goal, so a ring drawn against the total would sit near full from midnight.
+    val calories = state.effectiveCalories
+    val activeCalories = state.effectiveActiveCalories
     Row(
         Modifier
             .fillMaxWidth()
@@ -379,14 +412,14 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
                 SummaryMetric("Distance", distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
             }
             // The same figure the Today screen shows, not the row's raw `calories` (issue #101).
-            val calories = state.dayCalories
+            val calories = state.effectiveCalories
             SummaryMetric("Calories", calories?.let { Formats.count(it.toInt()) } ?: "—", if (calories != null) "cal" else null, PulseColors.calories)
         }
         ActivityRings(
             rings = listOf(
                 ActivityRing(today?.steps?.toDouble(), state.stepGoal.toDouble(), PulseColors.steps),
                 ActivityRing(today?.distanceMeters, state.distanceGoalMeters, PulseColors.distance),
-                ActivityRing(state.dayActiveCalories, state.caloriesGoal.toDouble(), PulseColors.calories),
+                ActivityRing(activeCalories, state.caloriesGoal.toDouble(), PulseColors.calories),
             ),
             size = 112.dp,
             strokeWidth = 11.dp,
@@ -869,8 +902,8 @@ private fun ActivityRecordsCard(
             text = {
                 Text(
                     "${Formats.count(bucket.steps)} steps at ${timeOf(bucket.startEpoch)}." +
-                        "\n\nThe day's total drops by that much. This can't be undone, and the record " +
-                        "stays deleted the next time this day syncs.",
+                            "\n\nThe day's total drops by that much. This can't be undone, and the record " +
+                            "stays deleted the next time this day syncs.",
                 )
             },
             confirmButton = {

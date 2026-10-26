@@ -31,6 +31,13 @@ class PulseLoopApplication : Application() {
         QuietHoursPrefs.migrateIndependentBedtime(this)
         // Application-scoped so capture runs whether or not the Debug screen is open.
         DiagnosticsSubscriber(PulseLoopDatabase.getInstance(this)).start(appScope)
+        // Persistence subscribes from here — not from PulseLoopApp's LaunchedEffect — so that
+        // nothing published after the Activity appears (MainActivity.onResume → refreshPhoneSteps
+        // → PulseEventBus.publishBlocking) can reach a bus with no persister attached. Before this,
+        // the phone read raced the composition's LaunchedEffect and today's PhoneStepsUpdate (and
+        // every backfill event) went to Diagnostics alone. Review item 1, PR #98. Idempotent:
+        // PulseLoopApp's LaunchedEffect no longer calls persistence.start().
+        AppServices.get(this).persistence.start()
         // One-time cleanup of activity totals corrupted by the old bucket handling; runs off the
         // main thread and is prefs-gated so it executes once. Safe to race the first sync — the
         // ring can't connect before this completes a couple of DELETE statements.

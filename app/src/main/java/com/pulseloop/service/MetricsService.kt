@@ -33,7 +33,16 @@ object MetricsService {
         val spo2Trend24h: List<Double> = emptyList(),
     )
 
-    suspend fun buildTodaySummary(db: PulseLoopDatabase): TodaySummary {
+    /**
+     * The day's activity totals for display.
+     *
+     * [preferPhone] is the resolved step-source preference (review item 5, PR #98). Pass it
+     * through [com.pulseloop.data.DisplaySteps] to pick between the ring's `steps` column and
+     * the phone's `phoneSteps` column per Path B. No callers today — kept for parity with the
+     * iOS reference and so that any future wiring of this aggregation gets the same answer
+     * Today does.
+     */
+    suspend fun buildTodaySummary(db: PulseLoopDatabase, preferPhone: Boolean): TodaySummary {
         val now = System.currentTimeMillis()
         val todayStart = Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault())
             .truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()
@@ -61,7 +70,7 @@ object MetricsService {
         val restingHr = hrValues.filter { it <= 72.0 }.minOrNull()
 
         return TodaySummary(
-            steps = todayActivity?.steps,
+            steps = com.pulseloop.data.DisplaySteps.count(todayActivity, preferPhone),
             calories = todayActivity?.calories,
             distanceMeters = todayActivity?.distanceMeters,
             activeMinutes = todayActivity?.activeMinutes,

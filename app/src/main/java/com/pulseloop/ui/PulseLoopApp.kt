@@ -120,23 +120,32 @@ fun PulseLoopApp() {
                         flags = flags,
                         coordinator = coordinator,
                         foodClient = foodClient,
+                        // Review item 5, part 2 of 3 — resolved per turn so a toggle made
+                        // mid-session is reflected on the next tool call.
+                        preferPhone = services.stepSourcePrefs.preferPhone(),
                     )
                 },
             )
         }
 
         // ── ViewModels ───────────────────────────────────────────────────
-        val todayVM = remember { TodayViewModel(db, apiKeyStore) }
+        val stepSourcePrefs = remember { com.pulseloop.settings.StepSourcePrefs(context) }
+        val todayVM = remember { TodayViewModel(db, apiKeyStore, stepSourcePrefs) }
         val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
         val sleepVM = remember {
             val appContext = context.applicationContext
-            SleepViewModel(db, gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) })
+            SleepViewModel(
+                db,
+                gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) },
+                stepSourcePrefs = stepSourcePrefs,
+            )
         }
-        val activityVM = remember { ActivityViewModel(db) }
+        val activityVM = remember { ActivityViewModel(db, stepSourcePrefs) }
         val weatherContextService = remember { com.pulseloop.coach.context.WeatherContextService(context) }
         val coachVM = remember {
             CoachViewModel(
                 db, coachOrchestrator,
+                preferPhone = { stepSourcePrefs.preferPhone() },
                 attachmentPayloads = { refs ->
                     com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
                 },
@@ -191,8 +200,9 @@ fun PulseLoopApp() {
                     }
                 }
 
-                // Start services
-                persistence.start()
+                // Start services. Persistence is already started from PulseLoopApplication.onCreate
+                // (review item 1, PR #98): it must be subscribed before MainActivity.onResume's
+                // refreshPhoneSteps publishes.
                 batteryAlerts.start()
                 coordinator.start()
                 summaryCoordinator.start()

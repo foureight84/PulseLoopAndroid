@@ -42,7 +42,9 @@
     <!-- Phase 8: Health Connect export (write-only). Exactly the Phase 1–4 data types from
          docs/health-connect-integration.md — Phase 5 types (blood pressure, glucose, respiratory
          rate, VO2max, resting HR, nutrition) - the Phase 5 "beyond iOS" types, added in Phase 5 so the
-         first permission sheet stayed narrow. No READ_* permissions anywhere. -->
+         first permission sheet stayed narrow. READ_STEPS below is the one exception: it supports
+         the optional phone step source, and users on the default "Ring" source never see the
+         Health Connect read prompt and never trigger a read. -->
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
     <uses-permission android:name="android.permission.health.WRITE_OXYGEN_SATURATION" />
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE_VARIABILITY" />
@@ -62,6 +64,10 @@
     <uses-permission android:name="android.permission.health.WRITE_VO2_MAX" />
     <uses-permission android:name="android.permission.health.WRITE_RESTING_HEART_RATE" />
     <uses-permission android:name="android.permission.health.WRITE_NUTRITION" />
+    <!-- Phone step source (fork feature): the only Health Connect READ permission the app
+         requests, and only when the user opts into "Phone" as their step source. Default
+         ("Ring") users never trigger a read and never see the prompt. -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
 
     <application
         android:name=".PulseLoopApplication"
