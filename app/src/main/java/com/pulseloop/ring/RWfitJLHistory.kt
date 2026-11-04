@@ -237,29 +237,39 @@ object RWfitJLHistory {
      * always carries at least a light minute — there is no all-awake session to filter out here,
      * unlike the legacy stream.
      */
-    fun decodeSleep(records: ByteArray): List<RingDecodedEvent> {
-        data class Record(val time: Instant, val model: Int)
+    fun decodeSleep(records: ByteArray): List<RingDecodedEvent> =
+        decodeSleepWithRemainder(records).first
+
+    /**
+     * Decodes sleep history records and returns both the completed session events and any unclosed
+     * trailing session records (which start with [SLEEP_SESSION_START] but have not received their
+     * [SLEEP_SESSION_END] wakeup marker yet).
+     */
+    fun decodeSleepWithRemainder(records: ByteArray): Pair<List<RingDecodedEvent>, ByteArray?> {
+        data class Record(val time: Instant, val model: Int, val byteOffset: Int)
 
         val recs = mutableListOf<Record>()
         var i = 0
         while (i + 7 <= records.size) {
-            recs.add(Record(instantAt(records, i), records[i + 4].toInt() and 0xFF))
+            recs.add(Record(instantAt(records, i), records[i + 4].toInt() and 0xFF, i))
             i += 7
         }
 
         // Deduplicate adjacent identical records in case pages repeat boundary items
         val cleanRecs = recs.filterIndexed { index, record ->
-            index == 0 || record != recs[index - 1]
+            index == 0 || (record.time == recs[index - 1].time && record.model == recs[index - 1].model).not()
         }
 
         val events = mutableListOf<RingDecodedEvent>()
         var sessionStart: Instant? = null
+        var sessionStartOffset: Int? = null
         val stages = mutableListOf<SleepStage>()
 
         for (index in cleanRecs.indices) {
             val rec = cleanRecs[index]
             if (rec.model == SLEEP_SESSION_START) {
                 sessionStart = rec.time
+                sessionStartOffset = rec.byteOffset
                 stages.clear()
             }
             val start = sessionStart ?: continue
@@ -270,6 +280,7 @@ object RWfitJLHistory {
                     events.add(RingDecodedEvent.SleepTimeline(start, stages.toList(), completeSession = true))
                 }
                 sessionStart = null
+                sessionStartOffset = null
                 stages.clear()
                 continue
             }
@@ -282,7 +293,13 @@ object RWfitJLHistory {
                 repeat(minutes.toInt()) { stages.add(sleepStage(rec.model)) }
             }
         }
-        return events
+
+        val remainder = if (sessionStartOffset != null) {
+            val end = (records.size / 7) * 7
+            if (end > sessionStartOffset) records.copyOfRange(sessionStartOffset, end) else null
+        } else null
+
+        return Pair(events, remainder)
     }
 
     private fun sleepStage(model: Int): SleepStage = when (model) {

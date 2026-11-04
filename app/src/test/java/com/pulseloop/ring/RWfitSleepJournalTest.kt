@@ -73,4 +73,34 @@ class RWfitSleepJournalTest {
         journal2.clear(deviceId = "ring123")
         assertFalse(journal2.hasPages(deviceId = "ring123"))
     }
+
+    @Test
+    fun `pruneStale deletes file when all pages are expired`() {
+        val journal = RWfitSleepJournal(tempDir)
+        // Record with timestamp 1 (ancient, Jan 1970)
+        val ancientPage = byteArrayOf(0, 0, 0, 1, 17, 0, 0)
+        journal.stagePage(ancientPage, deviceId = "test_stale")
+        assertTrue(journal.hasPages(deviceId = "test_stale"))
+
+        journal.pruneStale(deviceId = "test_stale", maxAgeHours = 1)
+        assertFalse(journal.hasPages(deviceId = "test_stale"))
+        val file = File(tempDir, "rwfit_sleep_test_stale.bin")
+        assertFalse(file.exists())
+    }
+
+    @Test
+    fun `defaultBaseDir is used when baseDir and override are null`() {
+        RWfitSleepJournal.directoryOverride = null
+        RWfitSleepJournal.defaultBaseDir = tempDir
+
+        val journal = RWfitSleepJournal()
+        val page = byteArrayOf(0, 0, 0, 2, 1, 0, 0)
+        journal.stagePage(page, deviceId = "app_test")
+
+        val file = File(tempDir, "rwfit_sleep_app_test.bin")
+        assertTrue(file.exists())
+        assertTrue(journal.hasPages(deviceId = "app_test"))
+
+        RWfitSleepJournal.defaultBaseDir = null
+    }
 }

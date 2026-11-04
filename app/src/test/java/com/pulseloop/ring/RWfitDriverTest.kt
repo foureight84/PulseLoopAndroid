@@ -504,4 +504,35 @@ class RWfitDriverTest {
         assertEquals(1, writer.frames.size)
         assertEquals(0x11, writer.frames[0][1].toInt() and 0xFF)
     }
+
+    @Test
+    fun `JieLi sleep pagination breaks loop when identical page is sent repeatedly`() {
+        val writer = RecordingWriter()
+        val journal = RWfitSleepJournal()
+        val driver = RWfitDriver(writer, sleepJournal = journal)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        val t0 = (System.currentTimeMillis() / 1000L) - 3600L
+        val page1Records = recSleep(t0, 0x11) + recSleep(t0 + 600, 1) + recSleep(t0 + 1200, 0x22)
+        val page1Frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), page1Records)
+
+        // First delivery: normal staging, enqueues delete + next
+        driver.ingest(page1Frame, "n")
+        val initialWrites = writer.frames.size
+
+        // Second delivery (duplicate): enqueues delete + next
+        driver.ingest(page1Frame, "n")
+
+        // Third delivery (duplicate): loop detected, aborts pagination and decodes current journal
+        val events = driver.ingest(page1Frame, "n")
+        val timelines = events.filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(1, timelines.size)
+        // No further delete or get requests enqueued on 3rd duplicate
+        val endWrites = writer.frames.size
+        // 3rd ingest only emits BLE frame ACK (1 frame), not delete or sync requests
+        val addedWrites = endWrites - initialWrites
+        assertTrue(addedWrites <= 4)
+    }
 }

@@ -25,6 +25,10 @@ class RWfitDriver(
     private val encoder = RWfitEncoder(legacyCodec, jieliCodec)
     private val syncEngine = RWfitSyncEngine(writer, encoder)
 
+    private var sleepPagingCount = 0
+    private var lastSleepPayload: ByteArray? = null
+    private var consecutiveIdenticalPageCount = 0
+
     override val serviceUUIDs: List<String> = listOf(RWfitProtocol.SERVICE_UUID)
     override val writeUUID: String = RWfitProtocol.WRITE_UUID
     override val notifyUUIDs: List<String> = listOf(RWfitProtocol.NOTIFY_UUID)
@@ -39,6 +43,9 @@ class RWfitDriver(
         jieliCodec.reset()
         syncEngine.reset()
         encoder.framing = RWfitFraming.LEGACY
+        sleepPagingCount = 0
+        lastSleepPayload = null
+        consecutiveIdenticalPageCount = 0
         sleepJournal.pruneStale()
     }
 
@@ -46,6 +53,9 @@ class RWfitDriver(
         legacyCodec.reset()
         jieliCodec.reset()
         syncEngine.reset()
+        sleepPagingCount = 0
+        lastSleepPayload = null
+        consecutiveIdenticalPageCount = 0
     }
 
     override fun servicesDiscovered(serviceUUIDs: Collection<String>) {
@@ -193,8 +203,26 @@ class RWfitDriver(
     }
 
     private fun handleJieLiSleepFrame(payload: ByteArray): List<RingDecodedEvent> {
-        if (payload.size >= 7) {
-            // Non-empty page: stage in the journal, acknowledge/delete on the ring, and request the next page.
+        if (payload.size >= 7 && (payload.size % 7) == 0) {
+            // Guard against broken firmware looping on the same page
+            if (lastSleepPayload?.contentEquals(payload) == true) {
+                consecutiveIdenticalPageCount++
+                if (consecutiveIdenticalPageCount >= 3) {
+                    Log.w(TAG, "received identical sleep page 3 times without advancing; aborting pagination")
+                    return decodeAndFinalizeSleep()
+                }
+            } else {
+                consecutiveIdenticalPageCount = 1
+                lastSleepPayload = payload.copyOf()
+            }
+
+            sleepPagingCount++
+            if (sleepPagingCount > MAX_SLEEP_PAGES_PER_SYNC) {
+                Log.w(TAG, "exceeded $MAX_SLEEP_PAGES_PER_SYNC sleep pages; aborting pagination")
+                return decodeAndFinalizeSleep()
+            }
+
+            // Non-empty valid page: stage in the journal, acknowledge/delete on the ring, and request the next page.
             if (sleepJournal.stagePage(payload)) {
                 encoder.historyDelete(RWfitProtocol.JLDataType.SLEEP)?.let { writer?.enqueue(it) }
                 encoder.history(RWfitProtocol.HistoryType.SLEEP)?.let { writer?.enqueue(it) }
@@ -202,15 +230,26 @@ class RWfitDriver(
             return emptyList()
         }
 
-        // Terminal empty page (payload.size < 7, typically a bare 3-byte triple with 0 data bytes):
+        // Terminal empty page (payload.size < 7) or malformed payload:
+        return decodeAndFinalizeSleep()
+    }
+
+    private fun decodeAndFinalizeSleep(): List<RingDecodedEvent> {
+        sleepPagingCount = 0
+        lastSleepPayload = null
+        consecutiveIdenticalPageCount = 0
+
         if (!sleepJournal.hasPages()) {
             return emptyList()
         }
 
         val assembled = sleepJournal.assembledPayload()
-        val events = RWfitJLHistory.decodeSleep(assembled)
+        val (events, remainder) = RWfitJLHistory.decodeSleepWithRemainder(assembled)
         if (events.isNotEmpty()) {
             sleepJournal.clear()
+            if (remainder != null && remainder.isNotEmpty()) {
+                sleepJournal.stagePage(remainder)
+            }
             return events
         }
 
@@ -222,5 +261,6 @@ class RWfitDriver(
 
     private companion object {
         const val TAG = "RWfitDriver"
+        const val MAX_SLEEP_PAGES_PER_SYNC = 64
     }
 }

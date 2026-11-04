@@ -1,5 +1,6 @@
 package com.pulseloop.ring
 
+import android.content.Context
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -31,8 +32,9 @@ class RWfitSleepJournal(
     private val memoryPages = mutableListOf<ByteArray>()
 
     private val activeDir: File?
-        get() = directoryOverride ?: baseDir
+        get() = directoryOverride ?: baseDir ?: defaultBaseDir
 
+    @Synchronized
     fun stagePage(payload: ByteArray, deviceId: String = "default"): Boolean {
         if (!isValidPage(payload)) {
             Log.w(TAG, "invalid JieLi sleep page size ${payload.size}B (must be non-empty multiple of 7)")
@@ -73,6 +75,7 @@ class RWfitSleepJournal(
         }
     }
 
+    @Synchronized
     fun assembledPayload(deviceId: String = "default"): ByteArray {
         val pages = getPages(deviceId)
         if (pages.isEmpty()) return ByteArray(0)
@@ -86,10 +89,13 @@ class RWfitSleepJournal(
         return joined
     }
 
+    @Synchronized
     fun hasPages(deviceId: String = "default"): Boolean = getPages(deviceId).isNotEmpty()
 
+    @Synchronized
     fun pageCount(deviceId: String = "default"): Int = getPages(deviceId).size
 
+    @Synchronized
     fun clear(deviceId: String = "default") {
         memoryPages.clear()
         val dir = activeDir ?: return
@@ -102,6 +108,7 @@ class RWfitSleepJournal(
     }
 
     /** Discard pages older than [maxAgeHours] to prevent abandoned or partial sessions from lingering forever. */
+    @Synchronized
     fun pruneStale(deviceId: String = "default", maxAgeHours: Long = 48) {
         val pages = getPages(deviceId)
         if (pages.isEmpty()) return
@@ -119,7 +126,11 @@ class RWfitSleepJournal(
             val dir = activeDir
             if (dir != null) {
                 val file = journalFile(dir, deviceId)
-                writePagesToFile(file, validPages)
+                if (validPages.isEmpty()) {
+                    if (file.exists()) file.delete()
+                } else {
+                    writePagesToFile(file, validPages)
+                }
             }
             memoryPages.clear()
             memoryPages.addAll(validPages)
@@ -185,6 +196,13 @@ class RWfitSleepJournal(
     companion object {
         private const val TAG = "RWfitSleepJournal"
         const val MAX_PAGES = 64
+
+        /** Default base directory initialized from Application Context in production. */
+        var defaultBaseDir: File? = null
+
+        fun init(context: Context) {
+            defaultBaseDir = File(context.filesDir, "rwfit_sleep_journal")
+        }
 
         val defaultJournal by lazy { RWfitSleepJournal() }
 
