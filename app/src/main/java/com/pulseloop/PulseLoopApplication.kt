@@ -8,6 +8,7 @@ import com.pulseloop.data.DataRepairs
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.diagnostics.CrashLogger
 import com.pulseloop.diagnostics.DiagnosticsSubscriber
+import com.pulseloop.service.EventPersistenceSubscriber
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.widgets.WidgetRefreshWorker
 import com.pulseloop.widgets.WidgetSnapshotPublisher
@@ -32,12 +33,10 @@ class PulseLoopApplication : Application() {
         // Application-scoped so capture runs whether or not the Debug screen is open.
         DiagnosticsSubscriber(PulseLoopDatabase.getInstance(this)).start(appScope)
         // Persistence subscribes from here — not from PulseLoopApp's LaunchedEffect — so that
-        // nothing published after the Activity appears (MainActivity.onResume → refreshPhoneSteps
-        // → PulseEventBus.publishBlocking) can reach a bus with no persister attached. Before this,
-        // the phone read raced the composition's LaunchedEffect and today's PhoneStepsUpdate (and
-        // every backfill event) went to Diagnostics alone. Review item 1, PR #98. Idempotent:
-        // PulseLoopApp's LaunchedEffect no longer calls persistence.start().
-        AppServices.get(this).persistence.start()
+        // a process launched only for RingSyncWorker / ScheduledSpo2Worker has a collector, and so
+        // that nothing published on activity resume (MainActivity.onResume → refreshPhoneSteps)
+        // races the UI's composition. Idempotent: PulseLoopApp's LaunchedEffect no longer calls start().
+        EventPersistenceSubscriber.shared(this).start()
         // One-time cleanup of activity totals corrupted by the old bucket handling; runs off the
         // main thread and is prefs-gated so it executes once. Safe to race the first sync — the
         // ring can't connect before this completes a couple of DELETE statements.

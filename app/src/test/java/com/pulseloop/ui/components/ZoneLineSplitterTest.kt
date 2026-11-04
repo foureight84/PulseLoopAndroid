@@ -55,4 +55,45 @@ class ZoneLineSplitterTest {
         assertEquals(4 * 86_400_000L, ZoneLineSplitter.maxGapMs(30 * 86_400_000L))
         assertEquals(45 * 86_400_000L, ZoneLineSplitter.maxGapMs(365 * 86_400_000L))
     }
+
+    @Test
+    fun `max gap in day view expands for wider measurement intervals`() {
+        val daySpan = 24 * 3600_000L
+        // Default / 60m interval stays 90m
+        assertEquals(90 * 60_000L, ZoneLineSplitter.maxGapMs(daySpan, 60 * 60_000L))
+        // 120m interval expands to 180m (120 * 1.5) so consecutive points stay connected
+        assertEquals(180 * 60_000L, ZoneLineSplitter.maxGapMs(daySpan, 120 * 60_000L))
+        // 180m interval expands to 270m (180 * 1.5)
+        assertEquals(270 * 60_000L, ZoneLineSplitter.maxGapMs(daySpan, 180 * 60_000L))
+        // Multi-day spans ignore sampleIntervalMs
+        assertEquals(36 * 3600_000L, ZoneLineSplitter.maxGapMs(7 * 86_400_000L, 120 * 60_000L))
+    }
+
+    @Test
+    fun `sampleIntervalMs uses median delta so occasional spot or midnight records do not collapse interval`() {
+        // Empty or single timestamp has no interval
+        assertEquals(null, ZoneLineSplitter.sampleIntervalMs(emptyList()))
+        assertEquals(null, ZoneLineSplitter.sampleIntervalMs(listOf(1000L)))
+
+        // Pair of timestamps
+        assertEquals(120 * 60_000L, ZoneLineSplitter.sampleIntervalMs(listOf(0L, 120 * 60_000L)))
+
+        // 120m periodic series with one 22-second midnight anomaly (issue #103)
+        val h120 = 120 * 60_000L
+        val timestamps = listOf(
+            0L,
+            22_000L, // 22s midnight record
+            h120,    // 120m
+            2 * h120,
+            3 * h120,
+            4 * h120,
+            5 * h120,
+        )
+        assertEquals(h120, ZoneLineSplitter.sampleIntervalMs(timestamps))
+
+        // maxGapMs calculated from this sampleInterval keeps the 120m points connected
+        val sampleInterval = ZoneLineSplitter.sampleIntervalMs(timestamps)
+        val maxGap = ZoneLineSplitter.maxGapMs(24 * 3600_000L, sampleInterval)
+        assertEquals(180 * 60_000L, maxGap)
+    }
 }

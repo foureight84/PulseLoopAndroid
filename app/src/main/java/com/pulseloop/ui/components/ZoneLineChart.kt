@@ -114,7 +114,10 @@ fun ZoneLineChart(
                     )
                 }
                 // Zone-colored line, broken across data gaps.
-                val runs = ZoneLineSplitter.segmentsByGap(samples.map { it.timestampMs }, maxGapMs)
+                val timestamps = samples.map { it.timestampMs }
+                val sampleInterval = ZoneLineSplitter.sampleIntervalMs(timestamps)
+                val effectiveMaxGapMs = ZoneLineSplitter.maxGapMs(span, sampleInterval).coerceAtLeast(maxGapMs)
+                val runs = ZoneLineSplitter.segmentsByGap(timestamps, effectiveMaxGapMs)
                 runs.forEach { run ->
                     // A gap-isolated single sample would otherwise draw nothing — sparse series
                     // (daily HRV/temp, fatigue) must still show their readings.

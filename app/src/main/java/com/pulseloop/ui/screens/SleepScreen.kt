@@ -164,13 +164,12 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
             SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = session.spanMinutes, startTs = session.startAt)
         }
     }
-    // The individual ring records behind the merged night (issue #68). Only when there is more
-    // than one — on an unsplit night the session *is* the record and a second card saying so is
-    // noise. The guard is on the `item` rather than inside it: an item that emits nothing still
-    // takes its share of the list's 16 dp spacing, which put a 32 dp hole in every single-record
-    // night.
+    // The individual ring records behind the merged night (issue #68). Rendered whenever
+    // runs is not empty so that single-record nights can also be edited or extended over missed
+    // sleep (issues #106, #103). The guard is on the `item` rather than inside it: an item that
+    // emits nothing still takes its share of the list's 16 dp spacing.
     val runs = com.pulseloop.service.sleepRecordRuns(blocks)
-    if (runs.size > 1) item { SleepRecordsCard(session, runs, viewModel) }
+    if (runs.isNotEmpty()) item { SleepRecordsCard(session, runs, viewModel) }
     item {
         val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
         SleepStageSummaryCards(
