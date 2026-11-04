@@ -433,7 +433,8 @@ fun TrendChart(
             // The primary line is drawn zone-split and gap-broken (iOS #35): each sample pair
             // splits at zone boundaries so a piece never spans two zones, and runs separated
             // by more than the range-tuned max gap break instead of bridging.
-            val maxGapMs = if (useTime) ZoneLineSplitter.maxGapMs(fullRangeMs) else Long.MAX_VALUE
+            val sampleInterval = ZoneLineSplitter.sampleIntervalMs(timestamps)
+            val maxGapMs = if (useTime) ZoneLineSplitter.maxGapMs(fullRangeMs, sampleInterval) else Long.MAX_VALUE
             val primaryOffsets = points.mapIndexed { i, v -> Offset(xForIndex(i), yForValue(v)) }
             val secondaryOffsets = secondary.mapIndexed { i, v -> Offset(xForSecondary(i), yForValue(v)) }
             clipRect(plotLeft, plotTop, plotRight, plotBottom) {

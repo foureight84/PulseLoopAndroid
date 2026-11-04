@@ -127,7 +127,7 @@ fun PulseLoopApp() {
 
         // ── ViewModels ───────────────────────────────────────────────────
         val todayVM = remember { TodayViewModel(db, apiKeyStore) }
-        val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
+        val vitalsVM = remember { VitalsViewModel(db, apiKeyStore, com.pulseloop.settings.ScheduledSpo2Prefs(context)) }
         val sleepVM = remember {
             val appContext = context.applicationContext
             SleepViewModel(db, gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) })
@@ -214,6 +214,8 @@ fun PulseLoopApp() {
 
                 // Schedule periodic background sync (matches official app behavior)
                 RingSyncWorker.schedule(context.applicationContext)
+                // Opt-in app-started spot SpO₂ (issue #103); revives the chain if it was cancelled.
+                com.pulseloop.service.ScheduledSpo2Worker.ensureScheduled(context.applicationContext)
 
                 // NOTE: demo data is never auto-seeded. A clean install starts empty so the UI
                 // reflects only real ring data. Demo data is seeded exclusively via the

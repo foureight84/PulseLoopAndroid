@@ -647,7 +647,8 @@ fun VitalDetailScreen(
     // Glucose display unit for the detail chart's zones/axis/stats (iOS #43 §3); the VM already
     // converts the plotted readings, this converts the reference layer the screen owns.
     val gUnit = apiKeyStore?.preferredGlucoseUnit ?: com.pulseloop.service.GlucoseUnit.MGDL
-    val vm = remember { VitalDetailViewModel(db, metric, apiKeyStore, units) }
+    val scheduledSpo2Prefs = remember { com.pulseloop.settings.ScheduledSpo2Prefs(context) }
+    val vm = remember { VitalDetailViewModel(db, metric, apiKeyStore, units, scheduledSpo2Prefs) }
     val state by vm.state.collectAsState()
 
     val title = metricDisplayName(metric)
@@ -1006,6 +1007,17 @@ private fun ReadingsCard(
                             " $unitLabel",
                             fontSize = 11.sp,
                             color = PulseColors.textMuted,
+                        )
+                    }
+                    if (reading.isEstimated) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "Estimated",
+                            fontSize = 10.sp,
+                            color = PulseColors.warning,
+                            modifier = Modifier
+                                .background(PulseColors.warning.copy(alpha = 0.15f), androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp, vertical = 1.dp),
                         )
                     }
                     IconButton(

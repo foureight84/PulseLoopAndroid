@@ -25,6 +25,7 @@ class YCBTSettingsEncoder {
     companion object {
         const val MINIMUM_INTERVAL_MINUTES = 30
         const val DEFAULT_INTERVAL_MINUTES = 60
+        private const val MONITOR_INTERVAL_CEILING_MINUTES = 60
 
         fun clampInterval(minutes: Int): Int {
             if (minutes <= 0) return DEFAULT_INTERVAL_MINUTES
@@ -78,9 +79,14 @@ class YCBTSettingsEncoder {
 
     /** The five background samplers, each {enable, intervalMinutes}. */
     fun monitorCommands(settings: MeasurementSettings): List<ByteArray> {
-        val interval = clampInterval(settings.hrIntervalMinutes).toByte()
+        val hrInterval = clampInterval(settings.hrIntervalMinutes)
+        // 120 min is only evidenced on the heart-rate key itself (issue #103: the ring ACKed
+        // `01 0c 01 78` and read at 10:00 and 12:00). Every other sampler keeps the 60-min ceiling
+        // the UI always had, so their on-air bytes are unchanged — in particular the blood-oxygen
+        // key, whose grid the scheduled spot SpO₂ has to stay between.
+        val interval = minOf(hrInterval, MONITOR_INTERVAL_CEILING_MINUTES).toByte()
         return listOf(
-            heartMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
+            heartMonitor(enabled = settings.hrEnabled, intervalMinutes = hrInterval.toByte()),
             bloodPressureMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
             temperatureMonitor(enabled = settings.temperatureEnabled, intervalMinutes = interval),
             // Blood oxygen carries its own interval where the user set one (issue #66); 0 means

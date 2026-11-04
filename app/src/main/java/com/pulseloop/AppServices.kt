@@ -13,7 +13,6 @@ import com.pulseloop.service.GpsRouteRecorder
 import com.pulseloop.service.LiveWorkoutManager
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.settings.ApiKeyStore
-import com.pulseloop.widgets.WidgetSnapshotPublisher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,12 +38,8 @@ class AppServices private constructor(context: Context) {
     val gpsRecorder = GpsRouteRecorder(context, db)
     val liveWorkout = LiveWorkoutManager(coordinator, db, gpsRecorder, context)
 
-    // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
-    // mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
-    val persistence = EventPersistenceSubscriber(
-        context, db,
-        onDataPersisted = { WidgetSnapshotPublisher.publishDebounced(context) },
-    )
+    /** Process-wide, not per-[AppServices]: background workers need it without the UI's services. */
+    val persistence = EventPersistenceSubscriber.shared(context)
     val batteryAlerts = BatteryAlertMonitor(context)
     val providerStore = CoachProviderSettingsStore(context)
     val summaryCoordinator = CoachSummaryCoordinator(db, apiKeyStore, providerStore)
@@ -85,6 +80,10 @@ class AppServices private constructor(context: Context) {
             instance ?: synchronized(this) {
                 instance ?: AppServices(context.applicationContext).also { instance = it }
             }
+
+        /** The services if the UI already built them, without building them: a background worker
+         *  must not create the app's ring client, whose watchdog would start reconnecting. */
+        fun peek(): AppServices? = instance
     }
 }
 
