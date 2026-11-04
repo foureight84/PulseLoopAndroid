@@ -257,7 +257,7 @@ class PhoneStepManager(private val context: Context) {
                 ReadRecordsRequest(
                     recordType = StepsRecord::class,
                     timeRangeFilter = timeRangeFilter,
-                    pageSize = 5_000,
+                    pageSize = 1_000,
                     pageToken = pageToken,
                 )
             )

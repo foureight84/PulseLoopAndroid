@@ -412,7 +412,6 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
                 SummaryMetric("Distance", distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
             }
             // The same figure the Today screen shows, not the row's raw `calories` (issue #101).
-            val calories = state.effectiveCalories
             SummaryMetric("Calories", calories?.let { Formats.count(it.toInt()) } ?: "—", if (calories != null) "cal" else null, PulseColors.calories)
         }
         ActivityRings(

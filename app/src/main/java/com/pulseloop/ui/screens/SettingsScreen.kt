@@ -108,7 +108,9 @@ fun SettingsScreen(
             stepSourcePrefs.lastBackfillDay = TimeUtil.startOfTodayLocal()
             scope.launch(Dispatchers.IO) {
                 try {
-                    com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
+                    val manager = com.pulseloop.PhoneStepManager(context)
+                    manager.refresh()
+                    manager.refreshHistoricalDays()
                 } catch (_: Exception) {
                     // A failed backfill just leaves the ring's data in place for
                     // historical days. Nothing user-visible to report.
@@ -260,7 +262,9 @@ fun SettingsScreen(
                                 stepSourcePrefs.lastBackfillDay = TimeUtil.startOfTodayLocal()
                                 withContext(Dispatchers.IO) {
                                     try {
-                                        com.pulseloop.PhoneStepManager(context).refreshHistoricalDays()
+                                        val manager = com.pulseloop.PhoneStepManager(context)
+                                        manager.refresh()
+                                        manager.refreshHistoricalDays()
                                     } catch (_: Exception) {
                                         // A failed backfill just leaves the ring's data
                                         // in place for historical days.

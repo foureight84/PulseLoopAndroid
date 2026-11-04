@@ -639,11 +639,13 @@ class EventPersistenceSubscriber(
         // Under Path B the ring always writes: the phone never occupies `steps`, so there is no
         // ownership gate to skip this upsert. The phone's value lives in `phoneSteps`, untouched
         // by anything here.
+        val effectiveSource = if (existing?.source == StepSourcePrefs.SOURCE_PHONE) "ring_history"
+        else if (ratchet) existing!!.source else "ring_history"
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
                 steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
                 distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
-                source = if (ratchet) existing!!.source else "ring_history",
+                source = effectiveSource,
                 syncedAt = System.currentTimeMillis(),
                 updatedAt = System.currentTimeMillis(),
             )
