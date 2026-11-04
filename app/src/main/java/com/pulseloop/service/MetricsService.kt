@@ -82,7 +82,7 @@ object MetricsService {
             // The seeder writes source = "demo"; comparing against "mock" (the iOS spelling)
             // alone meant this never fired, so seeded steps/HR were reported as live data.
             isDemo = DemoDataPolicy.isDemo(todayActivity?.source),
-            stepsTrend = recent7.map { it.steps.toDouble() },
+            stepsTrend = com.pulseloop.data.DisplaySteps.counts(recent7, preferPhone).map { it.toDouble() },
             hrTrend24h = hrValues,
             spo2Trend24h = spoValues,
         )
