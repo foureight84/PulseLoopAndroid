@@ -71,4 +71,10 @@ class ScheduledSpo2WorkerTest {
         assertEquals(false, RingSyncWorker.isSyncing)
         assertEquals(false, ScheduledSpo2Worker.isMeasuring)
     }
+
+    @Test
+    fun `shouldEnqueueNext is false when worker is stopped`() {
+        assertEquals(false, ScheduledSpo2Worker.shouldEnqueueNext(isStopped = true))
+        assertEquals(true, ScheduledSpo2Worker.shouldEnqueueNext(isStopped = false))
+    }
 }

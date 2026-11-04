@@ -13,6 +13,7 @@ import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.ring.RingConnectionState
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.ScheduledSpo2Prefs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -65,6 +66,8 @@ class ScheduledSpo2Worker(
         suspend fun ensureScheduled(context: Context) {
             enqueueNext(context, ExistingWorkPolicy.KEEP)
         }
+
+        internal fun shouldEnqueueNext(isStopped: Boolean): Boolean = !isStopped
 
         private suspend fun enqueueNext(context: Context, policy: ExistingWorkPolicy) {
             val wm = WorkManager.getInstance(context)
@@ -135,14 +138,20 @@ class ScheduledSpo2Worker(
                 return Result.success()
             }
             measure(db)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Scheduled SpO2 failed", e)
         } finally {
             // Append: the next run waits for this one, and REPLACE from inside a running worker
             // would cancel it. Always succeed, since a failed run fails its appended successor.
-            // Protected with NonCancellable so a cancelled run still schedules its successor.
-            withContext(NonCancellable) {
-                enqueueNext(applicationContext, ExistingWorkPolicy.APPEND_OR_REPLACE)
+            // Do not enqueue a successor if stopped/cancelled: WorkManager will retry a stopped
+            // worker (which will enqueue its own successor upon completion), and scheduling here
+            // would cause duplicate chained runs and schedule drift (issue #103).
+            if (shouldEnqueueNext(isStopped)) {
+                withContext(NonCancellable) {
+                    enqueueNext(applicationContext, ExistingWorkPolicy.APPEND_OR_REPLACE)
+                }
             }
         }
         return Result.success()
