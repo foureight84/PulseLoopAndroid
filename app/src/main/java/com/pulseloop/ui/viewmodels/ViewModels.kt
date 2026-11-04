@@ -224,8 +224,8 @@ class SleepViewModel(
         val dayOffset: Int = 0,
         /** How far back the stepper may page (0 locks to today when there's no history). */
         val maxDayOffset: Int = 0,
-        /** Local-midnight key of the shown day, for the nav header label. */
-        val shownDayMillis: Long = 0L,
+        /** Local-midnight key of the shown day; valid even before the first database emission. */
+        val shownDayMillis: Long = TimeUtil.referenceNightLocal(),
         val recentSessions: List<SleepSessionEntity> = emptyList(),
         // Aggregate view (week/month/year)
         val rangeSessions: List<SleepSessionEntity> = emptyList(),
