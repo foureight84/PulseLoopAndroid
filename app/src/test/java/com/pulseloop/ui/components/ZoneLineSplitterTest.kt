@@ -68,4 +68,32 @@ class ZoneLineSplitterTest {
         // Multi-day spans ignore sampleIntervalMs
         assertEquals(36 * 3600_000L, ZoneLineSplitter.maxGapMs(7 * 86_400_000L, 120 * 60_000L))
     }
+
+    @Test
+    fun `sampleIntervalMs uses median delta so occasional spot or midnight records do not collapse interval`() {
+        // Empty or single timestamp has no interval
+        assertEquals(null, ZoneLineSplitter.sampleIntervalMs(emptyList()))
+        assertEquals(null, ZoneLineSplitter.sampleIntervalMs(listOf(1000L)))
+
+        // Pair of timestamps
+        assertEquals(120 * 60_000L, ZoneLineSplitter.sampleIntervalMs(listOf(0L, 120 * 60_000L)))
+
+        // 120m periodic series with one 22-second midnight anomaly (issue #103)
+        val h120 = 120 * 60_000L
+        val timestamps = listOf(
+            0L,
+            22_000L, // 22s midnight record
+            h120,    // 120m
+            2 * h120,
+            3 * h120,
+            4 * h120,
+            5 * h120,
+        )
+        assertEquals(h120, ZoneLineSplitter.sampleIntervalMs(timestamps))
+
+        // maxGapMs calculated from this sampleInterval keeps the 120m points connected
+        val sampleInterval = ZoneLineSplitter.sampleIntervalMs(timestamps)
+        val maxGap = ZoneLineSplitter.maxGapMs(24 * 3600_000L, sampleInterval)
+        assertEquals(180 * 60_000L, maxGap)
+    }
 }

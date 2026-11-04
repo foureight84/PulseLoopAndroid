@@ -14,6 +14,7 @@ import com.pulseloop.ring.RingConnectionState
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.ScheduledSpo2Prefs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -139,7 +140,10 @@ class ScheduledSpo2Worker(
         } finally {
             // Append: the next run waits for this one, and REPLACE from inside a running worker
             // would cancel it. Always succeed, since a failed run fails its appended successor.
-            enqueueNext(applicationContext, ExistingWorkPolicy.APPEND_OR_REPLACE)
+            // Protected with NonCancellable so a cancelled run still schedules its successor.
+            withContext(NonCancellable) {
+                enqueueNext(applicationContext, ExistingWorkPolicy.APPEND_OR_REPLACE)
+            }
         }
         return Result.success()
     }
@@ -211,12 +215,17 @@ class ScheduledSpo2Worker(
             // The stop frame is only enqueued; let it reach the ring before the link closes.
             client.awaitOpsFlushed()
         } finally {
-            withContext(Dispatchers.Main) { coordinator.stop() }
-            val releasedConnection = client.destroy()
-            if (releasedConnection && !isAppForeground()) {
-                PulseEventBus.publishBlocking(
-                    PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
-                )
+            withContext(NonCancellable) {
+                // Cancel watchdog and tear down GATT before stopping coordinator, so that a
+                // CancellationException or failure in stop() cannot leave the BLE watchdog
+                // reconnecting indefinitely (issue #103).
+                val releasedConnection = client.destroy()
+                withContext(Dispatchers.Main) { coordinator.stop() }
+                if (releasedConnection && !isAppForeground()) {
+                    PulseEventBus.publishBlocking(
+                        PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
+                    )
+                }
             }
         }
     }
