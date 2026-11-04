@@ -15,7 +15,10 @@ import android.util.Log
  * and a frame in the wrong format is ignored by the ring rather than misinterpreted (the magic
  * byte differs), so a wrong guess is inert rather than dangerous.
  */
-class RWfitDriver(private val writer: RingCommandWriter?) : WearableDriver {
+class RWfitDriver(
+    private val writer: RingCommandWriter?,
+    private val sleepJournal: RWfitSleepJournal = RWfitSleepJournal.defaultJournal,
+) : WearableDriver {
 
     private val legacyCodec = RWfitLegacyCodec()
     private val jieliCodec = RWfitJLCodec()
@@ -36,6 +39,7 @@ class RWfitDriver(private val writer: RingCommandWriter?) : WearableDriver {
         jieliCodec.reset()
         syncEngine.reset()
         encoder.framing = RWfitFraming.LEGACY
+        sleepJournal.pruneStale()
     }
 
     override fun connectionDidEnd() {
@@ -173,6 +177,9 @@ class RWfitDriver(private val writer: RingCommandWriter?) : WearableDriver {
             // legacy path emits. Still unported: sport {5,14,16}, Muslim count {5,23,16} and the
             // other non-metric 05 keys, plus the {5,x,0x30} delete variants the vendor sends
             // after sync (no parser for them exists in the vendor either — x5/b.java dispatch).
+            t.cmd == 0x05.toByte() && t.key == RWfitProtocol.JLDataType.SLEEP ->
+                handleJieLiSleepFrame(frame.payload)
+
             t.cmd == 0x05.toByte() -> RWfitJLHistory.decode(t.key, frame.payload) ?: run {
                 Log.i(TAG, "JieLi history frame key 0x${"%02X".format(t.key)} (${frame.payload.size}B) — decoder not yet ported")
                 emptyList()
@@ -183,6 +190,34 @@ class RWfitDriver(private val writer: RingCommandWriter?) : WearableDriver {
                 emptyList()
             }
         }
+    }
+
+    private fun handleJieLiSleepFrame(payload: ByteArray): List<RingDecodedEvent> {
+        if (payload.size >= 7) {
+            // Non-empty page: stage in the journal, acknowledge/delete on the ring, and request the next page.
+            if (sleepJournal.stagePage(payload)) {
+                encoder.historyDelete(RWfitProtocol.JLDataType.SLEEP)?.let { writer?.enqueue(it) }
+                encoder.history(RWfitProtocol.HistoryType.SLEEP)?.let { writer?.enqueue(it) }
+            }
+            return emptyList()
+        }
+
+        // Terminal empty page (payload.size < 7, typically a bare 3-byte triple with 0 data bytes):
+        if (!sleepJournal.hasPages()) {
+            return emptyList()
+        }
+
+        val assembled = sleepJournal.assembledPayload()
+        val events = RWfitJLHistory.decodeSleep(assembled)
+        if (events.isNotEmpty()) {
+            sleepJournal.clear()
+            return events
+        }
+
+        // If events is empty, the night is likely still in progress (e.g., synced mid-sleep
+        // before waking up: 0x11 start marker present without a 0x22 wakeup marker yet).
+        // Retain staged pages in the journal for subsequent syncs.
+        return emptyList()
     }
 
     private companion object {

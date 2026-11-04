@@ -71,7 +71,7 @@ object RWfitJLHistory {
             ((p[i + 2].toLong() and 0xFF) shl 8) or (p[i + 3].toLong() and 0xFF)
 
     /** Vendor index `3 + i` in the parser's `bArr` → a true instant (epoch-2000 + correction). */
-    private fun instantAt(p: ByteArray, i: Int): Instant =
+    internal fun instantAt(p: ByteArray, i: Int): Instant =
         Instant.ofEpochSecond(u32(p, i) + JIELI_EPOCH_SECONDS - tzCorrectionSeconds())
 
     /**
@@ -247,12 +247,17 @@ object RWfitJLHistory {
             i += 7
         }
 
+        // Deduplicate adjacent identical records in case pages repeat boundary items
+        val cleanRecs = recs.filterIndexed { index, record ->
+            index == 0 || record != recs[index - 1]
+        }
+
         val events = mutableListOf<RingDecodedEvent>()
         var sessionStart: Instant? = null
         val stages = mutableListOf<SleepStage>()
 
-        for (index in recs.indices) {
-            val rec = recs[index]
+        for (index in cleanRecs.indices) {
+            val rec = cleanRecs[index]
             if (rec.model == SLEEP_SESSION_START) {
                 sessionStart = rec.time
                 stages.clear()
@@ -271,8 +276,8 @@ object RWfitJLHistory {
             // Segment length = gap to the next record (`s1.java:1134-1135`); the final record has
             // no following boundary and contributes nothing, exactly like the vendor's
             // `for (i22 < size4)` loop that skips the last element.
-            if (index + 1 >= recs.size) continue
-            val minutes = Duration.between(rec.time, recs[index + 1].time).seconds / 60
+            if (index + 1 >= cleanRecs.size) continue
+            val minutes = Duration.between(rec.time, cleanRecs[index + 1].time).seconds / 60
             if (minutes in 1..(24 * 60 - 1)) {
                 repeat(minutes.toInt()) { stages.add(sleepStage(rec.model)) }
             }

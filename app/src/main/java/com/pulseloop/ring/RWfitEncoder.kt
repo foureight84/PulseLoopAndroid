@@ -81,6 +81,15 @@ class RWfitEncoder(
     }
 
     /**
+     * History delete/ack for JieLi framing: `05 <type> 30` to acknowledge and erase the current page,
+     * advancing the ring's cursor to the next page. Legacy has no equivalent.
+     */
+    fun historyDelete(dataType: Byte): ByteArray? = when (framing) {
+        RWfitFraming.JIELI -> jieli.encode(RWfitProtocol.JieLi.historyDelete(dataType))
+        RWfitFraming.LEGACY -> null
+    }
+
+    /**
      * Realtime measurement toggle — `06 09 00 <type> 05 <enable>` (`u0.java n()`), **JieLi only**.
      * The vendor app has no legacy on-demand measurement command at all, which is why
      * [RWfitCoordinator] gates the manual/realtime capabilities behind the framing rather than
