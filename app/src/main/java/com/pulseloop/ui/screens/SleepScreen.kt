@@ -874,6 +874,7 @@ private fun SleepDurationHistogram(
 @Composable
 private fun SleepDayNavHeader(state: SleepViewModel.SleepState, viewModel: SleepViewModel?) {
     var showPicker by remember { mutableStateOf(false) }
+    val shownDayMillis = resolvedSleepDayMillis(state.shownDayMillis)
     val canOlder = state.dayOffset < state.maxDayOffset
     val canNewer = state.dayOffset > 0
 
@@ -892,10 +893,10 @@ private fun SleepDayNavHeader(state: SleepViewModel.SleepState, viewModel: Sleep
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                dayLabel(state.shownDayMillis),
+                dayLabel(shownDayMillis),
                 fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary,
             )
-            val sub = daySubLabel(state.shownDayMillis)
+            val sub = daySubLabel(shownDayMillis)
             Text(
                 sub.ifEmpty { " " },
                 fontSize = 11.sp, fontWeight = FontWeight.Medium,
@@ -907,13 +908,20 @@ private fun SleepDayNavHeader(state: SleepViewModel.SleepState, viewModel: Sleep
 
     if (showPicker) {
         SleepDayPickerDialog(
-            shownDayMillis = state.shownDayMillis,
+            shownDayMillis = shownDayMillis,
             maxDayOffset = state.maxDayOffset,
             onDismiss = { showPicker = false },
             onPick = { viewModel?.jumpToDay(it); showPicker = false },
         )
     }
 }
+
+/** Missing day keys must never reach the header or date picker as Unix-epoch dates. */
+internal fun resolvedSleepDayMillis(
+    dayMillis: Long,
+    nowMs: Long = System.currentTimeMillis(),
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): Long = if (dayMillis > 0L) dayMillis else com.pulseloop.util.TimeUtil.referenceNightLocal(nowMs, zone)
 
 @Composable
 private fun NavChevron(
