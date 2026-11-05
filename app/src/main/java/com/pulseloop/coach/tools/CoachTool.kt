@@ -42,6 +42,19 @@ data class ToolExecutionContext(
      * compile unchanged (iOS's ToolExecutionContext has the same optional foodClient).
      */
     val foodClient: com.pulseloop.nutrition.FoodDatabaseClient? = null,
+    /**
+     * The resolved step-source preference (review item 5, PR #98). Path B keeps phone and
+     * ring steps in separate columns; the retrieval tools must quote the same figure the
+     * Today tile shows. Populated per turn from
+     * [com.pulseloop.AppServices.stepSourcePrefs] at the tool context factory, so a toggle
+     * made mid-session is reflected on the next call.
+     *
+     * Defaults to false (ring steps) so existing test harnesses compile unchanged. Any
+     * production call site that reads `.steps` from an `activity_daily` row and is
+     * user-visible must pass this through `com.pulseloop.data.DisplaySteps` — see
+     * [com.pulseloop.data.DisplaySteps] for the pick rule.
+     */
+    val preferPhone: Boolean = false,
 )
 
 data class CoachFeatureFlags(

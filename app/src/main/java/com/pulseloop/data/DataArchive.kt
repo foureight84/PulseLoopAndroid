@@ -74,6 +74,13 @@ data class PulseArchive(
      *  buckets back into the day. */
     val deletedSteps: Int = 0, val deletedDistanceMeters: Double = 0.0,
     val estimatedActiveCalories: Double? = null,
+    /** PR #98 (Path B): phone-sourced steps, kept separate from the ring's [steps]. Defaulted
+     *  to `null` for two reasons. An archive written before the column existed deserializes as
+     *  "no phone data", which is exactly what [ActivityDailyEntity.displaySteps] already means
+     *  by a missing value. A default of `0` would falsely mean "the phone reported zero", and
+     *  after a restore that would hide the ring's own count on every historical day in Phone
+     *  mode. */
+    val phoneSteps: Int? = null,
 )
 
 @Serializable data class ActivityBucketDTO(

@@ -64,15 +64,40 @@ sealed class PulseEvent {
             if (this === other) return true
             if (other !is RawPacket) return false
             return direction == other.direction && data.contentEquals(other.data) &&
-                decoded == other.decoded && deviceType == other.deviceType
+                    decoded == other.decoded && deviceType == other.deviceType
         }
         override fun hashCode(): Int =
             31 * (31 * (31 * direction.hashCode() + data.contentHashCode()) + decoded.hashCode()) +
-                (deviceType?.hashCode() ?: 0)
+                    (deviceType?.hashCode() ?: 0)
     }
     data class ActivityUpdate(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double, val calories: Double) : PulseEvent()
     data class ActivityBucket(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double) : PulseEvent()
     data object ActivitySyncReset : PulseEvent()
+    /** Steps counted by the phone's own pedometer, published by the app's
+     *  [com.pulseloop.PhoneStepManager] when the user has chosen "phone" as their step source.
+     *  Distinct from [ActivityUpdate], which carries the ring's cumulative counter.
+     *
+     *  Only `steps` is carried. Distance and calories are deliberately not baked in here:
+     *  calories come from [com.pulseloop.service.DailyCalorieEstimator] (which needs the
+     *  user's weight, HR, and workout history), and workout distance is credited to the
+     *  day by [com.pulseloop.service.ActivityRollup]. Writing either from this event would
+     *  overwrite what those paths computed. */
+    data class PhoneStepsUpdate(
+        val timestamp: java.time.Instant,
+        val steps: Int,
+    ) : PulseEvent()
+
+    /**
+     * The phone step reader failed to produce a value this pass — Health Connect unreachable,
+     * or READ_STEPS not granted. Published by [com.pulseloop.MainActivity.refreshPhoneSteps]
+     * on a `refresh()` false return. [com.pulseloop.service.EventPersistenceSubscriber]
+     * handles it by clearing *today's* `phoneSteps` on the `activity_daily` row, so the
+     * display's read-time pick (`phoneSteps ?: steps`) falls back to the ring's live count
+     * instead of showing whatever stale phone value was last written. Historical days keep
+     * their `phoneSteps` — that data was real when collected, and a permission loss today
+     * does not retract it.
+     */
+    data object PhoneStepSourceUnavailable : PulseEvent()
     /**
      * [spot] marks the one settled reading a spot measurement publishes for itself (issue #60);
      * false for the ring's live stream. [ringWillLogIt] additionally says this ring writes that
@@ -161,6 +186,13 @@ object PulseEventBus {
 
     init {
         dispatchScope.launch {
+            // The drain runs from process start. Subscribers must attach by the time
+            // Application.onCreate returns — DiagnosticsSubscriber and (since PR #98)
+            // EventPersistenceSubscriber both do. Every real publisher — ring, phone, sync — runs
+            // after that, so no event published by the app can reach a drain with no subscriber.
+            // A publisher added inside Application.onCreate *before* those subscribers start
+            // would lose its event here; if that ever becomes necessary, the fix is to attach the
+            // subscribers first, not to hold this drain.
             // The bus is process-long and single-drained: an uncaught throw here would kill the
             // dispatcher and silently stop every subscriber for the rest of the process (the
             // SupervisorJob does not restart it). Isolate each emit so one bad event can't do that.

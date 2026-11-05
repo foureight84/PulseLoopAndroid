@@ -129,13 +129,14 @@ object CoachDataAccess {
     // ── Daily series ──────────────────────────────────────────────────────
 
     suspend fun dailySeries(
-        db: PulseLoopDatabase, metric: String, start: String, end: String
+        db: PulseLoopDatabase, metric: String, start: String, end: String,
+        preferPhone: Boolean,
     ): List<Pair<Long, Double>> {
         return when (metric) {
             "steps", "calories", "distance", "active_minutes" -> {
                 activityRows(db, start, end).map { row ->
                     val v = when (metric) {
-                        "steps" -> row.steps.toDouble()
+                        "steps" -> com.pulseloop.data.DisplaySteps.count(row, preferPhone)?.toDouble() ?: 0.0
                         "calories" -> row.calories
                         "distance" -> (row.distanceMeters / 1000.0).roundTo(2)
                         "active_minutes" -> row.activeMinutes.toDouble()
@@ -166,7 +167,8 @@ object CoachDataAccess {
     // ── Series points ─────────────────────────────────────────────────────
 
     suspend fun seriesPoints(
-        db: PulseLoopDatabase, metric: String, start: String, end: String, granularity: String
+        db: PulseLoopDatabase, metric: String, start: String, end: String, granularity: String,
+        preferPhone: Boolean,
     ): List<Pair<String, Double>> {
         val labeler: (Long) -> String = when (granularity) {
             "hour" -> { ts -> hourLabel(ts) }
@@ -182,7 +184,7 @@ object CoachDataAccess {
                         Instant.ofEpochMilli(it.timestamp).atZone(ZoneId.systemDefault())
                             .truncatedTo(ChronoUnit.HOURS).toInstant().toEpochMilli()
                     }.map { (h, ms) -> h to ms.map { it.value }.average().roundTo(1) }.sortedBy { it.first }
-                    "day" -> dailySeries(db, metric, start, end)
+                    "day" -> dailySeries(db, metric, start, end, preferPhone)
                     else -> rows.map { it.timestamp to it.value }
                 }
             }
@@ -193,11 +195,11 @@ object CoachDataAccess {
                         Instant.ofEpochMilli(it.timestamp).atZone(ZoneId.systemDefault())
                             .truncatedTo(ChronoUnit.HOURS).toInstant().toEpochMilli()
                     }.map { (h, ms) -> h to ms.map { it.value }.average().roundTo(1) }.sortedBy { it.first }
-                    "day" -> dailySeries(db, metric, start, end)
+                    "day" -> dailySeries(db, metric, start, end, preferPhone)
                     else -> rows.map { it.timestamp to it.value }
                 }
             }
-            else -> dailySeries(db, metric, start, end)
+            else -> dailySeries(db, metric, start, end, preferPhone)
         }
 
         return downsample(dated, 300).map { labeler(it.first) to it.second }

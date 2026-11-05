@@ -19,8 +19,13 @@ class CoachSummaryCoordinator(
     /** Optional multi-provider settings, threaded through to the service so
      *  summaries follow the selected coach provider. */
     providerSettings: com.pulseloop.coach.config.CoachProviderSettingsStore? = null,
+    /** The user's step-source preference, threaded to the service so the coach's
+     *  today/sleep summaries quote the same step figure Today does (review item 5,
+     *  PR #98). The service reads it per generation, so a toggle takes effect on
+     *  the next card regeneration without an app restart. */
+    stepSourcePrefs: com.pulseloop.settings.StepSourcePrefs,
 ) {
-    private val service = CoachSummaryService(db, apiKeyStore, providerSettings)
+    private val service = CoachSummaryService(db, apiKeyStore, providerSettings, stepSourcePrefs)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var streamJob: Job? = null
     private var debounceJob: Job? = null
