@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -9,7 +11,7 @@ import kotlin.math.roundToInt
  * threshold lives in exactly one place. Ported from Services/VitalsThresholdEngine.swift — zone
  * boundaries and special cases must stay identical to iOS.
  *
- * IMPORTANT: nothing here is a diagnosis. Labels are conservative ("Typical", "Elevated", "Low")
+ * IMPORTANT: nothing here is a diagnosis. Labels are conservative (L10n.get(R.string.zl_typical), L10n.get(R.string.zl_elevated), L10n.get(R.string.zl_low))
  * and ring-estimated metrics (blood pressure, glucose, fatigue) always carry `isEstimated`.
  *
  * Reference ranges encoded (defaults; users can later override via profile):
@@ -126,7 +128,7 @@ object VitalsThresholdEngine {
         val worse = ZoneSeverity.worst(sysZone.severity, diaZone.severity)
         // Pick whichever axis produced the worse severity for the label/explanation.
         val primary = if (worse == sysZone.severity) sysZone else diaZone
-        val confidence = if (hasCuffReference) "Estimated" else "Estimated · calibrate with a cuff"
+        val confidence = if (hasCuffReference) L10n.get(R.string.badge_estimated) else L10n.get(R.string.zc_estimated_calibrate)
         return MetricInterpretation(
             primaryZone = primary,
             allZones = systolicZones(),
@@ -182,40 +184,40 @@ object VitalsThresholdEngine {
         val lowColor: VitalColorToken
         when {
             athlete -> {
-                lowLabel = "Athletic"
+                lowLabel = L10n.get(R.string.zl_athletic)
                 lowSeverity = ZoneSeverity.OPTIMAL
                 lowColor = VitalColorToken.MetricAccent(MetricKind.HEART_RATE)
-                lowExplanation = "A low resting heart rate is common with high fitness."
+                lowExplanation = L10n.get(R.string.ze_hr_athletic_low)
             }
             profile.usesBetaBlockers -> {
-                lowLabel = "Low (medication)"
+                lowLabel = L10n.get(R.string.zl_low_medication)
                 lowSeverity = ZoneSeverity.NORMAL
                 lowColor = VitalColorToken.Blue
-                lowExplanation = "Beta-blockers lower heart rate; this is expected on that medication."
+                lowExplanation = L10n.get(R.string.ze_hr_betablockers)
             }
             else -> {
-                lowLabel = "Low"
+                lowLabel = L10n.get(R.string.zl_low)
                 lowSeverity = ZoneSeverity.WATCH
                 lowColor = VitalColorToken.Blue
-                lowExplanation = "Below the typical resting range. Often fine, but worth noting if you feel faint."
+                lowExplanation = L10n.get(R.string.ze_hr_low)
             }
         }
 
         val zones = mutableListOf<MetricZone>()
         zones.add(MetricZone("hr.low", lowLabel, null, lowUpper, lowSeverity, lowColor, lowExplanation))
         if (athlete && athleticUpper != null) {
-            zones.add(MetricZone("hr.athletic", "Athletic", lowUpper, athleticUpper, ZoneSeverity.OPTIMAL, VitalColorToken.Mint, "Athletic resting range."))
+            zones.add(MetricZone("hr.athletic", L10n.get(R.string.zl_athletic), lowUpper, athleticUpper, ZoneSeverity.OPTIMAL, VitalColorToken.Mint, L10n.get(R.string.ze_hr_athletic)))
         }
         val normalLow = if (athlete && athleticUpper != null) athleticUpper else lowUpper
-        zones.add(MetricZone("hr.normal", "Normal", normalLow, elevatedStart,
+        zones.add(MetricZone("hr.normal", L10n.get(R.string.zl_normal), normalLow, elevatedStart,
             ZoneSeverity.NORMAL, VitalColorToken.MetricAccent(MetricKind.HEART_RATE),
-            "A typical resting heart rate for adults."))
-        zones.add(MetricZone("hr.elevated", "Elevated", elevatedStart, highStart,
+            L10n.get(R.string.ze_hr_normal)))
+        zones.add(MetricZone("hr.elevated", L10n.get(R.string.zl_elevated), elevatedStart, highStart,
             ZoneSeverity.WATCH, VitalColorToken.Amber,
-            "Above the typical resting range. Activity, caffeine, or stress can raise it."))
-        zones.add(MetricZone("hr.high", "High", highStart, null,
+            L10n.get(R.string.ze_hr_elevated)))
+        zones.add(MetricZone("hr.high", L10n.get(R.string.zl_high), highStart, null,
             ZoneSeverity.HIGH, VitalColorToken.BrightRed,
-            "A high resting heart rate. Talk to a clinician if it persists at rest."))
+            L10n.get(R.string.ze_hr_high)))
         return zones
     }
 
@@ -229,27 +231,27 @@ object VitalsThresholdEngine {
         // and note it, rather than alarming on a normal-for-altitude reading.
         val highAltitude = (profile.altitudeMeters ?: 0.0) > 2000
         val watchUpper = if (highAltitude || profile.hasKnownLungCondition) 93.0 else 95.0
-        val altitudeNote = if (highAltitude) " Expected values are lower at altitude." else ""
+        val altitudeNote = if (highAltitude) " " + L10n.get(R.string.ze_spo2_altitude) else ""
         return listOf(
             MetricZone(
-                "spo2.critical", "Very low", null, 89.0,
+                "spo2.critical", L10n.get(R.string.zl_very_low), null, 89.0,
                 ZoneSeverity.CRITICAL, VitalColorToken.Red,
-                "An urgently low oxygen reading. Seek care if you also feel unwell.$altitudeNote",
+                L10n.get(R.string.ze_spo2_critical) + altitudeNote,
             ),
             MetricZone(
-                "spo2.high", "Low", 89.0, 93.0,
+                "spo2.high", L10n.get(R.string.zl_low), 89.0, 93.0,
                 ZoneSeverity.HIGH, VitalColorToken.Orange,
-                "Low blood oxygen. Re-measure when still; talk to a clinician if persistent.$altitudeNote",
+                L10n.get(R.string.ze_spo2_low) + altitudeNote,
             ),
             MetricZone(
-                "spo2.watch", "Slightly low", 93.0, watchUpper,
+                "spo2.watch", L10n.get(R.string.zl_slightly_low), 93.0, watchUpper,
                 ZoneSeverity.WATCH, VitalColorToken.Amber,
-                "Slightly below the typical range.$altitudeNote",
+                L10n.get(R.string.ze_spo2_watch) + altitudeNote,
             ),
             MetricZone(
-                "spo2.normal", "Normal", watchUpper, null,
+                "spo2.normal", L10n.get(R.string.zl_normal), watchUpper, null,
                 ZoneSeverity.NORMAL, VitalColorToken.Cyan,
-                "A normal blood-oxygen level is 95–100%.$altitudeNote",
+                L10n.get(R.string.ze_spo2_normal) + altitudeNote,
             ),
         )
     }
@@ -261,9 +263,9 @@ object VitalsThresholdEngine {
             // No baseline yet → show the metric's own purple accent (not a gray "unknown" color).
             return listOf(
                 MetricZone(
-                    "hrv.building", "Building baseline", null, null,
+                    "hrv.building", L10n.get(R.string.zl_building_baseline), null, null,
                     ZoneSeverity.UNKNOWN, VitalColorToken.MetricAccent(MetricKind.HRV),
-                    "HRV is personal. Wear your ring for about a week to learn your baseline.",
+                    L10n.get(R.string.ze_hrv_building),
                 ),
             )
         }
@@ -271,36 +273,36 @@ object VitalsThresholdEngine {
         val sd = baseline.standardDeviation
         return listOf(
             MetricZone(
-                "hrv.below", "Below baseline", null, mean - sd,
+                "hrv.below", L10n.get(R.string.zl_below_baseline), null, mean - sd,
                 ZoneSeverity.HIGH, VitalColorToken.Amber,
-                "Notably below your typical HRV — often linked to stress, poor sleep, or strain.",
+                L10n.get(R.string.ze_hrv_below),
             ),
             MetricZone(
-                "hrv.slightlyBelow", "Slightly below", mean - sd, mean - 0.5 * sd,
+                "hrv.slightlyBelow", L10n.get(R.string.zl_slightly_below), mean - sd, mean - 0.5 * sd,
                 ZoneSeverity.WATCH, VitalColorToken.SoftAmber,
-                "A little below your usual range.",
+                L10n.get(R.string.ze_hrv_slightly_below),
             ),
             MetricZone(
-                "hrv.near", "Near baseline", mean - 0.5 * sd, mean + 0.5 * sd,
+                "hrv.near", L10n.get(R.string.zl_near_baseline), mean - 0.5 * sd, mean + 0.5 * sd,
                 ZoneSeverity.NORMAL, VitalColorToken.MetricAccent(MetricKind.HRV),
-                "Around your personal baseline.",
+                L10n.get(R.string.ze_hrv_near),
             ),
             MetricZone(
-                "hrv.above", "Above baseline", mean + 0.5 * sd, null,
+                "hrv.above", L10n.get(R.string.zl_above_baseline), mean + 0.5 * sd, null,
                 ZoneSeverity.OPTIMAL, VitalColorToken.Mint,
-                "Above your typical HRV — often a sign of good recovery.",
+                L10n.get(R.string.ze_hrv_above),
             ),
         )
     }
 
     private fun interpretHRV(value: Double, baseline: BaselineStats?): MetricInterpretation {
         val zones = hrvZones(baseline)
-        // No established baseline → single "Building baseline" zone.
+        // No established baseline → single L10n.get(R.string.zl_building_baseline) zone.
         if (baseline == null || !baseline.isEstablished || baseline.standardDeviation <= 0) {
             val zone = zones[0]
             return MetricInterpretation(
                 primaryZone = zone, allZones = zones, displayLabel = zone.label,
-                explanation = zone.explanation, confidenceLabel = "Building baseline", isEstimated = false,
+                explanation = zone.explanation, confidenceLabel = L10n.get(R.string.zl_building_baseline), isEstimated = false,
             )
         }
         val zone = zoneContaining(value, zones)
@@ -310,7 +312,7 @@ object VitalsThresholdEngine {
         return MetricInterpretation(
             primaryZone = zone, allZones = zones, displayLabel = zone.label,
             explanation = zone.explanation,
-            confidenceLabel = if (delta == 0) "At baseline" else "$delta% $direction baseline",
+            confidenceLabel = if (delta == 0) L10n.get(R.string.zc_at_baseline) else if (deltaPct >= 0) L10n.get(R.string.zc_above_baseline_pct, delta) else L10n.get(R.string.zc_below_baseline_pct, delta),
             isEstimated = false,
         )
     }
@@ -319,39 +321,39 @@ object VitalsThresholdEngine {
 
     private fun stressZones(): List<MetricZone> = listOf(
         MetricZone(
-            "stress.calm", "Calm", null, 26.0,
-            ZoneSeverity.OPTIMAL, VitalColorToken.Mint, "Low stress score — relaxed.",
+            "stress.calm", L10n.get(R.string.zl_calm), null, 26.0,
+            ZoneSeverity.OPTIMAL, VitalColorToken.Mint, L10n.get(R.string.ze_stress_calm),
         ),
         MetricZone(
-            "stress.normal", "Normal", 26.0, 51.0,
-            ZoneSeverity.NORMAL, VitalColorToken.Cyan, "A typical daytime stress score.",
+            "stress.normal", L10n.get(R.string.zl_normal), 26.0, 51.0,
+            ZoneSeverity.NORMAL, VitalColorToken.Cyan, L10n.get(R.string.ze_stress_normal),
         ),
         MetricZone(
-            "stress.elevated", "Elevated", 51.0, 76.0,
-            ZoneSeverity.WATCH, VitalColorToken.Amber, "Elevated stress — consider a short break.",
+            "stress.elevated", L10n.get(R.string.zl_elevated), 51.0, 76.0,
+            ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.ze_stress_elevated),
         ),
         MetricZone(
-            "stress.high", "High", 76.0, null,
-            ZoneSeverity.HIGH, VitalColorToken.Red, "High stress score. Wellness estimate, not a diagnosis.",
+            "stress.high", L10n.get(R.string.zl_high), 76.0, null,
+            ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_stress_high),
         ),
     )
 
     private fun fatigueZones(): List<MetricZone> = listOf(
         MetricZone(
-            "fatigue.fresh", "Fresh", null, 25.0,
-            ZoneSeverity.OPTIMAL, VitalColorToken.Mint, "Low fatigue — well recovered.",
+            "fatigue.fresh", L10n.get(R.string.zl_fresh), null, 25.0,
+            ZoneSeverity.OPTIMAL, VitalColorToken.Mint, L10n.get(R.string.ze_fatigue_fresh),
         ),
         MetricZone(
-            "fatigue.mild", "Mild", 25.0, 50.0,
-            ZoneSeverity.NORMAL, VitalColorToken.Cyan, "Mild fatigue.",
+            "fatigue.mild", L10n.get(R.string.zl_mild), 25.0, 50.0,
+            ZoneSeverity.NORMAL, VitalColorToken.Cyan, L10n.get(R.string.ze_fatigue_mild),
         ),
         MetricZone(
-            "fatigue.tired", "Tired", 50.0, 75.0,
-            ZoneSeverity.WATCH, VitalColorToken.Amber, "Tired — consider lighter activity and good sleep.",
+            "fatigue.tired", L10n.get(R.string.zl_tired), 50.0, 75.0,
+            ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.ze_fatigue_tired),
         ),
         MetricZone(
-            "fatigue.high", "High fatigue", 75.0, null,
-            ZoneSeverity.HIGH, VitalColorToken.Red, "High fatigue score. Wellness estimate from the ring.",
+            "fatigue.high", L10n.get(R.string.zl_high_fatigue), 75.0, null,
+            ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_fatigue_high),
         ),
     )
 
@@ -365,52 +367,52 @@ object VitalsThresholdEngine {
 
     private fun systolicZones(): List<MetricZone> = listOf(
         MetricZone(
-            "bp.sys.low", "Low", null, 90.0,
-            ZoneSeverity.WATCH, VitalColorToken.Blue, "Low systolic pressure (below 90).",
+            "bp.sys.low", L10n.get(R.string.zl_low), null, 90.0,
+            ZoneSeverity.WATCH, VitalColorToken.Blue, L10n.get(R.string.ze_bp_sys_low),
         ),
         MetricZone(
-            "bp.sys.normal", "Normal", 90.0, 120.0,
-            ZoneSeverity.NORMAL, VitalColorToken.Mint, "Normal blood pressure is below 120/80.",
+            "bp.sys.normal", L10n.get(R.string.zl_normal), 90.0, 120.0,
+            ZoneSeverity.NORMAL, VitalColorToken.Mint, L10n.get(R.string.ze_bp_sys_normal),
         ),
         MetricZone(
-            "bp.sys.elevated", "Elevated", 120.0, 130.0,
-            ZoneSeverity.WATCH, VitalColorToken.Amber, "Elevated systolic (120–129).",
+            "bp.sys.elevated", L10n.get(R.string.zl_elevated), 120.0, 130.0,
+            ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.ze_bp_sys_elevated),
         ),
         MetricZone(
-            "bp.sys.stage1", "Stage 1", 130.0, 140.0,
-            ZoneSeverity.HIGH, VitalColorToken.Orange, "Stage 1 hypertension range (systolic 130–139).",
+            "bp.sys.stage1", L10n.get(R.string.zl_stage1), 130.0, 140.0,
+            ZoneSeverity.HIGH, VitalColorToken.Orange, L10n.get(R.string.ze_bp_sys_stage1),
         ),
         MetricZone(
-            "bp.sys.stage2", "Stage 2", 140.0, 180.0,
-            ZoneSeverity.HIGH, VitalColorToken.Red, "Stage 2 hypertension range (systolic ≥140).",
+            "bp.sys.stage2", L10n.get(R.string.zl_stage2), 140.0, 180.0,
+            ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_bp_sys_stage2),
         ),
         MetricZone(
-            "bp.sys.crisis", "Severe", 180.0, null,
-            ZoneSeverity.CRITICAL, VitalColorToken.Red, "Severe range (systolic >180). Seek care if confirmed.",
+            "bp.sys.crisis", L10n.get(R.string.zl_severe), 180.0, null,
+            ZoneSeverity.CRITICAL, VitalColorToken.Red, L10n.get(R.string.ze_bp_sys_crisis),
         ),
     )
 
     private fun diastolicZones(): List<MetricZone> = listOf(
         MetricZone(
-            "bp.dia.low", "Low", null, 60.0,
-            ZoneSeverity.WATCH, VitalColorToken.Blue, "Low diastolic pressure (below 60).",
+            "bp.dia.low", L10n.get(R.string.zl_low), null, 60.0,
+            ZoneSeverity.WATCH, VitalColorToken.Blue, L10n.get(R.string.ze_bp_dia_low),
         ),
         MetricZone(
-            "bp.dia.normal", "Normal", 60.0, 80.0,
-            ZoneSeverity.NORMAL, VitalColorToken.Mint, "Normal diastolic is below 80.",
+            "bp.dia.normal", L10n.get(R.string.zl_normal), 60.0, 80.0,
+            ZoneSeverity.NORMAL, VitalColorToken.Mint, L10n.get(R.string.ze_bp_dia_normal),
         ),
-        // Note: there is no diastolic "Elevated" category — 80–89 is already Stage 1 by AHA.
+        // Note: there is no diastolic L10n.get(R.string.zl_elevated) category — 80–89 is already Stage 1 by AHA.
         MetricZone(
-            "bp.dia.stage1", "Stage 1", 80.0, 90.0,
-            ZoneSeverity.HIGH, VitalColorToken.Orange, "Stage 1 hypertension range (diastolic 80–89).",
-        ),
-        MetricZone(
-            "bp.dia.stage2", "Stage 2", 90.0, 120.0,
-            ZoneSeverity.HIGH, VitalColorToken.Red, "Stage 2 hypertension range (diastolic ≥90).",
+            "bp.dia.stage1", L10n.get(R.string.zl_stage1), 80.0, 90.0,
+            ZoneSeverity.HIGH, VitalColorToken.Orange, L10n.get(R.string.ze_bp_dia_stage1),
         ),
         MetricZone(
-            "bp.dia.crisis", "Severe", 120.0, null,
-            ZoneSeverity.CRITICAL, VitalColorToken.Red, "Severe range (diastolic >120). Seek care if confirmed.",
+            "bp.dia.stage2", L10n.get(R.string.zl_stage2), 90.0, 120.0,
+            ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_bp_dia_stage2),
+        ),
+        MetricZone(
+            "bp.dia.crisis", L10n.get(R.string.zl_severe), 120.0, null,
+            ZoneSeverity.CRITICAL, VitalColorToken.Red, L10n.get(R.string.ze_bp_dia_crisis),
         ),
     )
 
@@ -419,58 +421,58 @@ object VitalsThresholdEngine {
     private fun glucoseZones(context: MeasurementContext): List<MetricZone> = when (context) {
         MeasurementContext.FASTING -> listOf(
             MetricZone(
-                "glucose.low", "Low", null, 70.0,
-                ZoneSeverity.HIGH, VitalColorToken.Red, "Below 70 mg/dL is low.",
+                "glucose.low", L10n.get(R.string.zl_low), null, 70.0,
+                ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_glu_low),
             ),
             MetricZone(
-                "glucose.normal", "Normal", 70.0, 100.0,
-                ZoneSeverity.NORMAL, VitalColorToken.Mint, "Fasting normal is up to 99 mg/dL.",
+                "glucose.normal", L10n.get(R.string.zl_normal), 70.0, 100.0,
+                ZoneSeverity.NORMAL, VitalColorToken.Mint, L10n.get(R.string.ze_glu_fasting_normal),
             ),
             MetricZone(
-                "glucose.elevated", "Elevated", 100.0, 126.0,
-                ZoneSeverity.WATCH, VitalColorToken.Amber, "Fasting 100–125 is above the typical range.",
+                "glucose.elevated", L10n.get(R.string.zl_elevated), 100.0, 126.0,
+                ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.ze_glu_fasting_elevated),
             ),
             MetricZone(
-                "glucose.high", "High", 126.0, null,
-                ZoneSeverity.HIGH, VitalColorToken.Red, "Fasting ≥126. Talk to a clinician if confirmed by a meter.",
+                "glucose.high", L10n.get(R.string.zl_high), 126.0, null,
+                ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_glu_fasting_high),
             ),
         )
         MeasurementContext.POST_MEAL -> listOf(
             MetricZone(
-                "glucose.low", "Low", null, 70.0,
-                ZoneSeverity.HIGH, VitalColorToken.Red, "Below 70 mg/dL is low.",
+                "glucose.low", L10n.get(R.string.zl_low), null, 70.0,
+                ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_glu_low),
             ),
             MetricZone(
-                "glucose.normal", "Normal", 70.0, 140.0,
-                ZoneSeverity.NORMAL, VitalColorToken.Mint, "Two-hour post-meal normal is up to 140 mg/dL.",
+                "glucose.normal", L10n.get(R.string.zl_normal), 70.0, 140.0,
+                ZoneSeverity.NORMAL, VitalColorToken.Mint, L10n.get(R.string.ze_glu_post_normal),
             ),
             MetricZone(
-                "glucose.elevated", "Elevated", 140.0, 200.0,
-                ZoneSeverity.WATCH, VitalColorToken.Amber, "Two-hour 140–199 is above the typical range.",
+                "glucose.elevated", L10n.get(R.string.zl_elevated), 140.0, 200.0,
+                ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.ze_glu_post_elevated),
             ),
             MetricZone(
-                "glucose.high", "High", 200.0, null,
-                ZoneSeverity.HIGH, VitalColorToken.Red, "Two-hour ≥200. Confirm with a meter and a clinician.",
+                "glucose.high", L10n.get(R.string.zl_high), 200.0, null,
+                ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_glu_post_high),
             ),
         )
         else ->
             // Unknown / random context: conservative labels, NO "prediabetes"/"diabetes" wording.
             listOf(
                 MetricZone(
-                    "glucose.low", "Low", null, 70.0,
-                    ZoneSeverity.HIGH, VitalColorToken.Red, "Below 70 mg/dL is low.",
+                    "glucose.low", L10n.get(R.string.zl_low), null, 70.0,
+                    ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_glu_low),
                 ),
                 MetricZone(
-                    "glucose.typical", "Typical", 70.0, 140.0,
-                    ZoneSeverity.NORMAL, VitalColorToken.Mint, "Within a typical range for a non-fasting reading.",
+                    "glucose.typical", L10n.get(R.string.zl_typical), 70.0, 140.0,
+                    ZoneSeverity.NORMAL, VitalColorToken.Mint, L10n.get(R.string.ze_glu_typical),
                 ),
                 MetricZone(
-                    "glucose.elevated", "Elevated", 140.0, 200.0,
-                    ZoneSeverity.WATCH, VitalColorToken.Amber, "Above the typical range. Context (meals) affects this.",
+                    "glucose.elevated", L10n.get(R.string.zl_elevated), 140.0, 200.0,
+                    ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.ze_glu_elevated),
                 ),
                 MetricZone(
-                    "glucose.veryHigh", "Very high", 200.0, null,
-                    ZoneSeverity.HIGH, VitalColorToken.Red, "A high reading regardless of context. Confirm with a meter.",
+                    "glucose.veryHigh", L10n.get(R.string.zl_very_high), 200.0, null,
+                    ZoneSeverity.HIGH, VitalColorToken.Red, L10n.get(R.string.ze_glu_very_high),
                 ),
             )
     }
@@ -481,7 +483,7 @@ object VitalsThresholdEngine {
         return MetricInterpretation(
             primaryZone = zone, allZones = zones, displayLabel = zone.label,
             explanation = zone.explanation,
-            confidenceLabel = "Estimated — not for dosing or diagnosis",
+            confidenceLabel = L10n.get(R.string.zc_estimated_no_dosing),
             isEstimated = true,
         )
     }
@@ -493,17 +495,17 @@ object VitalsThresholdEngine {
         // absolute, so we keep a single soft "typical" band and flag extremes only.
         listOf(
             MetricZone(
-                "temp.low", "Cool", null, 31.0,
-                ZoneSeverity.WATCH, VitalColorToken.Blue, "Cooler than typical skin temperature.",
+                "temp.low", L10n.get(R.string.zl_cool), null, 31.0,
+                ZoneSeverity.WATCH, VitalColorToken.Blue, L10n.get(R.string.ze_temp_low),
             ),
             MetricZone(
-                "temp.normal", "Typical", 31.0, 36.0,
+                "temp.normal", L10n.get(R.string.zl_typical), 31.0, 36.0,
                 ZoneSeverity.NORMAL, VitalColorToken.MetricAccent(MetricKind.TEMPERATURE),
-                "A typical skin-temperature range from the ring.",
+                L10n.get(R.string.ze_temp_normal),
             ),
             MetricZone(
-                "temp.high", "Warm", 36.0, null,
-                ZoneSeverity.WATCH, VitalColorToken.Amber, "Warmer than typical. Trends matter more than a single reading.",
+                "temp.high", L10n.get(R.string.zl_warm), 36.0, null,
+                ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.ze_temp_high),
             ),
         )
 

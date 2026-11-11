@@ -1,5 +1,7 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import androidx.compose.ui.graphics.Color
 import com.pulseloop.ring.RingConnectionState
 import com.pulseloop.ui.theme.PulseColors
@@ -28,10 +30,10 @@ data class DeviceHeroStatus(
 
     val actionTitle: String
         get() = when (action) {
-            Action.DISCONNECT -> "Disconnect"
-            Action.CONNECT -> "Connect"
-            Action.SET_UP -> "Set up a ring"
-            Action.PENDING -> "Connecting…"
+            Action.DISCONNECT -> L10n.get(R.string.wearable_disconnect)
+            Action.CONNECT -> L10n.get(R.string.hero_connect)
+            Action.SET_UP -> L10n.get(R.string.hero_set_up)
+            Action.PENDING -> L10n.get(R.string.pill_connecting)
         }
 
     /** The action button is inert while a single connection attempt is in flight, so a tap
@@ -53,35 +55,35 @@ data class DeviceHeroStatus(
             lastSyncAt: Long?,
             now: Long,
         ): DeviceHeroStatus {
-            val title = connectedName ?: knownName ?: "No ring connected"
+            val title = connectedName ?: knownName ?: L10n.get(R.string.hero_no_ring)
 
             val statusLine: String
             val statusTint: Color
             when (state) {
                 RingConnectionState.CONNECTED -> {
-                    statusLine = "Connected"; statusTint = PulseColors.success
+                    statusLine = L10n.get(R.string.status_connected); statusTint = PulseColors.success
                 }
                 RingConnectionState.CONNECTING -> {
-                    statusLine = "Connecting…"; statusTint = PulseColors.warning
+                    statusLine = L10n.get(R.string.pill_connecting); statusTint = PulseColors.warning
                 }
                 RingConnectionState.RECONNECTING -> {
-                    statusLine = "Reconnecting…"; statusTint = PulseColors.warning
+                    statusLine = L10n.get(R.string.pill_reconnecting); statusTint = PulseColors.warning
                 }
                 RingConnectionState.SCANNING -> {
-                    statusLine = "Searching…"; statusTint = PulseColors.warning
+                    statusLine = L10n.get(R.string.hero_searching); statusTint = PulseColors.warning
                 }
                 RingConnectionState.FAILED -> {
-                    statusLine = "Connection failed"; statusTint = PulseColors.danger
+                    statusLine = L10n.get(R.string.hero_connection_failed); statusTint = PulseColors.danger
                 }
                 RingConnectionState.IDLE, RingConnectionState.DISCONNECTED -> {
-                    statusLine = if (knownName == null) "No ring paired" else "Disconnected"
+                    statusLine = if (knownName == null) L10n.get(R.string.wearable_none_paired) else L10n.get(R.string.pill_disconnected)
                     statusTint = PulseColors.textSecondary
                 }
             }
 
             val batteryText = batteryPercent?.let { "${it.coerceIn(0, 100)}%" }
 
-            val syncText = lastSyncAt?.let { "Synced ${relativeShort(it, now)}" }
+            val syncText = lastSyncAt?.let { L10n.get(R.string.hero_synced, relativeShort(it, now)) }
 
             val action = when (state) {
                 RingConnectionState.CONNECTED,
@@ -103,10 +105,10 @@ data class DeviceHeroStatus(
         fun relativeShort(fromMillis: Long, nowMillis: Long): String {
             val seconds = ((nowMillis - fromMillis) / 1000).coerceAtLeast(0)
             return when {
-                seconds < 60 -> "just now"
-                seconds < 3_600 -> "${seconds / 60}m ago"
-                seconds < 86_400 -> "${seconds / 3_600}h ago"
-                else -> "${seconds / 86_400}d ago"
+                seconds < 60 -> L10n.get(R.string.ago_just_now)
+                seconds < 3_600 -> L10n.get(R.string.ago_minutes, seconds / 60)
+                seconds < 86_400 -> L10n.get(R.string.ago_hours, seconds / 3_600)
+                else -> L10n.get(R.string.ago_days, seconds / 86_400)
             }
         }
     }

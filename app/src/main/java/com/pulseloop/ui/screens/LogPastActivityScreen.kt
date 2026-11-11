@@ -1,5 +1,8 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -66,20 +69,20 @@ fun LogPastActivityScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, tint = PulseColors.textSecondary, onTap = onBack)
                 Spacer(Modifier.width(12.dp))
-                Text("Log Past Activity", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = PulseColors.textPrimary)
+                Text(stringResource(R.string.activity_log_past), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = PulseColors.textPrimary)
             }
         }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("What did you do?", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = PulseColors.textPrimary)
+                Text(stringResource(R.string.logpast_what), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = PulseColors.textPrimary)
                 Text(
-                    "Choose an activity, when it started, and how long it lasted.",
+                    stringResource(R.string.logpast_hint),
                     fontSize = 14.sp, color = PulseColors.textMuted,
                 )
             }
         }
 
-        item { SectionLabel("Activity type") }
+        item { SectionLabel(stringResource(R.string.logpast_type)) }
         item {
             ActivityTypeGrid(selectedType) { type ->
                 selectedType = type
@@ -87,14 +90,14 @@ fun LogPastActivityScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             }
         }
 
-        item { SectionLabel("When") }
+        item { SectionLabel(stringResource(R.string.logpast_when)) }
         item {
-            EditFieldRow("Started") {
+            EditFieldRow(stringResource(R.string.logpast_started)) {
                 DateTimeButton(startedAt) { startedAt = it; saveError = null }
             }
         }
         item {
-            EditFieldRow("Ends") {
+            EditFieldRow(stringResource(R.string.workout_field_ends)) {
                 Text(
                     formatDateTime(endedAt),
                     fontSize = 14.sp,
@@ -103,7 +106,7 @@ fun LogPastActivityScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             }
         }
 
-        item { SectionLabel("Duration") }
+        item { SectionLabel(stringResource(R.string.sleep_duration)) }
         item {
             PastActivityDurationCard(durationMinutes) { newValue ->
                 durationMinutes = newValue
@@ -112,7 +115,7 @@ fun LogPastActivityScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         }
 
         if (!isValid) {
-            item { Text("The workout must finish before now.", fontSize = 12.sp, color = PulseColors.warning) }
+            item { Text(stringResource(R.string.logpast_must_finish), fontSize = 12.sp, color = PulseColors.warning) }
         }
         saveError?.let { error ->
             item { Text(error, fontSize = 12.sp, color = PulseColors.danger) }
@@ -146,7 +149,7 @@ fun LogPastActivityScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             ) {
                 Icon(Icons.Filled.Check, null)
                 Spacer(Modifier.width(8.dp))
-                Text("Log Activity", fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.logpast_save), fontWeight = FontWeight.SemiBold)
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
@@ -230,7 +233,7 @@ private fun PastActivityDurationCard(minutes: Int, onChange: (Int) -> Unit) {
             DurationStepButton(Icons.Filled.Remove, enabled = !atFloor) { onChange(maxOf(5, minutes - 5)) }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(durationText(minutes), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = PulseColors.textPrimary)
-                Text("DURATION", fontSize = 10.sp, letterSpacing = 1.1.sp, color = PulseColors.textMuted)
+                Text(stringResource(R.string.workout_duration_caps), fontSize = 10.sp, letterSpacing = 1.1.sp, color = PulseColors.textMuted)
             }
             DurationStepButton(Icons.Filled.Add, enabled = true) { onChange(minutes + 5) }
         }
@@ -238,7 +241,7 @@ private fun PastActivityDurationCard(minutes: Int, onChange: (Int) -> Unit) {
             listOf(15, 30, 45, 60, 90).forEach { value ->
                 val selected = minutes == value
                 Text(
-                    "${value}m",
+                    L10n.get(R.string.duration_m, value),
                     fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
                     color = if (selected) PulseColors.accent else PulseColors.textSecondary,
                     modifier = Modifier
@@ -274,8 +277,8 @@ private fun durationText(minutes: Int): String {
     val hours = minutes / 60
     val remaining = minutes % 60
     return when {
-        hours == 0 -> "$remaining min"
-        remaining == 0 -> "$hours hr"
-        else -> "$hours hr $remaining min"
+        hours == 0 -> L10n.get(R.string.value_min, remaining)
+        remaining == 0 -> L10n.get(R.string.value_hr, hours)
+        else -> L10n.get(R.string.value_hr_min, hours, remaining)
     }
 }

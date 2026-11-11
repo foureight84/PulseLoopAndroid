@@ -1,5 +1,9 @@
 package com.pulseloop.ring
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+
+
 /**
  * Trailing "_<hex serial>" suffix on advertised ring names (e.g. "COLMI R10_1203").
  * ONE rule, shared by the UI label below and [com.pulseloop.diagnostics.DiagnosticsRedactor],
@@ -20,7 +24,7 @@ fun ringNameWithoutSerial(name: String): String = RING_SERIAL_SUFFIX.replace(nam
  * family display name when the name carries no recognizable model token.
  */
 fun ringModelLabel(name: String?, deviceType: RingDeviceType?): String {
-    val type = deviceType ?: return name?.takeIf { it.isNotBlank() } ?: "Ring"
+    val type = deviceType ?: return name?.takeIf { it.isNotBlank() } ?: L10n.get(R.string.ring_generic)
     // Exact catalog model first (iOS #49): correct branding for e.g. "R11_BEEF" → "Yawell R11".
     com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)
         ?.takeIf { it.family == type }

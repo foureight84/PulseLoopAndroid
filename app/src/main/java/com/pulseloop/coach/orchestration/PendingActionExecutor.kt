@@ -1,5 +1,7 @@
 package com.pulseloop.coach.orchestration
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.tools.CoachDataAccess
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.ActivitySessionEntity
@@ -28,7 +30,7 @@ object PendingActionExecutor {
 
         val sessions = db.activitySessionDao().recent(200)
         val session = sessions.firstOrNull { it.id == action.activityId }
-            ?: return "That workout no longer exists."
+            ?: return L10n.get(R.string.pa_workout_gone)
 
         val typeLabel = activityLabels[session.type] ?: session.type
 
@@ -46,11 +48,11 @@ object PendingActionExecutor {
                         updatedAt = System.currentTimeMillis(),
                     )
                 )
-                "Deleted the $typeLabel session."
+                L10n.get(R.string.pa_deleted_session, typeLabel)
             }
             PendingActionKind.UPDATE_ACTIVITY_SESSION -> {
                 applyUpdates(db, action.updates, session)
-                "Updated the $typeLabel session."
+                L10n.get(R.string.pa_updated_session, typeLabel)
             }
         }
     }
@@ -64,19 +66,19 @@ object PendingActionExecutor {
      */
     private suspend fun executeMeal(action: PendingAction, db: PulseLoopDatabase): String {
         val entry = db.mealEntryDao().byId(action.activityId)
-            ?: return "That meal no longer exists."
+            ?: return L10n.get(R.string.pa_meal_gone)
         return when (action.kind) {
             PendingActionKind.DELETE_MEAL_ENTRY -> {
                 val name = entry.name
                 db.mealEntryDao().deleteById(entry.id)
-                "Deleted \"$name\"."
+                L10n.get(R.string.pa_deleted_name, name)
             }
             PendingActionKind.UPDATE_MEAL_ENTRY -> {
                 val updated = action.mealUpdates?.let {
                     com.pulseloop.coach.tools.NutritionTools.applyMealUpdates(it, entry)
                 } ?: entry
                 db.mealEntryDao().upsert(updated)
-                "Updated \"${updated.name}\"."
+                L10n.get(R.string.pa_updated_name, updated.name)
             }
             // Unreachable: execute() routes only the two meal kinds here.
             else -> ""

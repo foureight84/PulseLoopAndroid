@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.ring.MeasurementKind
 import kotlin.math.sqrt
 
@@ -47,25 +49,25 @@ enum class MetricKind {
 
     val title: String
         get() = when (this) {
-            HEART_RATE -> "Heart rate"
-            SPO2 -> "Blood oxygen"
-            HRV -> "HRV"
-            BLOOD_PRESSURE -> "Blood pressure"
-            STRESS -> "Stress"
-            FATIGUE -> "Fatigue"
-            GLUCOSE -> "Blood sugar"
-            TEMPERATURE -> "Skin temperature"
+            HEART_RATE -> L10n.get(R.string.metric_heart_rate)
+            SPO2 -> L10n.get(R.string.metric_blood_oxygen)
+            HRV -> L10n.get(R.string.abbr_hrv)
+            BLOOD_PRESSURE -> L10n.get(R.string.metric_blood_pressure)
+            STRESS -> L10n.get(R.string.metric_stress)
+            FATIGUE -> L10n.get(R.string.metric_fatigue)
+            GLUCOSE -> L10n.get(R.string.metric_blood_sugar)
+            TEMPERATURE -> L10n.get(R.string.metric_skin_temperature)
         }
 
     /** Display unit shown after the big value. Empty for unit-less device scores. */
     val unit: String
         get() = when (this) {
-            HEART_RATE -> "bpm"
+            HEART_RATE -> L10n.get(R.string.unit_bpm)
             SPO2 -> "%"
-            HRV -> "ms"
-            BLOOD_PRESSURE -> "mmHg"
+            HRV -> L10n.get(R.string.unit_ms)
+            BLOOD_PRESSURE -> L10n.get(R.string.unit_mmhg)
             STRESS, FATIGUE -> ""
-            GLUCOSE -> "mg/dL"
+            GLUCOSE -> L10n.get(R.string.unit_mgdl)
             TEMPERATURE -> "°C"
         }
 
@@ -174,9 +176,9 @@ enum class BiologicalSex {
     }
 }
 
-enum class GlucoseUnit(val label: String) {
-    MGDL("mg/dL"),
-    MMOL("mmol/L");
+enum class GlucoseUnit(val label: String, @androidx.annotation.StringRes val labelRes: Int) {
+    MGDL("mg/dL", com.pulseloop.R.string.unit_mgdl),
+    MMOL("mmol/L", com.pulseloop.R.string.unit_mmol);
 
     /** Convert a canonical mg/dL value into this display unit (mmol/L = mg/dL ÷ 18.0182). */
     fun fromMgdl(mgdl: Double): Double = if (this == MMOL) mgdl / MGDL_PER_MMOL else mgdl

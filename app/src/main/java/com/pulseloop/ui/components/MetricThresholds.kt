@@ -1,5 +1,7 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import androidx.compose.ui.graphics.Color
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ui.theme.MetricColors
@@ -66,7 +68,7 @@ object MetricThresholdTable {
     private val heartRate = MetricThresholds(
         displayMin = 40.0, displayMax = 140.0,
         higherIsBetter = false,
-        unitLabel = "bpm",
+        unitLabel = L10n.get(R.string.unit_bpm),
         zones = listOf(
             ThresholdZone("Low",      40.0,  50.0, MetricColors.ZoneLow),
             ThresholdZone("Good",     50.0,  90.0, MetricColors.ZoneGood),
@@ -113,7 +115,7 @@ object MetricThresholdTable {
     private val hrv = MetricThresholds(
         displayMin = 0.0, displayMax = 120.0,
         higherIsBetter = true,
-        unitLabel = "ms",
+        unitLabel = L10n.get(R.string.unit_ms),
         zones = listOf(
             ThresholdZone("Low",         0.0, 20.0, MetricColors.ZoneConcern),
             ThresholdZone("Below avg",  20.0, 50.0, MetricColors.ZoneBorderline),
@@ -135,7 +137,7 @@ object MetricThresholdTable {
     private val bloodPressure = MetricThresholds(
         displayMin = 80.0, displayMax = 180.0,
         higherIsBetter = false,
-        unitLabel = "mmHg",
+        unitLabel = L10n.get(R.string.unit_mmhg),
         zones = listOf(
             ThresholdZone("Normal",     80.0, 120.0, MetricColors.ZoneGood),
             ThresholdZone("Elevated",  120.0, 130.0, MetricColors.ZoneBorderline),
@@ -147,7 +149,7 @@ object MetricThresholdTable {
     private val bloodSugar = MetricThresholds(
         displayMin = 50.0, displayMax = 200.0,
         higherIsBetter = false,
-        unitLabel = "mg/dL",
+        unitLabel = L10n.get(R.string.unit_mgdl),
         zones = listOf(
             ThresholdZone("Low",       50.0,  70.0, MetricColors.ZoneLow),
             ThresholdZone("Normal",    70.0, 100.0, MetricColors.ZoneGood),

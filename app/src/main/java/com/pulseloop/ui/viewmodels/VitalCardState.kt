@@ -1,5 +1,7 @@
 package com.pulseloop.ui.viewmodels
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.service.BaselineStats
 import com.pulseloop.service.MeasurementContext
 import com.pulseloop.service.MetricContext
@@ -58,7 +60,7 @@ data class TrendSummary(
             // HRV: latest vs personal baseline.
             if (metric == MetricKind.HRV && baseline != null && baseline.isEstablished) {
                 val latest = values.lastOrNull() ?: baseline.mean
-                return summarize(latest - baseline.mean, unitLabel, "vs baseline")
+                return summarize(latest - baseline.mean, unitLabel, L10n.get(R.string.trend_vs_baseline))
             }
 
             // Dense (≥8 points over the window): split at the time midpoint, compare half means.
@@ -69,14 +71,14 @@ data class TrendSummary(
                 val recent = samples.filter { it.timestampMs >= mid }.map { it.value }
                 val prior = samples.filter { it.timestampMs < mid }.map { it.value }
                 if (recent.isNotEmpty() && prior.isNotEmpty()) {
-                    return summarize(recent.average() - prior.average(), unitLabel, "vs earlier")
+                    return summarize(recent.average() - prior.average(), unitLabel, L10n.get(R.string.trend_vs_earlier))
                 }
             }
 
             // Sparse: latest minus previous.
             val latest = values[values.size - 1]
             val previous = values[values.size - 2]
-            return summarize(latest - previous, unitLabel, "vs previous")
+            return summarize(latest - previous, unitLabel, L10n.get(R.string.trend_vs_previous))
         }
 
         /**
@@ -87,7 +89,7 @@ data class TrendSummary(
             // Sub-unit deltas keep one decimal (truncated, matching iOS Int-cast); larger deltas round.
             val rounded = if (abs(delta) < 1 && delta != 0.0) (delta * 10).toInt() / 10.0 else roundAwayFromZero(delta)
             if (abs(rounded) < 0.5) {
-                return TrendSummary(TrendDirection.STABLE, "Stable $suffix", "→")
+                return TrendSummary(TrendDirection.STABLE, L10n.get(R.string.trend_stable, suffix), "→")
             }
             val unit = if (unitLabel.isEmpty()) "" else " $unitLabel"
             val sign = if (rounded > 0) "+" else "−"
@@ -207,20 +209,20 @@ object VitalsCardFactory {
         val interp = latest?.let { VitalsThresholdEngine.interpret(it, MetricKind.HEART_RATE, profile) }
 
         val valueText = rangeLabel(samples, latest)
-        val resting = inputs.restingHr?.let { "Resting ${it.toInt()}" } ?: "Resting calibrating"
-        val peak = inputs.peakHr?.let { "Peak ${it.toInt()}" } ?: "Peak —"
+        val resting = inputs.restingHr?.let { L10n.get(R.string.card_resting, it.toInt()) } ?: L10n.get(R.string.card_resting_calibrating)
+        val peak = inputs.peakHr?.let { L10n.get(R.string.card_peak, it.toInt()) } ?: L10n.get(R.string.card_peak_none)
         val domain = clampedDomain(samples, 40.0..140.0, pad = 8.0, hardLower = 40.0, hardUpper = 220.0)
         return VitalCardState(
             metric = MetricKind.HEART_RATE, title = MetricKind.HEART_RATE.title,
             valueText = valueText, latestValue = latest,
-            unitText = if (latest != null) "bpm range" else null,
-            statusText = interp?.displayLabel ?: "No reading",
+            unitText = if (latest != null) L10n.get(R.string.card_bpm_range) else null,
+            statusText = interp?.displayLabel ?: L10n.get(R.string.today_no_reading),
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = "$resting · $peak",
             samples = samples, zones = VitalsThresholdEngine.zones(MetricKind.HEART_RATE, profile),
             yDomain = domain, referenceBands = normalBand(MetricKind.HEART_RATE, profile, domain),
             dashedRules = emptyList(),
-            trend = TrendSummary.compute(samples, MetricKind.HEART_RATE, unitLabel = "bpm"),
+            trend = TrendSummary.compute(samples, MetricKind.HEART_RATE, unitLabel = L10n.get(R.string.unit_bpm)),
             sourceQuality = quality, isEstimated = false, confidenceLabel = null,
             lastUpdatedText = lastUpdated(samples.lastOrNull()?.timestampMs, inputs.nowMs),
             isEmpty = samples.size < 2,
@@ -235,12 +237,12 @@ object VitalsCardFactory {
         val quality = quality(MetricKind.SPO2, samples.lastOrNull()?.timestampMs, inputs)
         val interp = latest?.let { VitalsThresholdEngine.interpret(it, MetricKind.SPO2, profile) }
         val lowest = samples.map { it.value }.filter { it > 0 }.minOrNull()
-        val subtitle = lowest?.let { "Lowest ${it.toInt()} · ${samples.size} readings" }
+        val subtitle = lowest?.let { L10n.get(R.string.card_lowest, it.toInt(), L10n.plural(R.plurals.readings_count, samples.size, samples.size)) }
         return VitalCardState(
             metric = MetricKind.SPO2, title = MetricKind.SPO2.title,
             valueText = averageLabel(samples, latest), latestValue = latest,
-            unitText = if (latest != null) "% avg" else null,
-            statusText = interp?.displayLabel ?: "No reading",
+            unitText = if (latest != null) L10n.get(R.string.card_pct_avg) else null,
+            statusText = interp?.displayLabel ?: L10n.get(R.string.today_no_reading),
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = subtitle,
             samples = samples, zones = VitalsThresholdEngine.zones(MetricKind.SPO2, profile),
@@ -271,22 +273,22 @@ object VitalsCardFactory {
             )
         }
         val subtitle = if (baseline != null && baseline.isEstablished) {
-            "Baseline ${baseline.mean.toInt()} ms"
+            L10n.get(R.string.card_baseline_ms, baseline.mean.toInt())
         } else {
-            "Building baseline"
+            L10n.get(R.string.zl_building_baseline)
         }
         return VitalCardState(
             metric = MetricKind.HRV, title = MetricKind.HRV.title,
             valueText = latest?.let { "${it.toInt()}" } ?: "--", latestValue = latest,
-            unitText = if (latest != null) "ms" else null,
-            statusText = interp?.displayLabel ?: "Building baseline",
+            unitText = if (latest != null) L10n.get(R.string.unit_ms) else null,
+            statusText = interp?.displayLabel ?: L10n.get(R.string.zl_building_baseline),
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = subtitle,
             samples = samples,
             zones = VitalsThresholdEngine.zones(MetricKind.HRV, profile, baseline = baseline),
             yDomain = domain, referenceBands = bands,
             dashedRules = baseline?.let { listOf(it.mean) } ?: emptyList(),
-            trend = TrendSummary.compute(samples, MetricKind.HRV, baseline = baseline, unitLabel = "ms"),
+            trend = TrendSummary.compute(samples, MetricKind.HRV, baseline = baseline, unitLabel = L10n.get(R.string.unit_ms)),
             sourceQuality = quality, isEstimated = false, confidenceLabel = interp?.confidenceLabel,
             lastUpdatedText = lastUpdated(samples.lastOrNull()?.timestampMs, inputs.nowMs),
             isEmpty = samples.size < 2,
@@ -304,11 +306,11 @@ object VitalsCardFactory {
         val latest = samples.lastOrNull()?.value
         val quality = quality(metric, samples.lastOrNull()?.timestampMs, inputs)
         val interp = latest?.let { VitalsThresholdEngine.interpret(it, metric, profile) }
-        val subtitle = if (metric == MetricKind.STRESS) "Lower is calmer" else "Ring model estimate"
+        val subtitle = if (metric == MetricKind.STRESS) L10n.get(R.string.card_lower_calmer) else L10n.get(R.string.card_ring_estimate)
         return VitalCardState(
             metric = metric, title = metric.title,
             valueText = latest?.let { "${it.toInt()}" } ?: "--", latestValue = latest, unitText = null,
-            statusText = interp?.displayLabel ?: "No data",
+            statusText = interp?.displayLabel ?: L10n.get(R.string.status_no_data),
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = subtitle,
             samples = samples, zones = VitalsThresholdEngine.zones(metric, profile),
@@ -350,7 +352,7 @@ object VitalsCardFactory {
             valueText = latest?.let { "%.1f".format(tempValue(it, units)) } ?: "--",
             latestValue = latest?.let { tempValue(it, units) },
             unitText = if (latest != null) tempUnit(units) else null,
-            statusText = interp?.displayLabel ?: "No data",
+            statusText = interp?.displayLabel ?: L10n.get(R.string.status_no_data),
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             subtitleText = null,
             samples = dispSamples, zones = zones,
@@ -377,8 +379,8 @@ object VitalsCardFactory {
             metric = MetricKind.BLOOD_PRESSURE, title = MetricKind.BLOOD_PRESSURE.title,
             // No latestValue: the "sys/dia" label has no single number; BP gauges read the two
             // series directly.
-            valueText = valueText, unitText = if (sys != null) "mmHg" else null,
-            statusText = interp?.displayLabel ?: "No reading",
+            valueText = valueText, unitText = if (sys != null) L10n.get(R.string.unit_mmhg) else null,
+            statusText = interp?.displayLabel ?: L10n.get(R.string.today_no_reading),
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
             // Systolic/diastolic values are shown under each of the two gauges on the card, so the
             // subtitle would just repeat them.
@@ -386,9 +388,9 @@ object VitalsCardFactory {
             samples = inputs.systolic,
             zones = VitalsThresholdEngine.zones(MetricKind.BLOOD_PRESSURE, profile),
             yDomain = 80.0..190.0, referenceBands = emptyList(), dashedRules = emptyList(),
-            trend = TrendSummary.compute(inputs.systolic, MetricKind.BLOOD_PRESSURE, unitLabel = "mmHg"),
+            trend = TrendSummary.compute(inputs.systolic, MetricKind.BLOOD_PRESSURE, unitLabel = L10n.get(R.string.unit_mmhg)),
             sourceQuality = quality, isEstimated = true,
-            confidenceLabel = if (inputs.hasBPReference) "Estimated" else "Estimated · calibrate with a cuff",
+            confidenceLabel = if (inputs.hasBPReference) L10n.get(R.string.badge_estimated) else L10n.get(R.string.zc_estimated_calibrate),
             lastUpdatedText = lastUpdated(inputs.systolic.lastOrNull()?.timestampMs, inputs.nowMs),
             isEmpty = sys == null || dia == null,
         )
@@ -423,10 +425,10 @@ object VitalsCardFactory {
         return VitalCardState(
             metric = MetricKind.GLUCOSE, title = MetricKind.GLUCOSE.title,
             valueText = valueText ?: "--", latestValue = latest?.let(::gv),
-            unitText = if (latest != null) gUnit.label else null,
-            statusText = interp?.displayLabel ?: "No estimate",
+            unitText = if (latest != null) L10n.get(gUnit.labelRes) else null,
+            statusText = interp?.displayLabel ?: L10n.get(R.string.status_no_estimate),
             statusToken = interp?.statusColorToken ?: VitalColorToken.Neutral,
-            subtitleText = "Estimated wellness metric",
+            subtitleText = L10n.get(R.string.card_wellness_estimate),
             samples = dispSamples, zones = zones,
             yDomain = domain,
             referenceBands = listOf(ReferenceBand(gv(70.0), gv(140.0), VitalColorToken.Mint)),
@@ -511,11 +513,11 @@ object VitalsCardFactory {
     private fun lastUpdated(dateMs: Long?, nowMs: Long): String? {
         if (dateMs == null) return null
         val minutes = ((nowMs - dateMs) / 60_000L).toInt()
-        if (minutes < 1) return "Updated just now"
-        if (minutes < 60) return "Updated ${minutes}m ago"
+        if (minutes < 1) return L10n.get(R.string.updated_just_now)
+        if (minutes < 60) return L10n.get(R.string.updated_ago, L10n.get(R.string.ago_minutes, minutes))
         val hours = minutes / 60
-        if (hours < 24) return "Updated ${hours}h ago"
-        return "Updated ${hours / 24}d ago"
+        if (hours < 24) return L10n.get(R.string.updated_ago, L10n.get(R.string.ago_hours, hours))
+        return L10n.get(R.string.updated_ago, L10n.get(R.string.ago_days, hours / 24))
     }
 
     // Unit conversions (iOS UnitsFormatter). °C is canonical for temperature; mg/dL for glucose.

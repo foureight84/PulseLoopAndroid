@@ -1,5 +1,7 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -54,18 +56,18 @@ fun SettingsScreen(
 
     // Provider-aware AI Coach summary — mirrors iOS `coachTrailing` (no Apple on-device
     // mode on Android; hosted providers show the selected model slug).
-    val coachTrailing = if (!coachEnabled) "Off" else when (providerStore.providerMode) {
-        CoachProviderMode.OFFLINE_STUB -> "Offline"
+    val coachTrailing = if (!coachEnabled) stringResource(R.string.status_off) else when (providerStore.providerMode) {
+        CoachProviderMode.OFFLINE_STUB -> stringResource(R.string.status_offline)
         CoachProviderMode.USER_GEMINI_KEY -> providerStore.geminiModel
         CoachProviderMode.USER_OPENROUTER_KEY -> providerStore.openRouterModel
         CoachProviderMode.USER_MINIMAX_KEY -> providerStore.minimaxModel
         // Local: the model name, or just "Local" for a server (llama.cpp) that ignores the field.
         CoachProviderMode.LOCAL_OPENAI_COMPAT ->
-            providerStore.localModel.ifBlank { "Local" }
-        CoachProviderMode.BACKEND_PROXY -> "Backend proxy"
+            providerStore.localModel.ifBlank { stringResource(R.string.coach_local_short) }
+        CoachProviderMode.BACKEND_PROXY -> stringResource(R.string.coach_backend_proxy)
         else -> keyStore.model
     }
-    val notificationsTrailing = if (keyStore.notificationsEnabled) "On" else "Off"
+    val notificationsTrailing = if (keyStore.notificationsEnabled) stringResource(R.string.status_on) else stringResource(R.string.status_off)
 
     fun navigate(route: String) {
         navController?.navigate(route)
@@ -75,7 +77,7 @@ fun SettingsScreen(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Text("Settings", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
 
         DeviceHeroCard(
             bleState = bleState,
@@ -93,13 +95,13 @@ fun SettingsScreen(
 
         // AI COACH — check-ins are a coach sub-feature, only shown once the coach is on.
         SettingsSection(
-            title = "AI Coach",
+            title = stringResource(R.string.coach_title),
             rows = buildList {
-                add(SettingsRowItem(Icons.Filled.AutoAwesome, PulseColors.accent, "AI Coach", coachTrailing) {
+                add(SettingsRowItem(Icons.Filled.AutoAwesome, PulseColors.accent, stringResource(R.string.coach_title), coachTrailing) {
                     navigate("settings/coach")
                 })
                 if (coachEnabled) {
-                    add(SettingsRowItem(Icons.Filled.NotificationsActive, PulseColors.warning, "Coach Check-Ins", notificationsTrailing) {
+                    add(SettingsRowItem(Icons.Filled.NotificationsActive, PulseColors.warning, stringResource(R.string.settings_checkins), notificationsTrailing) {
                         navigate("settings/checkins")
                     })
                 }
@@ -112,16 +114,16 @@ fun SettingsScreen(
         // MEASUREMENT_INTERVAL, so the generic 56ff jring never shows this row (iOS #74: dropped the
         // old ring-only "Device" section for this since the row had no other members).
         SettingsSection(
-            title = "General",
+            title = stringResource(R.string.settings_general),
             rows = buildList {
-                add(SettingsRowItem(Icons.Filled.AccountCircle, PulseColors.accent, "User Profile") {
+                add(SettingsRowItem(Icons.Filled.AccountCircle, PulseColors.accent, stringResource(R.string.settings_profile)) {
                     navigate("settings/profile")
                 })
-                add(SettingsRowItem(Icons.Filled.MonitorHeart, PulseColors.hrv, "Physiology") {
+                add(SettingsRowItem(Icons.Filled.MonitorHeart, PulseColors.hrv, stringResource(R.string.settings_physiology)) {
                     navigate("settings/physiology")
                 })
                 if (capabilities.contains(WearableCapability.MEASUREMENT_INTERVAL)) {
-                    add(SettingsRowItem(Icons.Filled.Timer, PulseColors.spo2, "Measurement Frequency") {
+                    add(SettingsRowItem(Icons.Filled.Timer, PulseColors.spo2, stringResource(R.string.settings_measurement)) {
                         navigate("settings/measurement")
                     })
                 }
@@ -130,12 +132,12 @@ fun SettingsScreen(
 
         // METRICS
         SettingsSection(
-            title = "Metrics",
+            title = stringResource(R.string.settings_metrics),
             rows = listOf(
-                SettingsRowItem(Icons.Filled.TrackChanges, PulseColors.readiness, "Goals") {
+                SettingsRowItem(Icons.Filled.TrackChanges, PulseColors.readiness, stringResource(R.string.settings_goals)) {
                     navigate("settings/goals")
                 },
-                SettingsRowItem(Icons.Filled.RestaurantMenu, PulseColors.calories, "Nutrition") {
+                SettingsRowItem(Icons.Filled.RestaurantMenu, PulseColors.calories, stringResource(R.string.settings_nutrition)) {
                     navigate("settings/nutrition")
                 },
             ),
@@ -144,21 +146,21 @@ fun SettingsScreen(
         // RESOURCES — Calibration is jring-only (Colmi rings measure neither BP nor blood
         // sugar); Developer is hidden until unlocked by tapping the version 7× in About.
         SettingsSection(
-            title = "Resources",
+            title = stringResource(R.string.settings_resources),
             rows = buildList {
                 if (capabilities.contains(WearableCapability.BLOOD_PRESSURE) ||
                     capabilities.contains(WearableCapability.BLOOD_SUGAR)
                 ) {
-                    add(SettingsRowItem(Icons.Filled.Tune, PulseColors.bloodPressure, "Calibration") {
+                    add(SettingsRowItem(Icons.Filled.Tune, PulseColors.bloodPressure, stringResource(R.string.settings_calibration)) {
                         navigate("settings/calibration")
                     })
                 }
                 if (developerUnlocked) {
-                    add(SettingsRowItem(Icons.Filled.BugReport, PulseColors.danger, "Developer") {
+                    add(SettingsRowItem(Icons.Filled.BugReport, PulseColors.danger, stringResource(R.string.settings_developer)) {
                         navigate("debug")
                     })
                 }
-                add(SettingsRowItem(Icons.Filled.Shield, PulseColors.success, "Privacy & Data") {
+                add(SettingsRowItem(Icons.Filled.Shield, PulseColors.success, stringResource(R.string.settings_privacy)) {
                     navigate("settings/privacy")
                 })
                 add(SettingsRowItem(Icons.Filled.TrendingUp, PulseColors.calories, "Strava") {
@@ -167,7 +169,7 @@ fun SettingsScreen(
                 add(SettingsRowItem(Icons.Filled.Sync, PulseColors.success, "Health Connect") {
                     navigate("settings/health-connect")
                 })
-                add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, "About PulseLoop") {
+                add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, stringResource(R.string.settings_about_app)) {
                     navigate("settings/about")
                 })
             },

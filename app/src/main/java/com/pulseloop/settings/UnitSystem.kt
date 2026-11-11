@@ -1,5 +1,7 @@
 package com.pulseloop.settings
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import java.util.Locale
 
 /**
@@ -29,8 +31,8 @@ object UnitConverter {
     }
 
     fun distanceUnit(system: UnitSystem): String = when (system) {
-        UnitSystem.METRIC -> "km"
-        UnitSystem.IMPERIAL -> "mi"
+        UnitSystem.METRIC -> L10n.get(R.string.unit_km)
+        UnitSystem.IMPERIAL -> L10n.get(R.string.unit_mi)
     }
 
     fun weight(kg: Double, system: UnitSystem): Double = when (system) {
@@ -39,12 +41,12 @@ object UnitConverter {
     }
 
     fun weightUnit(system: UnitSystem): String = when (system) {
-        UnitSystem.METRIC -> "kg"
-        UnitSystem.IMPERIAL -> "lbs"
+        UnitSystem.METRIC -> L10n.get(R.string.unit_kg)
+        UnitSystem.IMPERIAL -> L10n.get(R.string.unit_lbs)
     }
 
     fun height(cm: Double, system: UnitSystem): String = when (system) {
-        UnitSystem.METRIC -> "%.0f cm".format(cm)
+        UnitSystem.METRIC -> L10n.get(R.string.value_cm_s, "%.0f".format(cm))
         UnitSystem.IMPERIAL -> {
             val totalInches = cm / 2.54
             val feet = (totalInches / 12).toInt()

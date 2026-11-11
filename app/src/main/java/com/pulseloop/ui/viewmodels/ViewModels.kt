@@ -1,5 +1,7 @@
 package com.pulseloop.ui.viewmodels
 
+import com.pulseloop.util.L10n
+import com.pulseloop.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
@@ -929,8 +931,7 @@ class CoachViewModel(
         val id: String? = null,
     )
 
-    private val greeting = ChatMessage("assistant",
-        "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?")
+    private val greeting get() = ChatMessage("assistant", L10n.get(R.string.coach_greeting))
 
     private val _state = MutableStateFlow(CoachState(messages = listOf(greeting)))
     val state: StateFlow<CoachState> = _state.asStateFlow()
@@ -1156,7 +1157,7 @@ class CoachViewModel(
             } catch (e: Exception) {
                 if (currentConversation.id == conversationId) {
                     _state.update { it.copy(
-                        messages = it.messages + ChatMessage("assistant", "Sorry, something went wrong: ${e.message}"),
+                        messages = it.messages + ChatMessage("assistant", L10n.get(R.string.coach_something_wrong, e.message ?: "")),
                         isThinking = false, error = e.message,
                     ) }
                 }
@@ -1167,7 +1168,9 @@ class CoachViewModel(
 
 // ──────────────────────── Vital Detail ────────────────────────
 
-enum class Period(val label: String) { DAY("Today"), WEEK("Week"), MONTH("Month") }
+enum class Period(val label: String, @androidx.annotation.StringRes val labelRes: Int) {
+    DAY("Today", R.string.period_today), WEEK("Week", R.string.period_week), MONTH("Month", R.string.period_month)
+}
 
 /**
  * VitalDetailViewModel — drives a single-metric detail screen with Today/Week/Month

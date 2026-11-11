@@ -1,5 +1,6 @@
 package com.pulseloop.ui.components
 
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -143,7 +144,7 @@ fun DeviceHeroCard(
                 }
                 Icon(
                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = "Opens ring settings",
+                    contentDescription = stringResource(R.string.hero_opens_settings),
                     modifier = Modifier.size(20.dp),
                     tint = PulseColors.textMuted,
                 )

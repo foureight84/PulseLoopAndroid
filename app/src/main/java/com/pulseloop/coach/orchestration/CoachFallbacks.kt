@@ -1,5 +1,7 @@
 package com.pulseloop.coach.orchestration
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.context.CoachContextPacket
 import com.pulseloop.coach.schema.CoachConfidence
 import com.pulseloop.coach.schema.CoachResponse
@@ -15,10 +17,10 @@ object CoachFallbacks {
     /** Used after an API failure or unrepairable output. */
     fun fallback(): CoachResponse = CoachResponse(
         responseType = CoachResponseType.ERROR_RECOVERY,
-        title = "I had trouble with that",
-        summary = "I checked your data but couldn't finish preparing the answer. Try asking again, or narrow the question.",
-        dataQualityNote = "No changes were made.",
-        followUpChips = listOf("How am I doing today?", "Summarize my week", "What data is missing?"),
+        title = L10n.get(R.string.fb_trouble_title),
+        summary = L10n.get(R.string.fb_trouble),
+        dataQualityNote = L10n.get(R.string.fb_no_changes),
+        followUpChips = listOf(L10n.get(R.string.coach_suggest_today), L10n.get(R.string.coach_suggest_week), L10n.get(R.string.fb_chip_missing)),
         confidence = CoachConfidence.LOW,
     )
 
@@ -30,27 +32,27 @@ object CoachFallbacks {
         val avgSteps = if (steps7d.isNotEmpty()) steps7d.average().toInt() else 0
 
         val bullets = mutableListOf<String>()
-        if (todaySteps > 0) bullets.add("Steps today: ${todaySteps}")
-        if (avgSteps > 0) bullets.add("7-day average: ${avgSteps} steps/day")
+        if (todaySteps > 0) bullets.add(L10n.get(R.string.fb_steps_today, todaySteps))
+        if (avgSteps > 0) bullets.add(L10n.get(R.string.fb_steps_avg, avgSteps))
 
         if (bullets.isEmpty()) {
             return CoachResponse(
                 responseType = CoachResponseType.DATA_MISSING,
-                title = "No activity synced yet",
-                summary = "I don't have today's activity from the ring yet. Sync the ring or take a measurement and I'll summarize what comes in. (The AI coach is off — add an OpenAI key in Settings to enable full coaching.)",
+                title = L10n.get(R.string.fb_no_activity_title),
+                summary = L10n.get(R.string.fb_no_activity),
                 dataQualityNote = packet.dataQualityWarnings.firstOrNull(),
-                followUpChips = listOf("Is my ring connected?", "What data is missing?"),
+                followUpChips = listOf(L10n.get(R.string.fb_chip_connected), L10n.get(R.string.fb_chip_missing)),
                 confidence = CoachConfidence.LOW,
             )
         }
 
         return CoachResponse(
             responseType = CoachResponseType.INSIGHT,
-            title = "Here's where you are today",
-            summary = "You're at ${todaySteps} steps so far today. The AI coach is off — add an OpenAI key in Settings for trends and tailored guidance.",
+            title = L10n.get(R.string.fb_today_title),
+                summary = L10n.get(R.string.fb_today, todaySteps),
             bullets = bullets,
             dataQualityNote = packet.dataQualityWarnings.lastOrNull(),
-            followUpChips = listOf("How does today compare to yesterday?", "What's my heart rate trend?"),
+            followUpChips = listOf(L10n.get(R.string.fb_chip_compare), L10n.get(R.string.fb_chip_hr_trend)),
             confidence = CoachConfidence.MEDIUM,
         )
     }
@@ -58,9 +60,9 @@ object CoachFallbacks {
     /** Parser failure — couldn't decode model output. */
     fun parseError(): CoachResponse = CoachResponse(
         responseType = CoachResponseType.ERROR_RECOVERY,
-        title = "Parse Error",
-        summary = "I had trouble formatting my response. Please try again.",
-        followUpChips = listOf("Try again", "Summarize my day", "What's new?"),
+        title = L10n.get(R.string.fb_parse_title),
+            summary = L10n.get(R.string.fb_parse),
+            followUpChips = listOf(L10n.get(R.string.action_try_again), L10n.get(R.string.fb_chip_day), L10n.get(R.string.fb_chip_new)),
         confidence = CoachConfidence.LOW,
     )
 }

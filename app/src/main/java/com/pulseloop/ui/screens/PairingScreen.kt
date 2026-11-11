@@ -1,5 +1,8 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import android.content.Intent
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -158,8 +161,8 @@ fun PairingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             PairingHeader(
-                title = "Add your ring",
-                subtitle = "Swipe to find your model, then tap to connect.\nYou can also explore first and pair later.",
+                title = stringResource(R.string.pairing_title),
+            subtitle = stringResource(R.string.pairing_subtitle),
             )
 
             if (!btReady) {
@@ -208,7 +211,7 @@ fun PairingScreen(
 
             if (!connected && (isLooking || state.diagnostics.isNotEmpty())) {
                 Text(
-                    if (showDiagnostics) "Hide connection details" else "Show connection details",
+                    if (showDiagnostics) stringResource(R.string.pairing_hide_details) else stringResource(R.string.pairing_show_details),
                     fontSize = 12.sp,
                     color = PulseColors.textSecondary,
                     modifier = Modifier.clickable { showDiagnostics = !showDiagnostics },
@@ -222,7 +225,7 @@ fun PairingScreen(
             val trace = buildList {
                 addAll(state.diagnostics.takeLast(4))
                 state.lastError?.let { if (it !in this) add(it) }
-            }.joinToString("\n").ifBlank { "Waiting for BLE connection events…" }
+            }.joinToString("\n").ifBlank { L10n.get(R.string.pairing_waiting_events) }
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -252,14 +255,14 @@ fun PairingScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     if (!isLooking && btReady) {
-                        PrimaryButton("Connect ring", icon = Icons.Filled.Sensors) {
+                        PrimaryButton(stringResource(R.string.pairing_connect), icon = Icons.Filled.Sensors) {
                             isLooking = true
                             bleClient.startScanning()
                         }
                         if (bleClient.hasLastKnownRing &&
                             state.connectionState != RingConnectionState.RECONNECTING
                         ) {
-                            SecondaryButton("Reconnect last ring", icon = Icons.Filled.Refresh) {
+                            SecondaryButton(stringResource(R.string.wearable_reconnect), icon = Icons.Filled.Refresh) {
                                 // See SettingsScreen's onConnect (issue #72): a user-initiated
                                 // reconnect must clear the stay-off flag a manual Disconnect set,
                                 // or it is silently suppressed.
@@ -268,9 +271,9 @@ fun PairingScreen(
                         }
                     }
                     if (onSkip != null) {
-                        SecondaryButton("Skip for now", icon = Icons.Filled.ArrowForward, onClick = onSkip)
+                        SecondaryButton(stringResource(R.string.pairing_skip), icon = Icons.Filled.ArrowForward, onClick = onSkip)
                         Text(
-                            "You can pair a ring later from Settings.",
+                            stringResource(R.string.pairing_later_hint),
                             fontSize = 12.sp,
                             color = PulseColors.textMuted,
                             textAlign = TextAlign.Center,
@@ -339,7 +342,7 @@ private fun BrandTabs(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            brand,
+                            if (brand == ALL_BRANDS_TAB) stringResource(R.string.pairing_all_brands) else brand,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isSelected) Color.White else PulseColors.textSecondary,
@@ -455,8 +458,8 @@ private fun ScanningCard(
                 color = PulseColors.accent,
             )
             Text(
-                if (connecting) "Connecting to ${selectedModel.displayName}…"
-                else "Scanning for ${selectedModel.displayName}…",
+                if (connecting) stringResource(R.string.pairing_connecting_to, selectedModel.displayName)
+                else stringResource(R.string.pairing_scanning_for, selectedModel.displayName),
                 fontSize = 12.sp,
                 color = PulseColors.textMuted,
             )
@@ -468,13 +471,13 @@ private fun ScanningCard(
 
         if (matchingRings.isEmpty()) {
             InlineEmptyState(
-                title = "No rings found yet",
-                message = "Wake the ring by tapping or moving it, and keep it close.",
+                title = stringResource(R.string.pairing_none_found),
+                message = stringResource(R.string.pairing_none_found_hint),
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
 
-        SecondaryButton("Stop scanning", icon = Icons.Filled.StopCircle, onClick = onStop)
+        SecondaryButton(stringResource(R.string.pairing_stop_scan), icon = Icons.Filled.StopCircle, onClick = onStop)
     }
 }
 
@@ -592,14 +595,14 @@ private fun ConnectedCard(
                 tint = PulseColors.success,
             )
             Text(
-                "Connected to $deviceName",
+                stringResource(R.string.pairing_connected_to, deviceName),
                 fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = PulseColors.textPrimary,
             )
         }
         if (onContinue != null) {
-            PrimaryButton("Continue", icon = Icons.Filled.Check, onClick = onContinue)
+            PrimaryButton(stringResource(R.string.action_continue), icon = Icons.Filled.Check, onClick = onContinue)
         }
     }
 }
@@ -623,18 +626,18 @@ private fun BluetoothOffCard() {
             tint = PulseColors.textMuted,
         )
         Text(
-            "Bluetooth is off",
+            stringResource(R.string.pairing_bt_off),
             fontSize = 17.sp,
             fontWeight = FontWeight.SemiBold,
             color = PulseColors.textPrimary,
         )
         Text(
-            "Turn on Bluetooth to find and connect your ring.",
+            stringResource(R.string.pairing_bt_off_desc),
             fontSize = 14.sp,
             color = PulseColors.textMuted,
             textAlign = TextAlign.Center,
         )
-        SecondaryButton("Open Settings", icon = Icons.Filled.Settings) {
+        SecondaryButton(stringResource(R.string.action_open_settings), icon = Icons.Filled.Settings) {
             try {
                 context.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
             } catch (_: Exception) {

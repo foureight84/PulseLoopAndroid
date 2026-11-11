@@ -1,5 +1,9 @@
 package com.pulseloop.ui.dashboard
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+
+
 /**
  * Which dashboard the visibility/order preferences apply to. Today and Vitals are fully
  * independent scopes (a card hidden on Today can still show on Vitals). Ported from iOS
@@ -29,16 +33,16 @@ enum class DashboardCard(val key: String) {
     /** Human label for the Hidden tray / edit-mode affordances. */
     val displayName: String
         get() = when (this) {
-            ACTIVITY -> "Activity"
-            SLEEP -> "Sleep"
-            HEART_RATE -> "Heart Rate"
-            SPO2 -> "SpO₂"
-            HRV -> "HRV"
-            TEMPERATURE -> "Temperature"
-            STRESS -> "Stress"
-            FATIGUE -> "Fatigue"
-            GLUCOSE -> "Glucose"
-            BLOOD_PRESSURE -> "Blood Pressure"
+            ACTIVITY -> L10n.get(R.string.tab_activity)
+            SLEEP -> L10n.get(R.string.metric_sleep)
+            HEART_RATE -> L10n.get(R.string.metric_heart_rate)
+            SPO2 -> L10n.get(R.string.abbr_spo2)
+            HRV -> L10n.get(R.string.abbr_hrv)
+            TEMPERATURE -> L10n.get(R.string.metric_temperature)
+            STRESS -> L10n.get(R.string.metric_stress)
+            FATIGUE -> L10n.get(R.string.metric_fatigue)
+            GLUCOSE -> L10n.get(R.string.metric_glucose)
+            BLOOD_PRESSURE -> L10n.get(R.string.metric_blood_pressure)
         }
 
     companion object {

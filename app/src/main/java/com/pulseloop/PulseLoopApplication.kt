@@ -26,6 +26,7 @@ class PulseLoopApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.pulseloop.util.L10n.init(this)
         CrashLogger.install(this)
         // Before any sync can read them: Bedtime tracking no longer needs the schedule (issue #126),
         // so a Bedtime flag left on under a switched-off schedule is cleared rather than reread.

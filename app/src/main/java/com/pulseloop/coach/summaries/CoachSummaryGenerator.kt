@@ -32,7 +32,7 @@ object CoachSummaryGenerator {
         if (!flags.coachEnabled || apiKey.isBlank()) return@withContext fallback
         try {
             val input = JsonArray(listOf(
-                message("system", CoachSummaryPromptBuilder.systemPrompt(kind)),
+                message("system", CoachSummaryPromptBuilder.systemPrompt(kind) + com.pulseloop.coach.context.CoachLanguage.directive("the title, body and chips")),
                 message("developer", CoachSummaryPromptBuilder.developerMessage(contextJSON, angle, recentTexts)),
             ))
             val textFormat = JsonObject(mapOf(
