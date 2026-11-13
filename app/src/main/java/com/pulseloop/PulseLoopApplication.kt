@@ -8,6 +8,7 @@ import com.pulseloop.data.DataRepairs
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.diagnostics.CrashLogger
 import com.pulseloop.diagnostics.DiagnosticsSubscriber
+import com.pulseloop.ring.RWfitSleepJournal
 import com.pulseloop.service.EventPersistenceSubscriber
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.widgets.WidgetRefreshWorker
@@ -27,6 +28,7 @@ class PulseLoopApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLogger.install(this)
+        RWfitSleepJournal.init(this)
         // Before any sync can read them: Bedtime tracking no longer needs the schedule (issue #126),
         // so a Bedtime flag left on under a switched-off schedule is cleared rather than reread.
         QuietHoursPrefs.migrateIndependentBedtime(this)

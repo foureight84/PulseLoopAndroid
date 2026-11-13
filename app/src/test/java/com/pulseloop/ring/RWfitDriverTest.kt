@@ -368,4 +368,171 @@ class RWfitDriverTest {
         assertFalse(WearableCapability.BLOOD_PRESSURE in RWfitCoordinator.capabilities)
         assertTrue(WearableCapability.BLOOD_PRESSURE in RWfitCoordinator.bitmapGatedCapabilities)
     }
+
+    // ── JieLi Sleep Paging (Issue #135, SR16 multi-page sleep) ─────────────────
+
+    private fun recSleep(unixSeconds: Long, model: Int): ByteArray {
+        val tz = java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000L
+        val v = unixSeconds - RWfitJLHistory.JIELI_EPOCH_SECONDS + tz
+        val be = byteArrayOf(
+            ((v shr 24) and 0xFF).toByte(), ((v shr 16) and 0xFF).toByte(),
+            ((v shr 8) and 0xFF).toByte(), (v and 0xFF).toByte(),
+        )
+        return be + byteArrayOf(model.toByte(), 0, 0)
+    }
+
+    @Test
+    fun `JieLi sleep paging stages pages, sends delete and get next, and decodes joined session on terminal frame`() {
+        // Issue #135: On JieLi 0xAB framing, sleep history is paginated. The ring sends page 1
+        // (start marker 0x11, stage changes, no 0x22 yet). Without sending {05,05,30} to delete/ack,
+        // the ring never advances to page 2. Staged pages are held in RWfitSleepJournal, and when the
+        // terminal empty frame arrives, the joined pages decode into the full night.
+        val writer = RecordingWriter()
+        val journal = RWfitSleepJournal()
+        val driver = RWfitDriver(writer, sleepJournal = journal)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        val t0 = 1_700_000_000L
+        // Page 1: 0x11 start marker (2:11 AM) + deep + light (no 0x22 wakeup marker)
+        val page1Records = recSleep(t0, 0x11) +
+            recSleep(t0 + 600, 1) +    // deep
+            recSleep(t0 + 1200, 2)     // light
+        val page1Frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), page1Records)
+
+        // Page 2: REM + 0x22 wakeup marker
+        val page2Records = recSleep(t0 + 1800, 4) +   // REM
+            recSleep(t0 + 2400, 0x22)                  // wakeup
+        val page2Frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), page2Records)
+
+        // Page 3: terminal empty frame (bare triple {05, 05, 10}, 0 data bytes)
+        val terminalFrame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), ByteArray(0))
+
+        // Ingest Page 1:
+        val eventsPage1 = driver.ingest(page1Frame, "n")
+        assertTrue("Page 1 has no 0x22, should not emit session yet", eventsPage1.isEmpty())
+        assertEquals(1, journal.pageCount())
+
+        // Verify writer sent: 1) ACK for page 1 frame, 2) delete {05,05,30}, 3) next request {05,05,10}
+        val triples1 = writer.frames.map { Triple(it[6].toInt() and 0xFF, it[7].toInt() and 0xFF, it[8].toInt() and 0xFF) }
+        assertEquals(listOf(Triple(5, 5, 0x10), Triple(5, 5, 0x30), Triple(5, 5, 0x10)), triples1)
+        assertEquals(0x11, writer.frames[0][1].toInt() and 0xFF) // First frame is app ACK
+        writer.clear()
+
+        // Ingest Page 2:
+        val eventsPage2 = driver.ingest(page2Frame, "n")
+        assertTrue("Page 2 is not terminal, session decodes on terminal frame", eventsPage2.isEmpty())
+        assertEquals(2, journal.pageCount())
+
+        val triples2 = writer.frames.map { Triple(it[6].toInt() and 0xFF, it[7].toInt() and 0xFF, it[8].toInt() and 0xFF) }
+        assertEquals(listOf(Triple(5, 5, 0x10), Triple(5, 5, 0x30), Triple(5, 5, 0x10)), triples2)
+        writer.clear()
+
+        // Ingest Terminal Page:
+        val eventsTerminal = driver.ingest(terminalFrame, "n")
+        val timelines = eventsTerminal.filterIsInstance<RingDecodedEvent.SleepTimeline>()
+        assertEquals(1, timelines.size)
+        val timeline = timelines.single()
+        assertEquals(40, timeline.stages.size)
+        assertEquals(SleepStage.LIGHT, timeline.stages[0])   // 0x11 start counts as light
+        assertEquals(SleepStage.DEEP, timeline.stages[10])   // 10 min in
+        assertEquals(SleepStage.LIGHT, timeline.stages[20])  // 20 min in
+        assertEquals(SleepStage.REM, timeline.stages[30])    // 30 min in
+        assertEquals(t0, timeline._timestamp.epochSecond)
+        assertTrue(timeline.completeSession)
+
+        // Journal must be cleared after successful decode of complete session
+        assertFalse(journal.hasPages())
+    }
+
+    @Test
+    fun `JieLi sleep paging preserves partial night across link disconnection`() {
+        val writer = RecordingWriter()
+        val journal = RWfitSleepJournal()
+        val driver1 = RWfitDriver(writer, sleepJournal = journal)
+        driver1.connectionDidStart()
+        driver1.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        val t0 = (System.currentTimeMillis() / 1000L) - 7200L
+        val page1Records = recSleep(t0, 0x11) + recSleep(t0 + 600, 1)
+        val page1Frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), page1Records)
+
+        // Link 1 receives Page 1
+        driver1.ingest(page1Frame, "n")
+        assertTrue(journal.hasPages())
+        driver1.connectionDidEnd()
+
+        // Link 2 connects later (e.g. morning sync)
+        writer.clear()
+        val driver2 = RWfitDriver(writer, sleepJournal = journal)
+        driver2.connectionDidStart()
+        driver2.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        // Page 1 is still preserved in journal
+        assertTrue(journal.hasPages())
+
+        // Page 2 arrives with wakeup marker 0x22
+        val page2Records = recSleep(t0 + 1200, 2) + recSleep(t0 + 1800, 0x22)
+        val page2Frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), page2Records)
+        driver2.ingest(page2Frame, "n")
+
+        // Terminal frame arrives
+        val terminalFrame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), ByteArray(0))
+        val events = driver2.ingest(terminalFrame, "n")
+        val timelines = events.filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(1, timelines.size)
+        assertEquals(30, timelines.single().stages.size)
+        assertEquals(t0, timelines.single().stages.size.let { timelines.single()._timestamp.epochSecond })
+        assertFalse(journal.hasPages())
+    }
+
+    @Test
+    fun `JieLi sleep with empty history returns empty immediately without sending delete`() {
+        val writer = RecordingWriter()
+        val journal = RWfitSleepJournal()
+        val driver = RWfitDriver(writer, sleepJournal = journal)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        val terminalFrame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), ByteArray(0))
+        val events = driver.ingest(terminalFrame, "n")
+
+        assertTrue(events.isEmpty())
+        assertFalse(journal.hasPages())
+        // Only the app ACK for the inbound frame is sent, no delete {5,5,30} or retry {5,5,10}
+        assertEquals(1, writer.frames.size)
+        assertEquals(0x11, writer.frames[0][1].toInt() and 0xFF)
+    }
+
+    @Test
+    fun `JieLi sleep pagination breaks loop when identical page is sent repeatedly`() {
+        val writer = RecordingWriter()
+        val journal = RWfitSleepJournal()
+        val driver = RWfitDriver(writer, sleepJournal = journal)
+        driver.connectionDidStart()
+        driver.servicesDiscovered(listOf(RWfitProtocol.SERVICE_UUID, RWfitProtocol.JIELI_SERVICE_UUID))
+
+        val t0 = (System.currentTimeMillis() / 1000L) - 3600L
+        val page1Records = recSleep(t0, 0x11) + recSleep(t0 + 600, 1) + recSleep(t0 + 1200, 0x22)
+        val page1Frame = RWfitJLCodec().encode(RWfitProtocol.JLTriple(0x05, 0x05, 0x10), page1Records)
+
+        // First delivery: normal staging, enqueues delete + next
+        driver.ingest(page1Frame, "n")
+        val initialWrites = writer.frames.size
+
+        // Second delivery (duplicate): enqueues delete + next
+        driver.ingest(page1Frame, "n")
+
+        // Third delivery (duplicate): loop detected, aborts pagination and decodes current journal
+        val events = driver.ingest(page1Frame, "n")
+        val timelines = events.filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(1, timelines.size)
+        // No further delete or get requests enqueued on 3rd duplicate
+        val endWrites = writer.frames.size
+        // 3rd ingest only emits BLE frame ACK (1 frame), not delete or sync requests
+        val addedWrites = endWrites - initialWrites
+        assertTrue(addedWrites <= 4)
+    }
 }

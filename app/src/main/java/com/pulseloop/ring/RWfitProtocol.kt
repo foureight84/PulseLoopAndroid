@@ -196,6 +196,9 @@ object RWfitProtocol {
 
         /** History sync for one stream: `05 <type> 10` (`y5/c.java:74-91`). */
         fun historySync(type: Byte) = JLTriple(0x05, type, 0x10)
+
+        /** History delete/ack for one stream: `05 <type> 30` (vendor post-sync delete ack). */
+        fun historyDelete(type: Byte) = JLTriple(0x05, type, 0x30)
     }
 
     /**
