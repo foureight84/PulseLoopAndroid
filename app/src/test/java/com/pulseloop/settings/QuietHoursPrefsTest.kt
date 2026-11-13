@@ -250,4 +250,13 @@ class QuietHoursPrefsTest {
         assertFalse(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = true, gateByZenMode = false))
         assertFalse(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = false, gateByZenMode = false))
     }
+
+    /** #140: the clock window is "open" only inside a real window, never for start == end. */
+    @Test
+    fun scheduleOpenForNightInProgress() {
+        val start = 22 * 60; val end = 7 * 60
+        org.junit.Assert.assertTrue(QuietHoursPrefs.scheduleOpen(start, end, 2 * 60 + 4))
+        org.junit.Assert.assertFalse(QuietHoursPrefs.scheduleOpen(start, end, 8 * 60 + 30))
+        org.junit.Assert.assertFalse(QuietHoursPrefs.scheduleOpen(600, 600, 2 * 60))
+    }
 }

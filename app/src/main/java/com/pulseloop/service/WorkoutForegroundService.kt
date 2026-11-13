@@ -3,10 +3,15 @@ package com.pulseloop.service
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -32,7 +37,30 @@ class WorkoutForegroundService : Service() {
         const val ACTION_RESUME = "com.pulseloop.RESUME_WORKOUT"
         const val ACTION_FINISH = "com.pulseloop.FINISH_WORKOUT"
         const val DISMISS_WORK_NAME = "workout_complete_dismiss"
+        /** Intent extra: the workout records a GPS route, so the service needs the location type. */
+        const val EXTRA_USE_GPS = "useGps"
+
+        /**
+         * Foreground-service types for a workout (#139). Without LOCATION, Android 10+ stops
+         * delivering "while using the app" location once the app leaves the foreground (phone
+         * in a pocket, screen off), so the route stopped after the first few metres.
+         * Returns null where the plain two-argument startForeground is the right call.
+         */
+        internal fun serviceTypes(sdkInt: Int, useGps: Boolean, hasLocationPermission: Boolean): Int? {
+            if (sdkInt < Build.VERSION_CODES.Q) return null
+            var types = 0
+            // API 34 checks every type passed against its permission, so pass HEALTH explicitly
+            // there; the manifest now also lists location, which the two-arg call would claim.
+            if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+            if (useGps && hasLocationPermission) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            return if (types == 0) null else types
+        }
     }
+
+    /** Types the service is currently in the foreground with; null = not yet foreground. */
+    private var foregroundTypes: Int? = null
+    private var inForeground = false
+    private var useGps = false
 
     private var status = "recording"
     private var elapsedSec = 0
@@ -58,8 +86,34 @@ class WorkoutForegroundService : Service() {
             ACTION_FINISH -> { finishWithSummary(intent); return START_NOT_STICKY }
             else -> applyLiveExtras(intent)
         }
-        startForeground(NOTIFICATION_ID, buildNotification())
+        if (intent?.hasExtra(EXTRA_USE_GPS) == true) useGps = intent.getBooleanExtra(EXTRA_USE_GPS, useGps)
+        val wanted = serviceTypes(Build.VERSION.SDK_INT, useGps, hasLocationPermission())
+        if (!inForeground || wanted != foregroundTypes) enterForeground(wanted) else updateNotification()
         return START_STICKY
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun enterForeground(types: Int?) {
+        val notification = buildNotification()
+        try {
+            if (types == null) startForeground(NOTIFICATION_ID, notification)
+            else ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, types)
+            foregroundTypes = types
+        } catch (e: Exception) {
+            // A location-type start can be refused (e.g. a sticky restart while the app is in the
+            // background). Keep the workout running as a health service rather than crashing.
+            Log.w("WorkoutService", "Foreground start with types=$types refused; retrying without location", e)
+            val fallback = serviceTypes(Build.VERSION.SDK_INT, useGps = false, hasLocationPermission = false)
+            if (fallback == null) startForeground(NOTIFICATION_ID, notification)
+            else ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fallback)
+            foregroundTypes = fallback
+        }
+        inForeground = true
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

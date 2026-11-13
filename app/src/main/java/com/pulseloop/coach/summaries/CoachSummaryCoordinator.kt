@@ -24,8 +24,10 @@ class CoachSummaryCoordinator(
      *  PR #98). The service reads it per generation, so a toggle takes effect on
      *  the next card regeneration without an app restart. */
     stepSourcePrefs: com.pulseloop.settings.StepSourcePrefs,
+    /** True while the wearer's Bedtime / sleep quiet-hours window is open (#140). */
+    nightInProgress: () -> Boolean = { false },
 ) {
-    private val service = CoachSummaryService(db, apiKeyStore, providerSettings, stepSourcePrefs)
+    private val service = CoachSummaryService(db, apiKeyStore, providerSettings, stepSourcePrefs, nightInProgress)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var streamJob: Job? = null
     private var debounceJob: Job? = null

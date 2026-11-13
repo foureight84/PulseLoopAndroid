@@ -134,6 +134,27 @@ class SleepGapsTest {
         assertEquals(1, gap.single().durationMinutes)
     }
 
+    /**
+     * #140: a record opened mid-minute (23:04:40) runs 63 minutes and the next opens at 00:08:01,
+     * so both sides round onto minute 63 and the sub-minute gap leaves no hole on the grid.
+     */
+    @Test
+    fun `the hypnogram draws a sub-minute gap the cards count`() {
+        val firstStart = at(23, 4, 40, dayOffset = -1)
+        val secondStart = at(0, 8, 1)
+        val blocks = listOf(
+            block(firstStart, 63, firstStart, firstStart),
+            block(secondStart, 30, secondStart, firstStart),
+        )
+        // Both sides land on minute 63 of the session.
+        assertEquals(63, blocks[1].startMinute)
+        val gap = hypnogramBlocks(blocks) - blocks.toSet()
+        assertEquals(1, gap.single().durationMinutes)
+        assertEquals(63, gap.single().startMinute)
+        assertEquals(SleepStage.AWAKE.name, gap.single().stageRaw)
+        assertEquals(1, awakeMinutes(blocks))
+    }
+
     // ── #105: a gap inside the Bedtime window keeps the night whole ──────────
 
     /** The reporter's night: records 00:51–05:44 and 06:56–08:07, Bedtime 00:25–08:06. */

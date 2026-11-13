@@ -78,4 +78,42 @@ class CoachSleepSyncGateTest {
         val fullSync = end + 5 * 60_000L
         assertFalse(CoachSleepSyncGate.sleepDaySafeToSummarize(end, fullSync, now = end + 10 * 60_000L))
     }
+
+    // ── #140: partial-night cards ───────────────────────────────────────────
+
+    /** Nov 9: first record ended 00:07, sync at 02:04 — Bedtime still on, so no card yet. */
+    @Test
+    fun testOpenBedtimeWindowDefersCard() {
+        val end = 10 * hour
+        val fullSync = end + 2 * hour
+        assertFalse(CoachSleepSyncGate.sleepDaySafeToSummarize(end, fullSync, end + 2 * hour, nightInProgress = true))
+        assertTrue(CoachSleepSyncGate.sleepDaySafeToSummarize(end, fullSync, end + 2 * hour, nightInProgress = false))
+    }
+
+    @Test
+    fun testOpenBedtimeWindowDefersAtMostTheCap() {
+        val end = 10 * hour
+        val now = end + CoachSleepSyncGate.NIGHT_IN_PROGRESS_CAP_MS
+        assertTrue(CoachSleepSyncGate.sleepDaySafeToSummarize(end, now, now, nightInProgress = true))
+    }
+
+    @Test
+    fun testGrownNightRewritesInsideFloor() {
+        val floor = 2 * hour
+        // 63 asleep minutes at 02:04, 530 after the morning sync 30 min later.
+        assertTrue(CoachSleepSyncGate.sleepCardRewriteDue("63|10|50|3|40", 0L, "530|90|380|12|75", 30 * 60_000L, floor))
+    }
+
+    @Test
+    fun testShrunkOrSameLengthNightWaitsForFloor() {
+        val floor = 2 * hour
+        assertFalse(CoachSleepSyncGate.sleepCardRewriteDue("530|90|380|12|75", 0L, "520|90|370|12|75", hour, floor))
+        assertFalse(CoachSleepSyncGate.sleepCardRewriteDue("530|90|380|12|75", 0L, "530|95|375|12|75", hour, floor))
+        assertTrue(CoachSleepSyncGate.sleepCardRewriteDue("530|90|380|12|75", 0L, "520|90|370|12|75", floor, floor))
+    }
+
+    @Test
+    fun testUnchangedSignatureNeverRewrites() {
+        assertFalse(CoachSleepSyncGate.sleepCardRewriteDue("530|1", 0L, "530|1", 10 * hour, 2 * hour))
+    }
 }

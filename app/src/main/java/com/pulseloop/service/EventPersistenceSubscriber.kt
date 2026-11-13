@@ -175,8 +175,27 @@ class EventPersistenceSubscriber(
         if (ours.isEmpty()) return
         val matched = spotReadingsMatching(ours, historyAt)
         if (matched.isEmpty()) return
+        // #142: how far the ring's stamp sits from our settled reading says whether its clock runs.
+        val now = System.currentTimeMillis()
+        RingClockStallStore.update(context) { state ->
+            matched.fold(state) { s, ourAt -> RingClockStall.onCopyPaired(s, ourAt, historyAt, now) }
+        }
         db.measurementDao().deleteBySourceBetween(kind.name, SOURCE_SPOT, historyAt - SPOT_MATCH_MS, historyAt + SPOT_MATCH_MS)
         ours.removeAll(matched)
+    }
+
+    /**
+     * After a completed sync, a ring-completed spot reading that still has no copy from the ring is
+     * evidence its clock has stopped (#142): the copy was stamped somewhere else entirely.
+     */
+    private suspend fun checkRingClock() {
+        val now = System.currentTimeMillis()
+        val since = now - RingClockStall.EVIDENCE_WINDOW_MS
+        val unmatched = listOf(MeasurementKind.HEART_RATE, MeasurementKind.SPO2).flatMap {
+            db.measurementDao().timestampsBySource(it.name, SOURCE_SPOT, since)
+        }
+        if (unmatched.isEmpty()) return
+        RingClockStallStore.update(context) { RingClockStall.onSyncFinished(it, unmatched, now) }
     }
 
     private suspend fun persistUnsafe(event: PulseEvent) {
@@ -424,6 +443,7 @@ class EventPersistenceSubscriber(
                     if (device != null) {
                         db.deviceDao().upsert(device.copy(lastFullSyncAt = System.currentTimeMillis()))
                     }
+                    checkRingClock()
                     reconcileRecentlyFinishedWorkouts()
                     recomputeCalorieEstimates()
                     // iOS #95: re-learn the resting-HR baseline that drives the "auto" HR zone

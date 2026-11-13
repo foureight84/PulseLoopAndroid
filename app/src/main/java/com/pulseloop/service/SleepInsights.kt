@@ -228,13 +228,16 @@ fun hypnogramBlocks(blocks: List<SleepStageBlockEntity>): List<SleepStageBlockEn
         if (betweenRecordAwakeMinutes(earlier, later) == 0) return@mapNotNull null
         val fromMinute = earlier.blocks.maxOf { it.startMinute + it.durationMinutes }
         val untilMinute = later.blocks.minOf { it.startMinute }
-        if (untilMinute <= fromMinute) return@mapNotNull null
+        // A sub-minute gap (41 s in #140) can round to no hole at all on the minute grid, yet the
+        // Awake and Records cards still count its one minute. Draw that minute anyway, over the
+        // seam, so the chart and the two cards agree.
+        val start = minOf(fromMinute, untilMinute)
         SleepStageBlockEntity(
-            id = "gap-${earlier.blocks.first().sessionId}-$fromMinute",
+            id = "gap-${earlier.blocks.first().sessionId}-$start",
             sessionId = earlier.blocks.first().sessionId,
             startAt = earlier.endAt,
-            startMinute = fromMinute,
-            durationMinutes = untilMinute - fromMinute,
+            startMinute = start,
+            durationMinutes = (untilMinute - fromMinute).coerceAtLeast(1),
             stageRaw = SleepStage.AWAKE.name,
         )
     }

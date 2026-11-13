@@ -71,6 +71,21 @@ class QuietHoursPrefs(context: Context) {
         const val DEFAULT_START = 22 * 60
         const val DEFAULT_END = 7 * 60
 
+        /**
+         * Is the wearer's night still open right now (#140)? True while Bedtime/DND tracking is on
+         * and the Mode is active, or while the clock schedule is on and the time is inside it.
+         * Both are opt-in; with neither on this is always false.
+         */
+        fun nightInProgress(context: Context, now: Long = System.currentTimeMillis()): Boolean {
+            val prefs = QuietHoursPrefs(context)
+            if (isZenTrackingActive(context) && ZenModeTracker.isZenModeActive(context)) return true
+            return prefs.enabled && scheduleOpen(prefs.startMinutes, prefs.endMinutes, minuteOfDay(now))
+        }
+
+        /** [covers], except a start==end window (which [covers] reads as "gate off") is never open. */
+        fun scheduleOpen(start: Int, end: Int, minuteOfDay: Int): Boolean =
+            start != end && covers(start, end, minuteOfDay)
+
         /** Bedtime/DND gating is on and the [ZenModeListener] has Notification access. */
         fun isZenTrackingActive(context: Context): Boolean =
             QuietHoursPrefs(context).gateByZenMode && ZenModeListener.isAccessGranted(context)
