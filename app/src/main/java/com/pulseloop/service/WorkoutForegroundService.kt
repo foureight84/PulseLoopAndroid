@@ -61,6 +61,8 @@ class WorkoutForegroundService : Service() {
     private var foregroundTypes: Int? = null
     private var inForeground = false
     private var useGps = false
+    /** The system refused the location type once; don't retry it on every 5 s refresh. */
+    private var locationRefused = false
 
     private var status = "recording"
     private var elapsedSec = 0
@@ -87,7 +89,7 @@ class WorkoutForegroundService : Service() {
             else -> applyLiveExtras(intent)
         }
         if (intent?.hasExtra(EXTRA_USE_GPS) == true) useGps = intent.getBooleanExtra(EXTRA_USE_GPS, useGps)
-        val wanted = serviceTypes(Build.VERSION.SDK_INT, useGps, hasLocationPermission())
+        val wanted = serviceTypes(Build.VERSION.SDK_INT, useGps && !locationRefused, hasLocationPermission())
         if (!inForeground || wanted != foregroundTypes) enterForeground(wanted) else updateNotification()
         return START_STICKY
     }
@@ -108,6 +110,7 @@ class WorkoutForegroundService : Service() {
             // A location-type start can be refused (e.g. a sticky restart while the app is in the
             // background). Keep the workout running as a health service rather than crashing.
             Log.w("WorkoutService", "Foreground start with types=$types refused; retrying without location", e)
+            locationRefused = true
             val fallback = serviceTypes(Build.VERSION.SDK_INT, useGps = false, hasLocationPermission = false)
             if (fallback == null) startForeground(NOTIFICATION_ID, notification)
             else ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fallback)

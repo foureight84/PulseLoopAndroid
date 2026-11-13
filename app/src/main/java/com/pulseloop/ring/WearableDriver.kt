@@ -236,7 +236,8 @@ interface RingSyncEngine {
     fun stopCombinedMeasurement() {}
     fun findDevice()
     fun setGoal(steps: Int)
-    fun powerOff()
+    /** Power the ring off. Returns true only if a command was actually queued. */
+    fun powerOff(): Boolean
     fun factoryReset()
     /** Push user anthropometrics (age/sex/height/weight) so on-device BP/sugar/calorie
      *  algorithms have real inputs. No-op if unsupported. */

@@ -48,10 +48,14 @@ object CoachSleepSyncGate {
     /** Longest a still-open Bedtime window may defer the card past the stored night's end. */
     const val NIGHT_IN_PROGRESS_CAP_MS = 8 * 3600_000L
 
+    /** How much longer the night must get to skip the rewrite floor (#140): a re-sync's rounding
+     *  or one more 15-minute packet is not worth another generation. */
+    const val GROWTH_SKIPS_FLOOR_MIN = 15
+
     /**
      * May an existing sleep card be rewritten? Not when nothing changed; yes once the rate floor
-     * has passed; and yes inside the floor when the night got longer (#140), since that is a
-     * correction of a card written from a partial night, not churn. The first signature field is
+     * has passed; and yes inside the floor when the night got at least [GROWTH_SKIPS_FLOOR_MIN]
+     * longer (#140), since that corrects a card written from a partial night rather than churning. The first signature field is
      * the session's asleep minutes ([com.pulseloop.coach.summaries.CoachSummaryContextBuilder.sleepDay]).
      */
     fun sleepCardRewriteDue(
@@ -65,6 +69,6 @@ object CoachSleepSyncGate {
         if (now - existingUpdatedAt >= minIntervalMs) return true
         val before = existingSignature.substringBefore('|').toIntOrNull() ?: return false
         val after = newSignature.substringBefore('|').toIntOrNull() ?: return false
-        return after > before
+        return after >= before + GROWTH_SKIPS_FLOOR_MIN
     }
 }

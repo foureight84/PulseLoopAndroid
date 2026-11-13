@@ -30,8 +30,8 @@ class CoachSummaryService(
      *  the coach's today/sleep summaries quote the same steps Today shows — Path B's separate
      *  columns otherwise let the coach read ring steps while Today read phone steps. */
     private val stepSourcePrefs: com.pulseloop.settings.StepSourcePrefs,
-    /** True while the wearer's Bedtime / sleep quiet-hours window is still open (#140). */
-    private val nightInProgress: () -> Boolean = { false },
+    /** Given the stored night's end: is the wearer's Bedtime / quiet-hours window still open (#140)? */
+    private val nightInProgress: (sessionEndAt: Long) -> Boolean = { false },
 ) {
     /** Minimum gap between Today / aggregate-sleep regenerations. */
     private val minIntervalMs = 2 * 3600_000L // 2 hours
@@ -63,7 +63,7 @@ class CoachSummaryService(
         val built = CoachSummaryContextBuilder.sleepDay(db, stepSourcePrefs.preferPhone()) ?: return
         val endAt = built.sleepSessionEnd ?: return
         val lastFullSyncAt = db.deviceDao().current()?.lastFullSyncAt
-        if (!CoachSleepSyncGate.sleepDaySafeToSummarize(endAt, lastFullSyncAt, now, nightInProgress())) return
+        if (!CoachSleepSyncGate.sleepDaySafeToSummarize(endAt, lastFullSyncAt, now, nightInProgress(endAt))) return
 
         // Signature-based upsert: regenerate when the signature differs and the floor has
         // passed, or straight away when a late sync grew the night (#140).

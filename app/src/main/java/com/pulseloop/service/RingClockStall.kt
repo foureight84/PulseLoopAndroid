@@ -19,23 +19,33 @@ import kotlinx.coroutines.flow.asStateFlow
  * 00:39:48), or the copy lands nowhere near our reading at all.
  *
  * So the evidence is either
- *  - the ring's copy paired with our reading is stamped at least [LAG_EVIDENCE_MS] before it
+ *  - the ring's closest copy of our reading is stamped at least [LAG_EVIDENCE_MS] before it
  *    (measurements run 35–63 s, so a working clock stamps within seconds of our settled time), or
- *  - a reading still has no copy [UNMATCHED_AFTER_MS] after a completed sync.
+ *  - a reading still has no copy [UNMATCHED_AFTER_MS] after a sync pass that delivered heart-rate
+ *    or SpO₂ history (a sleep-only pass says nothing about vitals history).
+ *
+ * The caller judges each reading once, at the end of a sync pass, against the closest history
+ * sample seen in that pass: the first sample within the match window may be one of the ring's own
+ * automatic readings rather than its copy of ours.
  *
  * One piece of evidence is not enough (a dropped history frame looks like the second case), so the
- * warning needs [EVIDENCE_NEEDED] within [EVIDENCE_WINDOW_MS]. A healthy pairing clears it, which is
- * also how the restart flow confirms the fix: the next reading after restarting comes back stamped
- * at its end.
+ * warning needs [EVIDENCE_NEEDED] within [EVIDENCE_WINDOW_MS]. Any copy stamped closer than the
+ * evidence threshold clears it, as does restarting the ring from the warning, forgetting the ring,
+ * or connecting a ring from another family.
  *
  * Only YCBT rings produce `spot` rows (see `EventPersistenceSubscriber.SOURCE_SPOT`), so the
  * detector is scoped to the family that has the problem without checking the family itself.
  */
 object RingClockStall {
+    /** The YCBT families: the only ones that log our spot readings, so the only ones judged. */
+    val AFFECTED_FAMILIES = setOf(
+        com.pulseloop.ring.RingDeviceType.YCBT,
+        com.pulseloop.ring.RingDeviceType.TK5,
+        com.pulseloop.ring.RingDeviceType.COLMI_SMART_HEALTH,
+    )
     const val LAG_EVIDENCE_MS = 45_000L
     /** A ring stamping to the whole minute can read up to 60 s early on a working clock. */
     const val LAG_EVIDENCE_MINUTE_STAMP_MS = 60_000L + LAG_EVIDENCE_MS
-    const val HEALTHY_LAG_MS = 20_000L
     const val UNMATCHED_AFTER_MS = 10 * 60_000L
     const val EVIDENCE_NEEDED = 2
     const val EVIDENCE_WINDOW_MS = 24 * 3600_000L
@@ -50,22 +60,59 @@ object RingClockStall {
         val suspectedAt: Long? = null,
     )
 
-    /** The ring's copy of our spot reading at [ourAt] landed, stamped [ringAt]. */
+    /** The ring's closest copy of our spot reading at [ourAt] is stamped [ringAt]. */
     fun onCopyPaired(state: State, ourAt: Long, ringAt: Long, now: Long): State {
         val lag = ourAt - ringAt
-        // A working clock clears the warning even for a reading an earlier sync already counted
-        // as unmatched: its copy simply arrived late.
-        if (kotlin.math.abs(lag) <= HEALTHY_LAG_MS) return State(checked = state.markChecked(ourAt).checked)
-        if (ourAt in state.checked) return state
         val threshold = if (ringAt % 60_000L == 0L) LAG_EVIDENCE_MINUTE_STAMP_MS else LAG_EVIDENCE_MS
-        return if (lag >= threshold) addEvidence(state.markChecked(ourAt), now) else state.markChecked(ourAt)
+        // A copy stamped near our reading means the clock runs. It clears the warning even for a
+        // reading an earlier pass already counted as unmatched: its copy simply arrived late.
+        if (lag < threshold) return State(checked = state.markChecked(ourAt).checked)
+        if (ourAt in state.checked) return state
+        return addEvidence(state.markChecked(ourAt), now)
     }
+
+    /** The closer of two candidate copies to our reading at [ourAt]. */
+    fun closerCopy(ourAt: Long, current: Long?, candidate: Long): Long =
+        if (current == null || kotlin.math.abs(ourAt - candidate) < kotlin.math.abs(ourAt - current)) candidate else current
 
     /** A sync finished at [now]; [unmatched] are our spot readings still waiting for a copy. */
     fun onSyncFinished(state: State, unmatched: List<Long>, now: Long): State =
         unmatched.sorted()
             .filter { now - it >= UNMATCHED_AFTER_MS && it !in state.checked }
             .fold(state) { s, at -> addEvidence(s.markChecked(at), now) }
+
+    /**
+     * One sync pass's bookkeeping. [onHistory] sees every heart-rate / SpO₂ history sample as it
+     * is written, with the spot readings it was just adopted for; [finish] judges the pass.
+     */
+    class Pass(private val matchWindowMs: Long) {
+        /** (kind, our reading) → the closest ring copy seen this pass. */
+        private val copies = mutableMapOf<Pair<String, Long>, Long>()
+        var vitalsSeen = false
+            private set
+
+        fun onHistory(kind: String, historyAt: Long, adopted: List<Long>) {
+            vitalsSeen = true
+            for (key in copies.keys.filter { it.first == kind && kotlin.math.abs(it.second - historyAt) <= matchWindowMs }) {
+                copies[key] = closerCopy(key.second, copies[key], historyAt)
+            }
+            for (ourAt in adopted) {
+                val key = kind to ourAt
+                copies[key] = closerCopy(ourAt, copies[key], historyAt)
+            }
+        }
+
+        /** The state after this pass, or null when the pass delivered no vitals history. */
+        fun finish(state: State, unmatched: List<Long>, now: Long): State? {
+            if (!vitalsSeen) return null
+            val afterPairs = copies.entries.sortedBy { it.key.second }
+                .fold(state) { s, (key, ringAt) -> onCopyPaired(s, key.second, ringAt, now) }
+            clear()
+            return onSyncFinished(afterPairs, unmatched, now)
+        }
+
+        fun clear() { copies.clear(); vitalsSeen = false }
+    }
 
     private fun addEvidence(state: State, now: Long): State {
         val evidence = (state.evidence + now).filter { now - it <= EVIDENCE_WINDOW_MS }
@@ -113,6 +160,9 @@ object RingClockStallStore {
         publish(prefs, read(prefs))
         loaded = true
     }
+
+    /** Forget all evidence: the ring was restarted, forgotten, or replaced. */
+    fun reset(context: Context) = update(context) { RingClockStall.State() }
 
     /** Hide the warning until the clock is next seen working and then stalls again. */
     fun dismiss(context: Context) {

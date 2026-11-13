@@ -98,6 +98,7 @@ fun TodayScreen(
     val hero = remember(state, sleep) { deriveHero(state, sleep) }
     remember { com.pulseloop.service.RingClockStallStore.load(context) }
     val clockStallAt by com.pulseloop.service.RingClockStallStore.suspectedAt.collectAsState()
+    var restartStep by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(RingRestartStep.NONE) }
 
     // Per-metric visibility + user order (iOS #64), read reactively so a hide/show/reorder
     // recomposes immediately (this is also the iOS #70 reactivity).
@@ -155,7 +156,12 @@ fun TodayScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // #142: a ring whose clock stopped looks exactly like an unworn ring; say so first.
-            if (clockStallAt != null) item { RingClockStallCard(coordinator) }
+            if (clockStallAt != null) item {
+                RingClockStallCard(
+                    canRestart = coordinator?.let { !it.isConnected || it.canPowerOff } ?: true,
+                    onRestart = { restartStep = RingRestartStep.CONFIRM },
+                )
+            }
 
             // Top insight card. When the coach is on it owns this slot (tap → chat);
             // otherwise the deterministic hero fills it. Only ever one card here, so the coach
@@ -218,6 +224,7 @@ fun TodayScreen(
             state = pullRefreshState,
             modifier = Modifier.align(Alignment.TopCenter),
         )
+        RingRestartDialog(restartStep, { restartStep = it }, coordinator)
     }
 }
 

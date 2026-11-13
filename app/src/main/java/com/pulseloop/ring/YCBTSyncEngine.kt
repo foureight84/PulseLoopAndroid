@@ -212,8 +212,10 @@ class YCBTSyncEngine(
         // Unverified for this ring; goal is persisted app-side.
     }
 
-    override fun powerOff() {
-        writer?.enqueue(encoder.shutDown())
+    override fun powerOff(): Boolean {
+        val w = writer ?: return false
+        w.enqueue(encoder.shutDown())
+        return true
     }
     override fun factoryReset() {}
     override fun startCombinedMeasurement() = startBloodPressure()

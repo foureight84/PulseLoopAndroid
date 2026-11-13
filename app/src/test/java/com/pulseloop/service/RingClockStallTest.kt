@@ -83,6 +83,38 @@ class RingClockStallTest {
     }
 
     @Test
+    fun `a sleep-only pass says nothing about a reading with no copy`() {
+        val pass = RingClockStall.Pass(90_000L)
+        val now = at(12, 0, 0)
+        // No heart-rate or SpO2 history was delivered (opening the Sleep screen).
+        assertNull(pass.finish(RingClockStall.State(), listOf(at(10, 0, 0), at(11, 0, 0)), now))
+    }
+
+    @Test
+    fun `an automatic sample landing first does not stand in for the ring's copy`() {
+        val pass = RingClockStall.Pass(90_000L)
+        val ours = at(10, 31, 30)
+        // The ring's own all-day sample at 10:30:40 (50 s early) claims our reading first…
+        pass.onHistory("HEART_RATE", at(10, 30, 40), adopted = listOf(ours))
+        // …then the real copy, stamped when the measurement ended, arrives.
+        pass.onHistory("HEART_RATE", at(10, 31, 29), adopted = emptyList())
+        val raised = RingClockStall.State(evidence = listOf(1L, 2L), suspectedAt = 2L)
+        val s = pass.finish(raised, unmatched = emptyList(), now = ours + 60_000L)!!
+        assertNull(s.suspectedAt)
+        assertEquals(0, s.evidence.size)
+    }
+
+    @Test
+    fun `a frozen copy found in the pass is evidence`() {
+        val pass = RingClockStall.Pass(90_000L)
+        pass.onHistory("SPO2", frozenRing, adopted = listOf(frozenOurs))
+        val s = pass.finish(RingClockStall.State(), unmatched = emptyList(), now = frozenOurs + 60_000L)!!
+        assertEquals(1, s.evidence.size)
+        // The pass is spent once judged.
+        assertNull(pass.finish(s, emptyList(), frozenOurs + 120_000L))
+    }
+
+    @Test
     fun `shut down is 03 16 01 like the vendor's appShutDown(1)`() {
         assertArrayEquals(byteArrayOf(0x03, 0x16, 0x01), YCBTEncoder().shutDown())
     }

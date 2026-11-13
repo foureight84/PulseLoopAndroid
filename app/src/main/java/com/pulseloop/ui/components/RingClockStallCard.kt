@@ -11,54 +11,71 @@ import com.pulseloop.service.RingClockStallStore
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.ui.theme.PulseColors
 
+/** Where the restart walkthrough is (issue #142). Held by the screen, not the card, so the
+ *  "put it on the charger" step survives the warning clearing and the card scrolling away. */
+enum class RingRestartStep { NONE, CONFIRM, CHARGE, NOT_CONNECTED, UNSUPPORTED }
+
 /**
- * "Your ring's clock seems to have stopped" (issue #142), with the restart walkthrough the
- * reporter found works: power the ring off, put it on its charger to turn it back on, and let
- * PulseLoop reconnect and set the time. The charger step is the one people miss — without it the
- * ring just stays off — so the dialog keeps it on screen after the ring goes dark.
+ * "Your ring's clock seems to have stopped" (issue #142). The ring still connects but logs nothing
+ * on its own, which otherwise looks exactly like a ring that wasn't worn.
  *
- * The card clears itself once a later reading comes back stamped by a running clock.
+ * [canRestart] is false only when a connected ring has said it can't be powered off from the app;
+ * while disconnected the button stays, and the dialog explains it needs a connection.
  */
 @Composable
-fun RingClockStallCard(coordinator: RingSyncCoordinator?, modifier: Modifier = Modifier) {
+fun RingClockStallCard(canRestart: Boolean, onRestart: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    LaunchedEffect(Unit) { RingClockStallStore.load(context) }
-    val suspectedAt by RingClockStallStore.suspectedAt.collectAsState()
-    var step by remember { mutableStateOf(RestartStep.NONE) }
-    if (suspectedAt == null && step == RestartStep.NONE) return
-
-    if (suspectedAt != null) {
-        Card(
-            modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = PulseColors.card),
-        ) {
-            Column(Modifier.padding(16.dp)) {
-                Text(
-                    "Your ring's clock seems to have stopped",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = PulseColors.warning,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
+    Card(
+        modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = PulseColors.card),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Your ring's clock seems to have stopped",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = PulseColors.warning,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (canRestart) {
                     "It still connects, but it isn't recording heart rate or sleep on its own. " +
-                        "Restarting the ring fixes this, and nothing stored on it is lost.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = PulseColors.textSecondary,
-                )
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { step = RestartStep.CONFIRM }) { Text("Restart ring") }
-                    TextButton(onClick = { RingClockStallStore.dismiss(context) }) { Text("Not now") }
-                }
+                        "Restarting the ring fixes this, and nothing stored on it is lost."
+                } else {
+                    "It still connects, but it isn't recording heart rate or sleep on its own. " +
+                        "Turn it off and on again from the ring's own app or its charger."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = PulseColors.textSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (canRestart) Button(onClick = onRestart) { Text("Restart ring") }
+                TextButton(onClick = { RingClockStallStore.dismiss(context) }) { Text("Not now") }
             }
         }
     }
+}
 
+/**
+ * The restart walkthrough the reporter found works: power the ring off, put it on its charger to
+ * turn it back on, and let PulseLoop reconnect and set the time. The charger step is the one people
+ * miss — without it the ring just stays off — so it stays on screen after the ring goes dark.
+ *
+ * Sending the power-off forgets the stall evidence: the warning comes back by itself if the next
+ * readings still arrive stamped by a stopped clock.
+ */
+@Composable
+fun RingRestartDialog(
+    step: RingRestartStep,
+    onStep: (RingRestartStep) -> Unit,
+    coordinator: RingSyncCoordinator?,
+) {
+    val context = LocalContext.current
     when (step) {
-        RestartStep.NONE -> Unit
-        RestartStep.CONFIRM -> AlertDialog(
-            onDismissRequest = { step = RestartStep.NONE },
+        RingRestartStep.NONE -> Unit
+        RingRestartStep.CONFIRM -> AlertDialog(
+            onDismissRequest = { onStep(RingRestartStep.NONE) },
             title = { Text("Restart your ring") },
             text = {
                 Text(
@@ -68,36 +85,50 @@ fun RingClockStallCard(coordinator: RingSyncCoordinator?, modifier: Modifier = M
             },
             confirmButton = {
                 TextButton(onClick = {
-                    step = if (coordinator?.restartRing() == true) RestartStep.CHARGE else RestartStep.NOT_CONNECTED
+                    onStep(
+                        when (coordinator?.restartRing()) {
+                            RingSyncCoordinator.RestartResult.SENT -> {
+                                RingClockStallStore.reset(context)
+                                RingRestartStep.CHARGE
+                            }
+                            RingSyncCoordinator.RestartResult.UNSUPPORTED -> RingRestartStep.UNSUPPORTED
+                            else -> RingRestartStep.NOT_CONNECTED
+                        },
+                    )
                 }) { Text("Turn off ring") }
             },
-            dismissButton = { TextButton(onClick = { step = RestartStep.NONE }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("Cancel") } },
         )
-        RestartStep.CHARGE -> AlertDialog(
+        RingRestartStep.CHARGE -> AlertDialog(
             onDismissRequest = {},
             title = { Text("Put your ring on its charger") },
             text = {
                 Text(
                     "Your ring is turning off. Put it on its charger to turn it back on — it stays " +
                         "off until you do.\n\nOnce it's back on, PulseLoop reconnects and sets the " +
-                        "time by itself. This warning clears when the next reading comes back " +
-                        "with the right time.",
+                        "time by itself. If the clock still doesn't run, this warning will come back.",
                 )
             },
-            confirmButton = { TextButton(onClick = { step = RestartStep.NONE }) { Text("Done") } },
+            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("Done") } },
         )
-        RestartStep.NOT_CONNECTED -> AlertDialog(
-            onDismissRequest = { step = RestartStep.NONE },
+        RingRestartStep.NOT_CONNECTED -> AlertDialog(
+            onDismissRequest = { onStep(RingRestartStep.NONE) },
             title = { Text("Ring not connected") },
             text = {
                 Text(
                     "PulseLoop needs to be connected to your ring to turn it off. Wait for it to " +
-                        "connect and try again, or restart it from the ring's own app.",
+                        "connect and try again.",
                 )
             },
-            confirmButton = { TextButton(onClick = { step = RestartStep.NONE }) { Text("OK") } },
+            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("OK") } },
+        )
+        RingRestartStep.UNSUPPORTED -> AlertDialog(
+            onDismissRequest = { onStep(RingRestartStep.NONE) },
+            title = { Text("Can't turn this ring off") },
+            text = {
+                Text("This ring can't be turned off from PulseLoop. Restart it from its own app or its charger.")
+            },
+            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("OK") } },
         )
     }
 }
-
-private enum class RestartStep { NONE, CONFIRM, CHARGE, NOT_CONNECTED }

@@ -43,6 +43,8 @@ class EventPersistenceSubscriber(
      * ours?" without a query per history sample. See [adoptRingsCopy].
      */
     private val spotReadings = mutableMapOf<MeasurementKind, MutableList<Long>>()
+    /** #142: this sync pass's ring-copy bookkeeping for the stopped-clock check. */
+    private val clockPass = RingClockStall.Pass(SPOT_MATCH_MS)
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
@@ -172,30 +174,30 @@ class EventPersistenceSubscriber(
     private suspend fun adoptRingsCopy(kind: MeasurementKind, historyAt: Long) {
         if (kind != MeasurementKind.HEART_RATE && kind != MeasurementKind.SPO2) return
         val ours = spotReadingsOf(kind)
-        if (ours.isEmpty()) return
-        val matched = spotReadingsMatching(ours, historyAt)
+        val matched = if (ours.isEmpty()) emptyList() else spotReadingsMatching(ours, historyAt)
+        // #142: every vitals sample counts — a reading adopted earlier this pass may still find a
+        // closer copy, since the first sample in the window can be one of the ring's automatic ones.
+        clockPass.onHistory(kind.name, historyAt, matched)
         if (matched.isEmpty()) return
-        // #142: how far the ring's stamp sits from our settled reading says whether its clock runs.
-        val now = System.currentTimeMillis()
-        RingClockStallStore.update(context) { state ->
-            matched.fold(state) { s, ourAt -> RingClockStall.onCopyPaired(s, ourAt, historyAt, now) }
-        }
         db.measurementDao().deleteBySourceBetween(kind.name, SOURCE_SPOT, historyAt - SPOT_MATCH_MS, historyAt + SPOT_MATCH_MS)
         ours.removeAll(matched)
     }
 
     /**
-     * After a completed sync, a ring-completed spot reading that still has no copy from the ring is
-     * evidence its clock has stopped (#142): the copy was stamped somewhere else entirely.
+     * End of a sync pass (#142). Judge each spot reading the ring's copy adopted this pass against
+     * the closest copy seen, and — only if the pass delivered vitals history at all — count a
+     * reading that still has no copy as evidence that the copy was stamped somewhere else entirely.
+     * A sleep-only pass (opening the Sleep screen) or one whose vitals transfer was skipped says
+     * nothing about the ring's clock.
      */
     private suspend fun checkRingClock() {
+        if (!clockPass.vitalsSeen) return
         val now = System.currentTimeMillis()
         val since = now - RingClockStall.EVIDENCE_WINDOW_MS
         val unmatched = listOf(MeasurementKind.HEART_RATE, MeasurementKind.SPO2).flatMap {
             db.measurementDao().timestampsBySource(it.name, SOURCE_SPOT, since)
         }
-        if (unmatched.isEmpty()) return
-        RingClockStallStore.update(context) { RingClockStall.onSyncFinished(it, unmatched, now) }
+        RingClockStallStore.update(context) { start -> clockPass.finish(start, unmatched, now) ?: start }
     }
 
     private suspend fun persistUnsafe(event: PulseEvent) {
@@ -204,6 +206,10 @@ class EventPersistenceSubscriber(
             // coordinator's poll loop, carrying no value of its own. Nothing to store.
             is PulseEvent.MeasurementComplete -> Unit
             is PulseEvent.DeviceStateChanged -> {
+                // #142: the clock-stall warning belongs to a YCBT ring; another family can't have it.
+                val family = event.deviceType
+                if (event.state == RingConnectionState.CONNECTED && family != null &&
+                    family !in RingClockStall.AFFECTED_FAMILIES) RingClockStallStore.reset(context)
                 // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
                 // device row, the ring's own teardown still emits a late DISCONNECTED — only
                 // a connection-establishing event may create a fresh row.
@@ -284,6 +290,8 @@ class EventPersistenceSubscriber(
                 // This event is queued after all earlier ring events, so deleting here prevents a
                 // pre-forget CONNECTED event still in the bus from recreating the cleared row.
                 db.deviceDao().currentReal()?.let { db.deviceDao().deleteById(it.id) }
+                clockPass.clear()
+                RingClockStallStore.reset(context)
             }
             is PulseEvent.BatteryLevel -> {
                 val device = db.deviceDao().currentReal() ?: DeviceEntity()

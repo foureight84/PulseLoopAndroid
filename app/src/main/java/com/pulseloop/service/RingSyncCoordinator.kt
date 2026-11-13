@@ -461,14 +461,19 @@ class RingSyncCoordinator(
     /**
      * Turn the ring off so it can be restarted from its charger (#142): a YCBT ring whose clock
      * has stopped keeps connecting and syncing but logs nothing, and setting the time on connect
-     * does not restart it — a power cycle does. Returns false when the ring can't be powered off.
+     * does not restart it — a power cycle does.
      */
-    fun restartRing(): Boolean {
-        if (!isConnected) return false
-        if (!client.state.value.activeCapabilities.contains(WearableCapability.POWER_OFF)) return false
-        engine?.powerOff() ?: return false
-        return true
+    fun restartRing(): RestartResult {
+        if (!isConnected) return RestartResult.NOT_CONNECTED
+        if (!canPowerOff) return RestartResult.UNSUPPORTED
+        return if (engine?.powerOff() == true) RestartResult.SENT else RestartResult.NOT_CONNECTED
     }
+
+    /** The connected ring can be powered off from the app; false while disconnected. */
+    val canPowerOff: Boolean
+        get() = isConnected && client.state.value.activeCapabilities.contains(WearableCapability.POWER_OFF)
+
+    enum class RestartResult { SENT, NOT_CONNECTED, UNSUPPORTED }
 
     fun findRing() {
         if (!isConnected) return

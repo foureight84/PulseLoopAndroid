@@ -116,4 +116,13 @@ class CoachSleepSyncGateTest {
     fun testUnchangedSignatureNeverRewrites() {
         assertFalse(CoachSleepSyncGate.sleepCardRewriteDue("530|1", 0L, "530|1", 10 * hour, 2 * hour))
     }
+
+    @Test
+    fun testSmallGrowthWaitsForFloor() {
+        val floor = 2 * hour
+        // A re-sync rounding difference or one more 15-minute packet doesn't skip the floor.
+        assertFalse(CoachSleepSyncGate.sleepCardRewriteDue("530|1", 0L, "531|1", hour, floor))
+        assertFalse(CoachSleepSyncGate.sleepCardRewriteDue("530|1", 0L, "544|1", hour, floor))
+        assertTrue(CoachSleepSyncGate.sleepCardRewriteDue("530|1", 0L, "545|1", hour, floor))
+    }
 }

@@ -241,7 +241,13 @@ fun hypnogramBlocks(blocks: List<SleepStageBlockEntity>): List<SleepStageBlockEn
             stageRaw = SleepStage.AWAKE.name,
         )
     }
-    return blocks + gaps
+    if (gaps.isEmpty()) return blocks
+    // A sub-minute gap's block shares its start minute with the next record's first block; order
+    // it first so the chart (which sorts stably by start) steps earlier → awake → next record, and
+    // scrubbing that minute reads Awake.
+    return (blocks + gaps).sortedWith(
+        compareBy<SleepStageBlockEntity> { it.startMinute }.thenBy { if (it in gaps) 0 else 1 },
+    )
 }
 
 /**

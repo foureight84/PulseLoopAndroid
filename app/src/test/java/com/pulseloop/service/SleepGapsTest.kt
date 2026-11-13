@@ -153,6 +153,9 @@ class SleepGapsTest {
         assertEquals(63, gap.single().startMinute)
         assertEquals(SleepStage.AWAKE.name, gap.single().stageRaw)
         assertEquals(1, awakeMinutes(blocks))
+        // Drawn before the later record's first block, which starts on the same minute.
+        val drawn = hypnogramBlocks(blocks).sortedBy { it.startMinute }
+        assertTrue(drawn.indexOf(gap.single()) < drawn.indexOf(blocks[1]))
     }
 
     // ── #105: a gap inside the Bedtime window keeps the night whole ──────────

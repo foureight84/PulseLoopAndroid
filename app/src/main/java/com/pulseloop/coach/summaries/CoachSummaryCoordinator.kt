@@ -25,7 +25,7 @@ class CoachSummaryCoordinator(
      *  the next card regeneration without an app restart. */
     stepSourcePrefs: com.pulseloop.settings.StepSourcePrefs,
     /** True while the wearer's Bedtime / sleep quiet-hours window is open (#140). */
-    nightInProgress: () -> Boolean = { false },
+    nightInProgress: (sessionEndAt: Long) -> Boolean = { false },
 ) {
     private val service = CoachSummaryService(db, apiKeyStore, providerSettings, stepSourcePrefs, nightInProgress)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())

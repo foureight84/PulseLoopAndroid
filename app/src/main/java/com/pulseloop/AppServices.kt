@@ -43,8 +43,8 @@ class AppServices private constructor(context: Context) {
     val persistence = EventPersistenceSubscriber.shared(context)
     val batteryAlerts = BatteryAlertMonitor(context)
     val providerStore = CoachProviderSettingsStore(context)
-    val summaryCoordinator = CoachSummaryCoordinator(db, apiKeyStore, providerStore, stepSourcePrefs) {
-        com.pulseloop.settings.QuietHoursPrefs.nightInProgress(context)
+    val summaryCoordinator = CoachSummaryCoordinator(db, apiKeyStore, providerStore, stepSourcePrefs) { sessionEndAt ->
+        com.pulseloop.settings.QuietHoursPrefs.nightInProgress(context, sessionEndAt)
     }
 
     // iOS #94: runs the due check-in slot the moment a full sync completes, so a slot the periodic

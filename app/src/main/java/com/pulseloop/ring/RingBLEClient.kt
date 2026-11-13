@@ -273,6 +273,10 @@ class RingBLEClient(
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
                 BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF ->
                     scope.launch { onBluetoothOff() }
+                // Back on: the message no longer describes anything, even if the ring is out of range.
+                BluetoothAdapter.STATE_ON -> scope.launch {
+                    if (_state.value.lastError == BLUETOOTH_OFF_ERROR) updateState { copy(lastError = null) }
+                }
             }
         }
     }
