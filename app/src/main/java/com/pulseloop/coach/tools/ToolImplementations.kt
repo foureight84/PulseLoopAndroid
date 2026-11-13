@@ -60,13 +60,14 @@ object RetrievalTools {
             val dayTs = CoachDataAccess.parseLocalDate(date)
             if (dayTs == null) return@runBlocking """{"error":"invalid date: $date"}"""
             val activity = db.activityDailyDao().byDay(dayTs)
+            val displaySteps = com.pulseloop.data.DisplaySteps.count(activity, ctx.preferPhone)
             val hrVals = db.measurementDao().range(MeasurementKind.HEART_RATE.name, dayTs, dayTs + 86400000L)
             val hrStats = if (hrVals.isNotEmpty()) {
                 val vals = hrVals.map { it.value }
                 """"mean":${(vals.average() * 10).toLong() / 10.0},"min":${vals.minOrNull()!!.toInt()},"max":${vals.maxOrNull()!!.toInt()}""""
             } else null
             val sleep = db.sleepSessionDao().byDay(dayTs)
-            """{"date":"$date","data_available":${activity != null || hrVals.isNotEmpty()},"activity":{"${if (activity != null) """steps":${activity.steps},"calories":${(activity.calories * 10).toLong() / 10.0},"distance_km":${(activity.distanceMeters / 1000 * 10).toLong() / 10.0},"active_minutes":${activity.activeMinutes}""" else """steps":0,"calories":0,"distance_km":0,"active_minutes":0"""}},"hr":{${hrStats ?: """"mean":null,"min":null,"max":null""""}},"sleep":${if (sleep != null) """{"total_min":${sleep.totalMinutes},"score":${sleep.totalMinutes / 5}}""" else "null"}}"""
+            """{"date":"$date","data_available":${activity != null || hrVals.isNotEmpty()},"activity":{"${if (activity != null) """steps":${displaySteps ?: 0},"calories":${(activity.calories * 10).toLong() / 10.0},"distance_km":${(activity.distanceMeters / 1000 * 10).toLong() / 10.0},"active_minutes":${activity.activeMinutes}""" else """steps":0,"calories":0,"distance_km":0,"active_minutes":0"""}},"hr":{${hrStats ?: """"mean":null,"min":null,"max":null""""}},"sleep":${if (sleep != null) """{"total_min":${sleep.totalMinutes},"score":${sleep.totalMinutes / 5}}""" else "null"}}"""
         }
         ToolResult(result)
     }
@@ -95,7 +96,7 @@ object RetrievalTools {
         val start = params["start_date"] ?: return@CoachToolDef ToolResult("""{"error":"missing 'start_date'"}""", isError = true)
         val end = params["end_date"] ?: start
         val result = kotlinx.coroutines.runBlocking {
-            val points = CoachDataAccess.seriesPoints(db, metric, start, end, "day")
+            val points = CoachDataAccess.seriesPoints(db, metric, start, end, "day", ctx.preferPhone)
             val sb = StringBuilder()
             sb.append("""{"metric":"$metric","points":[""")
             points.forEachIndexed { i, (date, value) ->
@@ -178,7 +179,7 @@ object RetrievalTools {
                     val d = java.time.Instant.ofEpochMilli(it.date).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
                     d >= start && d <= end
                 }
-                val totalSteps = rows.sumOf { it.steps }
+                val totalSteps = com.pulseloop.data.DisplaySteps.counts(rows, ctx.preferPhone).sum()
                 sb.append(""""activity":{"days_available":${rows.size},"totals":{"steps":$totalSteps,"calories":${rows.sumOf { it.calories }},"active_minutes":${rows.sumOf { it.activeMinutes }}}},""")
             }
             val hrData = db.measurementDao().range(MeasurementKind.HEART_RATE.name, 0, System.currentTimeMillis())
@@ -326,7 +327,8 @@ object RetrievalTools {
         val goal = kotlinx.coroutines.runBlocking { db.userGoalDao().get() }
         val todayStart = java.time.Instant.now().atZone(java.time.ZoneId.systemDefault()).truncatedTo(java.time.temporal.ChronoUnit.DAYS).toInstant().toEpochMilli()
         val today = kotlinx.coroutines.runBlocking { db.activityDailyDao().byDay(todayStart) }
-        ToolResult("""{"today":{"steps":${today?.steps ?: 0},"steps_goal":${goal?.steps ?: 10000},"active_minutes":${today?.activeMinutes ?: 0},"active_minutes_goal":${goal?.activeMinutes ?: 45}},"sleep_hours_goal":${(goal?.sleepMinutes ?: 480) / 60}}""")
+        val displaySteps = com.pulseloop.data.DisplaySteps.count(today, ctx.preferPhone) ?: 0
+        ToolResult("""{"today":{"steps":$displaySteps,"steps_goal":${goal?.steps ?: 10000},"active_minutes":${today?.activeMinutes ?: 0},"active_minutes_goal":${goal?.activeMinutes ?: 45}},"sleep_hours_goal":${(goal?.sleepMinutes ?: 480) / 60}}""")
     }
 
     // ── get_recent_anomalies ───────────────────────────────────────────
@@ -343,7 +345,8 @@ object RetrievalTools {
         )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
-        val recentSteps = kotlinx.coroutines.runBlocking { db.activityDailyDao().recent(14) }.map { it.steps.toDouble() }
+        val recentRows = kotlinx.coroutines.runBlocking { db.activityDailyDao().recent(14) }
+        val recentSteps = com.pulseloop.data.DisplaySteps.counts(recentRows, ctx.preferPhone).map { it.toDouble() }
         val stepOutliers = AnalysisEngine.outliers(recentSteps)
         ToolResult("""{"steps_outliers":${stepOutliers.size},"steps_analyzed":${recentSteps.size}}""")
     }

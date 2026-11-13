@@ -29,8 +29,8 @@ object CoachSummaryContextBuilder {
 
     // ── Today ────────────────────────────────────────────────────────────
 
-    suspend fun today(db: PulseLoopDatabase): Built {
-        val packet = CoachContextBuilder.build(db)
+    suspend fun today(db: PulseLoopDatabase, preferPhone: Boolean): Built {
+        val packet = CoachContextBuilder.build(db, preferPhone)
         val todayDate = packet.today
 
         @Serializable
@@ -53,7 +53,7 @@ object CoachSummaryContextBuilder {
 
         val tp = TodayPacket(
             today = todayDate,
-            steps = activity?.steps,
+            steps = com.pulseloop.data.DisplaySteps.count(activity, preferPhone),
             calories = activity?.calories,
             distanceKm = activity?.distanceMeters?.let { it / 1000 },
             activeMinutes = activity?.activeMinutes,
@@ -63,17 +63,21 @@ object CoachSummaryContextBuilder {
         )
         val contextJson = json.encodeToString(tp)
 
+        // The signature must include the *display* step figure, not the raw column — a phone-mode
+        // change that leaves `steps` untouched but moves `phoneSteps` has to trigger a regeneration
+        // or the card would keep quoting the old value (review item 5, PR #98).
         val sig = signature(listOf(
-            activity?.steps?.toString(), activity?.calories?.toInt()?.toString(),
+            tp.steps?.toString(), activity?.calories?.toInt()?.toString(),
             activity?.activeMinutes?.toString(), tp.distanceKm?.toString(),
             latestHr?.toInt()?.toString(), latestSpo2?.toInt()?.toString(),
         ))
 
-        // Scripted fallback
-        val title = if (activity != null && activity.steps > 0) "Today's snapshot" else "No activity synced yet"
-        val body = if (activity != null && activity.steps > 0)
-            "${activity.steps} steps so far today. Your ring is tracking — sync for the latest readings."
-        else "I don't have today's activity from the ring yet. Wear your ring and sync for a daily recap."
+        // Scripted fallback — same display value as the Today tile, so the two cannot disagree.
+        val displaySteps = tp.steps ?: 0
+        val title = if (displaySteps > 0) "Today's snapshot" else "No activity synced yet"
+        val body = if (displaySteps > 0)
+            "$displaySteps steps so far today. Your ring is tracking — sync for the latest readings."
+        else "I don't have today's activity yet. Wear your ring and sync for a daily recap."
 
         return Built(
             scopeKey = todayDate,
@@ -85,7 +89,7 @@ object CoachSummaryContextBuilder {
 
     // ── Sleep Day ────────────────────────────────────────────────────────
 
-    suspend fun sleepDay(db: PulseLoopDatabase): Built? {
+    suspend fun sleepDay(db: PulseLoopDatabase, preferPhone: Boolean): Built? {
         val todayStart = java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault())
             .toInstant().toEpochMilli()
         val session = db.sleepSessionDao().byDay(todayStart) ?: return null
@@ -93,7 +97,9 @@ object CoachSummaryContextBuilder {
 
         val blocks = db.sleepStageBlockDao().forSession(session.id)
         val score = SleepScore.calculate(session, blocks)
-        val activitySteps = db.activityDailyDao().byDay(todayStart)?.steps
+        val activitySteps = com.pulseloop.data.DisplaySteps.count(
+            db.activityDailyDao().byDay(todayStart), preferPhone,
+        )
 
         @Serializable
         data class SleepDayPacket(

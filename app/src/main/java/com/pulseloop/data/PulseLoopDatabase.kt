@@ -44,7 +44,7 @@ import com.pulseloop.data.entity.*
         CachedFoodProductEntity::class,
         MeasurementDeletionEntity::class,
     ],
-    version = 28,
+    version = 29,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -523,6 +523,21 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v28 -> v29: `activity_daily.phoneSteps` — the phone-source step column.
+         *
+         * Phone-sourced steps live in their own column instead of overwriting [ActivityDailyEntity.steps],
+         * so the ring's totals (steps, calories, distance) are never clobbered and switching the step
+         * source is a read-time choice, not a destructive write. Null for every existing row: no day
+         * has a phone value under the new design yet, and the display falls back to `steps` when null.
+         */
+        private val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `phoneSteps` INTEGER")
+            }
+        }
+
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -617,6 +632,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_25_26,
                         MIGRATION_26_27,
                         MIGRATION_27_28,
+                        MIGRATION_28_29,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

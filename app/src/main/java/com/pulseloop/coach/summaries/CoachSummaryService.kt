@@ -26,6 +26,10 @@ class CoachSummaryService(
      *  `CoachClientResolver` (Gemini/OpenRouter follow the provider picker).
      *  null keeps the legacy OpenAI-only behavior. */
     private val providerSettings: CoachProviderSettingsStore? = null,
+    /** The user's step-source preference (review item 5, PR #98). Applied per regeneration so
+     *  the coach's today/sleep summaries quote the same steps Today shows — Path B's separate
+     *  columns otherwise let the coach read ring steps while Today read phone steps. */
+    private val stepSourcePrefs: com.pulseloop.settings.StepSourcePrefs,
 ) {
     /** Minimum gap between Today / aggregate-sleep regenerations. */
     private val minIntervalMs = 2 * 3600_000L // 2 hours
@@ -42,7 +46,7 @@ class CoachSummaryService(
     // ── Refresh (self-gating) ────────────────────────────────────────────
 
     suspend fun refreshTodayIfNeeded() {
-        val built = CoachSummaryContextBuilder.today(db)
+        val built = CoachSummaryContextBuilder.today(db, stepSourcePrefs.preferPhone())
         val existing = db.coachSummaryDao().get(CoachSummaryKind.TODAY.rawValue, built.scopeKey)
         val now = System.currentTimeMillis()
 
@@ -54,7 +58,7 @@ class CoachSummaryService(
     }
 
     suspend fun refreshSleepDayIfNeeded(now: Long = System.currentTimeMillis()) {
-        val built = CoachSummaryContextBuilder.sleepDay(db) ?: return
+        val built = CoachSummaryContextBuilder.sleepDay(db, stepSourcePrefs.preferPhone()) ?: return
         val endAt = built.sleepSessionEnd ?: return
         val lastFullSyncAt = db.deviceDao().current()?.lastFullSyncAt
         if (!CoachSleepSyncGate.sleepDaySafeToSummarize(endAt, lastFullSyncAt, now)) return

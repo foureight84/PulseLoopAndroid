@@ -77,6 +77,11 @@ data class ActivityDailyEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val date: Long,                 // epoch millis, start of day
     val steps: Int = 0,
+    /** Phone-sourced step count for this day (Health Connect), stored separately from [steps].
+     *  Null = no phone value written for this day. The display picks between [steps] and
+     *  [phoneSteps] at read time based on the user's step-source preference; neither column
+     *  overwrites the other, so switching source is reversible. */
+    val phoneSteps: Int? = null,
     val calories: Double = 0.0,
     val distanceMeters: Double = 0.0,
     val activeMinutes: Int = 0,
@@ -100,7 +105,34 @@ data class ActivityDailyEntity(
      */
     val deletedSteps: Int = 0,
     val deletedDistanceMeters: Double = 0.0,
-)
+) {
+    /**
+     * The step count a screen should show for this day under the user's step-source preference
+     * (Path B read-time selection, PR #98). Ring mode shows the ring's own column; phone mode
+     * shows [phoneSteps] when the phone has a value for the day, falling back to the ring's
+     * column when it does not — so a day the phone never backfilled still shows something.
+     *
+     * `internal` on purpose (review item 5, PR #98). The one production caller is
+     * [com.pulseloop.data.DisplaySteps] — the one place the preference is applied. Leaving
+     * this `public` let each screen, widget, notification and coach path call it directly
+     * and drift; that is the bug the reviewer flagged. New callers use
+     * [com.pulseloop.data.DisplaySteps], not this. Test source sets (same module) can still
+     * exercise it directly.
+     */
+    internal fun displaySteps(preferPhone: Boolean): Int =
+        if (preferPhone) phoneSteps ?: steps else steps
+
+    /**
+     * The whole entity a screen should show, with `steps` projected for display under the user's
+     * step-source preference. Only `steps` is rewritten; `distanceMeters`, `calories`, and the
+     * rest of the row are left as the ring wrote them (Path B — see PR #98's design notes).
+     *
+     * `internal` for the same reason as [displaySteps] — use
+     * [com.pulseloop.data.DisplaySteps.project].
+     */
+    internal fun forDisplay(preferPhone: Boolean): ActivityDailyEntity =
+        if (preferPhone && phoneSteps != null) copy(steps = phoneSteps) else this
+}
 
 /**
  * Ported from [ActivityBucketSample] in PulseModels.swift.

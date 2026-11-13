@@ -32,8 +32,10 @@ class PulseLoopApplication : Application() {
         QuietHoursPrefs.migrateIndependentBedtime(this)
         // Application-scoped so capture runs whether or not the Debug screen is open.
         DiagnosticsSubscriber(PulseLoopDatabase.getInstance(this)).start(appScope)
-        // Same reason, for the ring data itself: a process launched only for RingSyncWorker never
-        // runs the UI's startup, and without a collector its events are dropped.
+        // Persistence subscribes from here — not from PulseLoopApp's LaunchedEffect — so that
+        // a process launched only for RingSyncWorker / ScheduledSpo2Worker has a collector, and so
+        // that nothing published on activity resume (MainActivity.onResume → refreshPhoneSteps)
+        // races the UI's composition. Idempotent: PulseLoopApp's LaunchedEffect no longer calls start().
         EventPersistenceSubscriber.shared(this).start()
         // One-time cleanup of activity totals corrupted by the old bucket handling; runs off the
         // main thread and is prefs-gated so it executes once. Safe to race the first sync — the
