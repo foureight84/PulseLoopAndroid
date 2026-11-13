@@ -2799,7 +2799,7 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
 }
 
 private const val DEVELOPER_TAP_THRESHOLD = 7
-private const val REPO_URL = "https://github.com/foureight84/PulseLoop"
+private const val REPO_URL = "https://github.com/foureight84/PulseLoopAndroid"
 
 // MARK: - Nutrition
 

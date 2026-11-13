@@ -248,4 +248,11 @@ Min SDK: 26 (Android 8.0+). Target SDK: 34.
 
 ## License
 
-This project is part of the PulseLoop ecosystem. See the parent repository for license information.
+This project is licensed under [Creative Commons Attribution 4.0 International (CC BY 4.0)](LICENSE),
+the same license as the [PulseLoop iOS app](https://github.com/saksham2001/PulseLoopiOS) it is ported from.
+
+You're free to share and adapt the work, including commercially, **as long as
+you give appropriate credit**. Please attribute:
+
+> PulseLoop Android — <https://github.com/foureight84/PulseLoopAndroid>, ported from
+> PulseLoop by Saksham Bhutani — <https://github.com/saksham2001/PulseLoopiOS>
