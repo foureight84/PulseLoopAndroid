@@ -186,7 +186,7 @@ class RWfitSyncEngine(
     // Not present in the vendor's command set for this family.
     override fun findDevice() {}
     override fun setGoal(steps: Int) {}
-    override fun powerOff() {}
+    override fun powerOff(): Boolean = false
 
     private companion object {
         const val TAG = "RWfitSyncEngine"

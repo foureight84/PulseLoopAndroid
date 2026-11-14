@@ -40,6 +40,7 @@ fun AppHeader(
     state: RingConnectionState,
     batteryPercent: Int?,
     onOpenSettings: () -> Unit,
+    bluetoothOff: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -70,6 +71,7 @@ fun AppHeader(
         ConnectionStatusPill(
             state = state,
             batteryPercent = batteryPercent,
+            bluetoothOff = bluetoothOff,
             modifier = Modifier.clickable(onClick = onOpenSettings),
         )
         IconButton(onClick = onOpenSettings) {
@@ -88,6 +90,7 @@ fun ConnectionStatusPill(
     state: RingConnectionState,
     batteryPercent: Int?,
     modifier: Modifier = Modifier,
+    bluetoothOff: Boolean = false,
 ) {
     val isPulsing = state == RingConnectionState.CONNECTING || state == RingConnectionState.RECONNECTING
     val dotColor = when (state) {
@@ -100,8 +103,9 @@ fun ConnectionStatusPill(
             if (batteryPercent != null && batteryPercent > 0) "Connected · $batteryPercent%" else "Connected"
         RingConnectionState.CONNECTING -> "Connecting…"
         RingConnectionState.RECONNECTING -> "Reconnecting…"
-        RingConnectionState.FAILED -> "Sync failed"
-        else -> "Disconnected"
+        // The phone's adapter being off explains every not-connected state (#136).
+        else -> if (bluetoothOff) "Bluetooth off"
+            else if (state == RingConnectionState.FAILED) "Sync failed" else "Disconnected"
     }
     val pulse by rememberInfiniteTransition(label = "pill").animateFloat(
         initialValue = 1f,

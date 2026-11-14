@@ -848,8 +848,10 @@ class ColmiSyncEngine(
         // Colmi goals write left minimal pending verification
     }
 
-    override fun powerOff() {
-        writer?.enqueue(encoder.powerOff())
+    override fun powerOff(): Boolean {
+        val w = writer ?: return false
+        w.enqueue(encoder.powerOff())
+        return true
     }
 
     override fun factoryReset() {

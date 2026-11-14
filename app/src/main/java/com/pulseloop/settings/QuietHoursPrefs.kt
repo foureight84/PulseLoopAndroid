@@ -71,6 +71,45 @@ class QuietHoursPrefs(context: Context) {
         const val DEFAULT_START = 22 * 60
         const val DEFAULT_END = 7 * 60
 
+        /**
+         * Is the night that ended (so far) at [sessionEndAt] still open right now (#140)? True
+         * while Bedtime/DND tracking is on and a Mode window that began by the night's end is
+         * still active, or while the clock schedule is on and the time is inside it. Both are
+         * opt-in; with neither on this is always false.
+         */
+        fun nightInProgress(context: Context, sessionEndAt: Long, now: Long = System.currentTimeMillis()): Boolean {
+            val prefs = QuietHoursPrefs(context)
+            val zenActive = isZenTrackingActive(context) && ZenModeTracker.isZenModeActive(context)
+            val openZenStart = if (zenActive) ZenModeTracker.getWindows(context).lastOrNull { it.end == null }?.start else null
+            return nightOpen(
+                zenActive = zenActive, openZenStart = openZenStart, sessionEndAt = sessionEndAt,
+                scheduleEnabled = prefs.enabled, start = prefs.startMinutes, end = prefs.endMinutes,
+                minuteOfDay = minuteOfDay(now),
+            )
+        }
+
+        /**
+         * The pure half of [nightInProgress]. An active Mode counts only if its window began
+         * before the night's stored end plus an hour: DND switched on for an afternoon meeting
+         * is not the Bedtime that night belongs to. A Mode with no recorded window still counts.
+         */
+        fun nightOpen(
+            zenActive: Boolean,
+            openZenStart: Long?,
+            sessionEndAt: Long,
+            scheduleEnabled: Boolean,
+            start: Int,
+            end: Int,
+            minuteOfDay: Int,
+        ): Boolean {
+            if (zenActive && (openZenStart == null || openZenStart <= sessionEndAt + 3600_000L)) return true
+            return scheduleEnabled && scheduleOpen(start, end, minuteOfDay)
+        }
+
+        /** [covers], except a start==end window (which [covers] reads as "gate off") is never open. */
+        fun scheduleOpen(start: Int, end: Int, minuteOfDay: Int): Boolean =
+            start != end && covers(start, end, minuteOfDay)
+
         /** Bedtime/DND gating is on and the [ZenModeListener] has Notification access. */
         fun isZenTrackingActive(context: Context): Boolean =
             QuietHoursPrefs(context).gateByZenMode && ZenModeListener.isAccessGranted(context)

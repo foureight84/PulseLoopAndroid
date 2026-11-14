@@ -1972,6 +1972,15 @@ fun WearableSettingsScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
+                if (!isConnected && device != null && bleState.bluetoothOff) {
+                    // Say why it's disconnected (#136); it reconnects once Bluetooth is back on.
+                    Text(
+                        "Phone Bluetooth is off — turn it on to reconnect",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PulseColors.warning,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
                 // Firmware version — show just the trailing version (e.g. "V138"), matching
                 // the official app, which displays only the last segment of "003A002AV138".
                 if (device?.firmwareVersion != null) {
