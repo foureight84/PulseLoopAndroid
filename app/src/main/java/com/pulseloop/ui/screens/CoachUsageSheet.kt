@@ -1,5 +1,7 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -70,7 +72,7 @@ fun CoachUsageSheet(
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Usage & cost", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+            Text(stringResource(R.string.coach_usage_cost), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
             SummaryCard(providerLabel, models, totalInputTokens, totalOutputTokens, totalCost)
             if (showsCostNote) CostNote()
             if (accounted.isNotEmpty()) BreakdownCard(accounted)
@@ -90,15 +92,15 @@ private fun SummaryCard(
             .background(PulseColors.card)
             .padding(horizontal = 16.dp),
     ) {
-        UsageRow("Provider", providerLabel)
+        UsageRow(stringResource(R.string.coach_provider), providerLabel)
         Divider()
-        UsageRow(if (models.size > 1) "Models" else "Model", models.joinToString(", "))
+        UsageRow(if (models.size > 1) stringResource(R.string.usage_models) else stringResource(R.string.coach_model), models.joinToString(", "))
         Divider()
-        UsageRow("Input tokens", formatTokens(totalInputTokens), mono = true)
+        UsageRow(stringResource(R.string.usage_input_tokens), formatTokens(totalInputTokens), mono = true)
         Divider()
-        UsageRow("Output tokens", formatTokens(totalOutputTokens), mono = true)
+        UsageRow(stringResource(R.string.usage_output_tokens), formatTokens(totalOutputTokens), mono = true)
         Divider()
-        UsageRow("Estimated cost", totalCost?.let { "$" + "%.4f".format(it) } ?: "—", mono = true)
+        UsageRow(stringResource(R.string.usage_estimated_cost), totalCost?.let { "$" + "%.4f".format(it) } ?: "—", mono = true)
     }
 }
 
@@ -114,7 +116,7 @@ private fun CostNote() {
     ) {
         Icon(Icons.Filled.Info, null, tint = PulseColors.textMuted, modifier = Modifier.size(14.dp))
         Text(
-            "Cost estimates aren't available for on-device or custom models.",
+            stringResource(R.string.usage_cost_note),
             fontSize = 12.sp, color = PulseColors.textMuted,
         )
     }
@@ -136,10 +138,10 @@ private fun BreakdownCard(accounted: List<CoachMessageEntity>) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Per-message breakdown", fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                stringResource(R.string.usage_breakdown), fontSize = 13.sp, fontWeight = FontWeight.Medium,
                 color = PulseColors.textPrimary,
             )
-            Text(if (expanded) "Hide" else "Show", fontSize = 12.sp, color = PulseColors.textSecondary)
+            Text(if (expanded) stringResource(R.string.action_hide) else stringResource(R.string.action_show), fontSize = 12.sp, color = PulseColors.textSecondary)
         }
         if (expanded) {
             Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -152,10 +154,10 @@ private fun BreakdownCard(accounted: List<CoachMessageEntity>) {
 @Composable
 private fun MessageBreakdownRow(message: CoachMessageEntity) {
     val preview = message.body.replace("\n", " ").take(30)
-    val tokens = "${message.inputTokens ?: 0} in · ${message.outputTokens ?: 0} out"
+    val tokens = stringResource(R.string.usage_tokens_line, message.inputTokens ?: 0, message.outputTokens ?: 0)
     val cost = message.costUSD?.let { "$" + "%.4f".format(it) } ?: "—"
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(preview.ifEmpty { "(no text)" }, fontSize = 12.sp, color = PulseColors.textPrimary, maxLines = 1)
+        Text(preview.ifEmpty { stringResource(R.string.usage_no_text) }, fontSize = 12.sp, color = PulseColors.textPrimary, maxLines = 1)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(tokens, fontSize = 11.sp, color = PulseColors.textMuted)
             Text(cost, fontSize = 11.sp, color = PulseColors.textMuted)

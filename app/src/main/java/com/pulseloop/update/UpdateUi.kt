@@ -1,5 +1,8 @@
 package com.pulseloop.update
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,11 +38,11 @@ fun UpdateDialog(info: UpdateInfo, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = { if (!downloading) onDismiss() },
-        title = { Text("Update available — ${info.versionName}") },
+        title = { Text(stringResource(R.string.update_available, info.versionName)) },
         text = {
             Column {
                 if (downloading) {
-                    Text("Downloading… ${(progress * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.update_downloading_pct, (progress * 100).toInt()), style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                 } else {
@@ -81,14 +84,14 @@ fun UpdateDialog(info: UpdateInfo, onDismiss: () -> Unit) {
                             ApkInstaller.install(context, file)
                             onDismiss()
                         } else {
-                            error = "Download failed. Please try again."
+                            error = L10n.get(R.string.update_download_failed)
                         }
                     }
                 },
-            ) { Text(if (downloading) "Downloading…" else "Update") }
+            ) { Text(if (downloading) stringResource(R.string.update_downloading) else stringResource(R.string.update_action)) }
         },
         dismissButton = {
-            TextButton(enabled = !downloading, onClick = onDismiss) { Text("Later") }
+            TextButton(enabled = !downloading, onClick = onDismiss) { Text(stringResource(R.string.action_later)) }
         },
     )
 }
@@ -109,8 +112,7 @@ fun CheckForUpdatesButton(modifier: Modifier = Modifier) {
     Column(modifier) {
         if (!UpdateChecker.isSupported()) {
             Text(
-                "Self-update is available in the release build only " +
-                    "(current: ${BuildConfig.VERSION_NAME} / ${BuildConfig.APPLICATION_ID}).",
+                stringResource(R.string.update_release_only, BuildConfig.VERSION_NAME, BuildConfig.APPLICATION_ID),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -125,14 +127,14 @@ fun CheckForUpdatesButton(modifier: Modifier = Modifier) {
                     when (val result = UpdateChecker.check(context, force = true)) {
                         is UpdateCheckResult.UpdateAvailable -> update = result.info
                         is UpdateCheckResult.Failed ->
-                            status = "Couldn't check for updates (${result.reason}). Please try again."
-                        else -> status = "You're on the latest version (${BuildConfig.VERSION_NAME})."
+                            status = L10n.get(R.string.update_check_failed, result.reason)
+                        else -> status = L10n.get(R.string.update_latest, BuildConfig.VERSION_NAME)
                     }
                     checking = false
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (checking) "Checking…" else "Check for updates") }
+        ) { Text(if (checking) stringResource(R.string.update_checking) else stringResource(R.string.update_check)) }
         status?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

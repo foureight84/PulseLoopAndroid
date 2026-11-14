@@ -1,5 +1,7 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -45,10 +47,10 @@ fun RecordScreen(
     val paceOrSpeedLabel: String
     val paceOrSpeedValue: String
     if (metricSet.showsSpeed) {
-        paceOrSpeedLabel = "Speed"
+        paceOrSpeedLabel = stringResource(R.string.record_speed)
         paceOrSpeedValue = ActivityMeta.speed(distanceMeters, elapsedSeconds, units) ?: "—"
     } else {
-        paceOrSpeedLabel = "Pace"
+        paceOrSpeedLabel = stringResource(R.string.record_pace)
         paceOrSpeedValue = ActivityMeta.pace(distanceMeters, elapsedSeconds, units)
             ?.let { it + ActivityMeta.paceUnit(units) } ?: "—"
     }
@@ -59,7 +61,7 @@ fun RecordScreen(
             Text(ActivityMeta.label(activityName), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             if (isPaused) {
                 Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small) {
-                    Text("PAUSED", Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.record_paused), Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -70,7 +72,7 @@ fun RecordScreen(
             Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(elapsed, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.height(4.dp))
-                val hrText = heartRate?.let { "$it bpm" } ?: "-- bpm"
+                val hrText = heartRate?.let { stringResource(R.string.value_bpm, it) } ?: stringResource(R.string.record_bpm_none)
                 val zoneColor = when (hrZone) {
                     HeartRateZones.Zone.REST, HeartRateZones.Zone.FAT_BURN -> Color(0xFF4CAF50)
                     HeartRateZones.Zone.CARDIO -> Color(0xFFFFC107)
@@ -89,11 +91,11 @@ fun RecordScreen(
             if (useGps && metricSet.showsDistance) {
                 item {
                     val distText = if (units == UnitSystem.METRIC && distanceMeters < 1000) {
-                        "%.0f m".format(distanceMeters)
+                        stringResource(R.string.value_meters, "%.0f".format(distanceMeters))
                     } else {
                         "%.2f %s".format(UnitConverter.distance(distanceMeters, units), UnitConverter.distanceUnit(units))
                     }
-                    StatTile("Distance", distText)
+                    StatTile(stringResource(R.string.metric_distance), distText)
                 }
             }
             if (useGps && (metricSet.showsPace || metricSet.showsSpeed)) {
@@ -108,21 +110,21 @@ fun RecordScreen(
         Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (isPaused) {
                 Button(onClick = onResume, Modifier.weight(1f).height(52.dp)) {
-                    Icon(Icons.Filled.PlayArrow, "Resume")
+                    Icon(Icons.Filled.PlayArrow, stringResource(R.string.record_resume))
                     Spacer(Modifier.width(8.dp))
-                    Text("Resume")
+                    Text(stringResource(R.string.record_resume))
                 }
             } else {
                 OutlinedButton(onClick = onPause, Modifier.weight(1f).height(52.dp)) {
-                    Icon(Icons.Filled.Pause, "Pause")
+                    Icon(Icons.Filled.Pause, stringResource(R.string.record_pause))
                     Spacer(Modifier.width(8.dp))
-                    Text("Pause")
+                    Text(stringResource(R.string.record_pause))
                 }
             }
             Button(onClick = onFinish, Modifier.weight(1f).height(52.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
-                Icon(Icons.Filled.Stop, "Finish")
+                Icon(Icons.Filled.Stop, stringResource(R.string.record_finish))
                 Spacer(Modifier.width(8.dp))
-                Text("Finish")
+                Text(stringResource(R.string.record_finish))
             }
         }
     }

@@ -1,5 +1,7 @@
 package com.pulseloop.strava
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.ring.MeasurementKind
@@ -34,7 +36,7 @@ object StravaUploader {
         db: PulseLoopDatabase,
         tokenStore: StravaTokenStore,
     ): Result {
-        val tokens = tokenStore.get() ?: return Result.Failure("Not connected to Strava.")
+        val tokens = tokenStore.get() ?: return Result.Failure(L10n.get(R.string.sv_not_connected))
         val name = activityName(session)
 
         val gpsPoints = db.activityGpsPointDao().forSession(session.id)
@@ -90,22 +92,22 @@ object StravaUploader {
         val response = StravaAuth.authenticatedRequest(tokens, tokenStore, "POST", "$API_BASE/uploads", body)
         val respBody = response.body?.string().orEmpty()
 
-        if (response.code == 429) return Result.Failure("Strava rate limit reached. Try again later.")
+        if (response.code == 429) return Result.Failure(L10n.get(R.string.sv_rate_limit))
         if (response.code == 409) {
             val dupId = parseDuplicate(respBody)
             return if (dupId != null) {
                 fixSportType(dupId, session.type, tokens, tokenStore)
                 Result.Success(dupId)
             } else {
-                Result.Failure("Already on Strava.")
+                Result.Failure(L10n.get(R.string.sv_already))
             }
         }
         if (!response.isSuccessful) {
-            return Result.Failure("Strava upload failed (HTTP ${response.code}): ${respBody.take(200)}")
+            return Result.Failure(L10n.get(R.string.sv_upload_failed, response.code, respBody.take(200)))
         }
 
         val initial = runCatching { json.decodeFromString<UploadStatus>(respBody) }.getOrNull()
-            ?: return Result.Failure("Unexpected response from Strava.")
+            ?: return Result.Failure(L10n.get(R.string.sv_unexpected))
 
         return when (val outcome = pollUpload(initial, tokens, tokenStore)) {
             is Result.Success -> {
@@ -130,7 +132,7 @@ object StravaUploader {
         while (true) {
             terminalResult(status)?.let { return it }
             if (++attempts > MAX_POLL_ATTEMPTS) {
-                return Result.Failure("Timed out waiting for Strava to process the upload.")
+                return Result.Failure(L10n.get(R.string.sv_timeout))
             }
             kotlinx.coroutines.delay(POLL_INTERVAL_MS)
             val response = StravaAuth.authenticatedRequest(
@@ -147,9 +149,9 @@ object StravaUploader {
         if (!error.isNullOrEmpty()) {
             if (error.contains("duplicate", ignoreCase = true)) {
                 val dupId = parseDuplicate(error)
-                return if (dupId != null) Result.Success(dupId) else Result.Failure("Already on Strava.")
+                return if (dupId != null) Result.Success(dupId) else Result.Failure(L10n.get(R.string.sv_already))
             }
-            return Result.Failure("Strava could not process the upload: $error")
+            return Result.Failure(L10n.get(R.string.sv_process_failed, error))
         }
         return status.activity_id?.let { Result.Success(it) }
     }
@@ -177,10 +179,10 @@ object StravaUploader {
         val response = StravaAuth.authenticatedRequest(tokens, tokenStore, "POST", "$API_BASE/activities", form)
         val body = response.body?.string().orEmpty()
         if (!response.isSuccessful) {
-            return Result.Failure("Strava rejected the activity (HTTP ${response.code}): ${body.take(200)}")
+            return Result.Failure(L10n.get(R.string.sv_rejected, response.code, body.take(200)))
         }
         val summary = runCatching { json.decodeFromString<ActivitySummary>(body) }.getOrNull()
-            ?: return Result.Failure("Unexpected response from Strava.")
+            ?: return Result.Failure(L10n.get(R.string.sv_unexpected))
         return Result.Success(summary.id)
     }
 

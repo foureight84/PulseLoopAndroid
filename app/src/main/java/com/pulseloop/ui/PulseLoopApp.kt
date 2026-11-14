@@ -1,5 +1,7 @@
 package com.pulseloop.ui
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -310,11 +312,11 @@ fun PulseLoopApp() {
         }
 
         val tabs = listOf(
-            Tab("today", "Today", Icons.Filled.Adjust, Icons.Outlined.Adjust),
-            Tab("vitals", "Vitals", Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
-            Tab("activity", "Activity", Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart),
-            Tab("sleep", "Sleep", Icons.Filled.Bedtime, Icons.Outlined.Bedtime),
-            Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
+            Tab("today", L10n.get(R.string.period_today), Icons.Filled.Adjust, Icons.Outlined.Adjust),
+            Tab("vitals", L10n.get(R.string.vitals_title), Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
+            Tab("activity", L10n.get(R.string.tab_activity), Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart),
+            Tab("sleep", L10n.get(R.string.metric_sleep), Icons.Filled.Bedtime, Icons.Outlined.Bedtime),
+            Tab("coach", L10n.get(R.string.tab_coach), Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
 
         // ── Self-update: release-only. Checked on every return to foreground (ON_START also
@@ -703,7 +705,7 @@ fun PulseLoopApp() {
                         }
                     }
                     RecordScreen(
-                        activityName = workoutState.activeSession?.type ?: "Workout",
+                        activityName = workoutState.activeSession?.type ?: L10n.get(R.string.workout_generic),
                         elapsedSeconds = workoutState.elapsedSeconds,
                         distanceMeters = workoutState.distanceMeters,
                         heartRate = workoutState.latestHeartRate,

@@ -1,5 +1,8 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -52,7 +55,7 @@ fun NutritionScreen(onBack: () -> Unit) {
         }
     }
     val dateLabel = remember(todayStart) {
-        java.text.SimpleDateFormat("EEE, MMM d", java.util.Locale.US).format(java.util.Date(todayStart))
+        com.pulseloop.util.LocaleFormats.simpleDateFormat("EEEMMMd", "EEE, MMM d").format(java.util.Date(todayStart))
     }
 
     var meals by remember { mutableStateOf<List<MealEntryEntity>>(emptyList()) }
@@ -85,10 +88,10 @@ fun NutritionScreen(onBack: () -> Unit) {
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                title = { Text("Nutrition") },
+                title = { Text(stringResource(R.string.settings_nutrition)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
                     }
                 },
                 windowInsets = WindowInsets(0, 0, 0, 0),
@@ -104,9 +107,9 @@ fun NutritionScreen(onBack: () -> Unit) {
             // Day navigation — left goes to older dates (higher offset), right goes to today (offset 0).
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { dayOffset++ }) { Icon(Icons.Filled.ChevronLeft, "Previous") }
+                    IconButton(onClick = { dayOffset++ }) { Icon(Icons.Filled.ChevronLeft, stringResource(R.string.action_previous)) }
                     Text(dateLabel, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                    IconButton(onClick = { if (dayOffset > 0) dayOffset-- }, enabled = dayOffset > 0) { Icon(Icons.Filled.ChevronRight, "Next") }
+                    IconButton(onClick = { if (dayOffset > 0) dayOffset-- }, enabled = dayOffset > 0) { Icon(Icons.Filled.ChevronRight, stringResource(R.string.action_next)) }
                 }
             }
 
@@ -117,8 +120,8 @@ fun NutritionScreen(onBack: () -> Unit) {
                 val pct = if (goalCal > 0) (totalCal / goalCal).coerceAtMost(1.0) else 0.0
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = PulseColors.card)) {
                     Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("${totalCal.roundToInt()} kcal", fontSize = 32.sp, fontWeight = FontWeight.Bold)
-                        Text("of ${goalCal.roundToInt()}", color = PulseColors.textMuted)
+                        Text(stringResource(R.string.value_kcal, totalCal.roundToInt()), fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.nutrition_of_goal, goalCal.roundToInt()), color = PulseColors.textMuted)
                         Spacer(Modifier.height(8.dp))
                         LinearProgressIndicator(
                             progress = { pct.toFloat() },
@@ -128,9 +131,9 @@ fun NutritionScreen(onBack: () -> Unit) {
                         )
                         Spacer(Modifier.height(8.dp))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                            MacroBar("Protein", totals.sumOf { it.totalP }, goal?.intakeProteinG ?: 150.0, PulseColors.heartRate)
-                            MacroBar("Carbs", totals.sumOf { it.totalC }, goal?.intakeCarbsG ?: 250.0, PulseColors.calories)
-                            MacroBar("Fat", totals.sumOf { it.totalF }, goal?.intakeFatG ?: 65.0, PulseColors.warning)
+                            MacroBar(stringResource(R.string.macro_protein), totals.sumOf { it.totalP }, goal?.intakeProteinG ?: 150.0, PulseColors.heartRate)
+                            MacroBar(stringResource(R.string.macro_carbs), totals.sumOf { it.totalC }, goal?.intakeCarbsG ?: 250.0, PulseColors.calories)
+                            MacroBar(stringResource(R.string.macro_fat), totals.sumOf { it.totalF }, goal?.intakeFatG ?: 65.0, PulseColors.warning)
                         }
                     }
                 }
@@ -142,14 +145,14 @@ fun NutritionScreen(onBack: () -> Unit) {
                 val typeMeals = meals.filter { it.mealTypeRaw == type }
                 if (typeMeals.isNotEmpty()) {
                     item {
-                        Text(type.replaceFirstChar { it.uppercase() }, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = PulseColors.textSecondary)
+                        Text(mealTypeLabel(type), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = PulseColors.textSecondary)
                     }
                     items(typeMeals, key = { it.id }) { meal ->
                         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = PulseColors.card)) {
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text(meal.name, fontWeight = FontWeight.Medium)
-                                    Text("${meal.calories.roundToInt()} kcal · P${meal.proteinG.roundToInt()} C${meal.carbsG.roundToInt()} F${meal.fatG.roundToInt()}", fontSize = 12.sp, color = PulseColors.textMuted)
+                                    Text(stringResource(R.string.nutrition_meal_line, meal.calories.roundToInt(), meal.proteinG.roundToInt(), meal.carbsG.roundToInt(), meal.fatG.roundToInt()), fontSize = 12.sp, color = PulseColors.textMuted)
                                 }
                                 IconButton(onClick = {
                                     scope.launch {
@@ -157,7 +160,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                                         reload()
                                     }
                                 }) {
-                                    Icon(Icons.Filled.Delete, "Delete", tint = PulseColors.danger, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Filled.Delete, stringResource(R.string.action_delete), tint = PulseColors.danger, modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
@@ -176,7 +179,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                         ) {
                             Icon(Icons.Filled.PhotoCamera, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Photo")
+                            Text(stringResource(R.string.nutrition_photo))
                         }
                         OutlinedButton(
                             onClick = { analysisRequest = AnalysisRequest(startWithCamera = false) },
@@ -184,7 +187,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                         ) {
                             Icon(Icons.Filled.AutoAwesome, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Describe")
+                            Text(stringResource(R.string.nutrition_describe))
                         }
                     }
                 }
@@ -198,7 +201,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                 ) {
                     Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Log Meal")
+                    Text(stringResource(R.string.nutrition_log_meal))
                 }
             }
         }
@@ -273,7 +276,7 @@ private fun MacroBar(label: String, value: Double, goal: Double, color: Color) {
     val pct = if (goal > 0) (value / goal).coerceAtMost(1.0) else 0.0
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, fontSize = 10.sp, color = PulseColors.textMuted)
-        Text("${value.roundToInt()}g", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.value_grams, value.roundToInt()), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         LinearProgressIndicator(
             progress = { pct.toFloat() },
             modifier = Modifier.width(60.dp).height(4.dp),
@@ -324,7 +327,7 @@ fun MealLogDialog(
                     }
                 if (product == null) {
                     // iOS MealLogSheet.swift:128-130.
-                    scanNotice = "Product not found for that barcode. Enter it manually instead."
+                    scanNotice = L10n.get(R.string.nutrition_barcode_not_found)
                 } else {
                     // Clear on success too: two scans in quick succession run two lookups, and
                     // an earlier-started "not found" completing after a later success would
@@ -353,7 +356,7 @@ fun MealLogDialog(
                 throw e
             } catch (e: Exception) {
                 // iOS MealLogSheet.swift:258-260 catch-all.
-                scanNotice = "Couldn't look up that barcode. Check your connection or enter the meal manually."
+                scanNotice = L10n.get(R.string.nutrition_barcode_failed)
             } finally {
                 lookingUp = false
             }
@@ -362,7 +365,7 @@ fun MealLogDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Log Meal") },
+        title = { Text(stringResource(R.string.nutrition_log_meal)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
@@ -377,26 +380,26 @@ fun MealLogDialog(
                     TextButton(onClick = { showScanner = true }, enabled = !lookingUp) {
                         Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Scan barcode")
+                        Text(stringResource(R.string.nutrition_scan_barcode))
                     }
                 }
                 scanNotice?.let {
                     // iOS inlineNotice copy (MealLogSheet.swift:128-130 / :259).
                     Text(it, fontSize = 12.sp, color = PulseColors.warning)
                 }
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(stringResource(R.string.editor_name)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("breakfast", "lunch", "dinner", "snack").forEach { t ->
-                        FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t.replaceFirstChar { it.uppercase() }) })
+                        FilterChip(selected = type == t, onClick = { type = t }, label = { Text(mealTypeLabel(t)) })
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = cal, onValueChange = { cal = it }, label = { Text("kcal") }, modifier = Modifier.weight(1f), singleLine = true)
-                    OutlinedTextField(value = protein, onValueChange = { protein = it }, label = { Text("P(g)") }, modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(value = cal, onValueChange = { cal = it }, label = { Text(stringResource(R.string.unit_kcal)) }, modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(value = protein, onValueChange = { protein = it }, label = { Text(stringResource(R.string.nutrition_p_g)) }, modifier = Modifier.weight(1f), singleLine = true)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = carbs, onValueChange = { carbs = it }, label = { Text("C(g)") }, modifier = Modifier.weight(1f), singleLine = true)
-                    OutlinedTextField(value = fat, onValueChange = { fat = it }, label = { Text("F(g)") }, modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(value = carbs, onValueChange = { carbs = it }, label = { Text(stringResource(R.string.nutrition_c_g)) }, modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(value = fat, onValueChange = { fat = it }, label = { Text(stringResource(R.string.nutrition_f_g)) }, modifier = Modifier.weight(1f), singleLine = true)
                 }
             }
         },
@@ -431,9 +434,9 @@ fun MealLogDialog(
                         userEdited = edited,
                     )
                 })
-            }, enabled = valid) { Text("Save") }
+            }, enabled = valid) { Text(stringResource(R.string.action_save)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 
     if (showScanner) {
