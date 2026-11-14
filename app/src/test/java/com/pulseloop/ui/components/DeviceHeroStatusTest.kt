@@ -112,4 +112,29 @@ class DeviceHeroStatusTest {
         assertEquals("Disconnect", status.actionTitle)
         assertEquals(true, status.actionEnabled)
     }
+
+    @Test
+    fun `bluetooth off explains a disconnected paired ring`() {
+        val s = DeviceHeroStatus.make(
+            state = RingConnectionState.DISCONNECTED, connectedName = null,
+            knownName = "Ale-Hop2211", batteryPercent = 61, lastSyncAt = null, now = now,
+            bluetoothOff = true,
+        )
+        assertEquals("Phone Bluetooth is off", s.statusLine)
+        assertEquals(DeviceHeroStatus.Action.CONNECT, s.action)
+    }
+
+    @Test
+    fun `bluetooth off does not override connected or unpaired`() {
+        val connected = DeviceHeroStatus.make(
+            state = RingConnectionState.CONNECTED, connectedName = "R11",
+            knownName = "R11", batteryPercent = 50, lastSyncAt = null, now = now, bluetoothOff = true,
+        )
+        assertEquals("Connected", connected.statusLine)
+        val unpaired = DeviceHeroStatus.make(
+            state = RingConnectionState.IDLE, connectedName = null,
+            knownName = null, batteryPercent = null, lastSyncAt = null, now = now, bluetoothOff = true,
+        )
+        assertEquals("No ring paired", unpaired.statusLine)
+    }
 }

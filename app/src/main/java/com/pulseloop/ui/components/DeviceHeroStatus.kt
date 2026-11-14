@@ -52,11 +52,12 @@ data class DeviceHeroStatus(
             batteryPercent: Int?,
             lastSyncAt: Long?,
             now: Long,
+            bluetoothOff: Boolean = false,
         ): DeviceHeroStatus {
             val title = connectedName ?: knownName ?: "No ring connected"
 
-            val statusLine: String
-            val statusTint: Color
+            var statusLine: String
+            var statusTint: Color
             when (state) {
                 RingConnectionState.CONNECTED -> {
                     statusLine = "Connected"; statusTint = PulseColors.success
@@ -77,6 +78,10 @@ data class DeviceHeroStatus(
                     statusLine = if (knownName == null) "No ring paired" else "Disconnected"
                     statusTint = PulseColors.textSecondary
                 }
+            }
+            // Phone Bluetooth off explains any not-connected state of a paired ring (#136).
+            if (bluetoothOff && knownName != null && state != RingConnectionState.CONNECTED) {
+                statusLine = "Phone Bluetooth is off"; statusTint = PulseColors.warning
             }
 
             val batteryText = batteryPercent?.let { "${it.coerceIn(0, 100)}%" }

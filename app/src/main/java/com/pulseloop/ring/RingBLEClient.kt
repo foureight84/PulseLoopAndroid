@@ -69,7 +69,9 @@ class RingBLEClient(
         val connectionState: RingConnectionState = RingConnectionState.IDLE,
         val discovered: List<DiscoveredRing> = emptyList(),
         val batteryPercent: Int? = null,
-        val isBluetoothReady: Boolean = false,
+        /** Phone Bluetooth adapter is off (#136). Defaults false so a placeholder state never
+         *  claims it; the client sets it from the adapter at init and on every state change. */
+        val bluetoothOff: Boolean = false,
         val lastError: String? = null,
         val activeDeviceType: RingDeviceType? = null,
         /** Exact catalog model of the active connection (iOS #49), resolved at connect time. */
@@ -271,11 +273,15 @@ class RingBLEClient(
         override fun onReceive(context: Context, intent: android.content.Intent) {
             if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
-                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF ->
-                    scope.launch { onBluetoothOff() }
+                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> scope.launch {
+                    updateState { copy(bluetoothOff = true) }
+                    onBluetoothOff()
+                }
                 // Back on: the message no longer describes anything, even if the ring is out of range.
                 BluetoothAdapter.STATE_ON -> scope.launch {
-                    if (_state.value.lastError == BLUETOOTH_OFF_ERROR) updateState { copy(lastError = null) }
+                    updateState {
+                        copy(bluetoothOff = false, lastError = lastError.takeUnless { it == BLUETOOTH_OFF_ERROR })
+                    }
                 }
             }
         }
@@ -283,6 +289,8 @@ class RingBLEClient(
     private var adapterReceiverRegistered = false
 
     init {
+        // No broadcast arrives for a state the adapter is already in, e.g. a launch with Bluetooth off.
+        updateState { copy(bluetoothOff = !isBluetoothEnabled) }
         startConnectionWatchdog()
         // Bluetooth broadcasts come from a privileged process outside the system UID;
         // NOT_EXPORTED can silently miss them (same as CRPTeardownMonitor).
@@ -555,6 +563,9 @@ class RingBLEClient(
     }
 
     private fun connectionWatchdogTick() {
+        // Keep the UI's Bluetooth-off flag honest if an ACTION_STATE_CHANGED broadcast was missed.
+        val adapterOff = !isBluetoothEnabled
+        if (_state.value.bluetoothOff != adapterOff) updateState { copy(bluetoothOff = adapterOff) }
         if (!bluetoothAdapter.isEnabled || !hasPermissions()) {
             // Fallback for a missed ACTION_STATE_CHANGED broadcast (#136).
             if (!bluetoothAdapter.isEnabled && (bluetoothGatt != null ||
