@@ -188,9 +188,7 @@ fun ZoneLineChart(
 private fun timeLabel(ts: Long, spanMs: Long): String {
     val t = Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault())
     if (spanMs > 48 * 3600_000L) {
-        return "${t.dayOfMonth} ${t.month.name.take(3).lowercase().replaceFirstChar { it.uppercase() }}"
+        return t.format(com.pulseloop.util.LocaleFormats.formatter("dMMM", "d MMM"))
     }
-    val h = t.hour % 12
-    val displayH = if (h == 0) 12 else h
-    return "$displayH ${if (t.hour < 12) "AM" else "PM"}"
+    return t.format(com.pulseloop.util.LocaleFormats.formatter("j", "h a"))
 }

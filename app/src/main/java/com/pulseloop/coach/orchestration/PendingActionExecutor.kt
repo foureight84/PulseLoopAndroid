@@ -1,5 +1,7 @@
 package com.pulseloop.coach.orchestration
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.tools.CoachDataAccess
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.ActivitySessionEntity
@@ -10,12 +12,13 @@ import com.pulseloop.data.entity.ActivitySessionEntity
  * taps Confirm on the action card. Returns a short human result string.
  */
 object PendingActionExecutor {
-    private val activityLabels = mapOf(
-        "walk" to "Walking", "run" to "Running", "cycle" to "Cycling",
-        "gym" to "Gym", "squash" to "Squash", "sport" to "Sport",
-        "yoga" to "Yoga", "dance" to "Dance", "hike" to "Hiking", "other" to "Workout",
-        "outdoor_run" to "Running", "outdoor_walk" to "Walking",
-    )
+    /** The session's display name. `outdoor_*` are older aliases of `run`/`walk`. */
+    internal fun typeLabel(type: String): String = when (type) {
+        "outdoor_run" -> com.pulseloop.ui.components.ActivityMeta.label("run")
+        "outdoor_walk" -> com.pulseloop.ui.components.ActivityMeta.label("walk")
+        "other" -> L10n.get(R.string.workout_generic)
+        else -> com.pulseloop.ui.components.ActivityMeta.label(type)
+    }
 
     suspend fun execute(action: PendingAction, db: PulseLoopDatabase): String {
         // Meal actions (iOS #96) target a MealEntry, not an ActivitySession — branch before
@@ -28,9 +31,9 @@ object PendingActionExecutor {
 
         val sessions = db.activitySessionDao().recent(200)
         val session = sessions.firstOrNull { it.id == action.activityId }
-            ?: return "That workout no longer exists."
+            ?: return L10n.get(R.string.pa_workout_gone)
 
-        val typeLabel = activityLabels[session.type] ?: session.type
+        val typeLabel = typeLabel(session.type)
 
         return when (action.kind) {
             // Meal kinds are handled by the early return above (before the session lookup, since
@@ -46,11 +49,11 @@ object PendingActionExecutor {
                         updatedAt = System.currentTimeMillis(),
                     )
                 )
-                "Deleted the $typeLabel session."
+                L10n.get(R.string.pa_deleted_session, typeLabel)
             }
             PendingActionKind.UPDATE_ACTIVITY_SESSION -> {
                 applyUpdates(db, action.updates, session)
-                "Updated the $typeLabel session."
+                L10n.get(R.string.pa_updated_session, typeLabel)
             }
         }
     }
@@ -64,19 +67,19 @@ object PendingActionExecutor {
      */
     private suspend fun executeMeal(action: PendingAction, db: PulseLoopDatabase): String {
         val entry = db.mealEntryDao().byId(action.activityId)
-            ?: return "That meal no longer exists."
+            ?: return L10n.get(R.string.pa_meal_gone)
         return when (action.kind) {
             PendingActionKind.DELETE_MEAL_ENTRY -> {
                 val name = entry.name
                 db.mealEntryDao().deleteById(entry.id)
-                "Deleted \"$name\"."
+                L10n.get(R.string.pa_deleted_name, name)
             }
             PendingActionKind.UPDATE_MEAL_ENTRY -> {
                 val updated = action.mealUpdates?.let {
                     com.pulseloop.coach.tools.NutritionTools.applyMealUpdates(it, entry)
                 } ?: entry
                 db.mealEntryDao().upsert(updated)
-                "Updated \"${updated.name}\"."
+                L10n.get(R.string.pa_updated_name, updated.name)
             }
             // Unreachable: execute() routes only the two meal kinds here.
             else -> ""

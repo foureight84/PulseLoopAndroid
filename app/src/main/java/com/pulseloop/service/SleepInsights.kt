@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
@@ -354,14 +356,12 @@ object SleepFormat {
     fun duration(minutes: Int?): String {
         if (minutes == null || minutes < 0) return "—"
         val h = minutes / 60; val m = minutes % 60
-        return if (h <= 0) "${m}m" else "${h}h ${m.toString().padStart(2, '0')}m"
+        return if (h <= 0) L10n.get(R.string.duration_m, m) else L10n.get(R.string.duration_hm, h, m)
     }
 
     fun clockTime(ts: Long): String {
         val t = Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault())
-        val h = t.hour % 12; val displayH = if (h == 0) 12 else h
-        val ampm = if (t.hour < 12) "AM" else "PM"
-        return "$displayH:${t.minute.toString().padStart(2, '0')} $ampm"
+        return t.format(com.pulseloop.util.LocaleFormats.time())
     }
 }
 
@@ -387,11 +387,11 @@ data class SleepBar(
 )
 
 object SleepInsights {
-    val rangeHeroLabel = mapOf(
-        SleepRangeKey.DAY to "Last Sleep",
-        SleepRangeKey.WEEK to "Weekly Sleep",
-        SleepRangeKey.MONTH to "Monthly Sleep",
-        SleepRangeKey.YEAR to "Yearly Sleep",
+    val rangeHeroLabel get() = mapOf(
+        SleepRangeKey.DAY to L10n.get(R.string.sleep_last),
+        SleepRangeKey.WEEK to L10n.get(R.string.sleep_weekly),
+        SleepRangeKey.MONTH to L10n.get(R.string.sleep_monthly),
+        SleepRangeKey.YEAR to L10n.get(R.string.sleep_yearly),
     )
 
     private const val minAggNights = 2
@@ -483,43 +483,45 @@ object SleepInsights {
         val deepPct = score.deepPct
         val awakePct = score.awakePct
         val chips = mutableListOf<String>()
-        if (session.totalMinutes in 420..540) chips.add("Good duration")
-        if (deepPct in 13..23) chips.add("Deep sleep balanced")
-        else if (deepPct > 23) chips.add("Deep sleep strong")
-        if (awakePct != null && awakePct <= 10) chips.add("Awake time low")
+        if (session.totalMinutes in 420..540) chips.add(L10n.get(R.string.sc_chip_good_duration))
+        if (deepPct in 13..23) chips.add(L10n.get(R.string.sc_chip_deep_balanced))
+        else if (deepPct > 23) chips.add(L10n.get(R.string.sc_chip_deep_strong))
+        if (awakePct != null && awakePct <= 10) chips.add(L10n.get(R.string.sc_chip_awake_low))
 
         if (score.score >= 85) {
             val body = if ((activitySteps ?: 0) > 5000)
-                "Looks like a strong night after a more active day. Your duration was solid and deep sleep made up a healthy part of the night, which kept the score high."
-            else "Your sleep duration and stage balance were strong. Deep sleep looked supportive, which helped keep the overall score high."
-            return SleepCoach("Strong recovery signal", body, chips.ifEmpty { listOf("Excellent") }.take(3))
+                L10n.get(R.string.sc_strong_active)
+            else L10n.get(R.string.sc_strong)
+            return SleepCoach(L10n.get(R.string.sc_strong_title), body, chips.ifEmpty { listOf(L10n.get(R.string.quality_excellent)) }.take(3))
         }
         if (awakePct != null && awakePct > 15) {
             return SleepCoach(
-                "Good sleep, with some restlessness",
-                "You slept long enough, but awake time was a bit elevated. If this repeats, look at late caffeine, alcohol, temperature, or stress near bedtime.",
-                (listOf("Awake time elevated") + chips).take(3),
+                L10n.get(R.string.sc_restless_title),
+                L10n.get(R.string.sc_restless),
+                (listOf(L10n.get(R.string.sc_chip_awake_elevated)) + chips).take(3),
             )
         }
         if (session.totalMinutes < 390) {
             return SleepCoach(
-                "Duration held the score back",
-                "The stage mix was useful, but total sleep time was short for a full recovery window. A slightly earlier wind-down would likely improve tomorrow's score.",
-                (listOf("Short duration") + chips).take(3),
+                L10n.get(R.string.sc_short_title),
+                L10n.get(R.string.sc_short),
+                (listOf(L10n.get(R.string.sc_chip_short)) + chips).take(3),
             )
         }
         return SleepCoach(
-            "Solid night overall",
-            "Your sleep was in a workable range, with the score shaped mostly by duration and stage balance. Deep and light sleep were readable enough to give a useful recovery snapshot.",
-            chips.ifEmpty { listOf("Good") }.take(3),
+            L10n.get(R.string.sc_solid_title),
+            L10n.get(R.string.sc_solid),
+            chips.ifEmpty { listOf(L10n.get(R.string.quality_good)) }.take(3),
         )
     }
 
-    val dayNoDataCoach = SleepCoach(
-        "No sleep tracked last night",
-        "I don't see sleep data for last night. Wear your ring overnight and sync in the morning so I can compare your sleep against your baseline.",
-        emptyList(),
-    )
+    /** A getter, not a stored value, so the copy follows a language change. */
+    val dayNoDataCoach: SleepCoach
+        get() = SleepCoach(
+            L10n.get(R.string.sc_none_title),
+            L10n.get(R.string.sc_none),
+            emptyList(),
+        )
 
     fun aggregateCoach(
         range: SleepRangeKey,
@@ -530,13 +532,15 @@ object SleepInsights {
     ): SleepCoach {
         val valid = validSessions(sessions)
         val avgMin = averageDuration(valid)
-        val periodWord = when (range) { SleepRangeKey.WEEK -> "week"; SleepRangeKey.MONTH -> "month"; else -> "year" }
-
         if (valid.size < minAggNights) {
-            val nightWord = if (valid.size == 1) "night" else "nights"
+            val (titleRes, bodyRes) = when (range) {
+                SleepRangeKey.WEEK -> R.string.sc_few_week_title to R.plurals.sc_few_week
+                SleepRangeKey.MONTH -> R.string.sc_few_month_title to R.plurals.sc_few_month
+                else -> R.string.sc_few_year_title to R.plurals.sc_few_year
+            }
             return SleepCoach(
-                "Not enough $periodWord data yet",
-                "I only have ${valid.size} tracked $nightWord for this $periodWord. Wear the ring overnight for a few more nights and I'll build a reliable ${periodWord}ly picture.",
+                L10n.get(titleRes),
+                L10n.plural(bodyRes, valid.size, valid.size),
                 listOf(nightsTrackedChip(valid.size, expectedNights)),
             )
         }
@@ -546,59 +550,58 @@ object SleepInsights {
         durationConsistency(valid)?.let { consistencyChip(it) }?.let { chips.add(it) }
 
         val avgText = SleepFormat.duration(avgMin)
-        val coveragePhrase = "${valid.size} of $expectedNights nights tracked"
+        val coveragePhrase = L10n.get(R.string.sleep_tracked_of, valid.size, expectedNights)
 
         return when (range) {
             SleepRangeKey.WEEK -> {
                 val incomplete = valid.size < expectedNights
                 val missing = expectedNights - valid.size
-                val missingWord = if (missing == 1) "night" else "nights"
                 val body = if (incomplete)
-                    "You averaged $avgText across ${valid.size} tracked nights this week. That's a useful read, but $missing missing $missingWord mean the trend is still incomplete."
-                else "You averaged $avgText across the full week. Your nights were tracked consistently, so this is a dependable picture of where your sleep sits right now."
-                SleepCoach("Your week at a glance", body, chips.take(3))
+                    L10n.plural(R.plurals.sc_week_incomplete, valid.size, avgText, valid.size, L10n.plural(R.plurals.sc_missing_nights, missing, missing))
+                else L10n.get(R.string.sc_week_full, avgText)
+                SleepCoach(L10n.get(R.string.sc_week_title), body, chips.take(3))
             }
             SleepRangeKey.MONTH -> {
                 val sparse = valid.size.toDouble() < expectedNights.toDouble() * 0.5
                 val body = if (sparse)
-                    "Your monthly average is $avgText, but coverage is low ($coveragePhrase), so I'd treat that number cautiously. More nights tracked will sharpen the trend."
-                else "Your monthly average is $avgText across $coveragePhrase. The biggest lever is consistency — a few short nights move this number more than any single great one."
-                SleepCoach("Your month in sleep", body, chips.take(3))
+                    L10n.get(R.string.sc_month_sparse, avgText, coveragePhrase)
+                else L10n.get(R.string.sc_month, avgText, coveragePhrase)
+                SleepCoach(L10n.get(R.string.sc_month_title), body, chips.take(3))
             }
             else -> SleepCoach(
-                "Your long-term sleep trend",
-                "Across the year your tracked average is $avgText over ${valid.size} nights. The long-term trend is still forming — as more months fill in, I'll be able to compare seasonal changes and consistency.",
+                L10n.get(R.string.sc_year_title),
+                L10n.plural(R.plurals.sc_year, valid.size, avgText, valid.size),
                 chips.take(3),
             )
         }
     }
 
-    private fun nightsTrackedChip(valid: Int, expected: Int) = "$valid of $expected tracked"
+    private fun nightsTrackedChip(valid: Int, expected: Int) = L10n.get(R.string.sc_chip_tracked, valid, expected)
 
     private fun goalDeltaChip(avgMin: Int, goalMin: Int?): String? {
         if (goalMin == null) return null
         val delta = avgMin - goalMin
-        if (abs(delta) <= 20) return "On target"
-        return if (delta < 0) "Below goal" else "Above goal"
+        if (abs(delta) <= 20) return L10n.get(R.string.sc_chip_on_target)
+        return if (delta < 0) L10n.get(R.string.sc_chip_below_goal) else L10n.get(R.string.sc_chip_above_goal)
     }
 
     private fun consistencyChip(sd: Double): String? = when {
-        sd <= 40 -> "Consistent"
-        sd >= 80 -> "Variable nights"
+        sd <= 40 -> L10n.get(R.string.sc_chip_consistent)
+        sd >= 80 -> L10n.get(R.string.sc_chip_variable)
         else -> null
     }
 
     // ── No-data states ───────────────────────────────────────────────────
 
     fun noDataState(range: SleepRangeKey): SleepNoDataState = when (range) {
-        SleepRangeKey.DAY -> SleepNoDataState("Last Sleep", "No sleep captured last night",
-            "Wear your ring overnight so PulseLoop can track your next night.")
-        SleepRangeKey.WEEK -> SleepNoDataState("Weekly Sleep", "Not enough weekly data",
-            "Wear your ring overnight for a few nights to build a weekly view.")
-        SleepRangeKey.MONTH -> SleepNoDataState("Monthly Sleep", "Not enough monthly data",
-            "Track more nights this month to see a monthly average.")
-        SleepRangeKey.YEAR -> SleepNoDataState("Yearly Sleep", "Not enough yearly data",
-            "Long-term insights appear as more nights are tracked.")
+        SleepRangeKey.DAY -> SleepNoDataState(L10n.get(R.string.sleep_last), L10n.get(R.string.nd_day_title),
+            L10n.get(R.string.nd_day))
+        SleepRangeKey.WEEK -> SleepNoDataState(L10n.get(R.string.sleep_weekly), L10n.get(R.string.nd_week_title),
+            L10n.get(R.string.nd_week))
+        SleepRangeKey.MONTH -> SleepNoDataState(L10n.get(R.string.sleep_monthly), L10n.get(R.string.nd_month_title),
+            L10n.get(R.string.nd_month))
+        SleepRangeKey.YEAR -> SleepNoDataState(L10n.get(R.string.sleep_yearly), L10n.get(R.string.nd_year_title),
+            L10n.get(R.string.nd_year))
     }
 
     // ── Histogram builders ───────────────────────────────────────────────
@@ -616,7 +619,7 @@ object SleepInsights {
         val bars = mutableListOf<SleepBar>()
         var cursor = Instant.ofEpochMilli(start).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.DAYS)
         val last = Instant.ofEpochMilli(end).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.DAYS)
-        val weekdayFmt = DateTimeFormatter.ofPattern("EEEEE")
+        val weekdayFmt = DateTimeFormatter.ofPattern("EEEEE", java.util.Locale.getDefault())
 
         while (!cursor.isAfter(last)) {
             val cursorMs = cursor.toInstant().toEpochMilli()
@@ -641,7 +644,7 @@ object SleepInsights {
             val t = Instant.ofEpochMilli(it.date).atZone(ZoneId.systemDefault())
             "${t.year}-${t.monthValue}"
         }
-        val monthFmt = DateTimeFormatter.ofPattern("MMM")
+        val monthFmt = DateTimeFormatter.ofPattern("MMM", java.util.Locale.getDefault())
         val endZ = Instant.ofEpochMilli(end).atZone(ZoneId.systemDefault())
         return (11 downTo 0).map { i ->
             val monthDate = endZ.minusMonths(i.toLong())

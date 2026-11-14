@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.content.Context
 import android.content.Intent
 import androidx.work.WorkManager
@@ -232,7 +234,7 @@ class LiveWorkoutManager(
         serviceIntent.apply {
             val s = _state.value
             val notification = Intent(context, WorkoutForegroundService::class.java).apply {
-                putExtra("activityName", s.activeSession?.let { ActivityMeta.label(it.type) } ?: "Workout")
+                putExtra("activityName", s.activeSession?.let { ActivityMeta.label(it.type) } ?: L10n.get(R.string.workout_generic))
                 putExtra("status", if (s.isPaused) "paused" else "recording")
                 putExtra("elapsedSeconds", s.elapsedSeconds)
                 putExtra("distanceMeters", s.distanceMeters)

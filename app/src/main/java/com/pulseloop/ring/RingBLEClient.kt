@@ -1,5 +1,7 @@
 package com.pulseloop.ring
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.*
@@ -287,7 +289,7 @@ class RingBLEClient(
             return
         }
         if (!bluetoothAdapter.isEnabled) {
-            updateState { copy(lastError = "Bluetooth is not powered on") }
+            updateState { copy(lastError = L10n.get(R.string.ble_off)) }
             return
         }
         // A user-initiated scan (pairing screen) must never be hijacked by a leftover
@@ -324,7 +326,7 @@ class RingBLEClient(
         val target = discoveredPeripherals[id] ?: run {
             try { bluetoothAdapter.getRemoteDevice(id) } catch (_: Exception) { null }
         } ?: run {
-            updateState { copy(lastError = "Ring no longer available; scan again.") }
+            updateState { copy(lastError = L10n.get(R.string.ble_ring_gone)) }
             return
         }
         val discoveredRing = _state.value.discovered.firstOrNull { it.id == id }
@@ -411,7 +413,7 @@ class RingBLEClient(
                 // The classic wedge: the ring still thinks it's connected (stale ACL in
                 // the phone's stack) so it never advertises. Only the user can fix that.
                 updateState { copy(lastError =
-                    "Ring not found in scans. It may be held by a stale Bluetooth connection — try toggling Bluetooth off and on.") }
+                    L10n.get(R.string.ble_stale)) }
             }
         }
         reconnectAttempts++
@@ -1562,7 +1564,7 @@ class RingBLEClient(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            updateState { copy(lastError = "Scan failed: $errorCode") }
+            updateState { copy(lastError = L10n.get(R.string.ble_scan_failed, errorCode)) }
         }
     }
 

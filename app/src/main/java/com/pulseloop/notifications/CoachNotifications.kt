@@ -1,5 +1,6 @@
 package com.pulseloop.notifications
 
+import com.pulseloop.R
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -31,9 +32,9 @@ object CoachNotifications {
     fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "Coach Check-ins", NotificationManager.IMPORTANCE_DEFAULT
+                CHANNEL_ID, context.getString(R.string.channel_coach), NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Daily AI-generated health insights based on your ring data"
+                description = context.getString(R.string.channel_coach_desc)
             }
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(channel)

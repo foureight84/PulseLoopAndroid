@@ -1,5 +1,7 @@
 package com.pulseloop.health
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.content.Context
 import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
@@ -32,30 +34,29 @@ class HealthConnectRemovalWorker(
     override suspend fun doWork(): Result {
         val store = HealthConnectPrefsStore.get(applicationContext)
         if (HealthConnectSdk.availability(applicationContext) != HealthConnectAvailability.AVAILABLE) {
-            store.update { it.copy(removalStatus = "Health Connect isn't available right now. Try again.") }
+            store.update { it.copy(removalStatus = L10n.get(R.string.hcr_unavailable)) }
             return Result.success()
         }
         val client = runCatching { HealthConnectClient.getOrCreate(applicationContext) }.getOrNull()
         if (client == null) {
-            store.update { it.copy(removalStatus = "Could not reach Health Connect. Try again.") }
+            store.update { it.copy(removalStatus = L10n.get(R.string.hcr_unreachable)) }
             return Result.success()
         }
         return try {
             val result = HealthConnectRemoval.removeAll(applicationContext, client, store)
             val message = when {
                 result.failedTypes > 0 ->
-                    "Removed PulseLoop data, but ${result.failedTypes} type(s) could not be deleted — try again."
+                    L10n.get(R.string.hcr_partial, result.failedTypes)
                 result.deletedTypes == 0 ->
-                    "Nothing to remove: PulseLoop has no write permissions left, so it can't delete " +
-                        "what it wrote. Delete it in the Health Connect app, or re-grant and try again."
-                else -> "Removed PulseLoop data from Health Connect."
+                    L10n.get(R.string.hcr_no_permission)
+                else -> L10n.get(R.string.hcr_done)
             }
             store.update { it.copy(removalStatus = message) }
             Log.i(TAG, "removal done: $message")
             Result.success()
         } catch (e: Exception) {
             Log.w(TAG, "removal failed", e)
-            store.update { it.copy(removalStatus = "Could not remove PulseLoop data. Try again.") }
+            store.update { it.copy(removalStatus = L10n.get(R.string.hcr_failed)) }
             Result.success()
         }
     }
