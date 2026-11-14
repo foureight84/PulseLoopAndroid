@@ -1,5 +1,7 @@
 # PulseLoop Android
 
+🇷🇺 [Русская версия README](README.ru.md)
+
 > ⚠️ **Disclaimer:** This app is provided as-is and is not a medical application.
 > The rings are not medical devices. This app does not replace professional
 > healthcare. Always consult your doctor for any medical concerns.
