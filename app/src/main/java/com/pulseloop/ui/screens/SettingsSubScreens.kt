@@ -1,5 +1,9 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.pluralStringResource
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -118,7 +122,7 @@ private fun SettingsSubScreen(
                 title = { Text(title) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
                     }
                 },
                 windowInsets = WindowInsets(0, 0, 0, 0),
@@ -211,24 +215,24 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
     // / o4-mini are gone from it (issue #77), and a stored one reads as the default.
     val models = com.pulseloop.coach.config.OpenAIModel.entries.map { it.slug to it.blurb }
 
-    SettingsSubScreen(title = "AI Coach", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.coach_title), onBack = onBack) {
         // AI Coach section — ported from CoachSettingsSection.swift
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("AI Coach", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.coach_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 // Readiness differs by provider: the local mode is gated by the server address,
                 // not a key, so the old key-only check told a correctly-configured user their
                 // "API key" was missing.
                 val isLocal = providerStore.providerMode == CoachProviderMode.LOCAL_OPENAI_COMPAT
                 val ready = if (isLocal) providerStore.hasLocalBaseUrl else keyStore.apiKey.isNotBlank()
-                val activeModel = if (isLocal) providerStore.localModel.ifBlank { "local server" }
+                val activeModel = if (isLocal) providerStore.localModel.ifBlank { context.getString(R.string.coach_local_server) }
                     else selectedModel
                 Text(
-                    if (coachEnabled && ready) "Active — $activeModel"
-                    else if (coachEnabled && isLocal) "Server address needed"
-                    else if (coachEnabled) "API key needed"
-                    else "Disabled",
+                    if (coachEnabled && ready) stringResource(R.string.coach_status_active, activeModel)
+                    else if (coachEnabled && isLocal) stringResource(R.string.coach_status_server_needed)
+                    else if (coachEnabled) stringResource(R.string.coach_status_key_needed)
+                    else stringResource(R.string.status_disabled),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -236,7 +240,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
 
                 // Master toggle
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Enable AI Coach")
+                    Text(stringResource(R.string.coach_enable))
                     Switch(checked = coachEnabled, onCheckedChange = { enabled ->
                         coachEnabled = enabled; keyStore.coachEnabled = enabled
                         if (!enabled) {
@@ -254,7 +258,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                 if (checkInPermissionDenied) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Notifications are off for PulseLoop. Turn them on in Android Settings to get check-ins.",
+                        stringResource(R.string.coach_notifications_off),
                         style = MaterialTheme.typography.bodySmall,
                         color = PulseColors.danger,
                     )
@@ -304,13 +308,13 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     val providerOptions = listOf(
                         CoachProviderMode.USER_OPENAI_KEY to "OpenAI",
                         CoachProviderMode.USER_GEMINI_KEY to "Google Gemini",
-                        CoachProviderMode.USER_OPENROUTER_KEY to "OpenRouter (100+ models)",
+                        CoachProviderMode.USER_OPENROUTER_KEY to stringResource(R.string.coach_provider_openrouter),
                         CoachProviderMode.USER_MINIMAX_KEY to "MiniMax",
-                        CoachProviderMode.LOCAL_OPENAI_COMPAT to "Local / self-hosted (no key needed)",
+                        CoachProviderMode.LOCAL_OPENAI_COMPAT to stringResource(R.string.coach_provider_local),
                     )
                     val providerLabel = providerOptions.firstOrNull { it.first == providerMode }?.second ?: "OpenAI"
 
-                    Text("Provider", style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(R.string.coach_provider), style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(4.dp))
                     var providerExpanded by remember { mutableStateOf(false) }
                     Box {
@@ -357,7 +361,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 IconButton(onClick = onVisibility) {
                                     Icon(
                                         if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                        contentDescription = "Toggle visibility"
+                                        contentDescription = stringResource(R.string.action_toggle_visibility)
                                     )
                                 }
                             },
@@ -365,15 +369,15 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Button(onClick = save, enabled = value.isNotBlank(), modifier = Modifier.weight(1f)) {
-                                Text(if (saved) "Update Key" else "Save Key")
+                                Text(if (saved) stringResource(R.string.coach_key_update) else stringResource(R.string.coach_key_save))
                             }
                             if (saved) {
-                                OutlinedButton(onClick = onRemove, modifier = Modifier.weight(1f)) { Text("Remove") }
+                                OutlinedButton(onClick = onRemove, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.action_remove)) }
                             }
                         }
                         if (justSaved) {
                             Text(
-                                "Saved ✓",
+                                stringResource(R.string.status_saved_check),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = PulseColors.success,
                                 modifier = Modifier.padding(top = 4.dp),
@@ -413,7 +417,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 onListing = { liveListing = it },
                             )
                             KeyField(
-                                label = "Gemini API Key", value = geminiKey, visible = geminiKeyVisible,
+                                label = stringResource(R.string.coach_key_label, "Gemini"), value = geminiKey, visible = geminiKeyVisible,
                                 saved = providerStore.hasGeminiKey,
                                 onValue = { geminiKey = it }, onVisibility = { geminiKeyVisible = !geminiKeyVisible },
                                 onSave = { providerStore.geminiApiKey = geminiKey; keySaves++ },
@@ -433,13 +437,13 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             OutlinedTextField(
                                 value = orModel,
                                 onValueChange = { orModel = it; providerStore.openRouterModel = it },
-                                label = { Text("Custom model slug (vendor/model)") },
+                                label = { Text(stringResource(R.string.coach_custom_slug)) },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                             )
                             Spacer(Modifier.height(8.dp))
                             KeyField(
-                                label = "OpenRouter API Key", value = orKey, visible = orKeyVisible,
+                                label = stringResource(R.string.coach_key_label, "OpenRouter"), value = orKey, visible = orKeyVisible,
                                 saved = providerStore.hasOpenRouterKey,
                                 onValue = { orKey = it }, onVisibility = { orKeyVisible = !orKeyVisible },
                                 onSave = { providerStore.openRouterApiKey = orKey; keySaves++ },
@@ -448,14 +452,14 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             Spacer(Modifier.height(8.dp))
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
-                                    Text("Privacy routing")
-                                    Text("Only providers that don't retain data", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(stringResource(R.string.coach_privacy_routing))
+                                    Text(stringResource(R.string.coach_privacy_routing_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Switch(checked = orPrivacy, onCheckedChange = { orPrivacy = it; providerStore.orPrivacyRouting = it })
                             }
                             ModelDropdown(
-                                "Route by", orSort ?: "auto",
-                                listOf("auto" to "Balanced (default)", "price" to "Cheapest first", "throughput" to "Fastest first", "latency" to "Lowest latency first"),
+                                stringResource(R.string.coach_route_by), orSort ?: "auto",
+                                listOf("auto" to stringResource(R.string.coach_route_auto), "price" to stringResource(R.string.coach_route_price), "throughput" to stringResource(R.string.coach_route_throughput), "latency" to stringResource(R.string.coach_route_latency)),
                             ) { providerStore.orProviderSort = it.takeIf { s -> s != "auto" }; orSort = providerStore.orProviderSort }
                         }
                         CoachProviderMode.USER_MINIMAX_KEY -> {
@@ -467,7 +471,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 onListing = { liveListing = it },
                             )
                             KeyField(
-                                label = "MiniMax API Key", value = minimaxKey, visible = minimaxKeyVisible,
+                                label = stringResource(R.string.coach_key_label, "MiniMax"), value = minimaxKey, visible = minimaxKeyVisible,
                                 saved = providerStore.hasMinimaxKey,
                                 onValue = { minimaxKey = it }, onVisibility = { minimaxKeyVisible = !minimaxKeyVisible },
                                 onSave = { providerStore.minimaxApiKey = minimaxKey; keySaves++ },
@@ -487,7 +491,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                     localProbeResult = null; localProbeOk = false
                                     localProbeNotes = emptyList(); localDiscovered = emptyList()
                                 },
-                                label = { Text("Server address") },
+                                label = { Text(stringResource(R.string.coach_server_address)) },
                                 placeholder = { Text("http://192.168.1.50:11434") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
@@ -496,8 +500,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             )
                             Text(
                                 urlProblem?.let { LocalEndpoint.message(it) }
-                                    ?: "Default ports — Ollama 11434 · LM Studio 1234 · llama.cpp 8080 · vLLM 8000 · SGLang 30000. " +
-                                       "The /v1 path is added for you.",
+                                    ?: stringResource(R.string.coach_default_ports),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (urlProblem != null) MaterialTheme.colorScheme.error
                                     else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -559,18 +562,17 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                             localProbeOk = false; localProbeResult = e.reason
                                         } catch (e: Exception) {
                                             localProbeOk = false
-                                            localProbeResult = e.message ?: "Couldn't reach the server."
+                                            localProbeResult = e.message ?: context.getString(R.string.coach_server_unreachable)
                                         }
                                         localProbeBusy = false
                                     }
                                 },
                                 enabled = localBaseUrl.isNotBlank() && urlProblem == null && !localProbeBusy,
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text(if (localProbeBusy) "Detecting…" else "Detect server & configure") }
+                            ) { Text(if (localProbeBusy) stringResource(R.string.coach_detecting) else stringResource(R.string.coach_detect)) }
                             if (localProbeBusy) {
                                 Text(
-                                    "Sending three tiny test messages. This can take a minute if the model " +
-                                    "still has to load.",
+                                    stringResource(R.string.coach_detect_hint),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(top = 4.dp),
@@ -598,7 +600,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             Spacer(Modifier.height(8.dp))
                             if (localDiscovered.isNotEmpty()) {
                                 ModelDropdown(
-                                    "Model", localModel.ifBlank { "Choose a model" },
+                                    stringResource(R.string.coach_model), localModel.ifBlank { context.getString(R.string.coach_choose_model) },
                                     localDiscovered.map { it to "" },
                                 ) { localModel = it; providerStore.localModel = it }
                             }
@@ -607,7 +609,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             OutlinedTextField(
                                 value = localModel,
                                 onValueChange = { localModel = it; providerStore.localModel = it },
-                                label = { Text("Model name") },
+                                label = { Text(stringResource(R.string.coach_model_name)) },
                                 placeholder = { Text("qwen3:8b") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
@@ -615,14 +617,14 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             Spacer(Modifier.height(8.dp))
 
                             KeyField(
-                                label = "API key (optional)", value = localKey, visible = localKeyVisible,
+                                label = stringResource(R.string.coach_key_optional), value = localKey, visible = localKeyVisible,
                                 saved = providerStore.hasLocalKey,
                                 onValue = { localKey = it }, onVisibility = { localKeyVisible = !localKeyVisible },
                                 onSave = { providerStore.localApiKey = localKey },
                                 onRemove = { localKey = ""; providerStore.localApiKey = "" },
                             )
                             Text(
-                                "Only needed if you started the server with --api-key. Leave blank otherwise.",
+                                stringResource(R.string.coach_key_optional_hint),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -630,10 +632,9 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             Spacer(Modifier.height(8.dp))
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
-                                    Text("Tool calling")
+                                    Text(stringResource(R.string.coach_tool_calling))
                                     Text(
-                                        "Lets the coach read your data. Detect sets this for you; turn it off " +
-                                        "if your server rejects tools (vLLM needs --enable-auto-tool-choice).",
+                                        stringResource(R.string.coach_tool_calling_desc),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -645,7 +646,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
 
                             Spacer(Modifier.height(8.dp))
                             ModelDropdown(
-                                "Response format", localStructured.label,
+                                stringResource(R.string.coach_response_format), localStructured.label,
                                 LocalStructuredOutput.entries.map { it.label to it.blurb },
                             ) { picked ->
                                 val mode = LocalStructuredOutput.entries.first { it.label == picked }
@@ -659,7 +660,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                         localMaxTokens = it.filter { c -> c.isDigit() }
                                         providerStore.localMaxTokens = localMaxTokens.toIntOrNull() ?: 0
                                     },
-                                    label = { Text("Max tokens") },
+                                    label = { Text(stringResource(R.string.coach_max_tokens)) },
                                     placeholder = { Text("auto") },
                                     modifier = Modifier.weight(1f),
                                     singleLine = true,
@@ -671,7 +672,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                         localTimeout = it.filter { c -> c.isDigit() }
                                         localTimeout.toIntOrNull()?.let { v -> providerStore.localTimeoutSeconds = v }
                                     },
-                                    label = { Text("Timeout (s)") },
+                                    label = { Text(stringResource(R.string.coach_timeout)) },
                                     modifier = Modifier
                                         .weight(1f)
                                         // The store clamps to 10..1800 on write, and a blank field
@@ -689,8 +690,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 )
                             }
                             Text(
-                                "Leave max tokens blank to let the server decide. Raise the timeout for a large " +
-                                "model on CPU — a slow reply is not retried.",
+                                stringResource(R.string.coach_tokens_hint),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 4.dp),
@@ -706,7 +706,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 onListing = { liveListing = it },
                             )
                             KeyField(
-                                label = "OpenAI API Key", value = apiKey, visible = apiKeyVisible,
+                                label = stringResource(R.string.coach_key_label, "OpenAI"), value = apiKey, visible = apiKeyVisible,
                                 saved = keyStore.apiKey.isNotBlank(),
                                 onValue = { apiKey = it }, onVisibility = { apiKeyVisible = !apiKeyVisible },
                                 onSave = { keyStore.apiKey = apiKey; keySaves++ },
@@ -716,7 +716,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Stored securely in Android Keystore. Never leaves your device except to call the model. Provider changes apply from your next message.",
+                        stringResource(R.string.coach_key_storage_note),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -741,17 +741,17 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         val shownEffort = com.pulseloop.coach.config.ReasoningEfforts.resolve(effortProvider, effortModel, reasoningEffort, liveEntry)
                         Spacer(Modifier.height(8.dp))
                         ModelDropdown(
-                            "Reasoning effort",
-                            com.pulseloop.coach.config.ReasoningEffort.fromRaw(shownEffort)?.label ?: "Default",
-                            listOf("default" to "Model decides (default)") + effortOptions.map { it.rawValue to it.label },
+                            stringResource(R.string.coach_reasoning_effort),
+                            com.pulseloop.coach.config.ReasoningEffort.fromRaw(shownEffort)?.label ?: stringResource(R.string.coach_effort_default),
+                            listOf("default" to stringResource(R.string.coach_effort_model_decides)) + effortOptions.map { it.rawValue to it.label },
                         ) { providerStore.reasoningEffort = it.takeIf { s -> s != "default" }; reasoningEffort = providerStore.reasoningEffort }
                     }
 
                     // Image attachments (iOS #31): gates the attach button in the coach chat.
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("Image attachments")
-                            Text("Attach photos to coach messages", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(stringResource(R.string.coach_image_attachments))
+                            Text(stringResource(R.string.coach_image_attachments_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = imageInput, onCheckedChange = { imageInput = it; providerStore.imageInputEnabled = it })
                     }
@@ -765,12 +765,12 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         providerMode != CoachProviderMode.LOCAL_OPENAI_COMPAT) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("Web Search")
-                                Text("Uses additional tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(stringResource(R.string.coach_web_search))
+                                Text(stringResource(R.string.coach_web_search_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 // Free-tier Gemini keys can be refused Google Search grounding (HTTP 429)
                                 // while every other call works; the coach then answers without it (issue #123).
                                 if (providerMode == CoachProviderMode.USER_GEMINI_KEY) {
-                                    Text("Google Search grounding may need a paid Gemini plan — free-tier keys can be refused, and the coach then answers without web results.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(stringResource(R.string.coach_gemini_search_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                             Switch(checked = webSearch, onCheckedChange = {
@@ -780,8 +780,8 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("Write Actions")
-                            Text("Set goals, log, edit data", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(stringResource(R.string.coach_write_actions))
+                            Text(stringResource(R.string.coach_write_actions_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = writeTools, onCheckedChange = {
                             writeTools = it; keyStore.writeToolsEnabled = it
@@ -789,8 +789,8 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("Live Measurements")
-                            Text("Trigger real-time ring readings", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(stringResource(R.string.coach_live_measurements))
+                            Text(stringResource(R.string.coach_live_measurements_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = liveMeasurements, onCheckedChange = {
                             liveMeasurements = it; keyStore.liveMeasurementsEnabled = it
@@ -798,8 +798,8 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("Use location & weather")
-                            Text("Grounds suggestions in your city's current weather", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(stringResource(R.string.coach_location_weather))
+                            Text(stringResource(R.string.coach_location_weather_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = environmentContext, onCheckedChange = { setEnvironmentContext(it) })
                     }
@@ -812,9 +812,9 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Coach Memory", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(stringResource(R.string.coach_memory), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         TextButton(onClick = { showMemory = !showMemory }) {
-                            Text(if (showMemory) "Hide" else "Show (${memories.size})")
+                            Text(if (showMemory) stringResource(R.string.action_hide) else stringResource(R.string.action_show_count, memories.size))
                         }
                     }
                     if (showMemory) {
@@ -832,7 +832,7 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                     IconButton(onClick = {
                                         scope.launch { db.coachMemoryDao().deleteByKey(memory.key) }
                                     }) {
-                                        Icon(Icons.Filled.Delete, "Delete", tint = MaterialTheme.colorScheme.error)
+                                        Icon(Icons.Filled.Delete, stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }
@@ -846,13 +846,13 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
     if (askEnableCheckIns) {
         AlertDialog(
             onDismissRequest = { askEnableCheckIns = false },
-            title = { Text("Enable Coach Check-Ins?") },
-            text = { Text("Get a daily check-in from your coach. You can change this anytime in Coach Check-Ins.") },
+            title = { Text(stringResource(R.string.checkins_enable_title)) },
+            text = { Text(stringResource(R.string.checkins_enable_body)) },
             confirmButton = {
-                TextButton(onClick = { askEnableCheckIns = false; enableCheckIns() }) { Text("Enable") }
+                TextButton(onClick = { askEnableCheckIns = false; enableCheckIns() }) { Text(stringResource(R.string.action_enable)) }
             },
             dismissButton = {
-                TextButton(onClick = { askEnableCheckIns = false }) { Text("Not now") }
+                TextButton(onClick = { askEnableCheckIns = false }) { Text(stringResource(R.string.action_not_now)) }
             },
         )
     }
@@ -929,14 +929,14 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    SettingsSubScreen(title = "Coach Check-Ins", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_checkins), onBack = onBack) {
         if (!coachEnabled) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("AI Coach is off", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.checkins_coach_off), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Enable the AI Coach to change these — daily check-ins are written by the coach from your recent trends.",
+                        stringResource(R.string.checkins_coach_off_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -946,11 +946,11 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Daily check-ins", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.checkins_daily), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(12.dp))
 
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Daily Check-in Notifications")
+                    Text(stringResource(R.string.checkins_daily_notifications))
                     Switch(
                         enabled = coachEnabled,
                         checked = notificationEnabled,
@@ -960,7 +960,7 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
 
                 if (notifPermissionDenied) {
                     Text(
-                        "Notifications are disabled for PulseLoop in Android Settings.",
+                        stringResource(R.string.notifications_disabled_system),
                         style = MaterialTheme.typography.bodySmall,
                         color = PulseColors.danger,
                     )
@@ -971,7 +971,7 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
                     // Morning time picker
                     var morningHour by remember { mutableStateOf(keyStore.morningHour) }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Morning")
+                        Text(stringResource(R.string.checkins_morning))
                         var amExpanded by remember { mutableStateOf(false) }
                         Box {
                             OutlinedButton(enabled = coachEnabled, onClick = { amExpanded = true }) {
@@ -991,7 +991,7 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
                     // Evening time picker
                     var eveningHour by remember { mutableStateOf(keyStore.eveningHour) }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Evening")
+                        Text(stringResource(R.string.checkins_evening))
                         var pmExpanded by remember { mutableStateOf(false) }
                         Box {
                             OutlinedButton(enabled = coachEnabled, onClick = { pmExpanded = true }) {
@@ -1015,14 +1015,14 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
                             scope.launch {
                                 CoachNotifications.showNow(
                                     context,
-                                    "PulseLoop Coach",
-                                    "This is a test check-in notification.",
+                                    context.getString(R.string.checkins_test_title),
+                                    context.getString(R.string.checkins_test_body),
                                 )
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Send Test Check-in Now")
+                        Text(stringResource(R.string.checkins_send_test))
                     }
                 }
             }
@@ -1032,16 +1032,16 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
         // NotificationsSettingsView section): a local notification at <20% / <10%, once per day.
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Ring battery alerts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.battery_alerts_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Get notified when your ring drops below 20% and 10%, so tracking doesn't stop mid-day.",
+                    stringResource(R.string.battery_alerts_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Low Battery Notifications")
+                    Text(stringResource(R.string.battery_alerts_switch))
                     Switch(
                         checked = batteryAlertsEnabled,
                         onCheckedChange = { setBatteryAlerts(it) },
@@ -1049,7 +1049,7 @@ fun CheckInsSettingsScreen(onBack: () -> Unit) {
                 }
                 if (batteryPermDenied) {
                     Text(
-                        "Notifications are disabled for PulseLoop in Android Settings.",
+                        stringResource(R.string.notifications_disabled_system),
                         style = MaterialTheme.typography.bodySmall,
                         color = PulseColors.danger,
                     )
@@ -1083,10 +1083,9 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
         )
     }
 
-    SettingsSubScreen(title = "User Profile", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_profile), onBack = onBack) {
         Text(
-            "Your age, sex, height and weight let the ring compute accurate calories (and, on " +
-                "56ff/Jring rings, blood sugar). Blood pressure is measured directly by the sensor.",
+            stringResource(R.string.profile_desc),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1114,7 +1113,7 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
                     profileDraft = draft.copy(units = keyStore.resolvedUnitSystem)
                     com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                 }) {
-                    Text("Reset units to auto-detect", style = MaterialTheme.typography.labelSmall)
+                    Text(stringResource(R.string.profile_reset_units), style = MaterialTheme.typography.labelSmall)
                 }
             }
 
@@ -1131,11 +1130,11 @@ fun ProfileSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit)
                         // Profile (age/sex) shifts widget reference zones — republish.
                         com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                         savedMsg = if (coordinator?.isConnected == true)
-                            "Saved & sent to ring ✓" else "Saved — will sync on next connect"
+                            context.getString(R.string.status_saved_sent) else context.getString(R.string.status_saved_pending)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Save profile") }
+            ) { Text(stringResource(R.string.profile_save)) }
             savedMsg?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
@@ -1177,32 +1176,31 @@ fun PhysiologySettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    SettingsSubScreen(title = "Physiology", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_physiology), onBack = onBack) {
         Text(
-            "Optional refinements to how your vitals are interpreted. Leave anything unset and " +
-                "PulseLoop uses sensible defaults.",
+            stringResource(R.string.physiology_desc),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         PhysiologyCard(
-            title = "Fitness",
-            footer = "Treats a low resting heart rate as a sign of fitness rather than a concern, and relaxes the low-HR threshold.",
+            title = stringResource(R.string.physiology_fitness),
+            footer = stringResource(R.string.physiology_fitness_footer),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Athlete mode", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.physiology_athlete_mode), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                 Switch(checked = athleteMode, onCheckedChange = { athleteMode = it; savedMsg = null })
             }
         }
 
         PhysiologyCard(
-            title = "Environment",
-            footer = "Above ~2000 m, normal blood-oxygen readings run lower. We use this to avoid false low-oxygen warnings.",
+            title = stringResource(R.string.physiology_environment),
+            footer = stringResource(R.string.physiology_environment_footer),
         ) {
             OutlinedTextField(
                 value = altitudeText,
                 onValueChange = { altitudeText = it.filter(Char::isDigit).take(5); savedMsg = null },
-                label = { Text(if (imperial) "Typical altitude (ft)" else "Typical altitude (m)") },
+                label = { Text(if (imperial) stringResource(R.string.physiology_altitude_ft) else stringResource(R.string.physiology_altitude_m)) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -1210,24 +1208,24 @@ fun PhysiologySettingsScreen(onBack: () -> Unit) {
         }
 
         PhysiologyCard(
-            title = "Health context",
-            footer = "Optional. Both can change what's expected for your heart rate or oxygen, so we adjust labels instead of alarming.",
+            title = stringResource(R.string.physiology_health_context),
+            footer = stringResource(R.string.physiology_health_context_footer),
         ) {
-            TriStateRow("Beta-blockers", betaBlockers) { betaBlockers = it; savedMsg = null }
+            TriStateRow(stringResource(R.string.physiology_beta_blockers), betaBlockers) { betaBlockers = it; savedMsg = null }
             Spacer(Modifier.height(12.dp))
-            TriStateRow("Known lung condition", lungCondition) { lungCondition = it; savedMsg = null }
+            TriStateRow(stringResource(R.string.physiology_lung_condition), lungCondition) { lungCondition = it; savedMsg = null }
         }
 
-        PhysiologyCard(title = "Units", footer = null) {
+        PhysiologyCard(title = stringResource(R.string.physiology_units), footer = null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Glucose unit", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.physiology_glucose_unit), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                 SingleChoiceSegmentedButtonRow {
                     GlucoseUnit.entries.forEachIndexed { i, u ->
                         SegmentedButton(
                             selected = glucoseUnit == u,
                             onClick = { glucoseUnit = u; savedMsg = null },
                             shape = SegmentedButtonDefaults.itemShape(i, GlucoseUnit.entries.size),
-                        ) { Text(u.label) }
+                        ) { Text(stringResource(u.labelRes)) }
                     }
                 }
             }
@@ -1244,10 +1242,10 @@ fun PhysiologySettingsScreen(onBack: () -> Unit) {
                     if (entered != null && entered > 0) (if (imperial) entered * 0.3048 else entered) else null
                 // Physiology shifts the vitals reference zones the widgets render — republish.
                 com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
-                savedMsg = "Saved ✓"
+                savedMsg = context.getString(R.string.status_saved_check)
             },
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Save") }
+        ) { Text(stringResource(R.string.action_save)) }
         savedMsg?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
         }
@@ -1274,7 +1272,11 @@ private fun PhysiologyCard(title: String, footer: String?, content: @Composable 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TriStateRow(title: String, value: Boolean?, onChange: (Boolean?) -> Unit) {
-    val options = listOf<Pair<String, Boolean?>>("Not set" to null, "No" to false, "Yes" to true)
+    val options = listOf<Pair<String, Boolean?>>(
+        stringResource(R.string.tristate_not_set) to null,
+        stringResource(R.string.tristate_no) to false,
+        stringResource(R.string.tristate_yes) to true,
+    )
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         SingleChoiceSegmentedButtonRow {
@@ -1318,12 +1320,12 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         glucoseRef = keyStore.glucoseRefMgdl.takeIf { it > 0 }?.let { "%.0f".format(it) } ?: ""
     }
 
-    SettingsSubScreen(title = "Calibration", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_calibration), onBack = onBack) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Blood pressure calibration", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.calibration_bp_title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Optional. Enter a recent cuff reading so the ring offsets its values to match.",
+                    stringResource(R.string.calibration_bp_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1331,13 +1333,13 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = bpSys, onValueChange = { bpSys = it.filter(Char::isDigit).take(3) },
-                        label = { Text("Systolic") },
+                        label = { Text(stringResource(R.string.bp_systolic)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true, modifier = Modifier.weight(1f),
                     )
                     OutlinedTextField(
                         value = bpDia, onValueChange = { bpDia = it.filter(Char::isDigit).take(3) },
-                        label = { Text("Diastolic") },
+                        label = { Text(stringResource(R.string.bp_diastolic)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true, modifier = Modifier.weight(1f),
                     )
@@ -1352,11 +1354,11 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                             keyStore.bpAdjustDiastolic = diaI
                             coordinator?.applyUserSettings(db.userProfileDao().get(), sysI, diaI)
                             savedMsg = if (coordinator?.isConnected == true)
-                                "Saved & sent to ring ✓" else "Saved — will sync on next connect"
+                                context.getString(R.string.status_saved_sent) else context.getString(R.string.status_saved_pending)
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("Save calibration") }
+                ) { Text(stringResource(R.string.calibration_save)) }
                 savedMsg?.let {
                     Spacer(Modifier.height(6.dp))
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
@@ -1366,10 +1368,9 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Blood sugar calibration", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.calibration_glucose_title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Optional. The ring estimates glucose from your profile, not a real sensor. " +
-                        "Enter a recent lab/meter reading (mg/dL) to offset the displayed value to match.",
+                    stringResource(R.string.calibration_glucose_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1377,7 +1378,7 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = glucoseRef, onValueChange = { glucoseRef = it.filter(Char::isDigit).take(3) },
-                        label = { Text("Reading (mg/dL)") },
+                        label = { Text(stringResource(R.string.calibration_glucose_reading)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true, modifier = Modifier.weight(1.4f),
                     )
@@ -1386,12 +1387,12 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                             scope.launch {
                                 val ref = glucoseRef.toDoubleOrNull()
                                 if (ref == null || ref <= 0) {
-                                    glucoseMsg = "Enter a valid mg/dL reading"
+                                    glucoseMsg = context.getString(R.string.calibration_glucose_invalid)
                                     return@launch
                                 }
                                 val latestRaw = db.measurementDao().latest(MeasurementKind.BLOOD_SUGAR.name)
                                 if (latestRaw == null) {
-                                    glucoseMsg = "Take a blood sugar measurement first, then calibrate"
+                                    glucoseMsg = context.getString(R.string.calibration_glucose_measure_first)
                                     return@launch
                                 }
                                 // Stored readings are raw (offset is applied only at display),
@@ -1399,15 +1400,15 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                 keyStore.glucoseOffsetMgdl = ref - latestRaw
                                 keyStore.glucoseRefMgdl = ref
                                 glucoseOffset = keyStore.glucoseOffsetMgdl
-                                glucoseMsg = "Calibrated ✓ (offset %+.0f mg/dL)".format(glucoseOffset)
+                                glucoseMsg = context.getString(R.string.calibration_glucose_done, "%+.0f".format(glucoseOffset))
                             }
                         },
                         modifier = Modifier.weight(1f),
-                    ) { Text("Calibrate") }
+                    ) { Text(stringResource(R.string.calibration_calibrate)) }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        if (glucoseOffset != 0.0) "Current offset: %+.0f mg/dL".format(glucoseOffset) else "No calibration set",
+                        if (glucoseOffset != 0.0) stringResource(R.string.calibration_current_offset, "%+.0f".format(glucoseOffset)) else stringResource(R.string.calibration_none),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
@@ -1418,8 +1419,8 @@ fun CalibrationSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                             keyStore.glucoseRefMgdl = 0.0
                             glucoseOffset = 0.0
                             glucoseRef = ""
-                            glucoseMsg = "Calibration cleared"
-                        }) { Text("Reset") }
+                            glucoseMsg = context.getString(R.string.calibration_cleared)
+                        }) { Text(stringResource(R.string.action_reset)) }
                     }
                 }
                 glucoseMsg?.let {
@@ -1447,9 +1448,9 @@ fun GoalsSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit) {
         goalDraft = com.pulseloop.ui.onboarding.GoalDraft.from(db.userGoalDao().get(), goalUnits)
     }
 
-    SettingsSubScreen(title = "Goals", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_goals), onBack = onBack) {
         Text(
-            "Daily and weekly targets behind the activity rings.",
+            stringResource(R.string.goals_desc),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1476,11 +1477,11 @@ fun GoalsSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> Unit) {
                         // Ring goals drive the widget's activity rings — republish.
                         com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                         goalSavedMsg = if (coordinator?.isConnected == true)
-                            "Saved & sent to ring ✓" else "Saved"
+                            context.getString(R.string.status_saved_sent) else context.getString(R.string.status_saved)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Save goals") }
+            ) { Text(stringResource(R.string.goals_save)) }
             goalSavedMsg?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
@@ -1570,13 +1571,13 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         }
     }
 
-    SettingsSubScreen(title = "Measurement Frequency", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_measurement), onBack = onBack) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Measurement", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.measurement_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "How often the ring measures in the background. Shorter heart-rate intervals give finer history at the cost of battery.",
+                    stringResource(R.string.measurement_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1584,15 +1585,15 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
 
                 if (device == null) {
                     Text(
-                        "Pair a ring to configure its all-day measurements.",
+                        stringResource(R.string.measurement_pair_first),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
-                    VitalToggle("All-day heart rate", cfgHrEnabled) { cfgHrEnabled = it }
+                    VitalToggle(stringResource(R.string.measurement_allday_hr), cfgHrEnabled) { cfgHrEnabled = it }
                     if (cfgHrEnabled) {
                         Text(
-                            "Every $cfgHrInterval min",
+                            stringResource(R.string.measurement_every_min, cfgHrInterval),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1606,7 +1607,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                     }
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     if (WearableCapability.SPO2 in capabilities) {
-                        VitalToggle("Blood oxygen (SpO₂)", cfgSpo2) { cfgSpo2 = it }
+                        VitalToggle(stringResource(R.string.measurement_spo2), cfgSpo2) { cfgSpo2 = it }
                         // The monitor command takes the same shape for every vital
                         // (`01 <key> {enable, interval}`), so blood oxygen always had an interval —
                         // it just wasn't surfaced and silently followed heart rate. On a ring
@@ -1615,7 +1616,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                             Text(
                                 // The blood-oxygen command keeps the 60-min ceiling whatever the
                                 // heart-rate slider shows (no evidence past 60 on that key).
-                                if (cfgSpo2Interval <= 0) "Same as heart rate, at most every 60 min" else "Every $cfgSpo2Interval min",
+                                if (cfgSpo2Interval <= 0) stringResource(R.string.measurement_spo2_same_as_hr) else stringResource(R.string.measurement_every_min, cfgSpo2Interval),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1636,13 +1637,13 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                         // Issue #103: this ring's own SpO₂ is computed from heart rate, so the app
                         // can run the ring's real spot measurement on the schedule instead.
                         if (supportsScheduledSpo2) {
-                            VitalToggle("Measure SpO₂ from the app", cfgAppSpo2) {
+                            VitalToggle(stringResource(R.string.measurement_app_spo2), cfgAppSpo2) {
                                 cfgAppSpo2 = it
                                 cfgSavedMsg = null
                             }
                             if (cfgAppSpo2) {
                                 Text(
-                                    "This ring's all-day SpO₂ is estimated from heart rate. When on, PulseLoop starts a real spot measurement on the schedule below, between the ring's own readings, about a minute each, which uses more battery. Android may delay or skip runs while the phone is asleep.",
+                                    stringResource(R.string.measurement_app_spo2_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -1650,7 +1651,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                 // itself, so the ring's limits don't apply (issue #103). Each run is
                                 // ~50 s of red LED, which is what 2–3 h spacing is for.
                                 Text(
-                                    if (cfgAppSpo2Interval == 60) "Every hour" else "Every ${cfgAppSpo2Interval / 60} hours",
+                                    if (cfgAppSpo2Interval == 60) stringResource(R.string.measurement_every_hour) else pluralStringResource(R.plurals.measurement_every_hours, cfgAppSpo2Interval / 60, cfgAppSpo2Interval / 60),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -1664,12 +1665,12 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                     valueRange = 60f..180f,
                                     steps = 1,
                                 )
-                                VitalToggle("Hide estimated SpO₂", cfgHideEstimatedSpo2) {
+                                VitalToggle(stringResource(R.string.measurement_hide_estimated), cfgHideEstimatedSpo2) {
                                     cfgHideEstimatedSpo2 = it
                                     cfgSavedMsg = null
                                 }
                                 Text(
-                                    "Display only real spot measurements on charts and vitals cards, hiding the hourly estimates.",
+                                    stringResource(R.string.measurement_hide_estimated_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -1677,13 +1678,13 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                         }
                     }
                     if (supportsStressSetting) {
-                        VitalToggle("Stress", cfgStress) { cfgStress = it }
+                        VitalToggle(stringResource(R.string.metric_stress), cfgStress) { cfgStress = it }
                     }
                     if (WearableCapability.HRV in capabilities) {
-                        VitalToggle("HRV", cfgHrv) { cfgHrv = it }
+                        VitalToggle(stringResource(R.string.abbr_hrv), cfgHrv) { cfgHrv = it }
                     }
                     if (WearableCapability.TEMPERATURE in capabilities) {
-                        VitalToggle("Temperature", cfgTemp) { cfgTemp = it }
+                        VitalToggle(stringResource(R.string.metric_temperature), cfgTemp) { cfgTemp = it }
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -1711,11 +1712,11 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                 scheduledSpo2Prefs.hideEstimated = cfgHideEstimatedSpo2
                                 ScheduledSpo2Worker.reschedule(context.applicationContext)
                                 cfgSavedMsg = if (coordinator?.isConnected == true)
-                                    "Saved & sent to ring ✓" else "Saved — will sync on next connect"
+                                    context.getString(R.string.status_saved_sent) else context.getString(R.string.status_saved_pending)
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Save measurement settings") }
+                    ) { Text(stringResource(R.string.measurement_save)) }
                     cfgSavedMsg?.let {
                         Spacer(Modifier.height(6.dp))
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
@@ -1767,10 +1768,9 @@ private fun QuietHoursCard() {
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
-            Text("Sleep trimming", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.sleep_trimming), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "A still wrist reads as sleep, so an evening on the sofa can run the night high. " +
-                    "Trimmed minutes are never imported — changing these later won't bring them back.",
+                stringResource(R.string.sleep_trimming_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1784,13 +1784,13 @@ private fun QuietHoursCard() {
             ) {
                 Column(Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
-                        "Track Bedtime / DND mode",
+                        stringResource(R.string.sleep_track_bedtime),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                     )
                     Text(
-                        "Keep only sleep inside Android's Bedtime or Do Not Disturb. " +
-                            if (enabled) "Nights without it use the schedule." else "Nights without it are kept whole.",
+                        stringResource(R.string.sleep_track_bedtime_desc) + " " +
+                            if (enabled) stringResource(R.string.sleep_track_bedtime_schedule) else stringResource(R.string.sleep_track_bedtime_whole),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1822,13 +1822,13 @@ private fun QuietHoursCard() {
             ) {
                 Column(Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
-                        "Sleep quiet hours",
+                        stringResource(R.string.sleep_quiet_hours),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                     )
                     Text(
-                        if (gateByZenMode) "Daily schedule for nights without Bedtime/DND."
-                        else "Keep only sleep inside a daily schedule. Naps outside it are skipped.",
+                        if (gateByZenMode) stringResource(R.string.sleep_quiet_hours_zen)
+                        else stringResource(R.string.sleep_quiet_hours_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1839,10 +1839,10 @@ private fun QuietHoursCard() {
                 Spacer(Modifier.height(8.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = { picking = "start" }, modifier = Modifier.weight(1f)) {
-                        Text("From ${formatMinutesOfDay(start)}")
+                        Text(stringResource(R.string.sleep_from, formatMinutesOfDay(start)))
                     }
                     OutlinedButton(onClick = { picking = "end" }, modifier = Modifier.weight(1f)) {
-                        Text("Until ${formatMinutesOfDay(end)}")
+                        Text(stringResource(R.string.sleep_until, formatMinutesOfDay(end)))
                     }
                 }
             }
@@ -1852,14 +1852,10 @@ private fun QuietHoursCard() {
     if (showPermissionDialog) {
         AlertDialog(
             onDismissRequest = { showPermissionDialog = false },
-            title = { Text("Permission required") },
+            title = { Text(stringResource(R.string.permission_required)) },
             text = {
                 Text(
-                    "To log when Bedtime or Do Not Disturb turns on and off while PulseLoop is " +
-                        "in the background, Android requires Notification access. PulseLoop only " +
-                        "listens for Mode changes and does not read your notifications.\n\n" +
-                        "If the switch is greyed out, open PulseLoop's App info, tap ⋮ → " +
-                        "Allow restricted settings, then come back here.",
+                    stringResource(R.string.sleep_zen_permission_body),
                 )
             },
             confirmButton = {
@@ -1878,13 +1874,13 @@ private fun QuietHoursCard() {
                         context.startActivity(intent)
                         prefs.gateByZenMode = true
                     } catch (_: Exception) {}
-                }) { Text("Open Settings") }
+                }) { Text(stringResource(R.string.action_open_settings)) }
             },
             dismissButton = {
                 TextButton(onClick = {
                     showPermissionDialog = false
                     if (!prefs.gateByZenMode) ZenModeListener.setEnabled(context, false)
-                }) { Text("Cancel") }
+                }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
     }
@@ -1898,7 +1894,7 @@ private fun QuietHoursCard() {
         )
         AlertDialog(
             onDismissRequest = { picking = null },
-            title = { Text(if (which == "start") "Quiet from" else "Quiet until") },
+            title = { Text(if (which == "start") stringResource(R.string.sleep_quiet_from) else stringResource(R.string.sleep_quiet_until)) },
             text = { TimePicker(state = pickerState) },
             confirmButton = {
                 TextButton(onClick = {
@@ -1906,10 +1902,10 @@ private fun QuietHoursCard() {
                     if (which == "start") { start = minutes; prefs.startMinutes = minutes }
                     else { end = minutes; prefs.endMinutes = minutes }
                     picking = null
-                }) { Text("Done") }
+                }) { Text(stringResource(R.string.action_done)) }
             },
             dismissButton = {
-                TextButton(onClick = { picking = null }) { Text("Cancel") }
+                TextButton(onClick = { picking = null }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
     }
@@ -1955,9 +1951,9 @@ fun WearableSettingsScreen(
     val battery = bleState.batteryPercent ?: device?.batteryPercent
     val lastSyncedLabel = (coordinator?.lastSyncAt ?: device?.lastSyncAt)
         ?.let { DeviceHeroStatus.relativeShort(it, System.currentTimeMillis()) }
-        ?: "Not yet"
+        ?: stringResource(R.string.status_not_yet)
 
-    SettingsSubScreen(title = "Wearable", onBack = onBack) {
+SettingsSubScreen(title = stringResource(R.string.settings_wearable), onBack = onBack) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1967,8 +1963,8 @@ fun WearableSettingsScreen(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        if (isConnected) "Connected — $wearableDisplayName · ${battery ?: 0}%"
-                        else device?.let { "Last seen: $wearableDisplayName" } ?: "No ring paired",
+                        if (isConnected) stringResource(R.string.wearable_connected_status, wearableDisplayName, battery ?: 0)
+                    else device?.let { stringResource(R.string.wearable_last_seen, wearableDisplayName) } ?: stringResource(R.string.wearable_none_paired),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -1977,12 +1973,12 @@ fun WearableSettingsScreen(
                 if (device?.firmwareVersion != null) {
                     val rawFw = device!!.firmwareVersion!!
                     val fwDisplay = if (rawFw.contains("V")) "V" + rawFw.substringAfterLast("V") else rawFw
-                    Text("Firmware: $fwDisplay", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                    Text(stringResource(R.string.wearable_firmware, fwDisplay), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 } else if (device != null) {
-                    Text("Firmware: reading… (connect ring to read)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                    Text(stringResource(R.string.wearable_firmware_reading), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 }
                 if (device != null) {
-                    Text("Last synced: $lastSyncedLabel", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                    Text(stringResource(R.string.wearable_last_synced, lastSyncedLabel), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 }
 
                 if (device == null) {
@@ -1991,7 +1987,7 @@ fun WearableSettingsScreen(
                     Button(onClick = onAddRing, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Filled.Add, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Add a ring")
+                        Text(stringResource(R.string.wearable_add_ring))
                     }
                 }
 
@@ -2003,7 +1999,7 @@ fun WearableSettingsScreen(
                     ) {
                         Icon(Icons.Filled.Sync, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Sync now")
+                        Text(stringResource(R.string.wearable_sync_now))
                     }
                     if (supportsFindDevice) {
                         Spacer(Modifier.height(8.dp))
@@ -2013,7 +2009,7 @@ fun WearableSettingsScreen(
                         ) {
                             Icon(Icons.Filled.NotificationsActive, null, Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Find ring")
+                            Text(stringResource(R.string.wearable_find_ring))
                         }
                     }
                     Spacer(Modifier.height(8.dp))
@@ -2023,7 +2019,7 @@ fun WearableSettingsScreen(
                     ) {
                         Icon(Icons.Filled.Close, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Disconnect")
+                        Text(stringResource(R.string.wearable_disconnect))
                     }
                 } else if (bleState.connectionState == RingConnectionState.RECONNECTING) {
                     // Automatic recovery can scan for minutes; let the user stop it (issue #124).
@@ -2034,7 +2030,7 @@ fun WearableSettingsScreen(
                     ) {
                         Icon(Icons.Filled.Close, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Disconnect")
+                        Text(stringResource(R.string.wearable_disconnect))
                     }
                 } else if (bleClient?.hasLastKnownRing == true) {
                     Spacer(Modifier.height(12.dp))
@@ -2044,7 +2040,7 @@ fun WearableSettingsScreen(
                     ) {
                         Icon(Icons.Filled.Refresh, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Reconnect last ring")
+                        Text(stringResource(R.string.wearable_reconnect))
                     }
                 }
             }
@@ -2061,11 +2057,10 @@ fun WearableSettingsScreen(
         if (device != null) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Ring management", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.wearable_management), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Forget unbinds the ring and removes it from the app so it can be paired " +
-                            "elsewhere. The app stays connected automatically the rest of the time.",
+                        stringResource(R.string.wearable_forget_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -2095,7 +2090,7 @@ fun WearableSettingsScreen(
                     ) {
                         Icon(Icons.Filled.DeleteForever, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Forget Ring")
+                        Text(stringResource(R.string.wearable_forget))
                     }
 
                     // Factory reset — destructive, ring-side wipe. Only for connected rings that
@@ -2103,8 +2098,7 @@ fun WearableSettingsScreen(
                     if (isConnected && supportsFactoryReset) {
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Factory reset erases all data stored on the ring itself and resets " +
-                                "it to factory state. Your synced data in the app is kept.",
+                            stringResource(R.string.wearable_factory_reset_desc),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -2117,7 +2111,7 @@ fun WearableSettingsScreen(
                         ) {
                             Icon(Icons.Filled.Refresh, null, Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text(if (resetting) (resetStatus.ifEmpty { "Resetting…" }) else "Factory Reset Ring")
+                            Text(if (resetting) (resetStatus.ifEmpty { stringResource(R.string.wearable_resetting) }) else stringResource(R.string.wearable_factory_reset))
                         }
                     }
                 }
@@ -2128,19 +2122,17 @@ fun WearableSettingsScreen(
     if (showFactoryReset) {
         AlertDialog(
             onDismissRequest = { showFactoryReset = false },
-            title = { Text("Factory reset ring?") },
+            title = { Text(stringResource(R.string.wearable_factory_reset_title)) },
             text = {
                 Text(
-                    "This erases all data stored on the ring and resets it to factory " +
-                        "state. We'll sync its latest data into the app first, but this " +
-                        "can't be undone. The ring will need to be re-paired afterward."
+                    stringResource(R.string.wearable_factory_reset_body)
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     showFactoryReset = false
                     resetting = true
-                    resetStatus = "Syncing latest data…"
+                    resetStatus = context.getString(R.string.wearable_syncing_latest)
                     RingSyncWorker.cancel(context)
                     // onCleared runs on the coordinator's long-lived scope: the reset
                     // takes up to ~30s, and the device row must be cleared even if the
@@ -2151,10 +2143,10 @@ fun WearableSettingsScreen(
                         db.deviceDao().clear()
                         resetting = false
                     }
-                }) { Text("Reset ring", color = MaterialTheme.colorScheme.error) }
+                }) { Text(stringResource(R.string.wearable_reset_ring), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { showFactoryReset = false }) { Text("Cancel") }
+                TextButton(onClick = { showFactoryReset = false }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
     }
@@ -2169,10 +2161,10 @@ private enum class BatteryHistoryRange(val label: String, val spanMs: Long) {
 /** Fixed 0–100 zone coloring for the battery line — mirrors iOS `colorForValue`
  *  (≤20 danger, ≤50 warning, else success). Zone boundaries use an exclusive upper bound
  *  (`ZoneLineChart` matches `lower <= value < upper`), so 21/51 sit just above each cut. */
-private val batteryZones = listOf(
-    MetricZone("critical", "Critical", null, 21.0, ZoneSeverity.CRITICAL, VitalColorToken.Red, "Battery critically low"),
-    MetricZone("low", "Low", 21.0, 51.0, ZoneSeverity.WATCH, VitalColorToken.Amber, "Battery low"),
-    MetricZone("good", "Good", 51.0, null, ZoneSeverity.OPTIMAL, VitalColorToken.Mint, "Battery healthy"),
+private val batteryZones get() = listOf(
+    MetricZone("critical", L10n.get(R.string.zone_critical), null, 21.0, ZoneSeverity.CRITICAL, VitalColorToken.Red, L10n.get(R.string.battery_zone_critical)),
+    MetricZone("low", L10n.get(R.string.zone_low), 21.0, 51.0, ZoneSeverity.WATCH, VitalColorToken.Amber, L10n.get(R.string.battery_zone_low)),
+    MetricZone("good", L10n.get(R.string.zone_good), 51.0, null, ZoneSeverity.OPTIMAL, VitalColorToken.Mint, L10n.get(R.string.battery_zone_good)),
 )
 
 /**
@@ -2197,7 +2189,7 @@ private fun BatteryHistorySection(db: PulseLoopDatabase) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Battery history", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.battery_history), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 SingleChoiceSegmentedButtonRow {
                     BatteryHistoryRange.entries.forEachIndexed { i, r ->
                         SegmentedButton(
@@ -2211,7 +2203,7 @@ private fun BatteryHistorySection(db: PulseLoopDatabase) {
             Spacer(Modifier.height(8.dp))
             if (samples.size < 2) {
                 Text(
-                    "Not enough data yet — battery history builds up as the ring reports its level.",
+                    stringResource(R.string.battery_history_empty),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2244,19 +2236,19 @@ private sealed class ResetAction {
     data object UnpairAndReset : ResetAction()
 
     val title: String get() = when (this) {
-        is UnpairRing -> "Unpair ring?"
-        is ResetAppData -> "Reset app data?"
-        is UnpairAndReset -> "Unpair ring & reset app data?"
+        is UnpairRing -> L10n.get(R.string.reset_unpair_title)
+        is ResetAppData -> L10n.get(R.string.reset_app_title)
+        is UnpairAndReset -> L10n.get(R.string.reset_both_title)
     }
     val message: String get() = when (this) {
-        is UnpairRing -> "Unpair your ring? The ring will forget this phone; your data stays."
-        is ResetAppData -> "This permanently erases all your data — metrics, sleep, activity, coach history, settings, and saved API keys — and can't be undone."
-        is UnpairAndReset -> "This unpairs your ring, then permanently erases all your data — metrics, sleep, activity, coach history, settings, and saved API keys — and can't be undone."
+        is UnpairRing -> L10n.get(R.string.reset_unpair_body)
+        is ResetAppData -> L10n.get(R.string.reset_app_body)
+        is UnpairAndReset -> L10n.get(R.string.reset_both_body)
     }
     val confirmLabel: String get() = when (this) {
-        is UnpairRing -> "Unpair ring"
-        is ResetAppData -> "Reset app data"
-        is UnpairAndReset -> "Unpair & reset"
+        is UnpairRing -> L10n.get(R.string.reset_unpair_confirm)
+        is ResetAppData -> L10n.get(R.string.reset_app_confirm)
+        is UnpairAndReset -> L10n.get(R.string.reset_both_confirm)
     }
 }
 
@@ -2342,14 +2334,14 @@ fun PrivacyDataSettingsScreen(
         }
     }
 
-    SettingsSubScreen(title = "Privacy & Data", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_privacy), onBack = onBack) {
         // Data Backup — export/import full app data as JSON.
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Data Backup", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.privacy_backup), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Export all your data to a single JSON file for backup, device migration, or external analysis. Import restores everything — replacing all current data.",
+                    stringResource(R.string.privacy_backup_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2368,10 +2360,10 @@ fun PrivacyDataSettingsScreen(
                                             putExtra(Intent.EXTRA_STREAM, uri)
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
-                                        context.startActivity(Intent.createChooser(shareIntent, "Export PulseLoop Data"))
+                                        context.startActivity(Intent.createChooser(shareIntent, context.getString(R.string.privacy_export_chooser)))
                                     }
                                 } catch (_: Exception) {
-                                    statusMessage = "Export failed"
+                                    statusMessage = context.getString(R.string.privacy_export_failed)
                                 }
                                 exportInProgress = false
                             }
@@ -2383,7 +2375,7 @@ fun PrivacyDataSettingsScreen(
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                         }
-                        Text(if (exportInProgress) "Exporting…" else "Export All Data")
+                        Text(if (exportInProgress) stringResource(R.string.privacy_exporting) else stringResource(R.string.privacy_export_all))
                     }
                     OutlinedButton(
                         onClick = {
@@ -2396,7 +2388,7 @@ fun PrivacyDataSettingsScreen(
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                         }
-                        Text(if (importInProgress) "Importing…" else "Import Data")
+                        Text(if (importInProgress) stringResource(R.string.privacy_importing) else stringResource(R.string.privacy_import))
                     }
                 }
             }
@@ -2405,10 +2397,10 @@ fun PrivacyDataSettingsScreen(
         // App data — destructive reset/restore actions.
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("App Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.privacy_app_data), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Destructive actions: unpair the ring, factory-reset app data, or both.",
+                    stringResource(R.string.privacy_app_data_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2420,7 +2412,7 @@ fun PrivacyDataSettingsScreen(
                 ) {
                     Icon(Icons.Filled.BluetoothDisabled, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Unpair Ring")
+                    Text(stringResource(R.string.reset_unpair_confirm))
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
@@ -2430,7 +2422,7 @@ fun PrivacyDataSettingsScreen(
                 ) {
                     Icon(Icons.Filled.DeleteForever, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Reset App Data")
+                    Text(stringResource(R.string.reset_app_confirm))
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
@@ -2440,7 +2432,7 @@ fun PrivacyDataSettingsScreen(
                 ) {
                     Icon(Icons.Filled.Warning, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Unpair & Reset")
+                    Text(stringResource(R.string.reset_both_confirm))
                 }
             }
         }
@@ -2448,20 +2440,20 @@ fun PrivacyDataSettingsScreen(
         // Demo data — Android-only (iOS seeds via the Simulator's SeedData).
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Demo Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.privacy_demo), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Explore the app without a ring. Seeds activity, HR, SpO2, sleep, and a coach conversation.",
+                    stringResource(R.string.privacy_demo_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
                 Button(onClick = { showSeedDialog = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Reseed Demo Data")
+                    Text(stringResource(R.string.privacy_demo_reseed))
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(onClick = { showClearDialog = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Clear Demo Data", color = PulseColors.danger)
+                    Text(stringResource(R.string.privacy_demo_clear), color = PulseColors.danger)
                 }
             }
         }
@@ -2470,22 +2462,22 @@ fun PrivacyDataSettingsScreen(
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 var maskSensitive by remember { mutableStateOf(true) }
-                Text("Diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.privacy_diagnostics), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Export app, device, and wearable logs as JSON for bug reports.",
+                    stringResource(R.string.privacy_diagnostics_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Anonymize export", style = MaterialTheme.typography.bodyMedium)
+                        Text(stringResource(R.string.privacy_anonymize), style = MaterialTheme.typography.bodyMedium)
                         Text(
                             if (maskSensitive)
-                                "Removes health values, ring serial & MAC addresses. Keeps models, opcodes & errors."
+                                stringResource(R.string.privacy_anonymize_on)
                             else
-                                "OFF — includes full unmasked BLE frames and health values (for protocol debugging only).",
+                                stringResource(R.string.privacy_anonymize_off),
                             style = MaterialTheme.typography.bodySmall,
                             color = if (maskSensitive) MaterialTheme.colorScheme.onSurfaceVariant
                                     else MaterialTheme.colorScheme.error,
@@ -2509,7 +2501,7 @@ fun PrivacyDataSettingsScreen(
                 ) {
                     Icon(Icons.Filled.Share, null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (maskSensitive) "Export Diagnostics" else "Export Full (Unmasked)")
+                    Text(if (maskSensitive) stringResource(R.string.privacy_export_diag) else stringResource(R.string.privacy_export_diag_full))
                 }
             }
         }
@@ -2521,28 +2513,28 @@ fun PrivacyDataSettingsScreen(
             val msg = statusMessage!!
             AlertDialog(
                 onDismissRequest = { statusMessage = null },
-                title = { Text("Error") },
+                title = { Text(stringResource(R.string.dialog_error)) },
                 text = { Text(msg) },
                 confirmButton = {
-                    TextButton(onClick = { statusMessage = null }) { Text("OK") }
+                    TextButton(onClick = { statusMessage = null }) { Text(stringResource(R.string.action_ok)) }
                 },
             )
         }
 
         showImportSuccess -> AlertDialog(
             onDismissRequest = { showImportSuccess = false },
-            title = { Text("Import Complete") },
-            text = { Text("Your data has been restored from the backup.") },
+            title = { Text(stringResource(R.string.privacy_import_done)) },
+            text = { Text(stringResource(R.string.privacy_import_done_body)) },
             confirmButton = {
-                TextButton(onClick = { showImportSuccess = false }) { Text("OK") }
+                TextButton(onClick = { showImportSuccess = false }) { Text(stringResource(R.string.action_ok)) }
             },
         )
 
         showImportConfirm -> AlertDialog(
             onDismissRequest = { showImportConfirm = false; pendingImportUri = null },
-            title = { Text("Replace all data?") },
+            title = { Text(stringResource(R.string.privacy_replace_title)) },
             text = {
-                Text("This permanently deletes everything currently in the app and replaces it with the contents of this file. This can't be undone.")
+                Text(stringResource(R.string.privacy_replace_body))
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -2556,16 +2548,16 @@ fun PrivacyDataSettingsScreen(
                             com.pulseloop.data.DataArchiveService.importFile(context, uri, db)
                             showImportSuccess = true
                         } catch (_: Exception) {
-                            statusMessage = "Import failed — the file may be corrupt or from a newer version."
+                            statusMessage = context.getString(R.string.privacy_import_failed)
                         }
                         importInProgress = false
                     }
                 }) {
-                    Text("Delete old data & import", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.privacy_delete_and_import), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showImportConfirm = false; pendingImportUri = null }) { Text("Cancel") }
+                TextButton(onClick = { showImportConfirm = false; pendingImportUri = null }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
 
@@ -2588,15 +2580,15 @@ fun PrivacyDataSettingsScreen(
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { pendingReset = null }) { Text("Cancel") }
+                    TextButton(onClick = { pendingReset = null }) { Text(stringResource(R.string.action_cancel)) }
                 },
             )
         }
 
         showSeedDialog -> AlertDialog(
             onDismissRequest = { showSeedDialog = false },
-            title = { Text("Reseed Demo Data?") },
-            text = { Text("This will replace all existing demo data. Your synced ring data — including sleep history — will not be affected.") },
+            title = { Text(stringResource(R.string.privacy_reseed_title)) },
+            text = { Text(stringResource(R.string.privacy_reseed_body)) },
             confirmButton = {
                 TextButton(onClick = {
                     showSeedDialog = false
@@ -2604,20 +2596,19 @@ fun PrivacyDataSettingsScreen(
                         DemoDataSeeder.seed(PulseLoopDatabase.getInstance(context))
                         com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                     }
-                }) { Text("Reseed") }
+                }) { Text(stringResource(R.string.privacy_reseed)) }
             },
             dismissButton = {
-                TextButton(onClick = { showSeedDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showSeedDialog = false }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
 
         showClearDialog -> AlertDialog(
             onDismissRequest = { showClearDialog = false },
-            title = { Text("Clear Demo Data?") },
+            title = { Text(stringResource(R.string.privacy_clear_demo_title)) },
             text = {
                 Text(
-                    "Removes all demo measurements, activity, sleep, and the demo device. " +
-                    "Synced ring data is not affected.",
+                    stringResource(R.string.privacy_clear_demo_body),
                 )
             },
             confirmButton = {
@@ -2627,10 +2618,10 @@ fun PrivacyDataSettingsScreen(
                         DemoDataSeeder.clear(PulseLoopDatabase.getInstance(context))
                         com.pulseloop.widgets.WidgetSnapshotPublisher.publish(context)
                     }
-                }) { Text("Clear", color = PulseColors.danger) }
+                }) { Text(stringResource(R.string.action_clear), color = PulseColors.danger) }
             },
             dismissButton = {
-                TextButton(onClick = { showClearDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showClearDialog = false }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
     }
@@ -2678,7 +2669,7 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
         lastVersionTap = now
 
         if (developerUnlocked) {
-            showToast("Developer options are already enabled.")
+            showToast(context.getString(R.string.about_dev_already))
             return
         }
 
@@ -2692,15 +2683,15 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
             developerUnlocked = true
             keyStore.developerUnlocked = true
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-            showToast("You are now a developer!")
+            showToast(context.getString(R.string.about_dev_enabled))
             onOpenDebug()
         } else if (remaining <= 3) {
-            showToast("You're $remaining step${if (remaining == 1) "" else "s"} away from Developer options.")
+            showToast(context.resources.getQuantityString(R.plurals.about_dev_steps, remaining, remaining))
         }
     }
 
     SettingsSubScreen(
-        title = "About",
+        title = stringResource(R.string.settings_about),
         onBack = onBack,
         bottomOverlay = {
             toast?.let { message ->
@@ -2734,7 +2725,7 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
                     .background(PulseColors.accent.copy(alpha = tapProgress * 0.22f))
                     .padding(16.dp),
             ) {
-                Text("Version", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.about_version), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "PulseLoop v${com.pulseloop.BuildConfig.VERSION_NAME} (${com.pulseloop.BuildConfig.VERSION_CODE})",
@@ -2748,9 +2739,7 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
                 Text("PulseLoop", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "An LLM-native health app that turns a cheap Bluetooth smart ring into a real, " +
-                        "conversational health tracker. It talks to the ring directly over Bluetooth — no " +
-                        "vendor cloud, no account — and layers an AI coach on top of your own data.",
+                    stringResource(R.string.about_description),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2771,7 +2760,7 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
         ) {
             Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Source on GitHub", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.about_source), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(
                         REPO_URL.removePrefix("https://"),
                         style = MaterialTheme.typography.bodySmall,
@@ -2784,11 +2773,10 @@ fun AboutSettingsScreen(onOpenDebug: () -> Unit, onBack: () -> Unit) {
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("License", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.about_license), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Open-source health tracker. Ported from iOS.\nCC BY 4.0 · Free to share and " +
-                        "adapt, including commercially, with appropriate credit.",
+                    stringResource(R.string.about_license_body),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2812,13 +2800,13 @@ fun NutritionSettingsScreen(onBack: () -> Unit, onNavigateToNutrition: () -> Uni
     var goalLoaded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { goal = db.userGoalDao().get(); goalLoaded = true }
 
-    SettingsSubScreen(title = "Nutrition", onBack = onBack) {
+    SettingsSubScreen(title = stringResource(R.string.settings_nutrition), onBack = onBack) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Enable Nutrition Tracking", fontWeight = FontWeight.Medium)
-                        Text("Log meals and track calories & macros", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.nutrition_enable), fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.nutrition_enable_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(
                         checked = goal?.nutritionEnabled == true,
@@ -2837,17 +2825,17 @@ fun NutritionSettingsScreen(onBack: () -> Unit, onNavigateToNutrition: () -> Uni
         if (goal?.nutritionEnabled == true) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Daily Goals", fontWeight = FontWeight.SemiBold)
-                    NutrientStepper("Calories (kcal)", goal?.intakeCalories ?: 2000.0, 50.0, 100.0, 10000.0) { v ->
+                    Text(stringResource(R.string.nutrition_daily_goals), fontWeight = FontWeight.SemiBold)
+                    NutrientStepper(stringResource(R.string.nutrition_calories_kcal), goal?.intakeCalories ?: 2000.0, 50.0, 100.0, 10000.0) { v ->
                         scope.launch { goal = goal?.copy(intakeCalories = v)?.also { db.userGoalDao().upsert(it) } }
                     }
-                    NutrientStepper("Protein (g)", goal?.intakeProteinG ?: 150.0, 5.0, 0.0, 500.0) { v ->
+                    NutrientStepper(stringResource(R.string.nutrition_protein_g), goal?.intakeProteinG ?: 150.0, 5.0, 0.0, 500.0) { v ->
                         scope.launch { goal = goal?.copy(intakeProteinG = v)?.also { db.userGoalDao().upsert(it) } }
                     }
-                    NutrientStepper("Carbs (g)", goal?.intakeCarbsG ?: 250.0, 5.0, 0.0, 800.0) { v ->
+                    NutrientStepper(stringResource(R.string.nutrition_carbs_g), goal?.intakeCarbsG ?: 250.0, 5.0, 0.0, 800.0) { v ->
                         scope.launch { goal = goal?.copy(intakeCarbsG = v)?.also { db.userGoalDao().upsert(it) } }
                     }
-                    NutrientStepper("Fat (g)", goal?.intakeFatG ?: 65.0, 5.0, 0.0, 300.0) { v ->
+                    NutrientStepper(stringResource(R.string.nutrition_fat_g), goal?.intakeFatG ?: 65.0, 5.0, 0.0, 300.0) { v ->
                         scope.launch { goal = goal?.copy(intakeFatG = v)?.also { db.userGoalDao().upsert(it) } }
                     }
                     OutlinedButton(onClick = {
@@ -2858,20 +2846,20 @@ fun NutritionSettingsScreen(onBack: () -> Unit, onNavigateToNutrition: () -> Uni
                                 .also { db.userGoalDao().upsert(it) }
                         }
                     }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Balance Macros (30/40/30)")
+                        Text(stringResource(R.string.nutrition_balance_macros))
                     }
                 }
             }
 
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Quick Access", fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.nutrition_quick_access), fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = onNavigateToNutrition,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Open Nutrition Log")
+                        Text(stringResource(R.string.nutrition_open_log))
                     }
                 }
             }
@@ -2929,10 +2917,10 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
         if (!isConfigured) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Strava Not Configured", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.strava_not_configured), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Add stravaClientId and stravaClientSecret to local.properties to enable Strava integration.",
+                        stringResource(R.string.strava_not_configured_desc),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -2943,11 +2931,11 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Strava Integration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.strava_integration), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (isConnected) "Connected as $athleteName. Workouts sync automatically when finished."
-                    else "Connect your Strava account to automatically upload workouts with GPS routes and heart rate data.",
+                    if (isConnected) stringResource(R.string.strava_connected_as, athleteName ?: "")
+                    else stringResource(R.string.strava_connect_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2964,12 +2952,11 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                                         // uploadAuto records why it stopped, if it stopped.
                                         statusMessage = tokenStore.lastError()?.also { tokenStore.clearLastError() }
                                             ?: when (count) {
-                                                0 -> "Nothing new to upload"
-                                                1 -> "Uploaded 1 workout"
-                                                else -> "Uploaded $count workouts"
+                                                0 -> context.getString(R.string.strava_nothing_new)
+                                                else -> context.resources.getQuantityString(R.plurals.strava_uploaded, count, count)
                                             }
                                     } catch (e: Exception) {
-                                        statusMessage = "Upload failed: ${e.message ?: "unknown error"}"
+                                        statusMessage = context.getString(R.string.strava_upload_failed, e.message ?: context.getString(R.string.error_unknown))
                                     }
                                     isUploading = false
                                 }
@@ -2977,7 +2964,7 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                             modifier = Modifier.weight(1f),
                             enabled = !isUploading,
                         ) {
-                            Text(if (isUploading) "Syncing…" else "Sync Now")
+                            Text(if (isUploading) stringResource(R.string.status_syncing) else stringResource(R.string.wearable_sync_now))
                         }
                         OutlinedButton(
                             onClick = {
@@ -2991,13 +2978,13 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                                     tokenStore.clear()
                                     isConnected = false
                                     athleteName = null
-                                    statusMessage = "Disconnected from Strava"
+                                    statusMessage = context.getString(R.string.strava_disconnected)
                                 }
                             },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                         ) {
-                            Text("Disconnect")
+                            Text(stringResource(R.string.wearable_disconnect))
                         }
                     }
                 } else {
@@ -3011,14 +2998,14 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
                             val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
                             try {
                                 context.startActivity(intent)
-                                statusMessage = "Authorize in your browser — you'll return to PulseLoop automatically."
+                                statusMessage = context.getString(R.string.strava_authorize_browser)
                             } catch (_: Exception) {
-                                statusMessage = "Could not open browser"
+                                statusMessage = context.getString(R.string.error_open_browser)
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Connect Strava")
+                        Text(stringResource(R.string.strava_connect))
                     }
                 }
             }
@@ -3027,10 +3014,10 @@ fun StravaSettingsScreen(onBack: () -> Unit) {
         if (isConnected) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Auto Upload", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.strava_auto_upload), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Finished workouts are automatically uploaded to Strava. GPS routes, heart rate data, and sport type are included.",
+                        stringResource(R.string.strava_auto_upload_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -3122,9 +3109,9 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
             )
         }
         statusMessage = if (got.isEmpty()) {
-            "No Health Connect permissions granted — nothing to export."
+            context.getString(R.string.hc_no_permissions)
         } else {
-            "Connected. ${got.size} of ${HealthConnectPermissions.all.size} permission types granted."
+            context.getString(R.string.hc_connected_count, got.size, HealthConnectPermissions.all.size)
         }
         // First-enable backfill dialog: the derived showBackfillDialog above now turns true from
         // the persisted state (enabled + connected + NOT_ASKED) this callback just set, so there
@@ -3193,7 +3180,7 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                 Text("Health Connect", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Export ring data to Health Connect so other apps and dashboards can show it. Write-only: PulseLoop never reads data back.",
+                    stringResource(R.string.hc_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -3202,34 +3189,34 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                 when (availability) {
                     HealthConnectAvailability.UNAVAILABLE -> {
                         Text(
-                            "Health Connect isn't available on this device. Install the Health Connect app to use this feature.",
+                            stringResource(R.string.hc_unavailable),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
                         )
                         Spacer(Modifier.height(8.dp))
                         Button(onClick = { openHealthConnectPlayStore(context) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Install Health Connect")
+                            Text(stringResource(R.string.hc_install))
                         }
                     }
 
                     HealthConnectAvailability.PROVIDER_UPDATE_REQUIRED -> {
                         Text(
-                            "The Health Connect app on this device needs an update before it can be used.",
+                            stringResource(R.string.hc_needs_update),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
                         )
                         Spacer(Modifier.height(8.dp))
                         Button(onClick = { openHealthConnectPlayStore(context) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Update Health Connect")
+                            Text(stringResource(R.string.hc_update))
                         }
                     }
 
                     HealthConnectAvailability.AVAILABLE -> {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("Export PulseLoop data", style = MaterialTheme.typography.bodyLarge)
+                                Text(stringResource(R.string.hc_export), style = MaterialTheme.typography.bodyLarge)
                                 Text(
-                                    if (prefs.isConnected) "Connected" else "Not connected",
+                                    if (prefs.isConnected) stringResource(R.string.status_connected) else stringResource(R.string.status_not_connected),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -3254,10 +3241,10 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                         TextButton(
                             onClick = { openHealthConnectApp(context) },
                             modifier = Modifier.align(Alignment.Start),
-                        ) { Text("Open Health Connect") }
+                        ) { Text(stringResource(R.string.hc_open)) }
                         if (!prefs.isConnected) {
                             Text(
-                                "Manage or re-grant permissions, and review or delete PulseLoop's data, in the Health Connect app.",
+                                stringResource(R.string.hc_manage_desc),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -3270,29 +3257,29 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
         if (availability == HealthConnectAvailability.AVAILABLE && prefs.isConnected) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Data Types", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.hc_data_types), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Exported only when switched on. A row stays dim until its permission is granted.",
+                        stringResource(R.string.hc_data_types_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(8.dp))
                     val rows = listOf(
-                        HealthConnectPermissions.DataTypeRow.HEART_RATE to "Heart rate",
-                        HealthConnectPermissions.DataTypeRow.OXYGEN_SATURATION to "Oxygen saturation (SpO₂)",
-                        HealthConnectPermissions.DataTypeRow.HEART_RATE_VARIABILITY to "Heart rate variability (HRV)",
-                        HealthConnectPermissions.DataTypeRow.BODY_TEMPERATURE to "Body temperature",
-                        HealthConnectPermissions.DataTypeRow.SLEEP to "Sleep",
-                        HealthConnectPermissions.DataTypeRow.STEPS_AND_ACTIVITY to "Steps & activity",
-                        HealthConnectPermissions.DataTypeRow.WORKOUTS to "Workouts",
-                        HealthConnectPermissions.DataTypeRow.NUTRITION to "Nutrition",
+                        HealthConnectPermissions.DataTypeRow.HEART_RATE to stringResource(R.string.metric_heart_rate),
+                        HealthConnectPermissions.DataTypeRow.OXYGEN_SATURATION to stringResource(R.string.hc_type_spo2),
+                        HealthConnectPermissions.DataTypeRow.HEART_RATE_VARIABILITY to stringResource(R.string.hc_type_hrv),
+                        HealthConnectPermissions.DataTypeRow.BODY_TEMPERATURE to stringResource(R.string.hc_type_body_temp),
+                        HealthConnectPermissions.DataTypeRow.SLEEP to stringResource(R.string.metric_sleep),
+                        HealthConnectPermissions.DataTypeRow.STEPS_AND_ACTIVITY to stringResource(R.string.hc_type_steps),
+                        HealthConnectPermissions.DataTypeRow.WORKOUTS to stringResource(R.string.metric_workouts),
+                        HealthConnectPermissions.DataTypeRow.NUTRITION to stringResource(R.string.settings_nutrition),
                         // Phase 5 (beyond iOS).
-                        HealthConnectPermissions.DataTypeRow.BLOOD_PRESSURE to "Blood pressure",
-                        HealthConnectPermissions.DataTypeRow.BLOOD_GLUCOSE to "Blood glucose",
-                        HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE to "Respiratory rate",
-                        HealthConnectPermissions.DataTypeRow.VO2_MAX to "VO\u2082 max",
-                        HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE to "Resting heart rate",
+                        HealthConnectPermissions.DataTypeRow.BLOOD_PRESSURE to stringResource(R.string.metric_blood_pressure),
+                        HealthConnectPermissions.DataTypeRow.BLOOD_GLUCOSE to stringResource(R.string.hc_type_glucose),
+                        HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE to stringResource(R.string.metric_respiratory_rate),
+                        HealthConnectPermissions.DataTypeRow.VO2_MAX to stringResource(R.string.metric_vo2max),
+                        HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE to stringResource(R.string.metric_resting_hr),
                     )
                     for ((row, label) in rows) {
                         val isRespRateOnYcbt = row == HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE && isYcbtDevice
@@ -3306,13 +3293,13 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                                 Text(label, style = MaterialTheme.typography.bodyMedium)
                                 if (isRespRateOnYcbt) {
                                     Text(
-                                        "Derived from heart rate by current ring — export disabled",
+                                        stringResource(R.string.hc_resp_derived),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 } else if (!rowGranted) {
                                     Text(
-                                        "Awaiting permission",
+                                        stringResource(R.string.hc_awaiting_permission),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -3341,7 +3328,7 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                             // Plan §7 open item: the rings' HRV metric is vendor-undocumented, and
                             // Health Connect has no SDNN type — we export it as RMSSD.
                             Text(
-                                "HRV is exported as RMSSD — Health Connect has no SDNN type, and the rings' metric is vendor-undocumented.",
+                                stringResource(R.string.hc_hrv_note),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -3372,10 +3359,9 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                     if (syncedAt != null) {
                         // The label promises a time, so show one (review pass 5): the summary
                         // alone read as "Last sync: skipped: …" with no indication of when.
-                        "Last sync ${DeviceHeroStatus.relativeShort(syncedAt, System.currentTimeMillis())} — " +
-                            (prefs.lastSyncSummary ?: "unknown")
+                        stringResource(R.string.hc_last_sync, DeviceHeroStatus.relativeShort(syncedAt, System.currentTimeMillis()), prefs.lastSyncSummary ?: stringResource(R.string.status_unknown))
                     } else {
-                        "No export has run yet. With the master switch on and a backfill choice made, PulseLoop exports automatically."
+                        stringResource(R.string.hc_no_export_yet)
                     },
                     modifier = Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodyMedium,
@@ -3387,17 +3373,17 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
             // stamp so the export state matches an empty Health store.
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Remove exported data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.hc_remove_exported), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Delete every record PulseLoop wrote to Health Connect and reset the export to start fresh. Your ring data in PulseLoop is untouched.",
+                        stringResource(R.string.hc_remove_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (!prefs.isConnected) {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Deleting needs write permission, and PulseLoop has none right now — re-grant above, or delete the data in the Health Connect app.",
+                            stringResource(R.string.hc_remove_no_permission),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -3409,7 +3395,7 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                         enabled = !removing,
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text(if (removing) "Removing…" else "Remove PulseLoop data") }
+                    ) { Text(if (removing) stringResource(R.string.status_removing) else stringResource(R.string.hc_remove_data)) }
                 }
             }
         }
@@ -3429,7 +3415,7 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(msg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { store.update { it.copy(removalStatus = null) } }) { Text("Dismiss") }
+                    TextButton(onClick = { store.update { it.copy(removalStatus = null) } }) { Text(stringResource(R.string.action_dismiss)) }
                 }
             }
         }
@@ -3456,21 +3442,21 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
             // false (it no longer holds enabled + connected + NOT_ASKED), which also keeps the
             // on-screen state honest — re-enabling re-offers the dialog.
             onDismissRequest = { store.update { it.copy(enabled = false) } },
-            title = { Text("How much history should we export?") },
+            title = { Text(stringResource(R.string.hc_backfill_title)) },
             // No "change this later" promise: there is no UI to change backfillChoice short of
             // "Remove PulseLoop data", which resets it to NOT_ASKED and re-offers this dialog.
-            text = { Text("Exporting all history can take a while on the first run.") },
+            text = { Text(stringResource(R.string.hc_backfill_body)) },
             confirmButton = {
                 TextButton(onClick = {
                     store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_ALL) }
                     HealthConnectExportWorker.enqueue(context) // answer the gate → run the pass
-                }) { Text("Sync all history") }
+                }) { Text(stringResource(R.string.hc_backfill_all)) }
             },
             dismissButton = {
                 TextButton(onClick = {
                     store.update { it.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_NEW_ONLY) }
                     HealthConnectExportWorker.enqueue(context) // stamps watermarks, exports nothing
-                }) { Text("Only new data from now on") }
+                }) { Text(stringResource(R.string.hc_backfill_new)) }
             },
         )
     }
@@ -3481,18 +3467,18 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
     if (showRevokeResetDialog) {
         AlertDialog(
             onDismissRequest = { showRevokeResetDialog = false; store.update { it.copy(revocationOfferDismissed = true) } },
-            title = { Text("Health Connect permissions revoked") },
-            text = { Text("PulseLoop no longer has any Health Connect permissions. Reset the export so a later re-grant re-exports your history?") },
+            title = { Text(stringResource(R.string.hc_revoked_title)) },
+            text = { Text(stringResource(R.string.hc_revoked_body)) },
             confirmButton = {
                 TextButton(onClick = {
                     store.clearWatermarks()
                     store.update { it.copy(lastSyncAt = null, lastSyncSummary = null, revocationOfferDismissed = true) }
                     showRevokeResetDialog = false
-                    statusMessage = "Export reset — re-grant permissions to sync again."
-                }) { Text("Reset export") }
+                    statusMessage = context.getString(R.string.hc_export_reset_done)
+                }) { Text(stringResource(R.string.hc_reset_export)) }
             },
             dismissButton = {
-                TextButton(onClick = { showRevokeResetDialog = false; store.update { it.copy(revocationOfferDismissed = true) } }) { Text("Not now") }
+                TextButton(onClick = { showRevokeResetDialog = false; store.update { it.copy(revocationOfferDismissed = true) } }) { Text(stringResource(R.string.action_not_now)) }
             },
         )
     }
@@ -3502,8 +3488,8 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
     if (showRemoveDialog) {
         AlertDialog(
             onDismissRequest = { showRemoveDialog = false },
-            title = { Text("Remove PulseLoop data?") },
-            text = { Text("This deletes every record PulseLoop wrote to Health Connect and resets the export. It cannot be undone, and your ring data in PulseLoop is not affected.") },
+            title = { Text(stringResource(R.string.hc_remove_title)) },
+            text = { Text(stringResource(R.string.hc_remove_body)) },
             confirmButton = {
                 TextButton(onClick = {
                     showRemoveDialog = false
@@ -3512,10 +3498,10 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                     // deleted, the rest alive, and the watermarks never cleared — unrepairable
                     // from a write-only client. The worker reports back via prefs.removalStatus.
                     HealthConnectRemovalWorker.enqueue(context)
-                }) { Text("Remove") }
+                }) { Text(stringResource(R.string.action_remove)) }
             },
             dismissButton = {
-                TextButton(onClick = { showRemoveDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showRemoveDialog = false }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
     }
@@ -3567,7 +3553,7 @@ private fun BatteryRuntimeEstimate(samples: List<VitalSample>) {
     }
     if (estimate == null) {
         Text(
-            "Not enough of a trend to estimate runtime yet — it appears after a few hours of discharge.",
+            stringResource(R.string.battery_runtime_not_enough),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -3575,12 +3561,12 @@ private fun BatteryRuntimeEstimate(samples: List<VitalSample>) {
     }
     Column {
         Text(
-            "About ${estimate.label} left",
+            stringResource(R.string.battery_runtime_left, estimate.label),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            "Estimated from the current discharge at %.1f %%/h.".format(estimate.percentPerHour),
+            stringResource(R.string.battery_runtime_rate, "%.1f".format(estimate.percentPerHour)),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

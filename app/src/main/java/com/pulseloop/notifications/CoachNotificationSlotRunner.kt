@@ -1,5 +1,7 @@
 package com.pulseloop.notifications
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.content.Context
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -258,8 +260,8 @@ class CoachNotificationSlotRunner(
 
     companion object {
         /** The generic scripted check-in (pre-extraction worker fallback text). */
-        const val GENERIC_TITLE = "PulseLoop Coach"
-        const val GENERIC_BODY = "Good morning! Sync your ring and check your vitals to start the day."
+        val GENERIC_TITLE: String get() = L10n.get(R.string.checkins_test_title)
+        val GENERIC_BODY: String get() = L10n.get(R.string.notif_generic_body)
 
         /**
          * iOS `CoachNotificationService.runInFlight` — process-wide, because each entry
@@ -500,7 +502,7 @@ private class CoachSlotProductionEngine(
         val input = JsonArray(listOf(
             JsonObject(mapOf(
                 "role" to JsonPrimitive("system"),
-                "content" to JsonPrimitive(NotificationPromptBuilder.systemPrompt(slot)),
+                "content" to JsonPrimitive(NotificationPromptBuilder.systemPrompt(slot) + com.pulseloop.coach.context.CoachLanguage.directive("the notification title and body")),
             )),
             JsonObject(mapOf(
                 "role" to JsonPrimitive("developer"),
@@ -549,13 +551,13 @@ private class CoachSlotProductionEngine(
                     val h = sleep.totalMin / 60
                     val m = sleep.totalMin % 60
                     CoachNotificationContent(
-                        title = "Good morning$name",
-                        body = "You logged ${h}h ${m}m of sleep. Here's to a strong day — get moving when you can.",
+                        title = L10n.get(R.string.notif_good_morning, name),
+                        body = L10n.get(R.string.notif_morning_sleep, h, m),
                     )
                 } else {
                     CoachNotificationContent(
-                        title = "Good morning$name",
-                        body = "Ready to start the day? Take a measurement and I'll help you plan it.",
+                        title = L10n.get(R.string.notif_good_morning, name),
+                        body = L10n.get(R.string.notif_morning_none),
                     )
                 }
             }
@@ -563,15 +565,15 @@ private class CoachSlotProductionEngine(
                 val steps = packet.today.steps
                 if (steps != null) {
                     val goal = packet.goals.stepsDaily
-                    val hit = if (steps >= goal) "You hit your $goal step goal — nice work." else "${goal - steps} steps to your goal."
+                    val hit = if (steps >= goal) L10n.plural(R.plurals.notif_goal_hit, goal, goal) else L10n.plural(R.plurals.notif_goal_left, goal - steps, goal - steps)
                     CoachNotificationContent(
-                        title = "Evening check-in",
-                        body = "$steps steps today. $hit Time to start winding down.",
+                        title = L10n.get(R.string.notif_evening),
+                        body = L10n.plural(R.plurals.notif_evening_steps, steps, steps, hit),
                     )
                 } else {
                     CoachNotificationContent(
-                        title = "Evening check-in",
-                        body = "How did today feel? Sync your ring and I'll recap your day.",
+                        title = L10n.get(R.string.notif_evening),
+                        body = L10n.get(R.string.notif_evening_none),
                     )
                 }
             }

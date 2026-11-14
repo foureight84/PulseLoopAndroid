@@ -1,5 +1,7 @@
 package com.pulseloop.ui.dashboard
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -148,21 +150,21 @@ fun EditableCard(
                 modifier = Modifier.align(Alignment.TopStart).padding(6.dp).size(28.dp),
             ) {
                 IconButton(onClick = { editState.setHidden(card, true) }) {
-                    Icon(Icons.Filled.Remove, contentDescription = "Hide ${card.displayName}", tint = MaterialTheme.colorScheme.onErrorContainer)
+                    Icon(Icons.Filled.Remove, contentDescription = stringResource(R.string.dash_hide, card.displayName), tint = MaterialTheme.colorScheme.onErrorContainer)
                 }
             }
             Row(Modifier.align(Alignment.TopEnd).padding(6.dp)) {
                 if (editState.canMoveUp(card)) {
                     Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.size(28.dp)) {
                         IconButton(onClick = { editState.moveUp(card) }) {
-                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move ${card.displayName} up")
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = stringResource(R.string.dash_move_up, card.displayName))
                         }
                     }
                 }
                 if (editState.canMoveDown(card)) {
                     Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.padding(start = 4.dp).size(28.dp)) {
                         IconButton(onClick = { editState.moveDown(card) }) {
-                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move ${card.displayName} down")
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = stringResource(R.string.dash_move_down, card.displayName))
                         }
                     }
                 }
@@ -179,7 +181,7 @@ fun EditableCard(
 fun HiddenMetricsTray(hidden: List<DashboardCard>, onRestore: (DashboardCard) -> Unit) {
     if (hidden.isEmpty()) return
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Text("HIDDEN", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(stringResource(R.string.dash_hidden), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         hidden.forEach { card ->
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 2.dp),
@@ -188,7 +190,7 @@ fun HiddenMetricsTray(hidden: List<DashboardCard>, onRestore: (DashboardCard) ->
             ) {
                 Text(card.displayName, style = MaterialTheme.typography.bodyMedium)
                 IconButton(onClick = { onRestore(card) }) {
-                    Icon(Icons.Filled.Add, contentDescription = "Show ${card.displayName}")
+                    Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.dash_show, card.displayName))
                 }
             }
         }
@@ -200,7 +202,7 @@ fun HiddenMetricsTray(hidden: List<DashboardCard>, onRestore: (DashboardCard) ->
 @Composable
 fun CustomizeCardsButton(onClick: () -> Unit) {
     TextButton(onClick = onClick) {
-        Text("Customize", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(stringResource(R.string.dash_customize), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -214,12 +216,12 @@ fun ReorderDoneBar(onDone: () -> Unit) {
     ) {
         Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "Reorder or hide cards",
+                stringResource(R.string.dash_reorder_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 8.dp),
             )
-            TextButton(onClick = onDone) { Text("Done") }
+            TextButton(onClick = onDone) { Text(stringResource(R.string.action_done)) }
         }
     }
 }

@@ -1,5 +1,7 @@
 package com.pulseloop.coach.orchestration
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.openai.ResponsesError
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -22,7 +24,7 @@ data class CoachTurnError(
     val reason: String,
 ) {
     /** Plain-text form stored in the message body (history/search fallback). */
-    val plainText: String get() = "Coach error · $code\n$reason"
+    val plainText: String get() = L10n.get(R.string.cte_plain, code, reason)
 
     /** JSON form stored alongside the message so the error bubble can render
      *  the structured code/reason. Reuses the existing field — no schema change. */
@@ -48,19 +50,19 @@ data class CoachTurnError(
          *  app's `ResponsesError` cases explicitly and falls back to `message`. */
         fun from(error: Throwable): CoachTurnError = when (error) {
             is ResponsesError.MissingAPIKey -> CoachTurnError(
-                code = "No API key",
-                reason = "No API key is configured for the selected provider. Add one in Settings → AI Coach.")
+                code = L10n.get(R.string.cte_no_key),
+                reason = L10n.get(R.string.cte_no_key_reason))
             is ResponsesError.Transport -> CoachTurnError(
-                code = "Network",
+                code = L10n.get(R.string.cte_network),
                 reason = transportReason(error.underlying))
             is ResponsesError.Http -> CoachTurnError(
                 code = "HTTP ${error.status}",
                 reason = cleanReason(error.body, error.status))
-            is ResponsesError.Decoding -> CoachTurnError(code = "Response error", reason = error.msg)
+            is ResponsesError.Decoding -> CoachTurnError(code = L10n.get(R.string.cte_response_error), reason = error.msg)
             is ResponsesError.EmptyOutput -> CoachTurnError(
-                code = "No output",
-                reason = "The model returned an empty response. Try again, or pick a different model.")
-            else -> CoachTurnError(code = "Error", reason = error.message ?: "Something went wrong.")
+                code = L10n.get(R.string.cte_no_output),
+                reason = L10n.get(R.string.cte_no_output_reason))
+            else -> CoachTurnError(code = L10n.get(R.string.dialog_error), reason = error.message ?: L10n.get(R.string.cte_generic))
         }
 
         /**
@@ -77,23 +79,19 @@ data class CoachTurnError(
             return when (underlying) {
                 is java.net.UnknownHostException -> {
                     val host = hostFrom(detail)
-                    "Couldn't look up ${host ?: "the provider"}. Your device can't resolve it right " +
-                        "now — check your connection, and whether a VPN or a Private DNS setting is " +
-                        "blocking it. (${detail.ifEmpty { "unknown host" }})"
+                    L10n.get(R.string.cte_dns, host ?: L10n.get(R.string.cte_the_provider), detail.ifEmpty { "unknown host" })
                 }
                 // OkHttp reports connect and read timeouts as this same exception, and only the
                 // message tells them apart ("failed to connect to … after 30000ms" vs "timeout").
                 // The copy therefore stays neutral about which one happened, and the raw text is
                 // appended like every other branch so a bug report can still distinguish them.
                 is java.net.SocketTimeoutException ->
-                    "The provider took too long to answer. Check your connection and try again — a " +
-                        "VPN or a weak signal will do this. (${detail.ifEmpty { "timeout" }})"
+                    L10n.get(R.string.cte_timeout, detail.ifEmpty { "timeout" })
                 is javax.net.ssl.SSLException ->
-                    "The secure connection to the provider failed. This is usually a VPN, a proxy, " +
-                        "or a network that intercepts traffic. (${detail.ifEmpty { "TLS error" }})"
+                    L10n.get(R.string.cte_tls, detail.ifEmpty { "TLS error" })
                 is java.net.ConnectException ->
-                    "Couldn't connect to the provider. (${detail.ifEmpty { "connection refused" }})"
-                else -> detail.ifEmpty { "The network request failed." }
+                    L10n.get(R.string.cte_connect, detail.ifEmpty { "connection refused" })
+                else -> detail.ifEmpty { L10n.get(R.string.cte_network_failed) }
             }
         }
 
@@ -123,7 +121,7 @@ data class CoachTurnError(
             } catch (_: Exception) {
                 // not JSON — fall through to the raw body
             }
-            if (trimmed.isEmpty()) return "The provider returned HTTP $status with no details."
+            if (trimmed.isEmpty()) return L10n.get(R.string.cte_http_empty, status)
             return trimmed.take(400)
         }
     }

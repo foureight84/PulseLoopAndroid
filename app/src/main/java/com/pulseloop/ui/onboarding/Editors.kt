@@ -1,5 +1,8 @@
 package com.pulseloop.ui.onboarding
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -63,17 +66,17 @@ fun ProfileEditor(
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         if (showUnits) {
-            SectionHeaderCaps("Units")
+            SectionHeaderCaps(stringResource(R.string.physiology_units))
             FormCard {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Measurement units",
+                        stringResource(R.string.editor_measurement_units),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = PulseColors.textPrimary,
                     )
                     SegmentedRow(
-                        options = listOf("Metric", "Imperial"),
+                        options = listOf(stringResource(R.string.units_metric), stringResource(R.string.units_imperial)),
                         selectedIndex = if (draft.units == UnitSystem.METRIC) 0 else 1,
                         onSelect = { index ->
                             onDraftChange(draft.copy(units = if (index == 0) UnitSystem.METRIC else UnitSystem.IMPERIAL))
@@ -83,7 +86,7 @@ fun ProfileEditor(
             }
         }
 
-        SectionHeaderCaps("Identity")
+        SectionHeaderCaps(stringResource(R.string.editor_identity))
         FormCard {
             Column {
                 Row(
@@ -92,14 +95,14 @@ fun ProfileEditor(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
-                        "Name",
+                        stringResource(R.string.editor_name),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = PulseColors.textPrimary,
                     )
                     Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                         if (draft.name.isEmpty()) {
-                            Text("Optional", fontSize = 14.sp, color = PulseColors.textMuted)
+                            Text(stringResource(R.string.editor_optional), fontSize = 14.sp, color = PulseColors.textMuted)
                         }
                         BasicTextField(
                             value = draft.name,
@@ -123,13 +126,13 @@ fun ProfileEditor(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        "Sex",
+                        stringResource(R.string.editor_sex),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = PulseColors.textPrimary,
                     )
                     SegmentedRow(
-                        options = listOf("Not set", "Female", "Male", "Other"),
+                        options = listOf(stringResource(R.string.tristate_not_set), stringResource(R.string.sex_female), stringResource(R.string.sex_male), stringResource(R.string.sex_other)),
                         selectedIndex = when (draft.sex?.lowercase()) {
                             "female" -> 1
                             "male" -> 2
@@ -151,25 +154,25 @@ fun ProfileEditor(
             }
         }
 
-        SectionHeaderCaps("Body metrics", action = {
-            Text("Optional", fontSize = 12.sp, color = PulseColors.textMuted)
+        SectionHeaderCaps(stringResource(R.string.editor_body_metrics), action = {
+            Text(stringResource(R.string.editor_optional), fontSize = 12.sp, color = PulseColors.textMuted)
         })
         FormCard {
             Column {
                 PickerRow(
-                    title = "Age",
-                    value = draft.age?.let { "$it years" },
+                    title = stringResource(R.string.editor_age),
+                    value = draft.age?.let { L10n.plural(R.plurals.age_years, it, it) },
                     onClick = { activePicker = ProfilePickerKind.AGE },
                 )
                 HorizontalDivider(color = PulseColors.borderSubtle)
                 PickerRow(
-                    title = "Height",
+                    title = stringResource(R.string.editor_height),
                     value = heightLabel(draft),
                     onClick = { activePicker = ProfilePickerKind.HEIGHT },
                 )
                 HorizontalDivider(color = PulseColors.borderSubtle)
                 PickerRow(
-                    title = "Weight",
+                    title = stringResource(R.string.editor_weight),
                     value = weightLabel(draft),
                     onClick = { activePicker = ProfilePickerKind.WEIGHT },
                 )
@@ -179,29 +182,29 @@ fun ProfileEditor(
 
     when (activePicker) {
         ProfilePickerKind.AGE -> NumberPickerSheet(
-            title = "Age",
+            title = stringResource(R.string.editor_age),
             values = (13..100).toList(),
             initialValue = draft.age,
             fallback = 30,
-            label = { "$it years" },
+            label = { L10n.plural(R.plurals.age_years, it, it) },
             onSave = { onDraftChange(draft.copy(age = it)) },
             onDismiss = { activePicker = null },
         )
         ProfilePickerKind.HEIGHT -> NumberPickerSheet(
-            title = "Height",
+            title = stringResource(R.string.editor_height),
             values = if (draft.units == UnitSystem.METRIC) (120..220).toList() else (48..87).toList(),
             initialValue = draft.heightDisplayValue,
             fallback = if (draft.units == UnitSystem.METRIC) 175 else 69,
             label = { value ->
-                if (draft.units == UnitSystem.METRIC) "$value cm" else "${value / 12}' ${value % 12}\""
+                if (draft.units == UnitSystem.METRIC) L10n.get(R.string.value_cm, value) else "${value / 12}' ${value % 12}\""
             },
             onSave = { onDraftChange(draft.settingHeight(it)) },
             onDismiss = { activePicker = null },
         )
         ProfilePickerKind.WEIGHT -> DecimalValueSheet(
-            title = "Weight",
+            title = stringResource(R.string.editor_weight),
             initialValue = draft.weightDisplayValue,
-            unit = if (draft.units == UnitSystem.METRIC) "kg" else "lb",
+            unit = if (draft.units == UnitSystem.METRIC) stringResource(R.string.unit_kg) else stringResource(R.string.unit_lb),
             validRange = if (draft.units == UnitSystem.METRIC) 35.0..250.0 else 77.0..551.0,
             onSave = { onDraftChange(draft.settingWeight(it)) },
             onDismiss = { activePicker = null },
@@ -214,12 +217,12 @@ private enum class ProfilePickerKind { AGE, HEIGHT, WEIGHT }
 
 private fun heightLabel(draft: ProfileDraft): String? {
     val value = draft.heightDisplayValue ?: return null
-    return if (draft.units == UnitSystem.METRIC) "$value cm" else "${value / 12}' ${value % 12}\""
+    return if (draft.units == UnitSystem.METRIC) L10n.get(R.string.value_cm, value) else "${value / 12}' ${value % 12}\""
 }
 
 private fun weightLabel(draft: ProfileDraft): String? {
     val value = draft.weightDisplayValue ?: return null
-    return "${LocalizedDecimalInput.format(value)} ${if (draft.units == UnitSystem.METRIC) "kg" else "lb"}"
+    return "${LocalizedDecimalInput.format(value)} ${if (draft.units == UnitSystem.METRIC) L10n.get(R.string.unit_kg) else L10n.get(R.string.unit_lb)}"
 }
 
 @Composable
@@ -291,7 +294,7 @@ private fun PickerRow(title: String, value: String?, onClick: () -> Unit) {
         )
         Spacer(Modifier.weight(1f))
         Text(
-            value ?: "Not set",
+            value ?: stringResource(R.string.tristate_not_set),
             fontSize = 14.sp,
             color = if (value == null) PulseColors.textMuted else PulseColors.textSecondary,
         )
@@ -335,7 +338,7 @@ private fun NumberPickerSheet(
                 TextButton(onClick = {
                     onSave(null)
                     onDismiss()
-                }) { Text("Clear", color = PulseColors.textSecondary) }
+                }) { Text(stringResource(R.string.action_clear), color = PulseColors.textSecondary) }
                 Spacer(Modifier.weight(1f))
                 Text(
                     title,
@@ -347,7 +350,7 @@ private fun NumberPickerSheet(
                 TextButton(onClick = {
                     onSave(selection)
                     onDismiss()
-                }) { Text("Done", color = PulseColors.accent, fontWeight = FontWeight.SemiBold) }
+                }) { Text(stringResource(R.string.action_done), color = PulseColors.accent, fontWeight = FontWeight.SemiBold) }
             }
             LazyColumn(
                 state = listState,
@@ -409,7 +412,7 @@ private fun DecimalValueSheet(
                 TextButton(onClick = {
                     onSave(null)
                     onDismiss()
-                }) { Text("Clear", color = PulseColors.textSecondary) }
+                }) { Text(stringResource(R.string.action_clear), color = PulseColors.textSecondary) }
                 Spacer(Modifier.weight(1f))
                 Text(
                     title,
@@ -426,8 +429,8 @@ private fun DecimalValueSheet(
                     },
                 ) {
                     Text(
-                        "Done",
-                        color = if (parsedValue != null) PulseColors.accent else PulseColors.textMuted,
+                        stringResource(R.string.action_done),
+color = if (parsedValue != null) PulseColors.accent else PulseColors.textMuted,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -438,7 +441,7 @@ private fun DecimalValueSheet(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    "Enter your weight in $unit",
+                    stringResource(R.string.editor_weight_in, unit),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     color = PulseColors.textPrimary,
@@ -480,14 +483,14 @@ private fun DecimalValueSheet(
                 }
 
                 Text(
-                    "You can use either a comma or a period as the decimal separator.",
+                    stringResource(R.string.editor_decimal_hint),
                     fontSize = 12.sp,
                     color = PulseColors.textMuted,
                 )
 
                 if (text.isNotEmpty() && parsedValue == null) {
                     Text(
-                        "Enter a weight between ${validRange.start.toInt()} and ${validRange.endInclusive.toInt()} $unit.",
+                        stringResource(R.string.editor_weight_range, validRange.start.toInt(), validRange.endInclusive.toInt(), unit),
                         fontSize = 12.sp,
                         color = PulseColors.danger,
                     )
@@ -509,13 +512,13 @@ fun GoalEditor(
     modifier: Modifier = Modifier,
     includeWeeklyWorkouts: Boolean = true,
 ) {
-    val distanceUnit = if (units == UnitSystem.METRIC) "km" else "mi"
+    val distanceUnit = if (units == UnitSystem.METRIC) stringResource(R.string.unit_km) else stringResource(R.string.unit_mi)
     val distanceRange = if (units == UnitSystem.METRIC) 1f..30f else 1f..20f
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        SectionHeaderCaps("Daily targets")
+        SectionHeaderCaps(stringResource(R.string.editor_daily_targets))
         GoalSliderCard(
-            title = "Steps",
+            title = stringResource(R.string.metric_steps),
             icon = Icons.AutoMirrored.Filled.DirectionsWalk,
             tint = PulseColors.steps,
             value = draft.steps.toFloat(),
@@ -525,7 +528,7 @@ fun GoalEditor(
             onValueChange = { onDraftChange(draft.copy(steps = it)) },
         )
         GoalSliderCard(
-            title = "Distance",
+            title = stringResource(R.string.metric_distance),
             icon = Icons.Filled.Place,
             tint = PulseColors.distance,
             value = draft.distance.toFloat(),
@@ -535,46 +538,46 @@ fun GoalEditor(
             onValueChange = { onDraftChange(draft.copy(distance = it)) },
         )
         GoalSliderCard(
-            title = "Calories",
+            title = stringResource(R.string.metric_calories),
             icon = Icons.Filled.LocalFireDepartment,
             tint = PulseColors.calories,
             value = draft.calories.toFloat(),
             range = 100f..2_000f,
             step = 50f,
-            label = "${draft.calories.toInt()} cal",
+            label = stringResource(R.string.value_cal, draft.calories.toInt()),
             onValueChange = { onDraftChange(draft.copy(calories = it)) },
         )
         GoalSliderCard(
-            title = "Active minutes",
+            title = stringResource(R.string.goal_active_minutes),
             icon = Icons.Filled.Timer,
             tint = PulseColors.readiness,
             value = draft.activeMinutes.toFloat(),
             range = 10f..180f,
             step = 5f,
-            label = "${draft.activeMinutes.toInt()} min",
+            label = stringResource(R.string.value_min, draft.activeMinutes.toInt()),
             onValueChange = { onDraftChange(draft.copy(activeMinutes = it)) },
         )
         GoalSliderCard(
-            title = "Sleep",
+            title = stringResource(R.string.metric_sleep),
             icon = Icons.Filled.Bedtime,
             tint = PulseColors.sleep,
             value = draft.sleepHours.toFloat(),
             range = 5f..10f,
             step = 0.5f,
-            label = "%.1f h".format(draft.sleepHours),
+            label = stringResource(R.string.value_hours_decimal, "%.1f".format(draft.sleepHours)),
             onValueChange = { onDraftChange(draft.copy(sleepHours = it)) },
         )
 
         if (includeWeeklyWorkouts) {
-            SectionHeaderCaps("Weekly target")
+            SectionHeaderCaps(stringResource(R.string.editor_weekly_target))
             GoalSliderCard(
-                title = "Workouts",
+                title = stringResource(R.string.metric_workouts),
                 icon = Icons.Filled.DirectionsRun,
                 tint = PulseColors.success,
                 value = draft.workouts.toFloat(),
                 range = 1f..7f,
                 step = 1f,
-                label = "${draft.workouts.toInt()} / week",
+                label = stringResource(R.string.value_per_week, draft.workouts.toInt()),
                 onValueChange = { onDraftChange(draft.copy(workouts = it)) },
             )
         }

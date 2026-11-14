@@ -111,26 +111,26 @@ class MainActivity : ComponentActivity() {
         uri.getQueryParameter("error")?.takeIf { it.isNotBlank() }?.let { error ->
             store.takePendingAuthState()
             store.saveLastError(
-                if (error == "access_denied") "Strava authorization was declined." else "Strava denied authorization: $error"
+                if (error == "access_denied") getString(R.string.strava_auth_declined) else getString(R.string.strava_auth_denied, error)
             )
             return
         }
 
         // CSRF: the state we generated must come back. One-shot, cleared either way.
         if (!StravaAuth.validateState(store, uri.getQueryParameter("state"))) {
-            store.saveLastError("Strava authorization could not be verified. Please try connecting again.")
+            store.saveLastError(getString(R.string.strava_auth_unverified))
             return
         }
 
         // The consent screen lets the user untick "Upload your activities". Catch it here rather
         // than letting every future upload fail with an opaque 401.
         if (!StravaAuth.grantedScopeIncludesWrite(uri.getQueryParameter("scope"))) {
-            store.saveLastError("Strava did not grant upload permission. Reconnect and keep \"Upload your activities\" checked.")
+            store.saveLastError(getString(R.string.strava_auth_no_upload))
             return
         }
 
         val code = uri.getQueryParameter("code")?.takeIf { it.isNotBlank() } ?: run {
-            store.saveLastError("Strava returned an unexpected authorization response.")
+            store.saveLastError(getString(R.string.strava_auth_unexpected))
             return
         }
 
@@ -140,7 +140,7 @@ class MainActivity : ComponentActivity() {
                 store.clearLastError()
             } catch (e: Exception) {
                 // The code may have expired, or the configured secrets are wrong.
-                store.saveLastError("Could not complete the Strava sign-in: ${e.message ?: "unknown error"}")
+                store.saveLastError(getString(R.string.strava_auth_failed, e.message ?: getString(R.string.strava_unknown_error)))
             }
         }
     }

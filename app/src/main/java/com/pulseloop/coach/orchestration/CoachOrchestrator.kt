@@ -1,5 +1,7 @@
 package com.pulseloop.coach.orchestration
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.attachments.CoachImagePayload
 import com.pulseloop.coach.context.CoachContextPacket
 import com.pulseloop.coach.context.CoachPromptBuilder
@@ -113,7 +115,7 @@ class CoachOrchestrator(
         // Initial input: system + developer + recent turns + the new user message.
         // Images only ever ride on user turns (system/developer/assistant stay text).
         val input = mutableListOf<JsonObject>()
-        input.add(OpenAIRequestBuilder.message("system", CoachPromptBuilder.systemPrompt))
+        input.add(OpenAIRequestBuilder.message("system", CoachPromptBuilder.systemPrompt + com.pulseloop.coach.context.CoachLanguage.directive()))
         input.add(OpenAIRequestBuilder.message("developer", CoachPromptBuilder.developerMessage(packet)))
         for (m in recentMessages) {
             val isUser = m.role == "user"
@@ -199,7 +201,7 @@ class CoachOrchestrator(
                 assistant = CoachFallbacks.parseError(), trace = trace,
                 pendingActions = toolContext.pendingActions.toList(),
                 usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
-                error = CoachTurnError(code = "Bad response", reason = e.reason))
+                error = CoachTurnError(code = L10n.get(R.string.cte_bad_response), reason = e.reason))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -228,8 +230,8 @@ class CoachOrchestrator(
             if (attempts > maxFinalAttempts) {
                 val snippet = current.outputText.trim().take(200)
                 throw ParseExhausted(
-                    "The model didn't return a valid structured answer after $maxFinalAttempts attempts." +
-                        if (snippet.isEmpty()) "" else " It replied: “$snippet…”")
+                    L10n.plural(R.plurals.cte_invalid_structured, maxFinalAttempts, maxFinalAttempts) +
+                        if (snippet.isEmpty()) "" else " " + L10n.get(R.string.cte_it_replied, snippet))
             }
             val repair = OpenAIRequestBuilder.message("user", "Your previous output did not match the required coach_response JSON schema. Return only valid JSON for that schema now.")
             current = send(client, flags, listOf(repair), emptyList(), coachResponseTextFormat, current.id)

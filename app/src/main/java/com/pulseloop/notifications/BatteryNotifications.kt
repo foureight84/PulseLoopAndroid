@@ -1,5 +1,7 @@
 package com.pulseloop.notifications
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -29,9 +31,9 @@ object BatteryNotifications {
     fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "Ring Battery", NotificationManager.IMPORTANCE_DEFAULT
+                CHANNEL_ID, context.getString(R.string.channel_battery), NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Alerts when your ring's battery runs low"
+                description = context.getString(R.string.channel_battery_desc)
             }
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(channel)
@@ -49,9 +51,9 @@ object BatteryNotifications {
 
         val (title, body) = when (alert) {
             is BatteryAlertKind.Low ->
-                "Ring battery low" to "Your ring is at ${alert.percent}%. Charge it soon so tracking doesn't stop."
+                L10n.get(R.string.battery_low_title) to L10n.get(R.string.battery_low_body, alert.percent)
             is BatteryAlertKind.Critical ->
-                "Ring battery critically low" to "Your ring is at ${alert.percent}% and will shut down soon. Charge it now."
+                L10n.get(R.string.battery_critical_title) to L10n.get(R.string.battery_critical_body, alert.percent)
         }
 
         val intent = Intent(context, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }

@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.DeviceEntity
 import com.pulseloop.data.entity.MeasurementEntity
@@ -499,7 +501,7 @@ class RingSyncCoordinator(
     fun factoryResetRing(onProgress: (String) -> Unit = {}, onCleared: suspend () -> Unit) {
         scope.launch {
             if (isConnected) {
-                onProgress("Syncing latest data…")
+                onProgress(L10n.get(R.string.wearable_syncing_latest))
                 syncNow()
                 // Wait for the history sync to drain (progress reaches 100 or clears), capped
                 // so a stale link can never hang the reset.
@@ -507,7 +509,7 @@ class RingSyncCoordinator(
                     syncProgress.first { it == null || it >= 100 }
                 }
                 kotlinx.coroutines.delay(800)  // let the final history writes flush
-                onProgress("Resetting ring…")
+                onProgress(L10n.get(R.string.wearable_resetting_ring))
                 engine?.factoryReset()
                 // The reset frame is only ENQUEUED on the GATT op queue; wait until it has
                 // actually been written and acked before forget() tears the queue down —

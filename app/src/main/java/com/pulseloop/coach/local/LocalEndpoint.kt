@@ -1,5 +1,7 @@
 package com.pulseloop.coach.local
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import java.net.URI
 
 /**
@@ -78,13 +80,11 @@ object LocalEndpoint {
 
     /** A short, user-facing explanation for a [Problem], for the Settings field. */
     fun message(problem: Problem): String = when (problem) {
-        Problem.BLANK -> "Enter your server's address, e.g. http://192.168.1.50:11434"
-        Problem.MALFORMED -> "That doesn't look like a URL — use host:port or http://host:port"
-        Problem.UNSUPPORTED_SCHEME -> "Only http:// and https:// are supported."
+        Problem.BLANK -> L10n.get(R.string.le_blank)
+        Problem.MALFORMED -> L10n.get(R.string.le_malformed)
+        Problem.UNSUPPORTED_SCHEME -> L10n.get(R.string.le_scheme)
         Problem.PUBLIC_CLEARTEXT ->
-            "Plain http:// is only allowed for a server on this device or your local network " +
-            "(an IP address, a plain hostname, or a .local / .lan / .ts.net name). " +
-            "Use https:// to reach one over the internet."
+            L10n.get(R.string.le_cleartext)
     }
 
     /**
