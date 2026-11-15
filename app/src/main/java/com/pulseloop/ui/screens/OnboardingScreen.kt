@@ -319,16 +319,19 @@ private fun WelcomeStep(getStarted: () -> Unit, exploreWithoutRing: () -> Unit) 
 
         // Two-column feature grid (rows of two, since we're inside a scroll column).
         features.chunked(2).forEach { pair ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // IntrinsicSize.Min + fillMaxHeight: both tiles in a row match the taller one, and a
+            // title that wraps (longer in some languages) grows the tile instead of clipping.
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 pair.forEach { feature ->
                     Column(
                         Modifier
                             .weight(1f)
-                            .height(118.dp)
+                            .fillMaxHeight()
+                            .heightIn(min = 118.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .background(PulseColors.card)
                             .border(1.dp, PulseColors.borderSubtle, RoundedCornerShape(16.dp))
-                            .padding(horizontal = 13.dp),
+                            .padding(horizontal = 13.dp, vertical = 12.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
                     ) {
