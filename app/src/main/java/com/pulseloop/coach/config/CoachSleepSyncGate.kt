@@ -66,6 +66,8 @@ object CoachSleepSyncGate {
         minIntervalMs: Long,
     ): Boolean {
         if (existingSignature == newSignature) return false
+        if (com.pulseloop.coach.summaries.CoachSummaryContextBuilder.languageOf(existingSignature) !=
+            com.pulseloop.coach.summaries.CoachSummaryContextBuilder.languageOf(newSignature)) return true
         if (now - existingUpdatedAt >= minIntervalMs) return true
         val before = existingSignature.substringBefore('|').toIntOrNull() ?: return false
         val after = newSignature.substringBefore('|').toIntOrNull() ?: return false

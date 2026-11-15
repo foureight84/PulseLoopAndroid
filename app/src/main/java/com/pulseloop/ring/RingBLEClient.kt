@@ -281,8 +281,9 @@ class RingBLEClient(
                 }
                 // Back on: the message no longer describes anything, even if the ring is out of range.
                 BluetoothAdapter.STATE_ON -> scope.launch {
+                    val wasOff = _state.value.bluetoothOff
                     updateState {
-                        copy(bluetoothOff = false, lastError = lastError.takeUnless { it == BLUETOOTH_OFF_ERROR })
+                        copy(bluetoothOff = false, lastError = if (wasOff || lastError == BLUETOOTH_OFF_ERROR) null else lastError)
                     }
                 }
             }
@@ -354,7 +355,7 @@ class RingBLEClient(
 
     private fun startScanningInternal() {
         if (!hasPermissions()) {
-            updateState { copy(lastError = "BLE permissions not granted") }
+            updateState { copy(lastError = L10n.get(R.string.ble_permissions)) }
             return
         }
         if (!bluetoothAdapter.isEnabled) {
@@ -1690,7 +1691,7 @@ class RingBLEClient(
                             }
                         }
                     } else {
-                        updateState { copy(lastError = "GATT connect failed: $status") }
+                        updateState { copy(lastError = L10n.get(R.string.ble_connect_failed_gatt, status)) }
                         handleDisconnect(gatt, status)
                     }
                 }
@@ -1942,7 +1943,7 @@ class RingBLEClient(
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 recordDiagnostic("GATT write failed ($status)", error = true)
-                updateState { copy(lastError = "Ring command write failed (GATT $status)") }
+                updateState { copy(lastError = L10n.get(R.string.ble_write_failed_gatt, status)) }
                 // Do not advance into the next command: the failed operation may be one of the
                 // required post-subscription handshake writes, and callbacks share a channel.
                 recoverWedgedLink()
@@ -2212,7 +2213,7 @@ class RingBLEClient(
                 lastError = when {
                     requestedByUser -> lastError
                     status == BluetoothGatt.GATT_SUCCESS -> null
-                    else -> "Ring disconnected (GATT $status)"
+                    else -> L10n.get(R.string.ble_disconnected_gatt, status)
                 },
             )
         }
@@ -2294,7 +2295,7 @@ class RingBLEClient(
         private const val PROCESS_OWNER_RETRY_MS = 1_000L
         /** How often the liveness watchdog runs. */
         private const val WATCHDOG_INTERVAL_MS = 15_000L
-        internal const val BLUETOOTH_OFF_ERROR = "Phone Bluetooth is off"
+        internal val BLUETOOTH_OFF_ERROR: String get() = L10n.get(R.string.hero_bluetooth_off)
         /** No GATT activity for this long while CONNECTED ⇒ zombie link ⇒ reconnect.
          *  Comfortably longer than the 15s keepalive so a single missed ACK won't trip it. */
         private const val LINK_STALE_MS = 50_000L

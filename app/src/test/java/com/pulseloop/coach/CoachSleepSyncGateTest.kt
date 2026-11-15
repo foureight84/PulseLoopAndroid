@@ -125,4 +125,11 @@ class CoachSleepSyncGateTest {
         assertFalse(CoachSleepSyncGate.sleepCardRewriteDue("530|1", 0L, "544|1", hour, floor))
         assertTrue(CoachSleepSyncGate.sleepCardRewriteDue("530|1", 0L, "545|1", hour, floor))
     }
+
+    @Test
+    fun testLanguageChangeRewritesInsideFloor() {
+        val floor = 2 * hour
+        assertTrue(CoachSleepSyncGate.sleepCardRewriteDue("420|82", 0L, "420|82|lang=Russian", 60_000L, floor))
+        assertTrue(CoachSleepSyncGate.sleepCardRewriteDue("420|82|lang=Russian", 0L, "420|82", 60_000L, floor))
+    }
 }

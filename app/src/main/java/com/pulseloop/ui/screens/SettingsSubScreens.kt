@@ -1971,7 +1971,7 @@ SettingsSubScreen(title = stringResource(R.string.settings_wearable), onBack = o
                 if (!isConnected && device != null && bleState.bluetoothOff) {
                     // Say why it's disconnected (#136); it reconnects once Bluetooth is back on.
                     Text(
-                        "Phone Bluetooth is off — turn it on to reconnect",
+                        stringResource(R.string.wearable_bluetooth_off_hint),
                         style = MaterialTheme.typography.bodySmall,
                         color = PulseColors.warning,
                         modifier = Modifier.padding(top = 2.dp),

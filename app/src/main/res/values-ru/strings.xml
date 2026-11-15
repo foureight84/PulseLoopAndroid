@@ -1283,4 +1283,24 @@
     <string name="chart_words_steps">шаг</string>
     <string name="chart_x_vs_y">%1$s и %2$s</string>
     <string name="chart_no_data">Нет данных за этот период.</string>
+    <string name="pill_bluetooth_off">Bluetooth выключен</string>
+    <string name="hero_bluetooth_off">Bluetooth на телефоне выключен</string>
+    <string name="wearable_bluetooth_off_hint">Bluetooth на телефоне выключен — включите его для подключения</string>
+    <string name="ble_permissions">Не выданы разрешения Bluetooth</string>
+    <string name="ble_connect_failed_gatt">Ошибка подключения GATT: %1$d</string>
+    <string name="ble_write_failed_gatt">Ошибка отправки команды кольцу (GATT %1$d)</string>
+    <string name="ble_disconnected_gatt">Кольцо отключилось (GATT %1$d)</string>
+    <string name="stall_title">Похоже, часы кольца остановились</string>
+    <string name="stall_body_can_restart">Кольцо по-прежнему подключается, но само не записывает пульс и сон. Перезапуск кольца исправит это, и сохранённые на нём данные не пропадут.</string>
+    <string name="stall_body_manual_restart">Кольцо по-прежнему подключается, но само не записывает пульс и сон. Выключите и снова включите его через родное приложение кольца или зарядное устройство.</string>
+    <string name="stall_restart_action">Перезапустить кольцо</string>
+    <string name="stall_confirm_title">Перезапустить кольцо</string>
+    <string name="stall_confirm_body">PulseLoop выключит кольцо. После этого положите его на зарядку, чтобы снова включить, — PulseLoop переподключится и установит время.</string>
+    <string name="stall_turn_off_action">Выключить кольцо</string>
+    <string name="stall_charge_title">Положите кольцо на зарядку</string>
+    <string name="stall_charge_body">Кольцо выключается. Положите его на зарядку, чтобы снова включить — без этого оно останется выключенным.\n\nКогда оно включится, PulseLoop сам переподключится и выставит время. Если часы всё равно не пойдут, это предупреждение появится снова.</string>
+    <string name="stall_not_connected_title">Кольцо не подключено</string>
+    <string name="stall_not_connected_body">Чтобы выключить кольцо, PulseLoop должен быть к нему подключён. Дождитесь подключения и попробуйте снова.</string>
+    <string name="stall_unsupported_title">Не удаётся выключить это кольцо</string>
+    <string name="stall_unsupported_body">Это кольцо нельзя выключить из PulseLoop. Перезапустите его через родное приложение или на зарядке.</string>
 </resources>

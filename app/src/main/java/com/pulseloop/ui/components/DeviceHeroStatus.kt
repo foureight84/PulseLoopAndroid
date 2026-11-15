@@ -83,7 +83,7 @@ data class DeviceHeroStatus(
             }
             // Phone Bluetooth off explains any not-connected state of a paired ring (#136).
             if (bluetoothOff && knownName != null && state != RingConnectionState.CONNECTED) {
-                statusLine = "Phone Bluetooth is off"; statusTint = PulseColors.warning
+                statusLine = L10n.get(R.string.hero_bluetooth_off); statusTint = PulseColors.warning
             }
 
             val batteryText = batteryPercent?.let { "${it.coerceIn(0, 100)}%" }

@@ -107,7 +107,7 @@ fun ConnectionStatusPill(
         RingConnectionState.CONNECTING -> stringResource(R.string.pill_connecting)
         RingConnectionState.RECONNECTING -> stringResource(R.string.pill_reconnecting)
         // The phone's adapter being off explains every not-connected state (#136).
-        else -> if (bluetoothOff) "Bluetooth off"
+        else -> if (bluetoothOff) stringResource(R.string.pill_bluetooth_off)
             else if (state == RingConnectionState.FAILED) stringResource(R.string.pill_sync_failed) else stringResource(R.string.pill_disconnected)
     }
     val pulse by rememberInfiniteTransition(label = "pill").animateFloat(

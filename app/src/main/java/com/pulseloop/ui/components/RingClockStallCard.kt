@@ -5,8 +5,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.pulseloop.R
 import com.pulseloop.service.RingClockStallStore
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.ui.theme.PulseColors
@@ -31,27 +33,23 @@ fun RingClockStallCard(canRestart: Boolean, onRestart: () -> Unit, modifier: Mod
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                "Your ring's clock seems to have stopped",
+                stringResource(R.string.stall_title),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = PulseColors.warning,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                if (canRestart) {
-                    "It still connects, but it isn't recording heart rate or sleep on its own. " +
-                        "Restarting the ring fixes this, and nothing stored on it is lost."
-                } else {
-                    "It still connects, but it isn't recording heart rate or sleep on its own. " +
-                        "Turn it off and on again from the ring's own app or its charger."
-                },
+                stringResource(
+                    if (canRestart) R.string.stall_body_can_restart else R.string.stall_body_manual_restart,
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = PulseColors.textSecondary,
             )
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (canRestart) Button(onClick = onRestart) { Text("Restart ring") }
-                TextButton(onClick = { RingClockStallStore.dismiss(context) }) { Text("Not now") }
+                if (canRestart) Button(onClick = onRestart) { Text(stringResource(R.string.stall_restart_action)) }
+                TextButton(onClick = { RingClockStallStore.dismiss(context) }) { Text(stringResource(R.string.action_not_now)) }
             }
         }
     }
@@ -76,13 +74,8 @@ fun RingRestartDialog(
         RingRestartStep.NONE -> Unit
         RingRestartStep.CONFIRM -> AlertDialog(
             onDismissRequest = { onStep(RingRestartStep.NONE) },
-            title = { Text("Restart your ring") },
-            text = {
-                Text(
-                    "PulseLoop will turn your ring off. You'll then put it on its charger to " +
-                        "turn it back on, and PulseLoop will reconnect and set its time.",
-                )
-            },
+            title = { Text(stringResource(R.string.stall_confirm_title)) },
+            text = { Text(stringResource(R.string.stall_confirm_body)) },
             confirmButton = {
                 TextButton(onClick = {
                     onStep(
@@ -95,40 +88,27 @@ fun RingRestartDialog(
                             else -> RingRestartStep.NOT_CONNECTED
                         },
                     )
-                }) { Text("Turn off ring") }
+                }) { Text(stringResource(R.string.stall_turn_off_action)) }
             },
-            dismissButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text(stringResource(R.string.action_cancel)) } },
         )
         RingRestartStep.CHARGE -> AlertDialog(
             onDismissRequest = {},
-            title = { Text("Put your ring on its charger") },
-            text = {
-                Text(
-                    "Your ring is turning off. Put it on its charger to turn it back on — it stays " +
-                        "off until you do.\n\nOnce it's back on, PulseLoop reconnects and sets the " +
-                        "time by itself. If the clock still doesn't run, this warning will come back.",
-                )
-            },
-            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("Done") } },
+            title = { Text(stringResource(R.string.stall_charge_title)) },
+            text = { Text(stringResource(R.string.stall_charge_body)) },
+            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text(stringResource(R.string.action_done)) } },
         )
         RingRestartStep.NOT_CONNECTED -> AlertDialog(
             onDismissRequest = { onStep(RingRestartStep.NONE) },
-            title = { Text("Ring not connected") },
-            text = {
-                Text(
-                    "PulseLoop needs to be connected to your ring to turn it off. Wait for it to " +
-                        "connect and try again.",
-                )
-            },
-            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("OK") } },
+            title = { Text(stringResource(R.string.stall_not_connected_title)) },
+            text = { Text(stringResource(R.string.stall_not_connected_body)) },
+            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text(stringResource(R.string.action_ok)) } },
         )
         RingRestartStep.UNSUPPORTED -> AlertDialog(
             onDismissRequest = { onStep(RingRestartStep.NONE) },
-            title = { Text("Can't turn this ring off") },
-            text = {
-                Text("This ring can't be turned off from PulseLoop. Restart it from its own app or its charger.")
-            },
-            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text("OK") } },
+            title = { Text(stringResource(R.string.stall_unsupported_title)) },
+            text = { Text(stringResource(R.string.stall_unsupported_body)) },
+            confirmButton = { TextButton(onClick = { onStep(RingRestartStep.NONE) }) { Text(stringResource(R.string.action_ok)) } },
         )
     }
 }

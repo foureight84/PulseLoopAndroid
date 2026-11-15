@@ -1239,4 +1239,24 @@
     <string name="chart_words_steps">step</string>
     <string name="chart_x_vs_y">%1$s vs %2$s</string>
     <string name="chart_no_data">No data to plot for this range.</string>
+    <string name="pill_bluetooth_off">Bluetooth off</string>
+    <string name="hero_bluetooth_off">Phone Bluetooth is off</string>
+    <string name="wearable_bluetooth_off_hint">Phone Bluetooth is off — turn it on to reconnect</string>
+    <string name="ble_permissions">BLE permissions not granted</string>
+    <string name="ble_connect_failed_gatt">GATT connect failed: %1$d</string>
+    <string name="ble_write_failed_gatt">Ring command write failed (GATT %1$d)</string>
+    <string name="ble_disconnected_gatt">Ring disconnected (GATT %1$d)</string>
+    <string name="stall_title">Your ring\'s clock seems to have stopped</string>
+    <string name="stall_body_can_restart">It still connects, but it isn\'t recording heart rate or sleep on its own. Restarting the ring fixes this, and nothing stored on it is lost.</string>
+    <string name="stall_body_manual_restart">It still connects, but it isn\'t recording heart rate or sleep on its own. Turn it off and on again from the ring\'s own app or its charger.</string>
+    <string name="stall_restart_action">Restart ring</string>
+    <string name="stall_confirm_title">Restart your ring</string>
+    <string name="stall_confirm_body">PulseLoop will turn your ring off. You\'ll then put it on its charger to turn it back on, and PulseLoop will reconnect and set its time.</string>
+    <string name="stall_turn_off_action">Turn off ring</string>
+    <string name="stall_charge_title">Put your ring on its charger</string>
+    <string name="stall_charge_body">Your ring is turning off. Put it on its charger to turn it back on — it stays off until you do.\n\nOnce it\'s back on, PulseLoop reconnects and sets the time by itself. If the clock still doesn\'t run, this warning will come back.</string>
+    <string name="stall_not_connected_title">Ring not connected</string>
+    <string name="stall_not_connected_body">PulseLoop needs to be connected to your ring to turn it off. Wait for it to connect and try again.</string>
+    <string name="stall_unsupported_title">Can\'t turn this ring off</string>
+    <string name="stall_unsupported_body">This ring can\'t be turned off from PulseLoop. Restart it from its own app or its charger.</string>
 </resources>
