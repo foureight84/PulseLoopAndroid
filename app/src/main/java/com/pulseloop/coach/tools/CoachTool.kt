@@ -8,12 +8,16 @@ import kotlinx.serialization.json.JsonObject
  */
 data class CoachToolDef(
     val name: String,
-    val publicLabel: String,
+    /** The progress line shown while the tool runs ("Looking at your sleep"). */
+    @androidx.annotation.StringRes val publicLabelRes: Int,
     val description: String,
     val parameters: JsonObject,
     val strict: Boolean = true,
     val run: (String, ToolExecutionContext) -> ToolResult,
-)
+) {
+    /** Resolved per call, so it follows a language change without rebuilding the registry. */
+    val publicLabel: String get() = com.pulseloop.util.L10n.get(publicLabelRes)
+}
 
 data class ToolResult(
     val jsonString: String,

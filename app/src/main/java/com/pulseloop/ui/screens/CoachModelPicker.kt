@@ -1,5 +1,8 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -62,7 +65,7 @@ fun CoachModelPicker(
     val presetSlugs = presets.map { it.first }.toSet()
     val others = success?.entries?.filter { it.id !in presetSlugs }.orEmpty()
 
-    Text("Model", style = MaterialTheme.typography.labelMedium)
+    Text(stringResource(R.string.coach_model), style = MaterialTheme.typography.labelMedium)
     Spacer(Modifier.height(4.dp))
     var expanded by remember { mutableStateOf(false) }
     var filter by remember(provider) { mutableStateOf("") }
@@ -83,19 +86,19 @@ fun CoachModelPicker(
                 onClick = { onPick(slug); expanded = false },
             )
 
-            if (presets.isNotEmpty()) MenuHeader("Recommended")
+            if (presets.isNotEmpty()) MenuHeader(stringResource(R.string.picker_recommended))
             presets.forEach { (slug, blurb) -> Item(slug, blurb) }
 
             if (others.isNotEmpty()) {
                 HorizontalDivider()
-                MenuHeader("All models from $providerName (${others.size})")
+                MenuHeader(stringResource(R.string.picker_all_models, providerName, others.size))
                 // OpenRouter lists hundreds; a filter beats scrolling, and the cap keeps the
                 // (non-lazy) menu from composing every row.
                 if (others.size > FILTER_THRESHOLD) {
                     OutlinedTextField(
                         value = filter,
                         onValueChange = { filter = it },
-                        placeholder = { Text("Filter, e.g. claude") },
+                        placeholder = { Text(stringResource(R.string.picker_filter)) },
                         singleLine = true,
                         modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth(),
                     )
@@ -107,12 +110,12 @@ fun CoachModelPicker(
                 matches.take(MAX_ROWS).forEach { e ->
                     val detail = listOfNotNull(
                         e.name?.takeIf { it != e.id },
-                        e.expiresOn?.let { "retiring $it" },
+                        e.expiresOn?.let { L10n.get(R.string.picker_retiring, it) },
                     ).joinToString(" · ")
                     Item(e.id, detail)
                 }
                 if (matches.size > MAX_ROWS) {
-                    MenuHeader("${matches.size - MAX_ROWS} more — type to narrow")
+                    MenuHeader(stringResource(R.string.picker_more, matches.size - MAX_ROWS))
                 }
             }
         }
@@ -123,28 +126,28 @@ fun CoachModelPicker(
     val unlisted = success != null && CoachModelCatalog.isUnlisted(provider, success, selected)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         val (status, color) = when {
-            savedKey.isBlank() -> "Save your key to see every model $providerName offers." to MaterialTheme.colorScheme.onSurfaceVariant
-            loading -> "Loading models from $providerName…" to MaterialTheme.colorScheme.onSurfaceVariant
+            savedKey.isBlank() -> stringResource(R.string.picker_save_key, providerName) to MaterialTheme.colorScheme.onSurfaceVariant
+            loading -> stringResource(R.string.picker_loading, providerName) to MaterialTheme.colorScheme.onSurfaceVariant
             listing is CoachModelCatalog.Result.Failure -> (listing as CoachModelCatalog.Result.Failure).message to PulseColors.danger
-            success != null -> "${success.entries.size} models available from $providerName" to MaterialTheme.colorScheme.onSurfaceVariant
+            success != null -> stringResource(R.string.picker_available, success.entries.size, providerName) to MaterialTheme.colorScheme.onSurfaceVariant
             else -> "" to MaterialTheme.colorScheme.onSurfaceVariant
         }
         Text(status, style = MaterialTheme.typography.bodySmall, color = color, modifier = Modifier.weight(1f))
         if (savedKey.isNotBlank() && !loading) {
             TextButton(onClick = { load(force = true) }) {
-                Text(if (listing is CoachModelCatalog.Result.Failure) "Retry" else "Refresh")
+                Text(if (listing is CoachModelCatalog.Result.Failure) stringResource(R.string.action_retry) else stringResource(R.string.action_refresh))
             }
         }
     }
     if (unlisted) {
         Text(
-            "$providerName doesn't list “$selected” any more — it may have been retired. Pick another model.",
+            stringResource(R.string.picker_missing, providerName, selected),
             style = MaterialTheme.typography.bodySmall,
             color = PulseColors.danger,
         )
     } else if (expiry != null) {
         Text(
-            "$providerName is retiring this model on $expiry.",
+            stringResource(R.string.picker_retiring_on, providerName, expiry),
             style = MaterialTheme.typography.bodySmall,
             color = PulseColors.warning,
         )

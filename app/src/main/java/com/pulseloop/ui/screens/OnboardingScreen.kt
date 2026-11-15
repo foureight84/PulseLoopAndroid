@@ -1,5 +1,6 @@
 package com.pulseloop.ui.screens
 
+import androidx.compose.ui.res.stringResource
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -226,14 +227,14 @@ private fun OnboardingTopBar(
                     IconButton(onClick = onBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
+                            contentDescription = stringResource(R.string.action_back),
                             tint = PulseColors.textSecondary,
                         )
                     }
                 }
             }
             Text(
-                "Step ${step.index + 1} of $total",
+                stringResource(R.string.onboarding_step, step.index + 1, total),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = FontFamily.Monospace,
@@ -244,7 +245,7 @@ private fun OnboardingTopBar(
             Box(Modifier.size(width = 60.dp, height = 44.dp), contentAlignment = Alignment.CenterEnd) {
                 if (showsSkip) {
                     Text(
-                        "Skip",
+                        stringResource(R.string.action_skip),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = PulseColors.textSecondary,
@@ -282,19 +283,19 @@ private data class WelcomeFeature(
 @Composable
 private fun WelcomeStep(getStarted: () -> Unit, exploreWithoutRing: () -> Unit) {
     val features = listOf(
-        WelcomeFeature(Icons.Filled.Paid, "No subscription", "Own your ring data", PulseColors.success),
-        WelcomeFeature(Icons.Filled.Lock, "Privacy first", "Data stays on device", PulseColors.info),
-        WelcomeFeature(Icons.Filled.AutoAwesome, "AI health coach", "Learns your baseline", PulseColors.accent),
-        WelcomeFeature(Icons.Filled.MonitorHeart, "See your vitals", "HR, SpO₂, HRV & stress", PulseColors.heartRate),
-        WelcomeFeature(Icons.Filled.Bedtime, "Sleep tracking", "Stages and trends", PulseColors.sleep),
-        WelcomeFeature(Icons.Filled.DirectionsRun, "Activity recording", "Live workout tracking", PulseColors.steps),
+        WelcomeFeature(Icons.Filled.Paid, stringResource(R.string.welcome_no_sub), stringResource(R.string.welcome_no_sub_desc), PulseColors.success),
+        WelcomeFeature(Icons.Filled.Lock, stringResource(R.string.welcome_privacy), stringResource(R.string.welcome_privacy_desc), PulseColors.info),
+        WelcomeFeature(Icons.Filled.AutoAwesome, stringResource(R.string.welcome_coach), stringResource(R.string.welcome_coach_desc), PulseColors.accent),
+        WelcomeFeature(Icons.Filled.MonitorHeart, stringResource(R.string.welcome_vitals), stringResource(R.string.welcome_vitals_desc), PulseColors.heartRate),
+        WelcomeFeature(Icons.Filled.Bedtime, stringResource(R.string.welcome_sleep), stringResource(R.string.welcome_sleep_desc), PulseColors.sleep),
+        WelcomeFeature(Icons.Filled.DirectionsRun, stringResource(R.string.welcome_activity), stringResource(R.string.welcome_activity_desc), PulseColors.steps),
     )
 
     StepScaffold(
         footer = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                PrimaryButton("Get started", icon = Icons.Filled.ArrowForward, onClick = getStarted)
-                SecondaryButton("Explore without ring", icon = Icons.Filled.GridView, onClick = exploreWithoutRing)
+                PrimaryButton(stringResource(R.string.onboarding_get_started), icon = Icons.Filled.ArrowForward, onClick = getStarted)
+                SecondaryButton(stringResource(R.string.onboarding_explore), icon = Icons.Filled.GridView, onClick = exploreWithoutRing)
             }
         },
     ) {
@@ -312,8 +313,8 @@ private fun WelcomeStep(getStarted: () -> Unit, exploreWithoutRing: () -> Unit) 
                 .clip(RoundedCornerShape(22.dp)),
         )
         StepHeader(
-            title = "Set up PulseLoop",
-            subtitle = "Your health, on your terms — no subscription, no cloud.",
+            title = stringResource(R.string.onboarding_setup_title),
+            subtitle = stringResource(R.string.onboarding_setup_subtitle),
         )
 
         // Two-column feature grid (rows of two, since we're inside a scroll column).
@@ -388,7 +389,7 @@ private fun ProfileStep(
 
     StepScaffold(
         footer = {
-            PrimaryButton("Continue", icon = Icons.Filled.ArrowForward, enabled = draft != null) {
+            PrimaryButton(stringResource(R.string.action_continue), icon = Icons.Filled.ArrowForward, enabled = draft != null) {
                 val current = draft ?: return@PrimaryButton
                 scope.launch {
                     val existing = db.userProfileDao().get()
@@ -402,8 +403,8 @@ private fun ProfileStep(
         },
     ) {
         StepHeader(
-            title = "Profile",
-            subtitle = "Used to tune calories, activity goals, and summaries.",
+            title = stringResource(R.string.onboarding_profile),
+            subtitle = stringResource(R.string.onboarding_profile_subtitle),
         )
         draft?.let { current ->
             ProfileEditor(draft = current, onDraftChange = { draft = it })
@@ -432,7 +433,7 @@ private fun GoalsStep(
 
     StepScaffold(
         footer = {
-            PrimaryButton("Save goals", icon = Icons.Filled.Check, enabled = draft != null) {
+            PrimaryButton(stringResource(R.string.goals_save), icon = Icons.Filled.Check, enabled = draft != null) {
                 val current = draft ?: return@PrimaryButton
                 scope.launch {
                     val existing = db.userGoalDao().get()
@@ -446,8 +447,8 @@ private fun GoalsStep(
         },
     ) {
         StepHeader(
-            title = "Daily goals",
-            subtitle = "Start with recommended targets. You can change these anytime.",
+            title = stringResource(R.string.onboarding_goals),
+            subtitle = stringResource(R.string.onboarding_goals_subtitle),
         )
         draft?.let { current ->
             GoalEditor(
@@ -473,9 +474,9 @@ private data class BaselineMilestone(
 private fun BaselineStep(finish: () -> Unit) {
     // iOS #75 finale copy: Today / First sync / Days 3–7.
     val milestones = listOf(
-        BaselineMilestone(null, "Today", "Activity and live vitals, right away", PulseColors.info),
-        BaselineMilestone(Icons.Filled.Bedtime, "First sync", "Sleep stages and nightly trends", PulseColors.sleep),
-        BaselineMilestone(Icons.AutoMirrored.Filled.TrendingUp, "Days 3–7", "Your personalized baseline unlocks", PulseColors.success),
+        BaselineMilestone(null, stringResource(R.string.period_today), stringResource(R.string.milestone_today), PulseColors.info),
+        BaselineMilestone(Icons.Filled.Bedtime, stringResource(R.string.milestone_first_sync), stringResource(R.string.milestone_first_sync_desc), PulseColors.sleep),
+        BaselineMilestone(Icons.AutoMirrored.Filled.TrendingUp, stringResource(R.string.milestone_days), stringResource(R.string.milestone_days_desc), PulseColors.success),
     )
 
     // Celebratory finale (iOS #75): the medallion scales in on appear. reduceMotion-equivalent
@@ -490,14 +491,14 @@ private fun BaselineStep(finish: () -> Unit) {
 
     StepScaffold(
         footer = {
-            PrimaryButton("Start using PulseLoop", icon = Icons.Filled.ArrowForward, onClick = finish)
+            PrimaryButton(stringResource(R.string.onboarding_start_using), icon = Icons.Filled.ArrowForward, onClick = finish)
         },
     ) {
         SuccessMedallion(scale = medallionScale)
         SetupCompleteEyebrow()
         StepHeader(
-            title = "You're all set",
-            subtitle = "Wear your ring today. Your baseline builds from here.",
+            title = stringResource(R.string.onboarding_done_title),
+            subtitle = stringResource(R.string.onboarding_done_subtitle),
         )
 
         Column(
@@ -515,13 +516,13 @@ private fun BaselineStep(finish: () -> Unit) {
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "PulseLoop learns your baseline over time",
+                    stringResource(R.string.onboarding_learns),
                     fontSize = 20.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = PulseColors.textPrimary,
                 )
                 Text(
-                    "Wear your ring during the day and sync after sleep. Trends become more personal after a few days.",
+                    stringResource(R.string.onboarding_learns_desc),
                     fontSize = 14.sp,
                     color = PulseColors.textSecondary,
                     lineHeight = 20.sp,
@@ -581,7 +582,7 @@ private fun SuccessMedallion(scale: Float) {
         ) {
             Icon(
                 Icons.Filled.Verified,
-                contentDescription = "Setup complete",
+                contentDescription = stringResource(R.string.onboarding_setup_complete),
                 tint = PulseColors.accent,
                 modifier = Modifier.size(56.dp),
             )
@@ -601,7 +602,7 @@ private fun SetupCompleteEyebrow() {
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Icon(Icons.Filled.Verified, contentDescription = null, Modifier.size(14.dp), tint = PulseColors.accent)
-        Text("Setup complete", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.accent)
+        Text(stringResource(R.string.onboarding_setup_complete), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.accent)
     }
 }
 

@@ -1,5 +1,7 @@
 package com.pulseloop.coach.summaries
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import com.pulseloop.coach.schema.CoachResponse
@@ -60,9 +62,9 @@ enum class CoachSummaryKind(val rawValue: String) {
     SLEEP_RANGE_YEAR("sleep_range_year");
 
     val conversationTitle: String get() = when (this) {
-        TODAY -> "Today recap"
-        SLEEP_DAY -> "Sleep recap"
-        else -> "Sleep trend"
+        TODAY -> L10n.get(R.string.summary_today_recap)
+        SLEEP_DAY -> L10n.get(R.string.summary_sleep_recap)
+        else -> L10n.get(R.string.summary_sleep_trend)
     }
 
     companion object {

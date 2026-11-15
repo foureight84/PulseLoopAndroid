@@ -1,5 +1,7 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -150,7 +152,7 @@ fun ActivityTile(
     modifier: Modifier = Modifier,
     onTap: () -> Unit,
 ) {
-    TodayTile(label = "Activity", color = PulseColors.steps, modifier = modifier, onTap = onTap) {
+    TodayTile(label = stringResource(R.string.tab_activity), color = PulseColors.steps, modifier = modifier, onTap = onTap) {
         Row(
             Modifier.weight(1f).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -321,7 +323,7 @@ fun SleepTile(
     modifier: Modifier = Modifier,
     onTap: () -> Unit,
 ) {
-    TodayTile(label = "Sleep", color = PulseColors.sleep, modifier = modifier, onTap = onTap) {
+    TodayTile(label = stringResource(R.string.metric_sleep), color = PulseColors.sleep, modifier = modifier, onTap = onTap) {
         if (durationText != null) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -364,7 +366,7 @@ fun SleepTile(
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "No sleep recorded",
+                    stringResource(R.string.sleep_none_recorded),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = PulseColors.textPrimary,

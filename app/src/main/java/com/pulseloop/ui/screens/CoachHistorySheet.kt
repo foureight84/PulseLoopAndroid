@@ -1,5 +1,9 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,14 +58,14 @@ fun CoachHistorySheet(
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Past conversations", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+            Text(stringResource(R.string.coach_past_conversations), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
             if (conversations.isEmpty()) {
                 Text(
-                    "No conversations yet. Ask the coach something and it will show up here.",
+                    stringResource(R.string.coach_history_empty),
                     fontSize = 13.sp, color = PulseColors.textMuted,
                 )
             } else {
-                Text("Swipe a conversation to delete it.", fontSize = 12.sp, color = PulseColors.textMuted)
+                Text(stringResource(R.string.coach_history_swipe), fontSize = 12.sp, color = PulseColors.textMuted)
                 LazyColumn(
                     Modifier.weight(1f, fill = false),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -78,7 +82,7 @@ fun CoachHistorySheet(
                 TextButton(
                     onClick = { confirmDeleteAll = true },
                     modifier = Modifier.align(Alignment.CenterHorizontally),
-                ) { Text("Delete all conversations", color = PulseColors.danger) }
+                ) { Text(stringResource(R.string.coach_delete_all), color = PulseColors.danger) }
             }
         }
     }
@@ -86,27 +90,27 @@ fun CoachHistorySheet(
     pendingDelete?.let { convo ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("Delete this conversation?") },
-            text = { Text("“${CoachHistoryText.title(convo.firstQuestion)}” and its replies will be deleted. This can't be undone.") },
+            title = { Text(stringResource(R.string.coach_delete_one_title)) },
+            text = { Text(stringResource(R.string.coach_delete_one_body, CoachHistoryText.title(convo.firstQuestion))) },
             confirmButton = {
                 TextButton(onClick = { onDelete(convo.id); pendingDelete = null }) {
-                    Text("Delete", color = PulseColors.danger)
+                    Text(stringResource(R.string.action_delete), color = PulseColors.danger)
                 }
             },
-            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
     if (confirmDeleteAll) {
         AlertDialog(
             onDismissRequest = { confirmDeleteAll = false },
-            title = { Text("Delete all conversations?") },
-            text = { Text("All ${conversations.size} conversations and their replies will be deleted. This can't be undone.") },
+            title = { Text(stringResource(R.string.coach_delete_all_title)) },
+            text = { Text(pluralStringResource(R.plurals.coach_delete_all_body, conversations.size, conversations.size)) },
             confirmButton = {
                 TextButton(onClick = { confirmDeleteAll = false; onDeleteAll() }) {
-                    Text("Delete all", color = PulseColors.danger)
+                    Text(stringResource(R.string.action_delete_all), color = PulseColors.danger)
                 }
             },
-            dismissButton = { TextButton(onClick = { confirmDeleteAll = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmDeleteAll = false }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 }
@@ -139,7 +143,7 @@ private fun HistoryRow(
                     .padding(horizontal = 16.dp),
                 contentAlignment = Alignment.CenterEnd,
             ) {
-                Icon(Icons.Filled.Delete, "Delete", tint = PulseColors.danger)
+                Icon(Icons.Filled.Delete, stringResource(R.string.action_delete), tint = PulseColors.danger)
             }
         },
     ) {
@@ -171,7 +175,7 @@ internal object CoachHistoryText {
 
     fun title(firstQuestion: String?): String =
         firstQuestion?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotEmpty() }
-            ?: "Untitled conversation"
+            ?: L10n.get(R.string.coach_untitled)
 
     fun subtitle(
         convo: CoachConversationSummary,
@@ -180,8 +184,8 @@ internal object CoachHistoryText {
         today: LocalDate = LocalDate.now(zone),
     ): String {
         val parts = mutableListOf(whenText(convo.updatedAt, zone, today))
-        parts += if (convo.messageCount == 1) "1 message" else "${convo.messageCount} messages"
-        if (isCurrent) parts += "open now"
+        parts += L10n.plural(R.plurals.coach_messages, convo.messageCount, convo.messageCount)
+        if (isCurrent) parts += L10n.get(R.string.coach_open_now)
         return parts.joinToString(" · ")
     }
 
@@ -189,8 +193,8 @@ internal object CoachHistoryText {
         val at = Instant.ofEpochMilli(epochMs).atZone(zone)
         val day = at.toLocalDate()
         return when {
-            day == today -> "Today " + at.format(TIME)
-            day == today.minusDays(1) -> "Yesterday " + at.format(TIME)
+            day == today -> L10n.get(R.string.when_today_at, at.format(TIME))
+            day == today.minusDays(1) -> L10n.get(R.string.when_yesterday_at, at.format(TIME))
             day.year == today.year -> at.format(SAME_YEAR)
             else -> at.format(OTHER_YEAR)
         }

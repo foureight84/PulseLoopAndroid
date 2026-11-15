@@ -1,5 +1,7 @@
 package com.pulseloop.widgets
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
@@ -107,7 +109,7 @@ class WidgetTileRenderer(private val density: Float) {
         if (payload == null || rolledOver) {
             drawEmptyMessage(
                 canvas, rect,
-                if (rolledOver) "No data yet today" else "Open PulseLoop to sync",
+                if (rolledOver) L10n.get(R.string.widget_no_data_today) else L10n.get(R.string.widget_open_to_sync),
                 PulseColors.steps.toArgb(),
             )
         } else {
@@ -161,7 +163,7 @@ class WidgetTileRenderer(private val density: Float) {
                 if (payload == null) {
                     drawEmptyMessage(
                         canvas, content,
-                        if (snapshot == null) "Open PulseLoop to sync" else "No data",
+                        if (snapshot == null) L10n.get(R.string.widget_open_to_sync) else L10n.get(R.string.status_no_data),
                         accent,
                     )
                 } else {
@@ -247,14 +249,14 @@ class WidgetTileRenderer(private val density: Float) {
     /** Small-tile activity body: 88 dp rings + stacked 10 sp labels / 26 sp values (iOS WidgetActivityContent). */
     private fun drawActivitySmallContent(canvas: Canvas, rect: RectF, payload: WidgetActivityPayload?, rolledOver: Boolean) {
         val values: List<Triple<String, String, Int>> = if (payload == null || rolledOver) emptyList() else buildList {
-            payload.stepsText?.let { add(Triple("STEPS", it, PulseColors.steps.toArgb())) }
+            payload.stepsText?.let { add(Triple(L10n.get(R.string.tile_steps), it, PulseColors.steps.toArgb())) }
             payload.distanceText?.let { add(Triple(payload.distanceUnitLabel, it, PulseColors.distance.toArgb())) }
-            payload.caloriesText?.let { add(Triple("CAL", it, PulseColors.calories.toArgb())) }
+            payload.caloriesText?.let { add(Triple(L10n.get(R.string.tile_cal), it, PulseColors.calories.toArgb())) }
         }
         if (values.isEmpty()) {
             drawEmptyMessage(
                 canvas, rect,
-                if (rolledOver) "No data yet today" else "Open PulseLoop to sync",
+                if (rolledOver) L10n.get(R.string.widget_no_data_today) else L10n.get(R.string.widget_open_to_sync),
                 PulseColors.steps.toArgb(),
             )
             return
@@ -312,15 +314,15 @@ class WidgetTileRenderer(private val density: Float) {
         val rowH = textHeight(textPaint(15f, 0)) + dp(5f) + textHeight(textPaint(32f, 0))
         val totalH = rowH * 2 + dp(14f)
         val top = rect.top + ((rect.height() - totalH) / 2f).coerceAtLeast(0f)
-        metricBlock(rect.left, top, "Steps", payload.stepsText, null, PulseColors.steps.toArgb(), colW - dp(6f))
+        metricBlock(rect.left, top, L10n.get(R.string.metric_steps), payload.stepsText, null, PulseColors.steps.toArgb(), colW - dp(6f))
         metricBlock(
-            rect.left + colW, top, "Distance", payload.distanceText,
+            rect.left + colW, top, L10n.get(R.string.metric_distance), payload.distanceText,
             if (payload.distanceText != null) payload.distanceUnitLabel.lowercase() else null,
             PulseColors.distance.toArgb(), colW - dp(6f),
         )
         metricBlock(
-            rect.left, top + rowH + dp(14f), "Calories", payload.caloriesText,
-            if (payload.caloriesText != null) "cal" else null,
+            rect.left, top + rowH + dp(14f), L10n.get(R.string.metric_calories), payload.caloriesText,
+                if (payload.caloriesText != null) L10n.get(R.string.unit_cal) else null,
             PulseColors.calories.toArgb(), colW - dp(6f),
         )
     }
@@ -329,7 +331,7 @@ class WidgetTileRenderer(private val density: Float) {
 
     private fun drawSleepContent(canvas: Canvas, rect: RectF, payload: WidgetSleepPayload?, rolledOver: Boolean) {
         if (payload == null || rolledOver) {
-            drawEmptyMessage(canvas, rect, "No sleep recorded", PulseColors.sleep.toArgb())
+            drawEmptyMessage(canvas, rect, L10n.get(R.string.sleep_none_recorded), PulseColors.sleep.toArgb())
             return
         }
         var y = rect.top
@@ -344,7 +346,7 @@ class WidgetTileRenderer(private val density: Float) {
         val baseline = y - scorePaint.fontMetrics.ascent
         canvas.drawText(scoreText, rect.left, baseline, scorePaint)
         val capPaint = textPaint(10f, textMuted, Weight.SEMIBOLD, trackingEm = 0.1f)
-        canvas.drawText("SCORE", rect.left + scorePaint.measureText(scoreText) + dp(5f), baseline, capPaint)
+        canvas.drawText(L10n.get(R.string.widget_score), rect.left + scorePaint.measureText(scoreText) + dp(5f), baseline, capPaint)
     }
 
     /** Proportional stage bar + per-stage labels for segments ≥10% share (SleepStageBar parity). */

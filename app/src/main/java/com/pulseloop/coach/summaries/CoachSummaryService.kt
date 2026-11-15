@@ -54,7 +54,7 @@ class CoachSummaryService(
 
         if (existing != null) {
             if (existing.dataSignature == built.signature) return       // no new data
-            if (now - existing.updatedAt < minIntervalMs) return        // rate limited
+            if (now - existing.updatedAt < minIntervalMs && sameLanguage(existing, built)) return // rate limited
         }
         generateAndUpsert(CoachSummaryKind.TODAY, built, existing)
     }
@@ -72,6 +72,10 @@ class CoachSummaryService(
                 existing.dataSignature, existing.updatedAt, built.signature, now, minIntervalMs)) return
         generateAndUpsert(CoachSummaryKind.SLEEP_DAY, built, existing)
     }
+
+    /** A card written in another language is replaced at once; the rate limit is for data churn. */
+    private fun sameLanguage(existing: CoachSummaryEntity, built: CoachSummaryContextBuilder.Built): Boolean =
+        CoachSummaryContextBuilder.languageOf(existing.dataSignature) == CoachSummaryContextBuilder.languageOf(built.signature)
 
     // ── Generate + Persist ───────────────────────────────────────────────
 

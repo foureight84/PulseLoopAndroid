@@ -1,5 +1,7 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.automirrored.filled.DirectionsRun
@@ -23,29 +25,29 @@ object ActivityMeta {
     val ORDER = listOf("walk", "run", "cycle", "gym", "squash", "sport", "yoga", "dance", "hike", "other")
 
     fun label(type: String): String = when (type) {
-        "walk" -> "Walking"
-        "run" -> "Running"
-        "cycle" -> "Cycling"
-        "gym" -> "Gym"
-        "squash" -> "Squash"
-        "sport" -> "Sport"
-        "yoga" -> "Yoga"
-        "dance" -> "Dance"
-        "hike" -> "Hiking"
+        "walk" -> L10n.get(R.string.act_walk)
+        "run" -> L10n.get(R.string.act_run)
+        "cycle" -> L10n.get(R.string.act_cycle)
+        "gym" -> L10n.get(R.string.act_gym)
+        "squash" -> L10n.get(R.string.act_squash)
+        "sport" -> L10n.get(R.string.act_sport)
+        "yoga" -> L10n.get(R.string.act_yoga)
+        "dance" -> L10n.get(R.string.act_dance)
+        "hike" -> L10n.get(R.string.act_hike)
         else -> type.replaceFirstChar { it.uppercase() }
     }
 
     fun helper(type: String): String = when (type) {
-        "walk" -> "Casual or brisk walking"
-        "run" -> "Outdoor or treadmill runs"
-        "cycle" -> "Road, trail, or stationary"
-        "gym" -> "Strength or circuit training"
-        "squash" -> "Court sessions"
-        "sport" -> "Team or racket sports"
-        "yoga" -> "Flow, stretch, or breathwork"
-        "dance" -> "Studio, cardio, or freestyle"
-        "hike" -> "Trails and elevation"
-        else -> "Anything else"
+        "walk" -> L10n.get(R.string.act_walk_desc)
+        "run" -> L10n.get(R.string.act_run_desc)
+        "cycle" -> L10n.get(R.string.act_cycle_desc)
+        "gym" -> L10n.get(R.string.act_gym_desc)
+        "squash" -> L10n.get(R.string.act_squash_desc)
+        "sport" -> L10n.get(R.string.act_sport_desc)
+        "yoga" -> L10n.get(R.string.act_yoga_desc)
+        "dance" -> L10n.get(R.string.act_dance_desc)
+        "hike" -> L10n.get(R.string.act_hike_desc)
+        else -> L10n.get(R.string.act_other_desc)
     }
 
     fun icon(type: String): ImageVector = when (type) {
@@ -107,7 +109,7 @@ object ActivityMeta {
         return "%d:%02d".format(total / 60, total % 60)
     }
 
-    fun paceUnit(units: UnitSystem): String = if (units == UnitSystem.IMPERIAL) "/mi" else "/km"
+    fun paceUnit(units: UnitSystem): String = if (units == UnitSystem.IMPERIAL) L10n.get(R.string.pace_per_mi) else L10n.get(R.string.pace_per_km)
 
     /**
      * Average speed for cycling (iOS LivePaceTile / RecordSummaryComponents hero), or null when
@@ -121,7 +123,7 @@ object ActivityMeta {
     fun speedParts(distanceMeters: Double?, durationSeconds: Int?, units: UnitSystem): Pair<String, String>? {
         if (distanceMeters == null || durationSeconds == null || durationSeconds <= 0 || distanceMeters < 50) return null
         val mps = distanceMeters / durationSeconds
-        return if (units == UnitSystem.IMPERIAL) "%.1f".format(mps * 2.23694) to "MPH"
-        else "%.1f".format(mps * 3.6) to "KM/H"
+        return if (units == UnitSystem.IMPERIAL) "%.1f".format(mps * 2.23694) to L10n.get(R.string.speed_mph)
+        else "%.1f".format(mps * 3.6) to L10n.get(R.string.speed_kmh)
     }
 }

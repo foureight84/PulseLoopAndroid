@@ -1,5 +1,7 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -203,12 +205,11 @@ private fun timeAxisTicks(visStart: Long, visEnd: Long, zone: ZoneId): Pair<List
     val stepsMin = longArrayOf(15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10080)
     val stepMin = stepsMin.firstOrNull { rangeMs / (it * 60_000L) <= 5 } ?: stepsMin.last()
     val stepMs = stepMin * 60_000L
-    val pattern = when {
-        stepMin >= 1440 -> "MMM d"
-        stepMin < 60 -> "h:mm a"
-        else -> "h a"
+    val fmt = when {
+        stepMin >= 1440 -> com.pulseloop.util.LocaleFormats.formatter("MMMd", "MMM d")
+        stepMin < 60 -> com.pulseloop.util.LocaleFormats.formatter("jmm", "h:mm a")
+        else -> com.pulseloop.util.LocaleFormats.formatter("j", "h a")
     }
-    val fmt = DateTimeFormatter.ofPattern(pattern, Locale.getDefault())
     // Align ticks to local midnight so labels land on clean boundaries.
     val dayStart = Instant.ofEpochMilli(visStart).atZone(zone)
         .truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()
@@ -558,7 +559,7 @@ fun TrendChart(
                     IconButton(onClick = { zoom = 1f; windowStart = 0f }) {
                         Icon(
                             Icons.Filled.Refresh,
-                            contentDescription = "Reset zoom",
+                            contentDescription = stringResource(R.string.chart_reset_zoom),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
