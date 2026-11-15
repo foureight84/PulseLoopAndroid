@@ -87,6 +87,7 @@ class LiveWorkoutManager(
         startTick(session)
         // Fresh state (not copy): clears any previous workout's finishedSessionId/paused flags.
         _state.value = WorkoutState(isRecording = true, activeSession = session)
+        com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
         return session
     }
 
@@ -117,6 +118,7 @@ class LiveWorkoutManager(
         polling.pause()
         tickJob?.cancel()
         _state.value = _state.value.copy(isPaused = true, activeSession = updated)
+        com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
         refreshNotification()
     }
 
@@ -140,6 +142,7 @@ class LiveWorkoutManager(
         polling.resume()
         startTick(updated)
         _state.value = _state.value.copy(isPaused = false, activeSession = updated)
+        com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
         refreshNotification()
     }
 
@@ -166,6 +169,7 @@ class LiveWorkoutManager(
         coordinator.stopWorkoutHeartRate()
         finishForegroundService(summarized)
         _state.value = WorkoutState(finishedSessionId = summarized.id)
+        com.pulseloop.mqtt.MqttLivePublisher.onWorkoutFinished(context)
         uploadToStravaIfConnected()
     }
 
@@ -197,6 +201,7 @@ class LiveWorkoutManager(
         ))
         coordinator.stopWorkoutHeartRate()
         _state.value = WorkoutState()
+        com.pulseloop.mqtt.MqttLivePublisher.onWorkoutFinished(context)
     }
 
     // MARK: - Tick loop
@@ -222,7 +227,10 @@ class LiveWorkoutManager(
                     hrZone = zone,
                 )
 
-                if (elapsed % 5 == 0) refreshNotification()
+                if (elapsed % 5 == 0) {
+            refreshNotification()
+            com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
+        }
                 delay(1000)
             }
         }

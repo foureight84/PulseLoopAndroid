@@ -36,11 +36,20 @@ class RingSyncWorker(
         var isSyncing: Boolean = false
             internal set
 
-        /** Schedule periodic background ring sync. Call from MainActivity. */
-        fun schedule(context: Context) {
+        /** Schedule periodic background ring sync. Call from MainActivity or settings. */
+        fun schedule(
+            context: Context,
+            intervalMinutes: Int? = null,
+            policy: ExistingPeriodicWorkPolicy = ExistingPeriodicWorkPolicy.KEEP,
+        ) {
+            val interval = (intervalMinutes
+                ?: com.pulseloop.mqtt.MqttPrefsStore.get(context).current.effectiveSyncIntervalMinutes)
+                .coerceIn(15, 720)
+                .toLong()
+            val flex = (interval / 2L).coerceAtLeast(5L)
             val request = PeriodicWorkRequestBuilder<RingSyncWorker>(
-                30, TimeUnit.MINUTES,  // repeat interval
-                15, TimeUnit.MINUTES,  // flex interval
+                interval, TimeUnit.MINUTES,  // repeat interval
+                flex, TimeUnit.MINUTES,  // flex interval
             )
                 .setConstraints(
                     Constraints.Builder()
@@ -56,7 +65,7 @@ class RingSyncWorker(
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                policy,
                 request,
             )
         }
@@ -137,6 +146,7 @@ class RingSyncWorker(
                 // data — run the (debounced) export pass. The foreground path triggers the same
                 // worker via the SyncProgress("done") event, so both sync owners cover it.
                 HealthConnectExportWorker.enqueue(applicationContext)
+                com.pulseloop.mqtt.MqttExportWorker.enqueue(applicationContext)
 
                 Result.success()
             }

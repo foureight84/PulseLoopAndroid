@@ -260,6 +260,7 @@ class ScheduledSpo2Worker(
             Log.i(TAG, "Scheduled SpO2: ${value ?: "no reading"}")
             // The stop frame is only enqueued; let it reach the ring before the link closes.
             client.awaitOpsFlushed()
+            com.pulseloop.mqtt.MqttExportWorker.enqueue(applicationContext)
             return true
         } finally {
             withContext(NonCancellable) {
