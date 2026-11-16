@@ -195,4 +195,52 @@ class LiveMosquittoBrokerTest {
             )
         }
     }
+
+    @Test
+    fun liveBroker_webSocketHandshakeAndPublish() = runBlocking {
+        assumeTrue(
+            "Live Mosquitto WS test skipped",
+            isLiveEnabled() && (phase() == "ws" || phase() == "all"),
+        )
+
+        val wsCfg = MqttEndpointConfig(
+            host = System.getenv("PULSELOOP_MQTT_HOST") ?: "127.0.0.1",
+            port = System.getenv("PULSELOOP_MQTT_WS_PORT")?.toIntOrNull() ?: 9001,
+            useTls = false,
+            transport = MqttTransport.WEBSOCKET,
+            wsPath = "/mqtt",
+            username = "",
+            password = "",
+            clientId = "pl_ws_live",
+        )
+        MqttClient.testConnection(wsCfg)
+
+        val pool = MqttSessionPool()
+        try {
+            pool.publish(
+                wsCfg,
+                listOf(
+                    MqttMessage(
+                        topic = "pulseloop/ws_test/state",
+                        payload = """{"heart_rate":75,"transport":"ws"}""",
+                        qos = 1,
+                        retain = true,
+                    )
+                ),
+            )
+            pool.publish(
+                wsCfg,
+                listOf(
+                    MqttMessage(
+                        topic = "pulseloop/ws_test/state",
+                        payload = """{"heart_rate":78,"transport":"ws"}""",
+                        qos = 1,
+                        retain = true,
+                    )
+                ),
+            )
+        } finally {
+            pool.close()
+        }
+    }
 }

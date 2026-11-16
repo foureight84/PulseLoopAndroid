@@ -53,6 +53,8 @@ data class MqttEndpointConfig(
     val host: String,
     val port: Int,
     val useTls: Boolean = false,
+    val transport: MqttTransport = MqttTransport.TCP,
+    val wsPath: String = "/mqtt",
     val username: String = "",
     val password: String = "",
     val clientId: String,
@@ -109,8 +111,21 @@ internal class MqttConnection(
                     liveSocket = ssl
                 }
 
-                val input = BufferedInputStream(liveSocket.getInputStream())
-                val output = BufferedOutputStream(liveSocket.getOutputStream())
+                val rawInput = BufferedInputStream(liveSocket.getInputStream())
+                val rawOutput = BufferedOutputStream(liveSocket.getOutputStream())
+                val (input, output) = if (config.transport == MqttTransport.WEBSOCKET) {
+                    val (wsIn, wsOut) = MqttWebSocket.upgrade(
+                        host = host,
+                        port = config.port,
+                        useTls = config.useTls,
+                        path = config.wsPath,
+                        rawInput = rawInput,
+                        rawOutput = rawOutput,
+                    )
+                    BufferedInputStream(wsIn) to BufferedOutputStream(wsOut)
+                } else {
+                    rawInput to rawOutput
+                }
                 val connection = MqttConnection(liveSocket, input, output)
 
                 output.write(

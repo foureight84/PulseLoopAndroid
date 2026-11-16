@@ -11,9 +11,11 @@ PulseLoop Android can publish your synced ring health metrics directly to any lo
 | Setting | Default | Notes |
 |---|---|---|
 | **Enable MQTT export** | Off | Turns background and live publishing on or off. |
-| **Broker Host** | _(empty)_ | Hostname or IP of your MQTT broker (for example `192.168.1.50` or `mqtt.local`). Plain TCP is intended for private/local addresses; enable TLS for public hosts. |
-| **Port** | `1883` (`8883` with TLS) | TCP port (`1`–`65535`). |
-| **Use TLS (MQTTS)** | Off | Uses Android's default TLS socket factory with `HTTPS` hostname verification. |
+| **Broker Host** | _(empty)_ | Hostname or IP of your MQTT broker (for example `192.168.1.50` or `mqtt.example.com`). Plain TCP/WS is intended for private/local addresses; enable TLS for public hosts. |
+| **Transport** | `TCP` | Choose `TCP` (`mqtt://` / `mqtts://`) or `WebSocket (WS / WSS)` (`ws://` / `wss://`, for example behind a reverse proxy on port `443`). |
+| **Port** | `1883` (`8883` TLS) / `80` (`443` WSS) | TCP port (`1`–`65535`). Auto-switches defaults when toggling Transport or TLS. |
+| **WebSocket Path** | `/mqtt` | Endpoint path sent in the HTTP Upgrade request when **Transport** is `WebSocket` (for example `/mqtt` or `/ws`). |
+| **Use TLS (MQTTS / WSS)** | Off | Uses Android's default TLS socket factory with `HTTPS` hostname verification (supports `mqtts://` and `wss://`). |
 | **Username / Password** | _(optional)_ | Sent on `CONNECT`; password is stored separately in `EncryptedSharedPreferences` (`pulseloop_secure`). |
 | **Discovery Prefix** | `homeassistant` | Root topic used when publishing MQTT auto-discovery entity definitions. |
 | **Base Topic** | `pulseloop` | Root topic used for consolidated state payloads. |

@@ -220,6 +220,8 @@ object MqttExporter {
         host = prefs.host,
         port = prefs.port,
         useTls = prefs.useTls,
+        transport = prefs.transport,
+        wsPath = prefs.normalizedWsPath,
         username = prefs.username,
         password = store.getPassword(),
         clientId = buildClientId(deviceId)

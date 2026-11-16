@@ -14,6 +14,15 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
+ * Network transport used to reach the MQTT broker.
+ */
+@Serializable
+enum class MqttTransport {
+    TCP,
+    WEBSOCKET,
+}
+
+/**
  * Serializable MQTT integration preferences for PulseLoop.
  */
 @Serializable
@@ -22,6 +31,8 @@ data class MqttPrefs(
     val host: String = "",
     val port: Int = 1883,
     val useTls: Boolean = false,
+    val transport: MqttTransport = MqttTransport.TCP,
+    val wsPath: String = "/mqtt",
     val username: String = "",
     val discoveryPrefix: String = "homeassistant",
     val baseTopic: String = "pulseloop",
@@ -41,6 +52,10 @@ data class MqttPrefs(
     /** Base topic with surrounding whitespace/slashes removed, falling back to the default. */
     val normalizedBaseTopic: String
         get() = baseTopic.trim().trim('/').ifEmpty { "pulseloop" }
+
+    /** WebSocket endpoint path normalized with a leading slash, defaulting to `/mqtt`. */
+    val normalizedWsPath: String
+        get() = MqttWebSocket.normalizePath(wsPath)
 
     /** True when the broker connection settings are complete and valid. */
     val isConfigured: Boolean

@@ -50,6 +50,7 @@ import com.pulseloop.mqtt.MqttDiscovery
 import com.pulseloop.mqtt.MqttExporter
 import com.pulseloop.mqtt.MqttLivePublisher
 import com.pulseloop.mqtt.MqttPrefsStore
+import com.pulseloop.mqtt.MqttTransport
 import com.pulseloop.service.RingSyncWorker
 import com.pulseloop.ui.components.DeviceHeroStatus
 import com.pulseloop.ui.theme.PulseColors
@@ -59,6 +60,13 @@ import kotlinx.coroutines.withContext
 
 private const val DEFAULT_PLAIN_PORT = "1883"
 private const val DEFAULT_TLS_PORT = "8883"
+private const val DEFAULT_WS_PLAIN_PORT = "80"
+private const val DEFAULT_WS_TLS_PORT = "443"
+
+private fun defaultPortFor(transport: MqttTransport, useTls: Boolean): String = when (transport) {
+    MqttTransport.TCP -> if (useTls) DEFAULT_TLS_PORT else DEFAULT_PLAIN_PORT
+    MqttTransport.WEBSOCKET -> if (useTls) DEFAULT_WS_TLS_PORT else DEFAULT_WS_PLAIN_PORT
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -72,6 +80,8 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
     var host by remember { mutableStateOf(initialPrefs.host) }
     var portText by remember { mutableStateOf(initialPrefs.port.toString()) }
     var useTls by remember { mutableStateOf(initialPrefs.useTls) }
+    var transport by remember { mutableStateOf(initialPrefs.transport) }
+    var wsPath by remember { mutableStateOf(initialPrefs.wsPath) }
     var username by remember { mutableStateOf(initialPrefs.username) }
     var password by remember { mutableStateOf("") }
     var savedPassword by remember { mutableStateOf("") }
@@ -94,7 +104,7 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    fun draftPort(): Int = (portText.toIntOrNull() ?: if (useTls) 8883 else 1883).coerceIn(1, 65535)
+    fun draftPort(): Int = (portText.toIntOrNull() ?: defaultPortFor(transport, useTls).toInt()).coerceIn(1, 65535)
 
     fun draftValid(): Boolean {
         val parsedPort = portText.toIntOrNull() ?: return false
@@ -105,6 +115,8 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
         val port = draftPort()
         portText = port.toString()
         val trimmedHost = host.trim()
+        val trimmedWsPath = wsPath.trim().ifEmpty { "/mqtt" }
+        wsPath = trimmedWsPath
         val trimmedUser = username.trim()
         val trimmedPrefix = discoveryPrefix.trim()
         val trimmedBase = baseTopic.trim()
@@ -112,6 +124,8 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
         val connectionChanged = prefs.host != trimmedHost ||
             prefs.port != port ||
             prefs.useTls != useTls ||
+            prefs.transport != transport ||
+            prefs.wsPath != trimmedWsPath ||
             prefs.username != trimmedUser ||
             savedPassword != password
 
@@ -120,6 +134,8 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
                 host = trimmedHost,
                 port = port,
                 useTls = useTls,
+                transport = transport,
+                wsPath = trimmedWsPath,
                 username = trimmedUser,
                 discoveryPrefix = trimmedPrefix,
                 baseTopic = trimmedBase,
@@ -159,6 +175,8 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
     val hasDraftChanges = host.trim() != prefs.host ||
         draftPort() != prefs.port ||
         useTls != prefs.useTls ||
+        transport != prefs.transport ||
+        wsPath.trim().ifEmpty { "/mqtt" } != prefs.wsPath ||
         username.trim() != prefs.username ||
         password != savedPassword ||
         discoveryPrefix.trim() != prefs.discoveryPrefix ||
@@ -232,6 +250,37 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
                         color = PulseColors.warning,
                     )
                 }
+                Text(
+                    text = stringResource(R.string.mqtt_transport_label),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MqttTransport.entries.forEach { option ->
+                        FilterChip(
+                            selected = transport == option,
+                            onClick = {
+                                if (transport != option) {
+                                    val oldDefault = defaultPortFor(transport, useTls)
+                                    val nextDefault = defaultPortFor(option, useTls)
+                                    transport = option
+                                    if (portText == oldDefault || portText.isBlank()) {
+                                        portText = nextDefault
+                                    }
+                                }
+                            },
+                            label = {
+                                Text(
+                                    stringResource(
+                                        when (option) {
+                                            MqttTransport.TCP -> R.string.mqtt_transport_tcp
+                                            MqttTransport.WEBSOCKET -> R.string.mqtt_transport_ws
+                                        }
+                                    )
+                                )
+                            },
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = portText,
                     onValueChange = { portText = it.filter(Char::isDigit).take(5) },
@@ -240,6 +289,16 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (transport == MqttTransport.WEBSOCKET) {
+                    OutlinedTextField(
+                        value = wsPath,
+                        onValueChange = { wsPath = it },
+                        label = { Text(stringResource(R.string.mqtt_ws_path_label)) },
+                        placeholder = { Text(stringResource(R.string.mqtt_ws_path_placeholder)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -249,9 +308,9 @@ fun MqttSettingsScreen(onBack: () -> Unit) {
                     Switch(
                         checked = useTls,
                         onCheckedChange = { next ->
+                            val oldDefault = defaultPortFor(transport, useTls)
+                            val nextDefault = defaultPortFor(transport, next)
                             useTls = next
-                            val nextDefault = if (next) DEFAULT_TLS_PORT else DEFAULT_PLAIN_PORT
-                            val oldDefault = if (next) DEFAULT_PLAIN_PORT else DEFAULT_TLS_PORT
                             if (portText == oldDefault || portText.isBlank()) {
                                 portText = nextDefault
                             }

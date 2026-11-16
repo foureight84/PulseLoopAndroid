@@ -1271,7 +1271,12 @@
     <string name="mqtt_host_label">Broker Host</string>
     <string name="mqtt_host_placeholder">192.168.1.50</string>
     <string name="mqtt_port_label">Port</string>
-    <string name="mqtt_tls_label">Use TLS (MQTTS)</string>
+    <string name="mqtt_transport_label">Transport</string>
+    <string name="mqtt_transport_tcp">TCP</string>
+    <string name="mqtt_transport_ws">WebSocket (WS / WSS)</string>
+    <string name="mqtt_ws_path_label">WebSocket Path</string>
+    <string name="mqtt_ws_path_placeholder">/mqtt</string>
+    <string name="mqtt_tls_label">Use TLS (MQTTS / WSS)</string>
     <string name="mqtt_cleartext_warning">Unencrypted MQTT to a non-local host sends traffic and credentials in plaintext. Enable TLS for remote brokers.</string>
     <string name="mqtt_username_label">Username (optional)</string>
     <string name="mqtt_password_label">Password (optional)</string>

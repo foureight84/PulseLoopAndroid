@@ -273,4 +273,39 @@ class MqttPrefsStoreTest {
         assertEquals("", store.getPassword())
         assertFalse(store.hasPassword())
     }
+
+    @Test
+    fun legacyJsonWithoutTransportDeserializesToTcpDefaults() {
+        val fake = FakeSharedPreferences()
+        fake.edit().putString(
+            MqttPrefsStore.KEY_PREFS,
+            """{"enabled":true,"host":"192.168.1.50","port":1883,"useTls":false}""",
+        ).commit()
+
+        val store = MqttPrefsStore(fake, null)
+        assertEquals(MqttTransport.TCP, store.current.transport)
+        assertEquals("/mqtt", store.current.normalizedWsPath)
+    }
+
+    @Test
+    fun persistsWebSocketTransportAndPath() {
+        val fake = FakeSharedPreferences()
+        val store1 = MqttPrefsStore(fake, null)
+        store1.update {
+            it.copy(
+                enabled = true,
+                host = "mqtt.example.com",
+                port = 443,
+                useTls = true,
+                transport = MqttTransport.WEBSOCKET,
+                wsPath = "ws/ha",
+            )
+        }
+
+        val store2 = MqttPrefsStore(fake, null)
+        assertEquals(MqttTransport.WEBSOCKET, store2.current.transport)
+        assertEquals("/ws/ha", store2.current.normalizedWsPath)
+        assertEquals(443, store2.current.port)
+        assertTrue(store2.current.useTls)
+    }
 }
