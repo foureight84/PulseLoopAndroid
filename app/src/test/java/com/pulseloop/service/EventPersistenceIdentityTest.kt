@@ -1,17 +1,13 @@
 package com.pulseloop.service
 
 import com.pulseloop.data.entity.SleepStageBlockEntity
-import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingDeviceType
-import com.pulseloop.ring.SleepStage
-import com.pulseloop.ring.SleepStageSegment
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.time.Instant
 
 class EventPersistenceIdentityTest {
     @Test
@@ -118,216 +114,72 @@ class EventPersistenceIdentityTest {
         assertEquals(listOf("LIGHT", "DEEP", "LIGHT"), merged.map { it.stageRaw })
     }
 
+    /**
+     * Issue #63: the ring split one night into two sessions three minutes apart (00:12–03:18 and
+     * 03:21–07:24). Once stored, SleepSegmentation has merged them into one row, so on the next
+     * sync pass the second record overlaps a row that also holds the first record's blocks. It
+     * must retire only its own stale copy — never the first session across the gap.
+     */
     @Test
-    fun `timestamped correction replaces collapsed sleep across explicit bounds idempotently`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val end = start.plusSeconds(6 * 60 * 60L)
-        val startMs = start.toEpochMilli()
-        val endMs = end.toEpochMilli()
-        val oldCollapsed = listOf(block("collapsed", startMs, 116, SleepStage.LIGHT.name))
-        val segments = listOf(
-            SleepStageSegment(SleepStage.UNKNOWN, start, start.plusSeconds(30 * 60L)),
-            SleepStageSegment(SleepStage.LIGHT, start.plusSeconds(30 * 60L), start.plusSeconds(90 * 60L)),
-            SleepStageSegment(SleepStage.UNKNOWN, start.plusSeconds(90 * 60L), start.plusSeconds(4 * 60 * 60L)),
-            SleepStageSegment(SleepStage.DEEP, start.plusSeconds(4 * 60 * 60L), start.plusSeconds(4 * 60 * 60L + 56 * 60L)),
-            SleepStageSegment(SleepStage.UNKNOWN, start.plusSeconds(4 * 60 * 60L + 56 * 60L), end),
+    fun `a complete record does not retire the other session of the same night`() {
+        val a = 1_725_408_720_000L                    // 00:12
+        val b = a + (3 * 60 + 9) * 60_000L           // 03:21 — three minutes after 03:18
+        val existing = listOf(
+            block("a-1", a, 124, "LIGHT"),
+            block("a-2", a + 124 * 60_000L, 62, "DEEP"),          // ends 03:18
+            block("b-1", b, 119, "LIGHT"),
+            block("b-2", b + 119 * 60_000L, 124, "DEEP"),         // ends 07:24
         )
-        val corrected = buildTimestampedStageBlocks("sleep-session", startMs, endMs, segments)
 
-        val first = replaceOverlappingSleepBlocks(oldCollapsed, corrected, startMs, endMs)
-        val replay = replaceOverlappingSleepBlocks(first, corrected, startMs, endMs)
+        val survivors = completeSessionSurvivors(existing, b, b + 243 * 60_000L)
 
-        assertEquals(360, first.sumOf { it.durationMinutes })
-        assertEquals(listOf("UNKNOWN", "LIGHT", "UNKNOWN", "DEEP", "UNKNOWN"), first.map { it.stageRaw })
-        assertEquals(first.map { it.startAt to it.durationMinutes }, replay.map { it.startAt to it.durationMinutes })
-        assertTrue(first.none { it.id == "collapsed" })
-        assertTrue(first.zipWithNext().all { (a, b) ->
-            a.startAt + a.durationMinutes * 60_000L <= b.startAt
-        })
-        assertTrue(first.all { it.startAt + it.durationMinutes * 60_000L <= endMs })
+        assertEquals(listOf("a-1", "a-2"), survivors.map { it.id })
     }
 
+    /**
+     * A complete record retires what its interval overlaps and leaves what merely touches it.
+     *
+     * The rule used to grow across abutting blocks so a shortened re-send could retire its own
+     * stale head and tail — but a block carries no record identity, so that is indistinguishable
+     * from the neighbouring record of a split night, and it cost a whole session (see the
+     * zero-gap case below). The stale tail survives instead: a re-send now reproduces the record's
+     * declared bounds rather than a drifted end, so a record shortening itself is the rarer event
+     * of the two, and it costs minutes rather than hours.
+     */
     @Test
-    fun `stitched YCBT night replaces malformed parents with one bounded idempotent group`() {
-        val start = Instant.parse("2026-08-24T02:07:46Z")
-        val aClassifiedEnd = start.plusSeconds(3_642)
-        val bStart = Instant.parse("2026-08-24T05:01:08Z")
-        val bClassifiedEnd = bStart.plusSeconds(3_036)
-        val cStart = Instant.parse("2026-08-24T06:33:32Z")
-        val cClassifiedEnd = cStart.plusSeconds(6_999)
-        val end = Instant.parse("2026-08-24T08:30:17Z")
-        val startMs = start.toEpochMilli()
-        val endMs = end.toEpochMilli()
-        val parentA = sleepParent("parent-a", start, Instant.parse("2026-08-24T03:08:32Z"), 60)
-        val parentC = sleepParent("parent-c", cStart, end, 116)
-        val malformed = listOf(
-            block("a-60", startMs, 60, SleepStage.LIGHT.name, parentA.id),
-            block("b-under-c-50", bStart.toEpochMilli(), 50, SleepStage.DEEP.name, parentC.id),
-            block("c-116", cStart.toEpochMilli(), 116, SleepStage.REM.name, parentC.id),
+    fun `a shortened complete record leaves the blocks that only abut it`() {
+        val start = 1_725_408_720_000L
+        val existing = listOf(
+            block("head", start, 10, "AWAKE"),                    // revision now starts 10 min later
+            block("mid", start + 10 * 60_000L, 100, "LIGHT"),
+            block("tail", start + 110 * 60_000L, 20, "LIGHT"),    // revision now ends 20 min earlier
+            block("nap", start + 131 * 60_000L, 30, "LIGHT"),     // one-minute gap: a different session
         )
-        assertEquals(166, malformed.filter { it.sessionId == parentC.id }.sumOf { it.durationMinutes })
-        assertTrue(malformed.any { it.sessionId == parentC.id && it.startAt < parentC.startAt })
 
-        val replacements = buildTimestampedStageBlocks(
-            "stitched",
-            startMs,
-            endMs,
-            listOf(
-                SleepStageSegment(SleepStage.LIGHT, start, aClassifiedEnd),
-                SleepStageSegment(SleepStage.DEEP, bStart, bClassifiedEnd),
-                SleepStageSegment(SleepStage.REM, cStart, cClassifiedEnd),
-            ),
-        )
-        val replacedParentIds = setOf(parentA.id, parentC.id)
-        val firstBlocks = replaceOverlappingSleepBlocks(
-            malformed, replacements, startMs, endMs, removeSessionIds = replacedParentIds,
-        )
-        val replayBlocks = replaceOverlappingSleepBlocks(
-            firstBlocks, replacements, startMs, endMs, removeSessionIds = replacedParentIds,
-        )
-        val firstGroups = buildSleepReconcileGroups(firstBlocks, startMs to endMs)
-        val replayGroups = buildSleepReconcileGroups(replayBlocks, startMs to endMs)
-        val plan = buildSleepReconcilePlan(listOf(parentA, parentC), firstGroups)
+        val survivors = completeSessionSurvivors(existing, start + 10 * 60_000L, start + 110 * 60_000L)
 
-        assertEquals(382, (endMs - startMs) / 60_000L)
-        assertEquals(382, firstBlocks.sumOf { it.durationMinutes })
-        assertEquals(firstBlocks.map { it.startAt to it.durationMinutes }, replayBlocks.map { it.startAt to it.durationMinutes })
-        assertEquals(firstGroups, replayGroups)
-        assertEquals(1, firstGroups.size)
-        assertEquals(startMs to endMs, firstGroups.single().start to firstGroups.single().end)
-        assertTrue(firstBlocks.all {
-            it.startAt >= startMs && it.startAt + it.durationMinutes * 60_000L <= endMs
-        })
-        assertEquals(1, plan.matches.size)
-        assertEquals(setOf(parentA.id), plan.deleteSessionIds)
+        assertEquals(listOf("head", "tail", "nap"), survivors.map { it.id })
     }
 
+    /**
+     * Issue #63, the case the three-minute gap in the original report hid: two records of one night
+     * that meet with **no** gap. The reporter's ring closes one record and opens the next 33 seconds
+     * later, so whether the two round to the same minute is a coin toss — and when they did, the
+     * abut rule read them as one run and the second record's re-send wiped the first's five hours.
+     */
     @Test
-    fun `timestamped blocks floor partial minutes without crossing explicit end`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val end = start.plusSeconds(119)
-        val blocks = buildTimestampedStageBlocks(
-            "sleep-session",
-            start.toEpochMilli(),
-            end.toEpochMilli(),
-            listOf(SleepStageSegment(SleepStage.LIGHT, start, end.plusSeconds(30))),
+    fun `a complete record does not retire the session it meets with no gap`() {
+        val a = 1_725_408_720_000L
+        val b = a + 322 * 60_000L                     // the first record's blocks end exactly here
+        val existing = listOf(
+            block("a-1", a, 200, "LIGHT"),
+            block("a-2", a + 200 * 60_000L, 122, "DEEP"),         // ends exactly at b
+            block("b-1", b, 151, "LIGHT"),
         )
 
-        assertEquals(1, blocks.single().durationMinutes)
-        assertTrue(blocks.single().startAt + blocks.single().durationMinutes * 60_000L <= end.toEpochMilli())
-    }
+        val survivors = completeSessionSurvivors(existing, b, b + 151 * 60_000L)
 
-    @Test
-    fun `timestamped blocks quantize cumulative fractional boundaries without losing coverage`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val firstBoundary = start.plusSeconds(90)
-        val secondBoundary = start.plusSeconds(180)
-        val end = start.plusSeconds(270)
-
-        val blocks = buildTimestampedStageBlocks(
-            "sleep-session",
-            start.toEpochMilli(),
-            end.toEpochMilli(),
-            listOf(
-                SleepStageSegment(SleepStage.LIGHT, start, firstBoundary),
-                SleepStageSegment(SleepStage.DEEP, firstBoundary, secondBoundary),
-                SleepStageSegment(SleepStage.REM, secondBoundary, end),
-            ),
-        )
-
-        assertEquals(4, blocks.sumOf { it.durationMinutes })
-        assertEquals(listOf("LIGHT", "DEEP", "REM"), blocks.map { it.stageRaw })
-        assertEquals(listOf(1, 2, 1), blocks.map { it.durationMinutes })
-        assertEquals(listOf(0, 1, 3), blocks.map { it.startMinute })
-        assertTrue(blocks.zipWithNext().all { (a, b) ->
-            a.startAt + a.durationMinutes * 60_000L <= b.startAt
-        })
-        assertTrue(blocks.all { it.startAt + it.durationMinutes * 60_000L <= end.toEpochMilli() })
-    }
-
-    @Test
-    fun `thirty second awake transition survives minute quantization`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val awakeStart = start.plusSeconds(30 * 60L)
-        val awakeEnd = awakeStart.plusSeconds(30)
-        val end = start.plusSeconds(60 * 60L)
-
-        val blocks = buildTimestampedStageBlocks(
-            "sleep-session",
-            start.toEpochMilli(),
-            end.toEpochMilli(),
-            listOf(
-                SleepStageSegment(SleepStage.LIGHT, start, awakeStart),
-                SleepStageSegment(SleepStage.AWAKE, awakeStart, awakeEnd),
-                SleepStageSegment(SleepStage.DEEP, awakeEnd, end),
-            ),
-        )
-
-        assertEquals(60, blocks.sumOf { it.durationMinutes })
-        assertEquals(listOf("LIGHT", "AWAKE", "DEEP"), blocks.map { it.stageRaw })
-        assertEquals(1, blocks.single { it.stageRaw == "AWAKE" }.durationMinutes)
-        assertTrue(blocks.zipWithNext().all { (a, b) ->
-            a.startAt + a.durationMinutes * 60_000L <= b.startAt
-        })
-        assertTrue(blocks.all { it.startAt + it.durationMinutes * 60_000L <= end.toEpochMilli() })
-    }
-
-    @Test
-    fun `corrected sleep updatedAt advances within the same millisecond`() {
-        assertEquals(1_001L, nextSleepUpdatedAt(wallClockNow = 1_000L, existingUpdatedAt = 1_000L))
-    }
-
-    @Test
-    fun `corrected sleep updatedAt advances across clock rollback and saturates safely`() {
-        assertEquals(2_001L, nextSleepUpdatedAt(wallClockNow = 1_000L, existingUpdatedAt = 2_000L))
-        assertEquals(Long.MAX_VALUE, nextSleepUpdatedAt(0L, Long.MAX_VALUE))
-    }
-
-    @Test
-    fun `authoritative night stays separate from a retained nap thirty minutes later`() {
-        val nightStart = Instant.parse("2026-07-06T22:30:00Z").toEpochMilli()
-        val nightEnd = nightStart + 6 * 60 * 60_000L
-        val blocks = listOf(
-            block("night", nightStart, 360, SleepStage.LIGHT.name),
-            block("nap", nightEnd + 30 * 60_000L, 30, SleepStage.DEEP.name),
-        )
-
-        val first = buildSleepReconcileGroups(blocks, nightStart to nightEnd)
-        val replay = buildSleepReconcileGroups(first.flatMap { it.blocks }, nightStart to nightEnd)
-
-        assertEquals(2, first.size)
-        assertEquals(first, replay)
-        assertEquals(nightStart to nightEnd, first[0].start to first[0].end)
-        assertTrue(first.all { group ->
-            group.blocks.all { block ->
-                block.startAt >= group.start &&
-                    block.startAt + block.durationMinutes * 60_000L <= group.end
-            }
-        })
-    }
-
-    @Test
-    fun `retained block ending at authoritative night start remains separate`() {
-        val nightStart = Instant.parse("2026-07-06T22:30:00Z").toEpochMilli()
-        val nightEnd = nightStart + 6 * 60 * 60_000L
-        val groups = buildSleepReconcileGroups(
-            listOf(
-                block("before", nightStart - 30 * 60_000L, 30, SleepStage.REM.name),
-                block("night", nightStart, 360, SleepStage.LIGHT.name),
-            ),
-            nightStart to nightEnd,
-        )
-
-        assertEquals(2, groups.size)
-        assertEquals(listOf("before"), groups[0].blocks.map { it.id })
-        assertEquals(listOf("night"), groups[1].blocks.map { it.id })
-        assertEquals(nightStart to nightEnd, groups[1].start to groups[1].end)
-        assertTrue(groups.all { group ->
-            group.blocks.all { block ->
-                block.startAt >= group.start &&
-                    block.startAt + block.durationMinutes * 60_000L <= group.end
-            }
-        })
+        assertEquals(listOf("a-1", "a-2"), survivors.map { it.id })
     }
 
     @Test
@@ -363,28 +215,58 @@ class EventPersistenceIdentityTest {
         )
     }
 
-    private fun block(
-        id: String,
-        start: Long,
-        duration: Int,
-        stage: String,
-        sessionId: String = "sleep-session",
-    ) =
+    private fun block(id: String, start: Long, duration: Int, stage: String) =
         SleepStageBlockEntity(
             id = id,
-            sessionId = sessionId,
+            sessionId = "sleep-session",
             startAt = start,
             startMinute = 0,
             durationMinutes = duration,
             stageRaw = stage,
         )
 
-    private fun sleepParent(id: String, start: Instant, end: Instant, minutes: Int) =
-        SleepSessionEntity(
-            id = id,
-            date = start.toEpochMilli(),
-            startAt = start.toEpochMilli(),
-            endAt = end.toEpochMilli(),
-            totalMinutes = minutes,
-        )
+    /**
+     * Issue #60: only a ring that logs its own spot measurements leaves a second copy to reconcile.
+     * A CRP or Colmi ring does not, and its all-day history sits on a five-minute grid — so a spot
+     * reading there must never be marked as awaiting a ring copy, or the next unrelated grid
+     * sample within the match window would delete a reading the user asked for.
+     */
+    @Test
+    fun `only a spot reading from a ring that logs it awaits the ring's copy`() {
+        assertTrue(awaitsRingsCopy(spot = true, ringWillLogIt = true))
+        assertFalse("a CRP/Colmi spot reading has no second copy coming",
+            awaitsRingsCopy(spot = true, ringWillLogIt = false))
+        assertFalse("a streamed sample is not a spot reading",
+            awaitsRingsCopy(spot = false, ringWillLogIt = true))
+        assertFalse(awaitsRingsCopy(spot = false, ringWillLogIt = false))
+    }
+
+    /**
+     * Issue #60, RC-2: the ring logs each spot reading into its own history, and a later sync
+     * imports it next to the row we stored for our settled value. The match rule that lets the
+     * ring's copy replace ours must reach a stamp at either end of a 35–63 s measurement and must
+     * not reach the ring's own all-day samples five minutes apart.
+     */
+    @Test
+    fun `a history sample adopts only the spot reading it is the ring's copy of`() {
+        val ours = listOf(1_000_000L, 1_300_000L)   // two spot readings, five minutes apart
+        // The ring stamps to the minute, so its copy may sit up to a measurement's length away.
+        assertEquals(listOf(1_000_000L), spotReadingsMatching(ours, 1_000_000L + 60_000))
+        assertEquals(listOf(1_000_000L), spotReadingsMatching(ours, 1_000_000L - 60_000))
+        // An all-day sample two and a half minutes from either is nobody's copy.
+        assertTrue(spotReadingsMatching(ours, 1_150_000L).isEmpty())
+        // Nothing of ours: nothing to adopt, whatever the ring sends.
+        assertTrue(spotReadingsMatching(emptyList(), 1_000_000L).isEmpty())
+    }
+
+    @Test
+    fun `corrected sleep updatedAt advances within the same millisecond`() {
+        assertEquals(1_001L, nextSleepUpdatedAt(wallClockNow = 1_000L, existingUpdatedAt = 1_000L))
+    }
+
+    @Test
+    fun `corrected sleep updatedAt advances across clock rollback and saturates safely`() {
+        assertEquals(2_001L, nextSleepUpdatedAt(wallClockNow = 1_000L, existingUpdatedAt = 2_000L))
+        assertEquals(Long.MAX_VALUE, nextSleepUpdatedAt(0L, Long.MAX_VALUE))
+    }
 }

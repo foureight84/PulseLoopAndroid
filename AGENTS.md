@@ -3,6 +3,22 @@
 Read this before touching ring/BLE hardware code (`app/src/main/java/com/pulseloop/ring/`,
 `app/src/main/java/com/pulseloop/wearables/`). Full detail: `docs/qring-ble-adoption.md`.
 
+## Commits carry no agent attribution
+
+**Do not add a `Co-Authored-By` trailer to commits in this repo** — not for Claude, not for any
+other agent or tool. GitHub reads that trailer as a second author and lists the address as a
+repository *contributor*, so an agent appears in the contributors graph beside the maintainer.
+
+This was already the rule, stated in `android/docs/crp-r11-hardening-plan.md` §"Ground rules" and
+`android/docs/health-connect-integration.md` §4, and it was still violated on 13 commits — because
+those are task-specific plan documents that nothing loads automatically, and the rule was nowhere
+an agent reliably reads. It lives here now for that reason. The Claude Code harness injects a
+session reminder *asking* for the trailer; that reminder defers to the project's own instructions,
+and this is one.
+
+Applies to both repos. Leave the existing commits alone: rewriting them would orphan the release
+tags and the published APKs hanging off them.
+
 ## Ring BLE protocol work — match the vendor app, not iOS
 
 When porting or fixing a ring's BLE protocol (connect/pairing sequence, GATT characteristic
@@ -11,6 +27,28 @@ Android app** (`decompiled-qring-official/`, `decompiled-jring-offical/`, etc., 
 root) and match its actual behavior. Do not port iOS's CoreBluetooth sequencing — Android's
 Bluetooth stack behaves differently (pairing/bonding flow, MTU negotiation, background
 restrictions), and a straight iOS port has caused real pairing/data-collection bugs before.
+
+## Manufacturer data: Android splits the field, iOS doesn't — put the company ID back
+
+`ScanRecord.getManufacturerSpecificData()` returns a `SparseArray` **keyed by company ID, with the
+ID removed from the value**. CoreBluetooth hands iOS the raw block, company ID and all. Every
+coordinator was ported from Swift and therefore matches a little-endian company-ID *prefix*
+(`TK5Coordinator` `10786501`, `ColmiSmartHealthCoordinator` `1078`, `LuckRingCoordinator` `64ff`,
+`RWfitProtocol.MANUFACTURER_HEX_PREFIXES` `d605…`/`d606…`). `RingBLEClient` used to pass
+`valueAt(0)` through untouched, so those prefixes could never appear and **every manufacturer-data
+fallback in the registry was dead code on Android** — a ring whose name the catalog didn't
+recognise matched nothing at all (issue #56, an `Ale-Hop2211 E1C7` YCBT ring). It also read only
+entry 0 despite a comment claiming otherwise.
+
+Build `AdvertisementInfo` through `AdvertisementMatcher` (`WearableDriver.kt`), which restores the
+company ID and offers **every** entry to each coordinator, registry order still outermost. If you
+add a coordinator that matches manufacturer bytes, write the prefix in on-air layout (company ID
+first) and cover it in `AdvertisementMatcherTest`.
+
+Same lesson, different field: a name pattern is one convention, so keep it in one constant.
+`WearableModel.SMARTHEALTH_NAME_PATTERN` gates two decisions in series — whether
+`modelForAdvertisedName` returns a card at all, and whether `ColmiSmartHealthCoordinator` accepts
+the name — and the two copies that used to exist drifted into the same bug.
 
 ## Colmi/Yawell OS-bonding is a hand-curated allowlist — not "match QRing exactly"
 
@@ -76,16 +114,16 @@ simply produces no reply. `CRPSyncEngine.sendSleepBackfill` therefore pulls the 
 per connection** (not per pass — `runStartup` is also the ~30-minute background sync, and this ring
 funnels everything through one `fdd2` channel).
 
-jring has the same gap, for different reasons. Its depth is `makeHistoryQueryCommand()`'s default of
-1, called with no argument at `JringDriver.kt:105`, against a command that accepts up to 27.
-**`RingSyncCoordinator.syncWindowDays` is not that control** — despite its "must match
-makeHistoryQueryCommand's default" comment, it has exactly one use, sizing the sync-progress window
-in `beginSyncProgress`, and it applies to every family. Don't cite it as a per-family request depth;
-that mistake is what deferred this fix once already. Two things do make jring harder than CRP:
-`JringSyncEngine.runStartup` has no once-per-connection gate, so a wider `days` re-pulls the whole
-span on every ~30-minute background pass rather than once; and `0x10` returns activity *and* sleep
-together — there is no sleep-only request — so each extra day costs ~96 activity packets
-(15× 1-minute buckets per packet) on top of the night.
+jring had the same gap and a worse one underneath it (see "#73" below: byte 1 of `0x10` is a day
+*offset*, so the app never asked for today at all). One day per request, so depth is a loop, not a
+number. **`RingSyncCoordinator.syncWindowDays` is not that control** — despite the "must match
+makeHistoryQueryCommand's default" comment it used to carry, it has exactly one use, sizing the
+sync-progress window in `beginSyncProgress`, and it applies to every family. Don't cite it as a
+per-family request depth; that mistake is what deferred this fix once already. Two things still make
+jring harder than CRP: `runStartup` is also the ~30-minute background sync, so a wider window must be
+gated to once per connection (`historyBackfilled`) or it re-pulls the whole span every half hour;
+and `0x10` returns activity *and* sleep together — there is no sleep-only request — so each extra
+day costs ~96 activity packets (15× 1-minute buckets per packet) on top of the night.
 
 Consequence to keep in mind: nothing bulk-deletes real sleep any more, so a Forget followed by
 pairing a different ring carries the previous ring's history over. If that ever needs to change,
@@ -157,6 +195,74 @@ Corollary for new protocol work: a reply that merely reports something about the
 serial, capabilities) is not a connection event. Give it its own `RingDecodedEvent` — as
 `FirmwareRevision` does — rather than hanging it off `Status`.
 
+## `0x10`'s byte 1 is a day offset, not a day count (issue #73)
+
+**An SR08 synced steps and HR but never a single night of sleep**, however long it was worn. The
+request depth looked fine; the day being requested was not. `getDataByDay(int type, int day)`
+(`IRemoteService.aidl`) reaches `BluetoothLeService.a(int, int)`, which writes the type into
+`bArr[0]` — `1` → `16` (`0x10`, activity+sleep), `2` → `22` (`0x16`, heart rate), via the
+`WeatherUtil` constants jadx happens to resolve those bytes to — and then the `day` argument
+**straight into `bArr[1]`**. One day per call. The caller loops:
+`DupMainActivity.onGetMultipleSportData` decrements `P_SYNC_HISTORY_DAY` on each day's sync-end and
+calls `getDataByDay(1, i6)` again, counting **down to 0**.
+
+Read as a count, our `0x10/03` asked for the day before last and `0x10/01` for yesterday, so **no
+pass ever requested today** — and `0x10` is the only source of sleep, so last night could not
+arrive. Steps and HR masked it: activity comes from the ring's automatic `0x03` push, and
+`makeHistoryMeasurementQueryCommand` already hardcoded `16 00`, i.e. offset 0. The one request that
+asked for today was the one that worked, which is the clue that was sitting in the source the whole
+time.
+
+Two process notes worth keeping:
+
+- **The count reading came from a name that isn't in the vendor SDK.** The KDoc cited Gadgetbridge's
+  `triggerActivityReportByDays()`; that identifier appears nowhere in `decompiled-jring-offical/`,
+  only in our own files. A citation to a *different* project's helper is not vendor evidence — check
+  the decompile, which for this family means `jadx --single-class` against `classes2.dex`, since
+  only the `.aidl` files ship as sources.
+- **Asking for the right day was only half of it — see below.** The first fix enqueued the whole
+  window in one pass and recorded the condition that would force the vendor's chain. That condition
+  arrived within a day.
+
+## This ring answers one history request at a time (issue #73, second half)
+
+**The day-offset fix alone did not restore sleep.** On `v2.9.1+54-rc1` the same SR08 still showed
+**45 minutes against an expected 6h30**, and the reporter's capture says why: `10 00`, `10 01`,
+`10 02` and `16 00` all went out inside **176 ms**, with `10 02` landing *between* two of today's
+sleep packets. Four `0x11` packets arrived in total — three consecutive 15-minute blocks for today
+(01:15–02:00, exactly the 45 minutes displayed) and one from the previous day. A second request
+mid-stream truncates the first, so the window's days were cutting each other off.
+
+`JringHistorySync` is the fix: one day at a time, the next request held until the current day's
+stream goes quiet. Per day, `0x10/offset` → settle → `0x16/offset` → next day, which is the vendor's
+own chain (`getDataByDay(1, day)` then `(2, day)`, advancing on that day's sync-end).
+
+- **The activity/sleep leg is time-settled, not reply-driven, and that is forced.** Nothing in the
+  `0x10`/`0x11` wire format marks the end of a day — both are bare runs of 15 one-minute samples.
+  JYouPro is in the same position and does the same thing: a **2000 ms** idle timer reset on each
+  reply, which is where `settleMs`' default comes from. The **heart-rate** leg does have a real end
+  marker (`0x16` subtype `0xFF` → `HistorySyncFinished`) and chains on it.
+- **`LuckRingHistorySync` is the same machine for the same reason** — port from it rather than
+  inventing a third one. The jring version adds the second (HR) leg per day.
+- **A re-entrant `start()` is declined, and the caller is told.** `runStartup` is also the
+  ~30-minute background sync, so a pass landing mid-backfill is normal; restarting would abandon
+  the in-flight day mid-stream, which is the truncation itself. `start` returns whether it began a
+  pass so `historyBackfilled` is only spent by a pass that ran — otherwise a connection can lose
+  its backfill to a no-op and never ask for the older days again.
+- **A day that answers nothing still gets its HR request.** `16 00` used to be unconditional and it
+  is the request that always worked; a silent `0x10` must not take today's HR down with it.
+- **The pass is dropped on disconnect** (`JringDriver.connectionDidEnd`). The writer outlives the
+  driver, so a timer firing after the link dropped would land a stray `0x10` in the *next*
+  connection — the same truncation, arriving from a connection that has already ended.
+- **Timers are epoch-guarded** (`JringHistorySync.armTimer`). `Job.cancel()` does not retract a
+  coroutine already past its `delay` and waiting on the monitor, and a stale settle firing into a
+  live stream would re-create the bug from the inside.
+- The one remaining divergence from the vendor is order: it counts **down** to today, we lead with
+  today — the day the user opened the app to see, and the one the reporter's prototype validated.
+- **Don't generalise this to other families.** `YCBTHistoryTransfer` has a terminal block with a
+  CRC and a YCBT owner read the same history twice back to back byte-identically (11 frames,
+  1916 bytes) while this SR08 was truncating. Different transports, different failure modes.
+
 ## Colmi R11 (CRP "Da Rings") — diagnose from the capture, and decode wear state before blaming code
 
 **Read this before changing anything in `CRP*` startup, sync, all-day-monitoring, or history code —
@@ -182,10 +288,12 @@ supporting evidence as the cause.
   a recent commit. A known-good "measure button" capture (worn, HR returns ~19 s after `g1/cmd9 [01]`)
   is the baseline to diff against.
 - **Wear state = `group 3 / cmd 7`** (`onWearStateChange`, `payload[0] > 0`). Decoded as of the
-  wear-state fix: `CRPDecoder` → `RingDecodedEvent.WearingStatus` → `PulseEvent.WearState`, and
-  `RingSyncCoordinator` fast-fails an in-flight CRP spot measure (with a "put the ring on" message)
-  when it reports not-worn *before* any reading. Gated to CRP — YCBT's wear polarity is unverified.
-  A not-worn measure now fails in ~2 s with guidance instead of spinning the full window silently.
+  wear-state fix: `CRPDecoder` → `RingDecodedEvent.WearingStatus` → `PulseEvent.WearState`. A spot
+  measure in flight is ended by `CRPSpotController` (see "A CRP spot measurement ends on one result"
+  below), which watches for the raw `g3c7 [00]` frame as well as the event, and the coordinator
+  surfaces it as `measureNotWorn` for the "put the ring on" message. Gated to CRP — YCBT's wear
+  polarity is unverified. A not-worn measure fails in seconds with guidance instead of spinning the
+  full window silently.
 - **SpO2 works on the R11 — do not "fix" it by removing the capability.** zaggash's 2026-07-23
   capture (build 26) contains a real reading: `group 1 / cmd 11` payload `0x61` = **97 %**. It is
   slow and contact-sensitive — the successful measure took **48 s** of silence before answering, and
@@ -206,9 +314,15 @@ supporting evidence as the cause.
 - **Read-backs exist — ask the ring instead of guessing.** `querySupportSpO2Type` (`2/37`) answers
   NOT_SUPPORT / SLEEP_OXYGEN / TIMING_OXYGEN, and the monitor-state queries `2/6` HR, `2/7` HRV,
   `2/8` SpO2, `2/45` stress, `2/21` temp each report the configured interval (`0` = off). These are
-  how you tell "the monitor is switched off" apart from "this ring lacks the sensor" — the open
-  question for stress (`2/47`) and temperature, both 23-sent/0-answered. Send them
+  how you tell "the monitor is switched off" apart from "this ring lacks the sensor". Send them
   **once per connection**, not per poll pass: `runStartup` is also the ~30-minute background sync.
+  The R100 capture in issue #58 shows what a *useful* answer looks like and what silence means:
+  `2/6` HR, `2/7` HRV, `2/8` SpO2 all replied `05` (5-minute interval, enabled) and `2/21` temp
+  replied `06`, while `2/45` stress and `2/37` SpO2-type answered **nothing across 22 sync passes**
+  — the same ring that also never answers the stress history query `2/47`. On that ring stress is
+  absent, not switched off. Note the app still advertises `STRESS` for it, because
+  `CRPCoordinator.capabilities` is a static family set, not something the ring confirmed — a
+  capability list is not evidence about an individual ring.
 - **Group 7 is Gomore, not device info — an opcode read off a decompiled builder is a guess until
   you check its caller.** Firmware was queried on `7/1` and never answered (23 sends, 0 replies),
   which read like ring firmware ignoring a valid vendor command. It wasn't: every builder in `b1/r`
@@ -226,10 +340,17 @@ supporting evidence as the cause.
   firmware string is not. Sibling group-3 queries confirmed from their callers: `3/0` reset,
   `3/1` shutDown, `3/4` firmware hash, `3/6` real-time battery, `3/7` wear state, `3/14` restart,
   `3/22` binding reminder.
-- **Temperature history is `2/22`, not `2/48`.** `q.b(2,48)` is the vendor's `querySleepState`
-  (`d1/b.java` line 650); real temp history is `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the
-  same shape as the other timing histories. Its sample layout is still unconfirmed — no non-empty
-  capture yet — so the reply stays an ack.
+- **Temperature history is `2/22`, not `2/48`, and its layout is now CONFIRMED (issue #58).**
+  `q.b(2,48)` is the vendor's `querySleepState` (`d1/b.java` line 650); real temp history is
+  `i0.b(day, frameIndex)` = `q.c(2,22,[day,idx])`, the same shape as the other timing histories.
+  The R100 capture attached to issue #58 is the first non-empty temperature reply anyone has sent
+  us, and it matches the vendor parser `e1/m` byte for byte: `[day][frameIndex]` then
+  **little-endian 2-byte tenths of a degree Celsius** per 5-minute slot, 72 slots/frame, terminal
+  index **3** (four frames/day, like HRV), clamp **28.0–50.0 °C** with anything outside meaning "no
+  reading" (`e1/m.a`). Decoded in `CRPDecoder.decodeTimingHistory`. Note what the missing decode
+  cost beyond the samples: with no `TimingHistoryFrame` marker emitted, `CRPSyncEngine` never
+  advanced the cursor, so the ring was asked for frame 0 on every pass and **never** for frames
+  1-3 — 18:00 onward of every day was unreachable.
 - **The multi-frame follow-up is hardware-validated** (was open on rc3): HR asked frames (0,0)+(0,1)
   and got both; HRV asked (0,0)…(0,3) and got all four. HR history decoded 27 readings at 00:10–11:35
   local (46–104 bpm), HRV 11 readings (30–56 ms), sleep 12 records across light/deep/REM — so the
@@ -258,6 +379,620 @@ supporting evidence as the cause.
   connect" premise is false — match the vendor (query state / apply saved config). And the vendor
   sends spot measures on a priority path (`insertNotificationMessage`) distinct from config/history
   (`insertBleMessage`).
+- **The R100 (issue #58) is a second CRP ring, and a more talkative one than the R11.** White-label,
+  ships with the same "Da Rings" app, firmware `MOY-R2E3-*`, catalogued as `WearableModel.R100`. It
+  advertises a usable name (`R100` / `R100_<hex>`) so it matches at scan instead of relying on the
+  post-connect `fdda` re-route. What its capture settles: temperature history decodes (above),
+  all-day HR/HRV return real frames, all-day SpO2 returns almost entirely empty ones (2 frames with
+  data against 44 empty — the ring records little, the decode is fine), and stress is unanswered on
+  both its history and state opcodes. When a CRP question needs a non-empty capture, this ring is
+  now the better source.
+- **A CRP spot measurement ends on one result, and it does not go through `HRSampleWindow`
+  (issue #88).** The ring answers `g1/cmd9` (HR) or `g1/cmd11` (SpO₂) with a single frame and then
+  goes quiet. On a second R11 (firmware `MOY-R2Z3-2.2.1`, not zaggash's `MOY-R1K3-2.1.6`) HR arrived
+  15–17 s after the start:
+
+  | Time | Dir | Frame | Meaning |
+  | --- | --- | --- | --- |
+  | 20:28:03.187 | TX | `fdda1007010901` | start HR |
+  | 20:28:19.932 | RX | `fdda1007010948` | 72 bpm |
+  | 20:28:28.415 | TX | `fdda1007010900` | stop HR |
+
+  `HRSampleWindow` wants six samples and calls 8 s of silence lost contact, so it threw that result
+  away. `CRPSpotController` runs CRP spot HR/SpO₂ instead. What it relies on:
+  - **Every cmd-9/11 frame is terminal, an empty one included.** The vendor dispatcher `g1/a.c`
+    hands `frame[6..]` to `e1/f.b` / `e1/d.b` with no length check, both return 0 for an empty
+    payload, and the app layer (`v3/a.a`, `f4/b.a`) turns 0 into "no value" and ends the
+    measurement. (JADX flags `g1/a.c` with a type-inference warning; `-m simple` and `-m fallback`
+    show the same control flow.)
+  - **Its deadline starts when it sees the start command's outgoing `RawPacket` on the bus.** The bus
+    does not replay, so the listener must be subscribed *before* the write is enqueued (it is
+    launched `UNDISPATCHED`): on an idle queue the packet can be published before a normally
+    dispatched coroutine runs, and the countdown never started. A dispatch timeout backs this up,
+    so a start that is never seen leaving the queue still ends the measurement. Without either, a
+    silent ring left the UI measuring forever.
+  - **CRP has no transaction id.** A late result of the same kind that lands inside a later request
+    is indistinguishable from that request's own answer. History frames never complete a request.
+  - **The stored row is `sourceRaw = "spot_result"`, not `"spot"`.** It must stay out of
+    `adoptRingsCopy` for the five-minute-grid reason in "The ring owns a spot reading it logged
+    itself" below.
+  - **A rejected result is still a health frame.** `CRPDecoder` names an out-of-band vital result
+    `RejectedVitalResult` so the export masks it; decoded to nothing it would be logged `unknown`
+    and exported whole.
 - Whenever you touch CRP measure/sync/all-day behavior, hardware-validate with the ring owner
   (zaggash) — and for a "measure broken" report, first get a capture of **several** Measure presses
   with the ring snug and still, to separate a contact failure from a real code bug.
+
+## A CRP sleep day turns over at 20:00, not midnight
+
+**A sleep reply's day index counts back from the ring's sleep day, and that day starts at 8 PM.** An
+R11's first night was stored twice: correctly by a morning sync, then exactly one day earlier by an
+evening one, at a time before the ring had been delivered. The vendor dates a `group 2 / cmd 14`
+reply from the moment it syncs: `t3/n.onHistorySleepChange` passes `new Date()` to `f4/e.a`, whose
+`f4/e.e` moves it to tomorrow when `f4/e.h` reads `20 <= HOUR_OF_DAY`, and `j4/h.b` then subtracts
+the day index. So from 20:00 day 0 is the night about to begin and last night is day 1.
+`CRPDecoder.decodeSleep` counted back from the phone's date alone, so every sync after 8 PM filed
+last night under the day before.
+
+Two things follow, and `CRPSleepDayIndexTest` pins both:
+
+- **A record starting at or after 20:00 is the evening before the reply's day**, even when the reply
+  never crosses midnight. Without that, a reply holding only evening sleep (a doze at the desk) was
+  anchored on the evening *after* the waking day, which is in the future at a morning sync.
+- **The constant is 20, not `TimeUtil.wakingDayLocal`'s 19.** That one is iOS's key for grouping
+  stored sessions by waking day; this one is the ring's own boundary, read from the vendor. Merging
+  them would move the decoder off the vendor to match a persistence convention.
+
+**The damage is not limited to a ring's first night.** The background sync runs about every
+30 minutes, so most evenings include a sync after 20:00, and each one filed that morning's night
+24 h early, on top of the night before. The next morning's re-sync restores the real night, but
+`upsertSleepSessionAtomic` only replaces the time range a packet covers. So the copy's blocks
+outside that range stay, and every night grows by whatever the following night covered beyond it.
+
+On the reporter's database, every one of the 37 stray blocks sits inside a block of the next
+waking day's record at exactly +24 h, with the same stage. Their `recordStartAt` is that record's
+minus 24 h. Sunday read 382 minutes asleep against a real 302, because 80 came from Monday's night.
+On the ring's first night there was no earlier night to land on, so the copy stood alone as a whole
+night on a day before the ring arrived.
+
+The decoder fix stops new copies. **Copies already stored are left alone, on purpose.** A one-time
+cleanup (`SleepDayEarlyCopies`, #110, CRP-only after #119) was tried and backed out before any stable
+release, after the reporter ran it on a longer-history database (#109, 2026-10-13):
+- **It removed copies but could not restore what they had overwritten.** By the time a night's
+  copy is old, the next evening's sync has usually replaced that night's real stages with the copy,
+  so deleting the copy left Sep 27 empty and cut Sep 29 from 425 to 79 asleep minutes.
+- **It ran once, before a later re-sync exposed more copies.** A copy on Oct 9 only became
+  detectable after a sync restored Oct 10, after the cleanup had marked itself done.
+
+Recovering that history needs a trusted earlier snapshot, which the app doesn't have. Don't
+reintroduce a destructive cleanup without one. Test builds 2.10.3 (68–72) and 2.10.2 (73) did run
+it, so their testers' databases may already show those holes.
+
+**No sleep query goes out within 5 minutes of 20:00** (`CRPDecoder.nearSleepDayRollover`). The ring
+dates a reply by its own clock and the decoder by the phone's when the reply lands; straddling the
+turnover they disagree by a day and recreate the copy, after the repair has already run.
+
+Not covered: a copy older than the ring's ~week of history whose source night was itself overwritten
+by the next evening's sync no longer fits inside it, so the all-or-nothing match leaves it in place.
+
+## Spot measurements: the ring's own verdict beats our window (issue #59)
+
+**Read this before touching `HRSampleWindow`, `SpotMeasurementGate`, or `RingSyncCoordinator`'s
+measure legs.**
+
+A YCBT ring ends a spot measurement itself with **`04 0e [mode, status]`** — `bArr[0]` is the same
+mode byte `03 2f` started with, `bArr[1]` is `1` success / `2` failed / anything else cancelled
+(vendor `BaseMeasureActivity.onDataResponse`, `decompiled-smarthealth/.../BaseMeasureActivity.java:259`).
+The vendor reads **no value** out of that frame; on success it calls `syncData()` and pulls the
+reading from history. We decode it the same way: `RingDecodedEvent.MeasurementComplete` carries the
+mode and the verdict and nothing else, and `SpotMeasurementGate` honours it by token so a
+completion can only end the measurement it names.
+
+What the `Ale-Hop2211` captures in #59 established about how these rings actually behave. None of
+it is safe to assume away:
+
+- **Warm-up is not the same as the cached echo.** `HRSampleWindow` drops the first 5 s because the
+  ring answers instantly with its last stored bpm. That ring sent nothing for 14 s, then spent ~12 s
+  on a *pre-converged plateau* (47 47 47, 46 46 46) before stepping to the real rate (84 … 81) at
+  ~26 s. A whole-window median picks the plateau every time: it is both the majority of the window
+  and the most self-consistent thing in it. **Never settle a median over everything collected.**
+- **Which settle rule a run gets is decided by whether the ring ended it**
+  (`HRSampleWindow.settled(ringChoosesLastSample)`, wired to the ring's `04 0e` success verdict on
+  *this run*, not to the family's ability to send one). A run that hits our ceiling without a
+  `04 0e` is one the ring never finished, so it falls back to the consistency gate whatever the
+  family. A ring that ends its own measurement **logs the last plausible
+  sample of the run** (vendor band `HEART_RATE_VISIBLE_MIN..MAX` = 40..220), so the app reports
+  that. RC-3 feedback on #59 established it directly: three spot measurements captured with no stop
+  command, each read back out of the ring's memory before any app touched it, stored value ==
+  last streamed sample **3/3** (65, 58, 72). It is a discriminating test here, unlike SpO2 where
+  tail and last coincide — the rate is still **climbing** when the ring stops, so every
+  tail-weighted rule lands below the ring's answer (94 against the ring's 93 on rc5, and up to
+  18 bpm out on those captures). Disagreeing with the ring is not a better number, it is a second
+  number: the ring's copy arrives on the next sync and ours yields to it (issue #60). A ring with
+  **no** completion signal keeps the tail rule, because nothing chose its last sample — the leg
+  just ran out of window. Don't widen the last-sample rule to every family; that is the same
+  over-generalisation rc5 had to correct for the ring-copy rule.
+- **The ring's stored sample is not a converged reading, and that is not ours to fix.** It stops
+  while the value is still rising (34.2 s, 49.2 s, 34.2 s across those three runs), so "which
+  sample did the firmware choose" and "is that sample any good" have different answers and only the
+  first is the app's. The reporter raised this himself and argued against correcting for it:
+  inventing a better number app-side would disagree with the row the ring re-supplies.
+- **These rings stream in bursts.** Three samples about a second apart, then **4-6 s of silence**.
+  The contact-lost gap was 3 s, so it fired mid-measurement on a ring that was working perfectly and
+  aborted the leg before the sensor had converged at all. It is 8 s now. Size this against the
+  burstiest cadence in a capture, never against the average one.
+- **SpO2 is not heart rate, and the HR rules must not be copied onto it.** RC-1 feedback on #59
+  included an instrumented SpO2 capture from the same ring, and every property differs: samples
+  start at t+13 s, there is a **24 s** silence in the middle (against HR's 4-6 s), the run lasts
+  **50 s** (against 35), and the values *rise to a peak of 99 then decline to 94* rather than
+  converging. So: there is no cached echo to discard here, the HR contact-gap would abort it
+  outright if it were ever applied to this leg, and HR's tail rule would report the decline.
+  `Spo2SampleWindow` settles on the **last plausible sample** (vendor band 70–100), because that is
+  what the ring itself logs. Three sources agree (RC-2 feedback on #59): five captures read back
+  against the ring's own history matched the last sample 5/5 (a median matched 4/5); the one run
+  that collapsed 98 → 87 is stored by the ring as 87, so it was a bad measurement, not a rule
+  failure; and the vendor app (`BloodOxygenMeasureActivity.onEvent`) never settles at all — it
+  shows each frame and on `04 0e` re-reads the ring's history. Don't put a median or a tail rule
+  back: anything cleverer than the ring disagrees with the row the ring will later re-supply.
+  There is still no value-based early exit for this leg — the collapsing run's late burst changed
+  the answer, so "a value in hand" is not "done"; only `04 0e` (or the ceiling) is.
+- **A window ceiling is per family** (`RingSyncEngine.spotHeartRateSeconds`,
+  `spotSpo2Seconds`). YCBT HR is 45 s because that ring self-terminates at ~35 s; YCBT SpO2 is
+  75 s because five captures put its `04 0e` at t+63.1 s (the default 60 s timed out just before
+  it); everyone else keeps 30 s / 60 s. This is only safe *because* the leg ends on `04 0e` —
+  raising the default for families that never send one would make every measurement visibly slower
+  for nothing.
+- **`04 0e` success is not an abort for BP and HRV.** Those legs read no value out of the push
+  (the vendor re-syncs history), and HRV has no live-value frame at all, so treating success as
+  "stop polling" turned a measurement the ring called successful into a failure. Only the ring's
+  *failure* verdict ends them early (`pollForValue`'s abort predicate tests `== false`).
+
+**Collecting a whole run is gated on the ring saying when it is done**
+(`RingSyncEngine.signalsMeasurementCompletion`, true only for YCBT). Don't widen it: a leg that
+waits for a completion signal no family sends just idles out its window, and the CRP R11 answers a
+spot SpO2 with one value after ~48 s of silence and nothing further — waiting past it would turn a
+working measurement into a minute-long stare at a progress bar. Families without the signal keep
+"first plausible value wins" for SpO2. CRP is outside both rules: its spot legs are run by `CRPSpotController` and end on the
+ring's one result frame (see the R11 section above).
+
+**A spot measurement's output is one reading, not a stream.** While one is settling, the
+coordinator closes a gate on that kind's live samples and publishes the settled value once,
+`spot = true` (which the closed gate lets through). The gate is a **bus event** (`PulseEvent.LiveSampleGate`), not a shared
+flag: `EventPersistenceSubscriber` collects behind the ring on its own dispatcher, so a flag read at
+write time let every sample already queued in the bus through the moment it flipped — the event is
+ordered against the samples it governs. Before any of this, every converging PPG estimate was stored
+as its own heart-rate row stamped with the moment it arrived — a failed measurement left a whole
+train of readings that were never the user's heart rate (this is what prompted issue #60). A live
+*workout* is the opposite case: there the stream **is** the data, so a measurement that runs during
+one neither closes the gate nor publishes a second row for a reading the stream already stored.
+
+**The gate reopens when the ring stops sending, not when the leg ends** (`LiveGateReopen`). Told to
+stop, a Colmi ring sends one more `0x69` reading and only then its `0x6A` acknowledgement — in
+QRing's captures and ours alike. Reopening as the leg ended put that trailing reading on an open
+gate, so every Colmi HR and SpO₂ spot measurement stored **two** rows a few hundred ms apart (HR
+85 + 86, SpO₂ 98 + 98 on a Ring 2 Pro). The leg now arms the reopen before sending its stop, and
+the ring's acknowledgement (`PulseEvent.RealtimeStreamStopped`) pays it, with a 2 s timeout in case
+it never comes. The wait is opt-in per stop: only when the engine reports that the stop it just sent
+will be acknowledged (`RingSyncEngine.stopAwaitsAck`, Colmi only). Every other family — and a Colmi
+stop that sent nothing — reopens at once, because waiting there would drop the first ~2 s of a
+workout's samples after every leg. Don't move the reopen back to the end of the leg to "simplify"
+it, and don't make the timeout unconditional.
+
+**A spot HR measurement is refused while a workout is running.** The live-sample gate is one switch
+per kind, so whichever of the two closed it decides whether the other's samples are stored, and the
+leg sampled that decision once at the start. Running both meant either the workout's samples were
+dropped for the length of the leg, or — if the workout started inside it — the leg's converging
+samples were stored as workout rows and its settled value never published. A workout starting mid-leg
+now aborts the leg, and the gate is reopened unconditionally in the `finally` because the leg is what
+closed it; leaving it closed would silently drop that workout's samples for the rest of the session.
+The workout screen is already showing live bpm, so refusing costs nothing. Streamed HRV / stress /
+temperature (`measureVital`) is refused and aborted the same way, for a blunter reason: `0x69 <type>`
+takes over the ring's one realtime engine, so the workout would get no bpm at all. No unit test:
+`RingSyncCoordinator` needs a BLE client and has no harness.
+
+## The terminal block is the authority on a history transfer, not the header (issue #69)
+
+`YCBTHistoryTransfer.handleTerminal` used to require the terminal block's packet count to equal the
+one the header declared. **The ring contradicts its own estimate one frame later, so that check threw
+away whole record types.** On the reporter's `Ale-Hop2211` (COLMI_SMART_HEALTH, firmware 2.04) the
+`05 09` header declared **5** packets for 840 bytes and the ring then sent **6** — it packs whole
+20-byte records into each frame (7 × 20 = 140) instead of filling it, so the header's
+`ceil(bytes / frame)` estimate is one short. Bytes and CRC were correct on every transfer; we
+nacked, retried once, and skipped the type.
+
+What that cost: the composite `05 18` record is the **only** source of SpO₂ history on this family —
+the dedicated `05 1a` query was sent ten times in one session and never answered once — so hourly
+SpO₂ vanished while HR survived from `05 15`. Respiratory rate, HRV, BP, temperature and blood sugar
+ride in the same record. It only bites above one packet, which is why the record imported while the
+day was young and stopped once it grew, and why it looked like a regression introduced by a release
+that had touched nothing nearby.
+
+The vendor doesn't check the count either: at `Sync_Block_Verify` (128) `DataUnpack` reads the two
+count bytes into locals it never compares, sizes its buffer from the **terminal's** length, and
+accepts on `crc16_compute(...) == crc` alone. So: size the buffer from the header if you like, but
+validate against the terminal's byte count and the CRC. The CRC is the integrity check; a packet
+count is an estimate, and this firmware proves it can be wrong.
+
+**The general lesson, because this shape recurs here.** A silent "reject and skip" on a
+self-consistency check is much harder to see than a decode bug: the frames arrive, the log shows
+them as `unknown` (which is what *every* accumulating history frame looks like — 427 sleep frames in
+the same export say `unknown` and sleep imports fine), and nothing fails anywhere. When a whole
+metric is missing but its neighbours are not, check what the transfer did with the block before
+suspecting the parser.
+
+## A complete sleep record retires only its own run (issue #63)
+
+A YCBT ring closes a sleep session when the wearer gets up and opens a new one when they settle,
+so one night can be two `af fa` records minutes apart (00:12–03:18 and 03:21–07:24 in the report).
+`SleepSegmentation` merges those into one stored row, which is right. What was wrong: a complete
+record used to be treated as authoritative for **every block of every row it overlapped**, so on the
+next sync pass the second record landed on the merged row and wiped the first record's three hours
+with its own stale copy — the night read 4 h 06. `completeSessionSurvivors` now retires only the
+contiguous run of blocks the packet's interval sits in (overlapping blocks, plus anything abutting
+end-to-start with no gap, in both directions). A shortened re-send still retires its own stale head
+or tail; a neighbouring session across even a one-minute gap is untouched. The vendor
+(`DataUnpack` case 4 → one `Sleep` row per `af fa` block, `queryByYearToDay` returns a list) never
+lets one record displace another. `YCBTHealthRecords.sleep` also resynchronises on the `af fa` magic
+now, so a record with a wrong declared length can't swallow the sessions after it.
+
+**A session's `totalMinutes` is time asleep, not the span from its start to its end.** Merging is
+what made the two diverge: one row covering both records also covers the minutes between them, so
+the reporter's night read 8 h 10 (23:51–08:02) against the 268 + 140 minutes its two records
+declared, 6 h 48. The vendor draws the same distinction and the reporter found where —
+`SleepActivity:695` builds each history entry as `deepSleepTotal + lightSleepTotal + remTotal`,
+carries `wakeDuration` separately, and takes `startTime` from the first record of the day and
+`endTime` from the last, never conflating the two. `asleepMinutes(blocks)` (SleepInsights.kt) is
+the single definition; `spanMinutes` is the other number. Three things to keep straight:
+
+- It is **"every stage except AWAKE"**, not "DEEP + LIGHT + REM". Same sum on a ring that labels
+  its stages (YCBT's sleep tag 4 *is* AWAKE), but `SleepStage.UNKNOWN` is the `else` branch of
+  every decoder here — an unrecognised stage byte *inside* a sleep record. Naming three stages
+  would drop minutes that were slept, and could zero a night on a ring we decode only partly.
+- **Anything positioning against wall-clock time scales by `spanMinutes`.** The hypnogram's x axis
+  did use `totalMinutes` and would silently compress and mislabel every tick otherwise.
+- **Stored rows were repaired once** (`DataRepairs.repairSleepDurationsIfNeeded`, prefs key
+  `sleepAsleepMinutesRepair.v1`), because ring history only reaches back about a week and a
+  re-sync would leave older nights reading the old way forever. It recomputes from each session's
+  own blocks and skips a session with none rather than zeroing it — `byDay` and `earliestDay` both
+  filter `totalMinutes > 0`, so a zero hides the night.
+
+**A zero-length segment must not shadow a real one.** The vendor de-duplicates segments on
+`sleepStartTime` (`DataUnpack` case 4 keeps the first it sees) and the ring emits zero-length
+segments, so a zero-length segment sharing a start with a real one used to take its place and drop
+it. All four duplicate starts in the reporter's thirteen-record night dump are exactly that — a
+zero-length LIGHT ahead of a real 76–105 s segment — and since `placeStages` reads an unclaimed
+minute as wake, the dropped minutes surfaced as wake instead. The vendor has the same de-duplication
+and does not care, because its headline comes from the header's own totals rather than from the
+segment array; ours is counted off the timeline, so it does. Zero-length segments are skipped before
+the de-duplication now.
+
+**The record's header declares its own time asleep, and it agrees with the timeline.** When
+`deepSleepCount` (+12) reads `0xffff`, the three following `u16`s are **seconds**, in the order
+`rapidEyeMovementTotal` (+14), `deepSleepTotal` (+16), `lightSleepTotal` (+18) — REM first, not
+deep — and `wakeDuration` is the summed length of the `0xf4` segments (`DataUnpack.java:1736-1805`).
+Otherwise +14 is `lightSleepCount`, deep/light are minutes×60, and REM is absent. On the reporter's
+dump `deepSleepCount` is `0xffff` on 13/13 records and deep+light+rem agrees with the timeline we
+count to within a minute on 12 of 13. So the counted timeline is sound; if a headline ever needs to
+be independent of placement and rounding, the declared totals are there. Note the record length at
++2 is **bytes, not minutes** — it reads plausibly as a minute count (244, 164, 268, 140) and was
+misread that way for several rounds of this issue.
+
+**A complete record retires only what its interval overlaps — abutting blocks are left alone.** The
+rule used to grow its run across any block meeting it end-to-start, so that a shortened re-send could
+retire its own stale tail. But a block carries no record identity — `sessionId` is the *merged* row,
+shared by every record of the night — so "my stale tail" and "the neighbouring record" are the same
+shape from the same side, and two records meeting with no gap read as one run: the second wiped the
+first. The reporter's ring closes one record and opens the next 33 seconds later, so whether the two
+round to the same minute is a coin toss, and losing it costs a whole session. The trade is a stale
+tail surviving a genuine shortening, which is minutes rather than hours and rarer than it was now
+that a re-send reproduces the record's declared bounds instead of a drifted end.
+
+**The block now carries its record's start, so the identity that was missing above exists**
+(`SleepStageBlockEntity.recordStartAt`, v28, stamped by `buildStageBlocks` — see #68 below). It is
+the fix this section predicted for the stale-tail trade, and `completeSessionSurvivors` can take it
+whenever the tail actually bites.
+
+## A record boundary is stored, never inferred from a gap (issue #68)
+
+Showing a split night's individual records was the fair ask left open by #63. The card itself is
+easy; the boundary is the whole problem, and it is the **third** time this one gap has cost a
+feature.
+
+**This firmware reopens a record roughly a minute after closing one** — 33 seconds on the #63
+capture, `05:57 → 05:58` on the #68 reporter's Sept 9 — and blocks *within* one record are rounded
+onto the same minute grid, so an ordinary rounding seam between two blocks of one record is the same
+width as a genuine record boundary. That is not a threshold problem, it is the absence of the
+information: `sessionId` names the *merged* row, shared by every record of the night, so from stored
+data alone "next record" and "next block" are indistinguishable. `sleepRecordRuns` shipped with
+`minGapMinutes = 2` and merged a genuinely split night (no card at all); 1 minute would have grown a
+spurious second record on every unsplit night instead. Both answers are wrong because the question
+was unanswerable.
+
+So the import stamps it. `buildStageBlocks` is the one place that knows — it is handed the record's
+declared start — and `sleepRecordRuns` groups by `recordStartAt` rather than measuring gaps. The gap
+rule survives only as the fallback for rows written before the column, and it is **all-or-nothing
+per night**: one stamped record beside a legacy block would read as two records whatever the truth.
+`SleepRecordRunsTest` keeps the discriminating pair — the same one-minute gap asserted as a boundary
+in one test and as a seam in the other — because that pair is what no threshold can satisfy and what
+a future "simplify this to a gap check" would break.
+
+**The general lesson:** when a merge destroys provenance, recover it at the point of the merge, not
+at the point of display. Three separate fixes here tried to re-derive a record boundary downstream.
+
+## Live workout HR on Colmi is a sport session, not an HR stream (issue #64)
+
+The QRing app never touches the realtime-HR commands during an activity. `SportRunningActivity`
+sends `PhoneSportReq.getSportStatus(1, sportType)` = `0x77 01 <type>` on entry and consumes the
+ring's own unsolicited `0x78` telemetry (`DeviceNotifyRsp`: `[dataType][status][durMin×2][bpm]
+[steps×3][metres×3][cal×3]` after the opcode) until `0x77 04`. No timer, no keepalive — the ring
+drives the cadence, which is the near-constant LED and ~10 s readings the reporter sees there.
+`ColmiSyncEngine.startWorkoutHeartRate` does the same. Rules that matter:
+
+- **Don't re-send the start mid-workout.** The coordinator restarts the stream after every spot
+  measure; on this path that must be a no-op or the ring's own sport record resets.
+- **Silence gets one resume (`0x77 03`), then the session is given up** for the plain HR stream
+  (`sportWatchdogTick`), as it is when the ring rejects `0x77` outright (the error-flag reply).
+  Those two are sticky for the engine's life (`sportRejected`), like the `0x1E` refusal — the ring
+  has shown it will not run a sport session at all. **A `0x78` status 3 is not one of them**: it is
+  the vendor's own "this session finished" push, which its running screen answers by closing the
+  screen. It ends the session for the rest of that workout (`sportEndedByRing`) and the next
+  workout starts a fresh one; making it sticky would let one ring-side timeout cost every later
+  workout the protocol this issue exists to add. The old `0x1E` → `0x69` path is unchanged
+  underneath and is what a fallback lands on.
+- `0x77` on the command channel is `PhoneSportReq`; the same number as a big-data *action* is
+  interval temperature on the other characteristic. They are unrelated.
+- **Every `0x78` frame decodes to a `SportTelemetry` event first** (kind `sport_telemetry`, in the
+  redactor's masked set), with the bpm as a separate `HeartRateSample` only when plausible. A
+  warm-up frame has bpm 0 but still carries live steps, distance and calories; returning nothing
+  for it made it `unknown` and exported it in clear — the decode-gap-becomes-privacy-gap failure
+  the diagnostics section below warns about.
+- Untested on hardware as of this note: the reporter (issue #64, Colmi R09) has the ring.
+
+## Deleting a reading needs a tombstone, not just a DELETE (issue #60)
+
+History measurements are keyed `history:<kind>:<timestamp>` and written with `upsert`, on purpose:
+re-syncing a day the ring still holds must update the same row rather than duplicate it (see the
+measurement-duplicate bug). That idempotence is also what would undo a deletion — delete the row and
+the next sync writes it straight back, with nothing failing anywhere.
+
+So `measurement_deletions` (v24) remembers the deletion, `EventPersistenceSubscriber.upsertUnlessDeleted`
+is the single gate every deterministic-id write goes through, and `MeasurementDeletion` owns the two
+rules callers must not have to remember: tombstone anything regenerable, and delete a blood-pressure
+reading as both of its rows. A live reading's id is a fresh UUID nothing regenerates, so it is
+deleted without a tombstone — `MeasurementDeletionDao.record` applies that split, and
+`MeasurementDeletionTest` guards the id-prefix agreement that makes it work.
+
+Tombstones ride in the archive (`PulseArchive.measurementDeletions`) because a restore wipes every
+table first; without them a backup round trip would forget the deletions while the ring still holds
+the days behind them.
+
+**The ring owns a spot reading it logged itself.** RC-1's doubled rows (two HR rows per
+measurement, same minute, 79/82) are the ring **logging the spot reading into its own history** —
+confirmed on RC-2 by reading five SpO2 runs back out of the ring's memory at the exact times they
+were taken — which a later history sync imports as a `history:<kind>:<ts>` row next to the UUID row
+we stored for our settled value. Our row is stored with `sourceRaw = "spot"`, and
+`EventPersistenceSubscriber.adoptRingsCopy` deletes it when a history sample of the same kind lands
+within 90 s: the ring's row wins because it is the one that regenerates on every sync (so it is the
+one a tombstone can hold down).
+
+**Only a reading the ring itself completed may take part, and the gate is at write time.** A row is
+marked `"spot"` only when the ring reported *that run's* success (`04 0e`, carried on the event as
+`ringWillLogIt`, which `RingSyncCoordinator` sets from the run's own verdict — a ring that ends a
+measurement with its own verdict is one whose vendor app reads the value back out of history).
+Everything else stores a plain `"live"` row exactly as before, with nothing that could delete it.
+This is per run, not per family: a YCBT run that times out at our ceiling with no `04 0e` was
+never logged by the ring, and marking it `"spot"` would let the next sync delete it in favour of an
+unrelated all-day grid sample. A history sample the user has tombstoned adopts nothing either — it
+is re-sent on every sync, and letting it retire spot rows would delete a retaken reading each time. Do not widen this to all families: CRP and Colmi record all-day
+HR/SpO2 on a **five-minute grid**, so with a ±90 s match window most spot measurements would have an
+unrelated grid sample within reach and the user's own reading would be deleted in favour of it.
+
+**A deleted `spot` row needs a range tombstone, because its id is a UUID.** The split above —
+tombstone the regenerable ids, delete the UUIDs outright — is right for a `"live"` row and wrong for
+a `"spot"` one: a `"spot"` row exists *precisely because* the ring logged that measurement itself and
+will hand it back under a `history:` id on the next sync. Tombstoning by id alone let the ring's copy
+walk straight in, so the reading came back and had to be deleted twice. The ring stamps its log to
+the minute rather than to our settled instant, so the tombstone cannot name the id it must suppress:
+`MeasurementDeletionDao.record` writes a `spot:<kind>:<ts>` row instead and `isSpotDeleted` matches
+it the way `adoptRingsCopy` matches the pair it reconciles — same kind, within ±90 s. A measurement
+retaken inside that window inherits the suppression: it is stored and displayed (it is our own row,
+not a history write) but never adopts the ring's copy. That is the same ±90 s ambiguity
+`adoptRingsCopy` already carries, and it fails towards keeping a reading the user asked for.
+
+**Known limit, worth stating when a user asks:** a reading already exported to Health Connect stays
+there. The export doesn't retain HC record ids, so there is nothing to delete against.
+
+## Deleting an activity bucket needs the tombstone *and* the day's deficit (issue #70)
+
+`ActivityBucketDeletion` is the tombstone rule applied to intraday step blocks, and it has one more
+thing to get right than `MeasurementDeletion` does. **A tombstone guards the history path; today's
+number does not come from the history path.** The ring also pushes `PulseEvent.ActivityUpdate`
+carrying its own *cumulative* count for the day — seconds apart, and again on every reconnect — and
+`EventPersistenceSubscriber.upsertActivityDaily` ratchets the day up against it with `maxOf`. That
+counter still includes the deleted block, so a restated 7,000 went back to 8,000 on the next frame:
+the delete looked like it worked and then silently undid itself, which is the exact failure the
+restate-without-the-ratchet rule exists to prevent.
+
+So the day remembers what it removed. `ActivityDailyEntity.deletedSteps` / `deletedDistanceMeters`
+(v27) are subtracted from every later cumulative reading before the ratchet
+(`ActivityBucketDeletion.ratchetAgainstRing`, which lives with the deletion rules rather than in the
+write path — a reader looking at the ratchet has no reason to suspect a deletion changed what the
+ring's counter *means*). They ride the archive for the same reason the measurement tombstones do.
+This is also why the feature is only offered on today: it is the only day whose counter is still
+moving.
+
+**Calories are dropped, not corrected.** A bucket carries steps and distance and no calorie field,
+so there is nothing to subtract from the ring's own daily figure — and that figure demonstrably
+counted the block the user removed. The day's `calories` is cleared instead, which makes
+`DailyCalorieEstimator.deviceReportedCalories` fall through to the app's own estimate, recomputed
+from the surviving buckets at deletion time rather than at the next completed sync. An estimate
+consistent with the restated day beats a device figure known to be wrong. `activeMinutes` is not
+touched: it is credited by `ActivityRollup` from workouts, not from step buckets.
+
+## A derived metric must say it is derived (issue #67)
+
+`DerivedStress` computes a stress figure from HRV for rings whose hardware never reports one — the
+R100 answers neither the stress history query nor its monitor-state read-back (22 sends, 0 replies,
+while every other state query on that ring answered), so stress there is absent rather than switched
+off. The app advertised it anyway, because a capability list is a static per-family constant and not
+something an individual ring confirmed, and the user got a card that could never fill.
+
+**The rule that matters more than the formula: it is labelled wherever it is shown.** The card reads
+"Estimated from HRV — your ring doesn't measure stress", and `VitalsState.stressIsDerived` carries
+the fact so no future surface can render it as a measurement by accident. A derived figure presented
+as measured would be worse than the empty card it replaces — a user comparing it against the vendor
+app's number is entitled to know which of the two they are looking at.
+
+It is scored **against that user's own recent HRV**, not a population: HRV varies several-fold
+between individuals, so an absolute cutoff labels whole people permanently stressed or permanently
+calm. Median and median-absolute-deviation rather than mean and standard deviation, because ring
+HRV history is full of obvious outliers and one of them must not redefine the scale. It returns null
+below twelve baseline readings rather than a default, for the same reason the battery estimate in
+#65 refuses to answer: an unearned number on a health screen is read as a measurement.
+
+Derived stress only fills in where the ring returned **no** stress at all. It never overwrites or
+blends with hardware readings.
+
+**"No stress at all" is a question about the ring, so ask it of the whole history.** Gating on the
+24 h chart window instead meant an empty window decided it, and windows go empty for ordinary
+reasons — the monitor switched off for a day, a ring re-paired this morning, a quiet night. A ring
+that does measure stress then showed a derived number captioned "your ring doesn't measure stress",
+which is a false statement about that user's hardware. The gate is
+`measurementDao().hasReal(STRESS)`.
+
+**Labelled wherever it is shown means the chart too.** The figure reaches three surfaces — the
+Vitals card, the Today tile, and the `vitals/stress` detail chart — and the detail screen builds its
+own series straight from Room rather than from `VitalsState`, so it needs the derivation wired in
+separately (`VitalDetailViewModel.derivedStressIn`) and carries `DetailState.isDerived` into the
+same amber disclaimer card BP and glucose use. Two related traps: a derived score has no "0 means
+nothing measured" sentinel, so the card's `>= 10` floor must not be applied to it (a genuinely calm
+day scores below 10), and the scores skip the first readings for want of a baseline — so they
+cannot be zipped positionally onto the HRV series. `DerivedStress.scored` returns each score with
+the index of the reading behind it for exactly that reason.
+
+## Diagnostics masking keeps the routing header (issue #58)
+
+`DiagnosticsRedactor.maskPacketHex` masks a health frame's payload but keeps the leading bytes that
+say *which* record it is — 6 for CRP (`FD DA 10 len group cmd`), 4 for YCBT, 1 elsewhere. Masking
+from byte 1 made every health frame in a report indistinguishable, which is why issue #58's capture
+could not answer whether an all-day SpO₂ reply carried samples. Those header bytes are the same ones
+the app writes when it *asks* for the record, and outbound queries are exported unmasked, so keeping
+them costs no privacy.
+
+The inverse failure is worth remembering too: CRP temperature frames were exported **with their
+values intact**, because an undecoded frame fell through to `command_ack`, which isn't in
+`HEALTH_KINDS`. A decode gap silently became a privacy gap. When you add a decoder for a frame that
+carries physiological values, check that its `decodedKind` is one the redactor masks.
+
+**The export carries no database rows, and that is deliberate — don't add them, and don't ask a
+reporter for stored-row detail through it.** `DiagnosticsExporter` emits app info, device info,
+logs, raw packets, crashes and logcat, and nothing else. Issue #74's "Next" section asked a reporter
+for "the timestamps of the heart-rate rows stored around that minute, and whether they carry the
+spot flag" — a question the format cannot answer, so the ask was made twice and answered neither
+time. The reporter (@Albabit, #74) gave the reason the section should stay absent: **a diagnostics
+file people paste into public issues is not where health readings should end up.** That is the same
+principle `maskPacketHex` already enforces one layer down, so a measurements section would undo
+deliberately, in clear, exactly what the masking exists to prevent. When you need to know what the
+app *stored*, ask what the user sees on screen — for "is the user shown a bad reading?" that is also
+the better evidence, since it answers the question the issue is actually about.
+
+**The header length must come from the packet's own family, and a half-assembled frame has no header
+at all.** Two further shapes of the same failure, fixed together:
+
+- Masking used to use the **connected** ring's family for every stored packet, so a report exported
+  after switching rings masked the old family's frames with the wrong header length — and CRP's is the
+  longest, so a Colmi frame masked as CRP kept five bytes of samples. `raw_packets.deviceTypeRaw`
+  (v25) records the family at capture time (`PulseEvent.RawPacket.deviceType`), and a row from before
+  it existed masks from byte 1: less useful, never wrong in the direction that leaks.
+- A CRP reply spanning several notifications only decodes when its last chunk lands, so every chunk
+  before that reached the log as `unknown` — which is deliberately exported **whole**, because control
+  and pairing frames decode to nothing and are what most connection reports are taken for. Half an
+  all-day health reply left in clear that way. `RingDecodedEvent.FramePending` names a chunk instead,
+  and the two cases mask differently: `frame_start` keeps its family's header (it is there, and it is
+  what identifies the reply), `frame_chunk` keeps byte 0 and nothing else, because the middle of a
+  frame is payload from byte 0 on.
+
+**Capture is application-scoped and bounded — keep it that way.** `DiagnosticsSubscriber` is started
+once from `PulseLoopApplication` and is the only writer of `raw_packets` and `wearable_logs`. For a
+long time it was never started at all: the Debug console showed "0 packets captured" beside 778
+stored CRP packets, and Ring Events lived in composable state that vanished on navigation. Three
+things to preserve:
+
+- **Nothing in the UI owns capture.** The Debug screen reads Room through `DiagnosticsViewModel` and
+  acts on the app's own `RingBLEClient` / `RingSyncCoordinator`. A screen that builds its own client
+  is talking to a second, unconnected ring stack.
+- **Both tables are capped** (`DiagnosticsRetention`: 1,000 packets, 2,000 log rows, trimmed every 50
+  inserts so a DELETE stays off the per-packet path; up to 49 over between trims). They ride in the
+  data archive, and a verbose driver logs every attempt and every reply, so an unbounded table grows
+  for the life of the install.
+- **Verbose transport logging is a driver opt-in** (`WearableDriver.verboseTransportDiagnostics`,
+  on for CRP only), and its log lines carry the frame's route (`diagnosticRoute`) — never its payload.
+  An undecoded frame is still logged `unknown` and exported whole, per the section above.
+
+## A gap is a waking only if it is real time, and the Bedtime window outranks the hour rule (issues #111, #105)
+
+- **Sub-minute holes are seams.** `YCBTHealthRecords.placeStages` closes any hole shorter than 60 s
+  of real time between a record's segments, and between them and the record's own bounds. The ring
+  leaves a one-second hole between segments, and rounding each end to the minute grid independently
+  could still leave a whole AWAKE minute in it (315.48 → 315, 315.5 → 316).
+- **Every gap between two records is a waking, at least one minute** (`betweenRecordAwakeMinutes`).
+  The old rule dropped gaps under 2 minutes as the #63 "reopen seam". The #111 reporter checked all
+  19 gaps on their YCBT ring since late August: the shortest were 52, 79 and 88 s, the 52 and 88 s
+  ones were get-ups they had logged, and none was a reopen without waking. The ring starts a record
+  on a whole minute, so a short gap's length depends on where the last one ended; no threshold
+  separates seams from get-ups. The gap is rounded, not truncated (a stored end is its start plus
+  whole minutes, ±30 s from the ring's; truncation lost a 2m07 waking). Back-to-back records (gap 0,
+  e.g. Jring's 15-minute packets) count nothing.
+- **The hypnogram draws the counted gaps** (`hypnogramBlocks`), display-only. Never feed those
+  blocks to `awakeMinutes`, which counts the gaps itself.
+- **An hour-plus gap inside the wearer's Bedtime window stays one night** (`SleepGapBridge`). Off
+  unless the schedule or Bedtime tracking is on — the two are independent since #126; Bedtime
+  windows decide when the night has any, else the clock window if the schedule is on.
+  The sync's reconcile and `SleepRecordDeletion`'s restate must segment with the same bridge, or a
+  record delete would split a night the next sync merges back.
+
+## An extended record's added minutes are asleep but unstaged (issue #106)
+
+Editing (#82) can extend a record over time the ring missed, not only shorten it. The added minutes
+are stored as `SleepStage.ADDED` blocks — **not** `UNKNOWN`, which is a stage byte the ring did
+record and we can't read.
+
+- **In time asleep, out of everything that judges stages.** `asleepMinutes` already admits them (it
+  excludes only AWAKE). Every score or stage share uses `measuredAsleepMinutes` / drops `addedMinutes`:
+  `sleepStageScore` in `reconcileWakingDay` and `SleepRecordDeletion.restateSession`, and
+  `SleepScore.calculate`. Health Connect gets `STAGE_TYPE_SLEEPING`. The hypnogram draws them as a
+  hatched band, not a lane.
+- **They carry the ring record's `recordStartAt`**, so `sleepRecordRuns` keeps them in that record
+  and the covered gap stops counting as a between-record waking (#81) with no special case.
+- **One function maps a record through an edit**: `editedRecordBlocks` (`SleepRecordExtension.kt`).
+  `SleepRecordDeletion.edit` and the import's edit gate both call it, so a re-sync writes back the
+  edit's blocks with the same `startAt`s. It ignores existing ADDED blocks and re-derives them from
+  the bounds, and snaps the bounds inwards onto the record's own minute grid. Don't hand-build
+  ADDED blocks anywhere else.
+- **Limits** (`recordEditLimits`): back to the previous record's end, forward to the next record's
+  start, otherwise 2 h past the ring's own bounds, never across the 7 PM waking-day turnover, and a
+  record must keep one measured minute. At import, a stored extension is also clamped clear of any
+  other stored record, so the ring's measurement always beats an extension.
+- **Known divergence**: the edit path only sees stored blocks. Re-extending over minutes an earlier
+  edit trimmed off makes them ADDED until the next sync, which restores the ring's real stages there.
+
+## Long-lived services belong to the process, not the composition (issue #113)
+
+**`RingBLEClient`, `RingSyncCoordinator`, `EventPersistenceSubscriber` and the other app-lifetime
+services live in `AppServices`, one set per process. Never `remember { … }` one in a composable.**
+
+`MainActivity` declares no `android:configChanges`, so the Activity — and `PulseLoopApp`'s whole
+composition with it — is rebuilt on any configuration change: a dark-theme switch (Pixel's Bedtime
+mode does one overnight), locale, font scale, rotation. When these were `remember`ed there, every
+rebuild made a second `RingBLEClient`. The first was never destroyed and kept both the ring's GATT
+link and `processConnectionOwner`, so the new one could only log "Connection skipped: another
+PulseLoop BLE client owns GATT" every second and show Disconnected over a ring that was still
+connected. That matches #113's log (Ale-Hop YCBT ring, process up five days), though the
+recreation itself wasn't captured. Each rebuild also put another persistence subscriber and sync
+coordinator on the event bus, so every frame was persisted and handled twice.
+
+- `AppServices.get(context)` builds the set from the application context, so none of it pins an Activity.
+- The one-shot startup in `PulseLoopApp` (callback wiring, `start()`s, the stale-state reset, the
+  auto-reconnect) runs for the process's first composition only (`claimStartup()`). Re-running the
+  stale-state reset would write DISCONNECTED over a live link.
+- A recreated Activity's first `ON_START` is not the startup's, so it does run `reconnectIfNeeded()`.

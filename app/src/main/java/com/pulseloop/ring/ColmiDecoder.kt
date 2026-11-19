@@ -36,6 +36,12 @@ object ColmiDecoder {
                 val readingType = v[1]
                 val errorCode = v[2].toInt()
                 val value = v[3].toInt()
+                ColmiCommandID.spotVital(readingType)?.let { vital ->
+                    // QRing's measure screens: errCode 1 = not worn; a value of 0 is warm-up.
+                    if (errorCode != 0) return listOf(RingDecodedEvent.SpotVitalNoReading(vital, now))
+                    if (value <= 0) return emptyList()
+                    return listOf(RingDecodedEvent.SpotVitalSample(vital, spotVitalValue(vital, value), now))
+                }
                 if (readingType == ColmiCommandID.RT_SPO2) {
                     // error!=0 ends the run — surface it so a spot measurement fails fast
                     // instead of idling out its full window (mirrors the HR path below).
@@ -66,10 +72,26 @@ object ColmiDecoder {
             }
             ColmiCommandID.REALTIME_HEART_RATE_ERROR ->
                 listOf(RingDecodedEvent.HeartRateComplete(_timestamp = now))
+            ColmiCommandID.REALTIME_STOP ->
+                listOf(RingDecodedEvent.RealtimeStopAck(readingType = v[1].toInt(), _timestamp = now))
+            ColmiCommandID.SPORT_NOTIFY -> decodeSportNotify(v, now)
             ColmiCommandID.NOTIFICATION -> decodeNotification(v, now)
             ColmiCommandID.BP_READ -> decodeBpResponse(v, now)
             else -> listOf(RingDecodedEvent.CommandAck(commandId = v[0]))
         }
+    }
+
+    /** A streamed on-demand value in its unit. Temperature is `raw / 10 + 20` °C, as QRing shows
+     *  it (`TemperatureActivity`: `value * 1.0f / 10 + 20`) and as the history path decodes it. */
+    fun spotVitalValue(vital: SpotVital, raw: Int): Double = when (vital) {
+        SpotVital.TEMPERATURE -> raw / 10.0 + 20.0
+        SpotVital.HRV, SpotVital.STRESS -> raw.toDouble()
+    }
+
+    /** Inverse of [spotVitalValue], for the stop frame that hands the ring back its reading. */
+    fun spotVitalRaw(vital: SpotVital, value: Double): Int = when (vital) {
+        SpotVital.TEMPERATURE -> kotlin.math.round((value - 20.0) * 10.0).toInt()
+        SpotVital.HRV, SpotVital.STRESS -> kotlin.math.round(value).toInt()
     }
 
     private fun decodeBpResponse(v: List<UByte>, now: Instant): List<RingDecodedEvent> {
@@ -95,6 +117,23 @@ object ColmiDecoder {
                 value = dia.toDouble(), _timestamp = instant
             ),
         )
+    }
+
+    /**
+     * Sport telemetry the ring pushes during a phone-driven sport session (issue #64). Byte layout
+     * after the opcode is `DeviceNotifyRsp.loadData` as `SportRunningActivity` reads it:
+     * `[dataType][status][durMin hi][durMin lo][bpm][steps×3][metres×3][cal×1000 ×3]`. Only the
+     * bpm is consumed here — the workout's steps and distance come from the phone and the ring's
+     * own activity history — and QRing shows it only when positive, so zero is a warm-up frame.
+     */
+    private fun decodeSportNotify(v: List<UByte>, now: Instant): List<RingDecodedEvent> {
+        if (v.size < 6) return emptyList()
+        val bpm = v[5].toInt()
+        // The telemetry event comes first so it is the frame's diagnostic kind (and masked) even
+        // on a warm-up frame whose bpm is zero — those still carry steps, distance and calories.
+        val telemetry = RingDecodedEvent.SportTelemetry(bpm = bpm, _timestamp = now)
+        return if (bpm in 30..220) listOf(telemetry, RingDecodedEvent.HeartRateSample(bpm = bpm, _timestamp = now))
+        else listOf(telemetry)
     }
 
     private fun decodeNotification(v: List<UByte>, now: Instant): List<RingDecodedEvent> = when (v[1]) {

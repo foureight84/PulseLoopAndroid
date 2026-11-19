@@ -25,6 +25,7 @@ class YCBTSettingsEncoder {
     companion object {
         const val MINIMUM_INTERVAL_MINUTES = 30
         const val DEFAULT_INTERVAL_MINUTES = 60
+        private const val MONITOR_INTERVAL_CEILING_MINUTES = 60
 
         fun clampInterval(minutes: Int): Int {
             if (minutes <= 0) return DEFAULT_INTERVAL_MINUTES
@@ -78,12 +79,24 @@ class YCBTSettingsEncoder {
 
     /** The five background samplers, each {enable, intervalMinutes}. */
     fun monitorCommands(settings: MeasurementSettings): List<ByteArray> {
-        val interval = clampInterval(settings.hrIntervalMinutes).toByte()
+        val hrInterval = clampInterval(settings.hrIntervalMinutes)
+        // 120 min is only evidenced on the heart-rate key itself (issue #103: the ring ACKed
+        // `01 0c 01 78` and read at 10:00 and 12:00). Every other sampler keeps the 60-min ceiling
+        // the UI always had, so their on-air bytes are unchanged — in particular the blood-oxygen
+        // key, whose grid the scheduled spot SpO₂ has to stay between.
+        val interval = minOf(hrInterval, MONITOR_INTERVAL_CEILING_MINUTES).toByte()
         return listOf(
-            heartMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
+            heartMonitor(enabled = settings.hrEnabled, intervalMinutes = hrInterval.toByte()),
             bloodPressureMonitor(enabled = settings.hrEnabled, intervalMinutes = interval),
             temperatureMonitor(enabled = settings.temperatureEnabled, intervalMinutes = interval),
-            bloodOxygenMonitor(enabled = settings.spo2Enabled, intervalMinutes = interval),
+            // Blood oxygen carries its own interval where the user set one (issue #66); 0 means
+            // follow heart rate, which is what it always did. Same clamp — the firmware floors the
+            // interval at its own minimum whatever we ask for.
+            bloodOxygenMonitor(
+                enabled = settings.spo2Enabled,
+                intervalMinutes = if (settings.spo2IntervalMinutes > 0)
+                    clampInterval(settings.spo2IntervalMinutes).toByte() else interval,
+            ),
             hrvMonitor(enabled = settings.hrvEnabled, intervalMinutes = interval),
         )
     }
@@ -190,6 +203,10 @@ class YCBTEncoder {
 
     fun findDevice(): ByteArray =
         logical(YCBTGroup.APP_CONTROL, YCBTCommand.FIND_DEVICE, byteArrayOf(0x01, 0x05, 0x02))
+
+    /** Power the ring off (`03 16 01`); it comes back on when put on its charger (#142). */
+    fun shutDown(): ByteArray =
+        logical(YCBTGroup.APP_CONTROL, YCBTCommand.SHUT_DOWN, byteArrayOf(0x01))
 
     private fun liveMeasurement(enable: Boolean, mode: Int): ByteArray {
         return logical(YCBTGroup.APP_CONTROL, YCBTCommand.LIVE_MEASUREMENT, byteArrayOf(if (enable) 1 else 0, mode.toByte()))

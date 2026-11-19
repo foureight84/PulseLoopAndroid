@@ -18,6 +18,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.pulseloop.R
 
 /**
  * Ported from CoachChartView.swift.
@@ -30,13 +32,14 @@ fun CoachChartView(
     modifier: Modifier = Modifier,
     height: Int = 170,
 ) {
-    val color = when {
-        chart.title.contains("HR", ignoreCase = true) || chart.yLabel.contains("bpm", ignoreCase = true) -> Color(0xFFE53935)
-        chart.title.contains("SpO2", ignoreCase = true) || chart.yLabel.contains("%", ignoreCase = true) -> Color(0xFF1E88E5)
-        chart.title.contains("sleep", ignoreCase = true) -> Color(0xFF7E57C2)
-        chart.title.contains("step", ignoreCase = true) -> Color(0xFF4CAF50)
-        else -> MaterialTheme.colorScheme.primary
-    }
+    val color = chartColor(
+        chart,
+        heartWords = stringResource(R.string.chart_words_heart),
+        heartUnits = stringResource(R.string.chart_words_heart_unit),
+        oxygenWords = stringResource(R.string.chart_words_oxygen),
+        sleepWords = stringResource(R.string.chart_words_sleep),
+        stepWords = stringResource(R.string.chart_words_steps),
+    ) ?: MaterialTheme.colorScheme.primary
 
     Column(
         modifier = modifier
@@ -47,14 +50,14 @@ fun CoachChartView(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            chart.title.ifEmpty { "${chart.xLabel} vs ${chart.yLabel}" },
+            chart.title.ifEmpty { stringResource(R.string.chart_x_vs_y, chart.xLabel, chart.yLabel) },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         if (chart.points.isEmpty()) {
             Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
-                Text("No data to plot for this range.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.chart_no_data), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
             when (chart.chartType.lowercase()) {
@@ -64,6 +67,34 @@ fun CoachChartView(
                 else -> LineChartPlot(chart, color, height)
             }
         }
+    }
+}
+
+/**
+ * The series colour, picked from the chart's own title and axis label. The coach writes those in
+ * the app's language, so the translation's words for each metric (comma-separated string
+ * resources) are matched as well as the English ones, which the model also uses. In English the
+ * resources repeat the English words, so the colours are what they always were.
+ */
+internal fun chartColor(
+    chart: CoachChart,
+    heartWords: String = "",
+    heartUnits: String = "",
+    oxygenWords: String = "",
+    sleepWords: String = "",
+    stepWords: String = "",
+): Color? {
+    fun words(extra: String, vararg english: String) =
+        english.toList() + extra.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    fun CharSequence.hasAny(list: List<String>) = list.any { contains(it, ignoreCase = true) }
+    val title = chart.title
+    val y = chart.yLabel
+    return when {
+        title.hasAny(words(heartWords, "HR")) || y.hasAny(words(heartUnits, "bpm")) -> Color(0xFFE53935)
+        title.hasAny(words(oxygenWords, "SpO2")) || y.contains("%") -> Color(0xFF1E88E5)
+        title.hasAny(words(sleepWords, "sleep")) -> Color(0xFF7E57C2)
+        title.hasAny(words(stepWords, "step")) -> Color(0xFF4CAF50)
+        else -> null
     }
 }
 

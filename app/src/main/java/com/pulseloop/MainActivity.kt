@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.pulseloop.health.HealthConnectPermissionReconcile
 import com.pulseloop.notifications.CoachNotifications
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.strava.StravaAuth
 import com.pulseloop.strava.StravaTokenStore
 import com.pulseloop.ui.PulseLoopApp
@@ -25,6 +26,13 @@ import kotlinx.coroutines.launch
  *   - Android 12+: BLUETOOTH_SCAN + BLUETOOTH_CONNECT
  *   - Android < 12: ACCESS_FINE_LOCATION (for BLE scanning)
  *   - Android 13+: POST_NOTIFICATIONS
+ *
+ * Health Connect READ_STEPS is deliberately **not** requested here — it is
+ * requested only from the Step Source row in Settings, on the user's explicit
+ * action. This means users on the default "Ring" step source never see the
+ * prompt, and users who declined are not asked again on every foreground.
+ * ACTIVITY_RECOGNITION is not requested at all: the fork reads steps from
+ * Health Connect, never from the raw hardware step counter.
  */
 class MainActivity : ComponentActivity() {
 
@@ -68,6 +76,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Re-request on resume in case user granted in Settings
         requestAllPermissions()
+        refreshPhoneSteps()
         if (hasAllBlePermissions() && hasNotificationPermission()) {
             CoachNotifications.schedule(this)
         }
@@ -102,26 +111,26 @@ class MainActivity : ComponentActivity() {
         uri.getQueryParameter("error")?.takeIf { it.isNotBlank() }?.let { error ->
             store.takePendingAuthState()
             store.saveLastError(
-                if (error == "access_denied") "Strava authorization was declined." else "Strava denied authorization: $error"
+                if (error == "access_denied") getString(R.string.strava_auth_declined) else getString(R.string.strava_auth_denied, error)
             )
             return
         }
 
         // CSRF: the state we generated must come back. One-shot, cleared either way.
         if (!StravaAuth.validateState(store, uri.getQueryParameter("state"))) {
-            store.saveLastError("Strava authorization could not be verified. Please try connecting again.")
+            store.saveLastError(getString(R.string.strava_auth_unverified))
             return
         }
 
         // The consent screen lets the user untick "Upload your activities". Catch it here rather
         // than letting every future upload fail with an opaque 401.
         if (!StravaAuth.grantedScopeIncludesWrite(uri.getQueryParameter("scope"))) {
-            store.saveLastError("Strava did not grant upload permission. Reconnect and keep \"Upload your activities\" checked.")
+            store.saveLastError(getString(R.string.strava_auth_no_upload))
             return
         }
 
         val code = uri.getQueryParameter("code")?.takeIf { it.isNotBlank() } ?: run {
-            store.saveLastError("Strava returned an unexpected authorization response.")
+            store.saveLastError(getString(R.string.strava_auth_unexpected))
             return
         }
 
@@ -131,7 +140,7 @@ class MainActivity : ComponentActivity() {
                 store.clearLastError()
             } catch (e: Exception) {
                 // The code may have expired, or the configured secrets are wrong.
-                store.saveLastError("Could not complete the Strava sign-in: ${e.message ?: "unknown error"}")
+                store.saveLastError(getString(R.string.strava_auth_failed, e.message ?: getString(R.string.strava_unknown_error)))
             }
         }
     }
@@ -193,4 +202,52 @@ class MainActivity : ComponentActivity() {
     private fun hasFineLocation() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Refresh today's phone step count and backfill the last 30 days from
+     * Health Connect, when the user's step source is set to "Phone".
+     *
+     * If the Health Connect read permission is missing, this quietly returns
+     * without prompting. The permission is requested from Settings → Step
+     * Source, on the user's explicit action — never from here, so neither app
+     * launch nor return-to-foreground re-triggers a dialog the user may have
+     * already declined.
+     *
+     * On failure, publishes [PulseEvent.PhoneStepSourceUnavailable]. The
+     * persistence layer responds by clearing *today's* `phoneSteps` on the
+     * `activity_daily` row, so the display's read-time pick falls back to
+     * the ring's live count instead of leaving a stale phone value on screen
+     * for the rest of the day. Historical days keep their `phoneSteps`.
+     */
+    private fun refreshPhoneSteps() {
+        val prefs = StepSourcePrefs(this)
+        if (prefs.stepSource != StepSourcePrefs.SOURCE_PHONE) return
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val manager = PhoneStepManager(this@MainActivity)
+            if (!manager.refresh()) {
+                // The phone reader couldn't produce a value — permission revoked, the
+                // provider uninstalled, or a device with no Health Connect. Signal the
+                // persistence layer so it clears today's phoneSteps and the display falls
+                // back to the ring's live count instead of a stale phone value.
+                com.pulseloop.ring.PulseEventBus.publishBlocking(
+                    com.pulseloop.ring.PulseEvent.PhoneStepSourceUnavailable
+                )
+                return@launch
+            }
+            // A10: the 30-day historical backfill runs at most once per local day. It has to
+            // run today's refresh on every foreground — the phone has been walking since the
+            // last one — but re-reading 30 days of Health Connect on every resume, writing
+            // every row's updatedAt forward, and having the exporter re-select and re-export
+            // the whole tail is wasted work. The toggle in SettingsScreen still calls
+            // refreshHistoricalDays() directly and is not throttled: an explicit user action
+            // should always run.
+            val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+            if (prefs.lastBackfillDay != today) {
+                if (manager.refreshHistoricalDays()) {
+                    prefs.lastBackfillDay = today
+                }
+            }
+        }
+    }
 }

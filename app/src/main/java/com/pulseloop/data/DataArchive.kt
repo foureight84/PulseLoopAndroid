@@ -35,6 +35,12 @@ data class PulseArchive(
     /** iOS #96 nutrition. Not in iOS's own `DataArchive.swift` — see the note on [MealEntryDTO]. */
     val mealEntries: List<MealEntryDTO> = emptyList(),
     val foodProducts: List<CachedFoodProductDTO> = emptyList(),
+    /**
+     * Issue #60: readings the user deleted. Carried in the archive because a restore wipes every
+     * table first — without these, a restore would forget the deletions while the ring still holds
+     * the days behind them, and the next sync would put every deleted reading back.
+     */
+    val measurementDeletions: List<MeasurementDeletionDTO> = emptyList(),
 )
 
 @Serializable data class DeviceDTO(
@@ -54,12 +60,27 @@ data class PulseArchive(
     val createdAt: Long,
 )
 
+@Serializable data class MeasurementDeletionDTO(
+    val measurementId: String, val kindRaw: String, val timestamp: Long, val deletedAt: Long,
+)
+
 @Serializable data class ActivityDailyDTO(
     val id: String, val date: Long, val steps: Int = 0, val calories: Double = 0.0,
     val distanceMeters: Double = 0.0, val activeMinutes: Int = 0,
     val source: String = "mock", val syncedAt: Long? = null,
     val createdAt: Long, val updatedAt: Long,
+    /** Issue #70. Rides the archive for the same reason the tombstones do: a restore wipes every
+     *  table first, and without the deficit the ring's cumulative counter would walk the deleted
+     *  buckets back into the day. */
+    val deletedSteps: Int = 0, val deletedDistanceMeters: Double = 0.0,
     val estimatedActiveCalories: Double? = null,
+    /** PR #98 (Path B): phone-sourced steps, kept separate from the ring's [steps]. Defaulted
+     *  to `null` for two reasons. An archive written before the column existed deserializes as
+     *  "no phone data", which is exactly what [ActivityDailyEntity.displaySteps] already means
+     *  by a missing value. A default of `0` would falsely mean "the phone reported zero", and
+     *  after a restore that would hide the ring's own count on every historical day in Phone
+     *  mode. */
+    val phoneSteps: Int? = null,
 )
 
 @Serializable data class ActivityBucketDTO(
@@ -128,6 +149,9 @@ data class PulseArchive(
 @Serializable data class SleepStageBlockDTO(
     val id: String, val sessionId: String, val startAt: Long, val startMinute: Int,
     val durationMinutes: Int, val stageRaw: String,
+    /** Issue #68. 0 in an archive written before the column existed, which is the same "unknown"
+     *  the migration backfills — [com.pulseloop.service.sleepRecordRuns] falls back for those. */
+    val recordStartAt: Long = 0L,
 )
 
 @Serializable data class CoachConversationDTO(
@@ -188,6 +212,7 @@ data class PulseArchive(
     val id: String, val timestamp: Long, val directionRaw: String,
     val commandId: Int, val hexPayload: String, val decodedKind: String? = null,
     val decodedJSON: String? = null, val confidenceRaw: String = "unknown",
+    val deviceTypeRaw: String? = null,
     val createdAt: Long,
 )
 

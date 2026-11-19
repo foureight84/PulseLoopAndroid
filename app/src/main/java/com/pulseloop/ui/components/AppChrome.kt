@@ -1,5 +1,8 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -40,6 +43,7 @@ fun AppHeader(
     state: RingConnectionState,
     batteryPercent: Int?,
     onOpenSettings: () -> Unit,
+    bluetoothOff: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -52,7 +56,7 @@ fun AppHeader(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                "PULSELOOP",
+                stringResource(R.string.app_header),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 1.2.sp,
@@ -70,10 +74,11 @@ fun AppHeader(
         ConnectionStatusPill(
             state = state,
             batteryPercent = batteryPercent,
+            bluetoothOff = bluetoothOff,
             modifier = Modifier.clickable(onClick = onOpenSettings),
         )
         IconButton(onClick = onOpenSettings) {
-            Icon(Icons.Outlined.Settings, "Settings", tint = PulseColors.textSecondary)
+            Icon(Icons.Outlined.Settings, stringResource(R.string.settings_title), tint = PulseColors.textSecondary)
         }
     }
 }
@@ -88,6 +93,7 @@ fun ConnectionStatusPill(
     state: RingConnectionState,
     batteryPercent: Int?,
     modifier: Modifier = Modifier,
+    bluetoothOff: Boolean = false,
 ) {
     val isPulsing = state == RingConnectionState.CONNECTING || state == RingConnectionState.RECONNECTING
     val dotColor = when (state) {
@@ -97,10 +103,12 @@ fun ConnectionStatusPill(
     }
     val label = when (state) {
         RingConnectionState.CONNECTED ->
-            if (batteryPercent != null && batteryPercent > 0) "Connected · $batteryPercent%" else "Connected"
-        RingConnectionState.CONNECTING, RingConnectionState.RECONNECTING -> "Connecting…"
-        RingConnectionState.FAILED -> "Sync failed"
-        else -> "Disconnected"
+            if (batteryPercent != null && batteryPercent > 0) stringResource(R.string.pill_connected_battery, batteryPercent) else stringResource(R.string.status_connected)
+        RingConnectionState.CONNECTING -> stringResource(R.string.pill_connecting)
+        RingConnectionState.RECONNECTING -> stringResource(R.string.pill_reconnecting)
+        // The phone's adapter being off explains every not-connected state (#136).
+        else -> if (bluetoothOff) stringResource(R.string.pill_bluetooth_off)
+            else if (state == RingConnectionState.FAILED) stringResource(R.string.pill_sync_failed) else stringResource(R.string.pill_disconnected)
     }
     val pulse by rememberInfiniteTransition(label = "pill").animateFloat(
         initialValue = 1f,
@@ -137,10 +145,10 @@ fun ConnectionStatusPill(
 
 /** Time-of-day greeting, mirroring RootViews.swift `greetingForHour()`. */
 fun greetingForHour(): String = when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
-    in 5..11 -> "Good morning"
-    in 12..16 -> "Good afternoon"
-    in 17..21 -> "Good evening"
-    else -> "Good night"
+    in 5..11 -> L10n.get(R.string.greeting_morning)
+    in 12..16 -> L10n.get(R.string.greeting_afternoon)
+    in 17..21 -> L10n.get(R.string.greeting_evening)
+    else -> L10n.get(R.string.greeting_night)
 }
 
 /**

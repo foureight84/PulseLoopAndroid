@@ -64,6 +64,21 @@ class YCBTEncoderTest {
     }
 
     @Test
+    fun `heart rate carries 120 minutes while the other monitors keep the 60 minute ceiling`() {
+        // 120 is evidenced on the heart-rate key only (issue #103); the other samplers' bytes are
+        // unchanged from what the UI's 60-min cap always produced.
+        val settings = MeasurementSettings(
+            hrEnabled = true, hrIntervalMinutes = 120,
+            spo2Enabled = true, stressEnabled = true, hrvEnabled = true, temperatureEnabled = true,
+        )
+        val commands = encoder.monitorCommands(settings, allMonitorCapabilities)
+        assertArrayEquals(byteArrayOf(0x01, 0x0c, 0x01, 120), commands[0])
+        assertArrayEquals(byteArrayOf(0x01, 0x20, 0x01, 60), commands[1])
+        assertArrayEquals(byteArrayOf(0x01, 0x26, 0x01, 60), commands[2])
+        assertArrayEquals(byteArrayOf(0x01, 0x45, 0x01, 60, 0, 0, 0), commands[3])
+    }
+
+    @Test
     fun `userInfo carries real profile`() {
         val profile = UserProfileValues(metric = true, gender = 0x01u, age = 31u, heightCm = 183u, weightKg = 78u)
         assertArrayEquals(byteArrayOf(0x01, 0x03, 183.toByte(), 78.toByte(), 1, 31.toByte()), encoder.userInfo(profile))

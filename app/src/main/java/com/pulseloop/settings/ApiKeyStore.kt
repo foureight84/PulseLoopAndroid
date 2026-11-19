@@ -9,6 +9,9 @@ import com.pulseloop.service.GlucoseUnit
  * Ported from OpenAIKeychainStore in the iOS app.
  * Stores the OpenAI API key securely using EncryptedSharedPreferences
  * (Android equivalent of iOS Keychain).
+ *
+ * Non-sensitive UI preferences like `stepSource` live in [StepSourcePrefs] instead — the
+ * encryption layer is expensive enough to avoid using it for values that don't need it.
  */
 class ApiKeyStore(context: Context) {
     private val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
@@ -27,7 +30,8 @@ class ApiKeyStore(context: Context) {
     val hasApiKey: Boolean get() = apiKey.isNotBlank()
 
     var model: String
-        get() = prefs.getString(KEY_MODEL, "gpt-5.4") ?: "gpt-5.4"
+        // Normalized so a retired slug stored by an older picker (issue #77) reads as the default.
+        get() = com.pulseloop.coach.config.OpenAIModel.normalize(prefs.getString(KEY_MODEL, "") ?: "")
         set(value) { prefs.edit().putString(KEY_MODEL, value).apply() }
 
     var coachEnabled: Boolean

@@ -35,9 +35,18 @@ object LuckRingCoordinator : WearableCoordinator {
 
     /**
      * The baseline the LuckRing driver can decode: live + history HR, live + history SpO2 (with the
-     * all-day log), day steps, sleep, HRV, temperature, blood pressure, stress, and the in-band
-     * battery, plus the find-device buzz. All are unconditional promises -- every metric maps onto a
+     * all-day log), day steps, sleep, temperature, blood pressure, stress, and the in-band battery,
+     * plus the find-device buzz. All are unconditional promises -- every metric maps onto a
      * `LuckRing*` decoder path.
+     *
+     * **HRV is deliberately omitted** (issue #112). The ring does send one HRV byte per reading
+     * (types 45 live / 42 history), and we decode it exactly as the vendor SDK's `K6_HeartStruct`
+     * does -- but nothing shows it is HRV in milliseconds. The TK18 sent 107-168 across one evening
+     * (masking the top bit didn't help), and no packet carries beat-to-beat intervals to compute HRV
+     * from. The official LuckRing app (1.6.3) stores the byte without ever displaying it: every HRV
+     * screen there shows `AppUtils.getRomHrv()`, a random number from the user's age band. So
+     * [LuckRingDriver] drops the byte, the history pass no longer requests it, and without
+     * [WearableCapability.HRV] the HRV card and everything keyed on it stay hidden for this family.
      *
      * `bitmapGatedCapabilities` is empty on purpose. The K6 `FUNCTION_CONTROL` (dataType 22) bitmap is
      * obfuscated in the decompile, so no capability can yet be deferred to the connected unit; the
@@ -51,7 +60,6 @@ object LuckRingCoordinator : WearableCoordinator {
         WearableCapability.SPO2, WearableCapability.MANUAL_SPO2, WearableCapability.SPO2_HISTORY,
         WearableCapability.STEPS, WearableCapability.REALTIME_STEPS,
         WearableCapability.SLEEP, WearableCapability.BATTERY,
-        WearableCapability.HRV, WearableCapability.MANUAL_HRV,
         WearableCapability.TEMPERATURE,
         WearableCapability.BLOOD_PRESSURE, WearableCapability.MANUAL_BLOOD_PRESSURE,
         WearableCapability.STRESS,

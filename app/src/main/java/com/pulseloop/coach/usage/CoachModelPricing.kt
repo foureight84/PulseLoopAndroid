@@ -25,21 +25,40 @@ data class CoachModelPrice(
  */
 object CoachPricingCatalog {
     /** Normalized-key → published list price, standard (non-batch) tier, as of
-     *  July 2026. Sources: platform OpenAI/Google/DeepSeek/MiniMax pricing pages,
+     *  October 2026 (iOS #140; checked against openrouter.ai/api/v1/models on
+     *  2026-10-14). Sources: platform OpenAI/Google/DeepSeek/MiniMax pricing pages,
      *  platform.claude.com pricing docs, and openrouter.ai model pages. Estimates
-     *  only — OpenRouter's API-reported exact cost always takes precedence. */
+     *  only — OpenRouter's API-reported exact cost always takes precedence. Models
+     *  that dropped out of the pickers keep their entry so a stored or Custom
+     *  choice still prices. */
     private val table: Map<String, CoachModelPrice> = mapOf(
-        // OpenAI (native)
+        // OpenAI (native). GPT-6 bills the whole request at 2x input / 1.5x output
+        // above 272k input tokens.
+        "gpt-6-luna" to CoachModelPrice(0.10, 0.01, 0.50),
+        "gpt-6.1-sol" to CoachModelPrice(2.00, 0.10, 10.00),
+        "gpt-6-astra" to CoachModelPrice(10.00, 1.00, 50.00),
         "gpt-5.4-mini" to CoachModelPrice(0.75, 0.075, 4.50),
         "gpt-5.4" to CoachModelPrice(2.50, 0.25, 15.00),
         "gpt-5.5" to CoachModelPrice(5.00, 0.50, 30.00),
         // Gemini (native). gemini-2.0-flash was shut down June 1 2026 and has no
         // published price; it intentionally has no entry so the UI reports
         // "cost unavailable".
+        // 4 Argon's rates double Dec 1 2026 and 3.8 Flash's on Jan 1 2027.
+        "gemini-3.8-flash" to CoachModelPrice(0.75, 0.075, 3.75),
+        "gemini-3.5-flash-lite" to CoachModelPrice(0.30, 0.03, 2.50),
+        "gemini-4-argon" to CoachModelPrice(2.00, 0.10, 10.00),
         "gemini-2.5-flash" to CoachModelPrice(0.30, 0.03, 2.50),
         "gemini-2.5-pro" to CoachModelPrice(1.25, 0.125, 10.00), // <=200k-token tier; >200k bills 2x
         // OpenRouter (vendor/model slugs). List prices match the vendors';
         // cached rates use the vendor cache-read price.
+        "anthropic/claude-sonnet-5.5" to CoachModelPrice(2.00, 0.10, 10.00),
+        "anthropic/claude-opus-5.5" to CoachModelPrice(4.00, 0.20, 20.00),
+        "anthropic/claude-haiku-5.5" to CoachModelPrice(0.10, 0.01, 0.50), // <=100k-token tier
+        "openai/gpt-6.1-sol" to CoachModelPrice(2.00, 0.10, 10.00),
+        "openai/gpt-6-luna" to CoachModelPrice(0.10, 0.01, 0.50),
+        "google/gemini-4-argon" to CoachModelPrice(2.00, 0.10, 10.00),
+        "google/gemini-3.8-flash" to CoachModelPrice(0.75, 0.075, 3.75),
+        "deepseek/deepseek-v4.1-flash" to CoachModelPrice(0.016, 0.005, 0.891), // cheapest OpenRouter endpoint
         "anthropic/claude-sonnet-4.6" to CoachModelPrice(3.00, 0.30, 15.00),
         "anthropic/claude-opus-4.7" to CoachModelPrice(5.00, 0.50, 25.00),
         "openai/gpt-5.5" to CoachModelPrice(5.00, 0.50, 30.00),
@@ -47,16 +66,16 @@ object CoachPricingCatalog {
         "google/gemini-2.5-flash" to CoachModelPrice(0.30, 0.03, 2.50),
         "google/gemini-2.5-pro" to CoachModelPrice(1.25, 0.125, 10.00),
         "deepseek/deepseek-v4-flash" to CoachModelPrice(0.09, null, 0.18), // OpenRouter routes below DeepSeek's direct $0.14/$0.28
-        // MiniMax. No published cache-read rate; -highspeed variants bill 2x
-        // the standard rate.
-        "minimax-m3" to CoachModelPrice(0.30, null, 1.20), // <=512k-token tier; >512k bills 2x
-        "minimax-m2.7" to CoachModelPrice(0.30, null, 1.20),
-        "minimax-m2.7-highspeed" to CoachModelPrice(0.60, null, 2.40),
-        "minimax-m2.5" to CoachModelPrice(0.30, null, 1.20),
-        "minimax-m2.5-highspeed" to CoachModelPrice(0.60, null, 2.40),
-        "minimax-m2.1" to CoachModelPrice(0.30, null, 1.20),
-        "minimax-m2.1-highspeed" to CoachModelPrice(0.60, null, 2.40),
-        "minimax-m2" to CoachModelPrice(0.30, null, 1.20),
+        // MiniMax. -highspeed variants bill 2x the standard input/output rate;
+        // M2.5/M2.7 retire Nov 18 2026.
+        "minimax-m3" to CoachModelPrice(0.30, 0.06, 1.20), // <=512k-token tier; >512k bills 2x
+        "minimax-m2.7" to CoachModelPrice(0.30, 0.06, 1.20),
+        "minimax-m2.7-highspeed" to CoachModelPrice(0.60, 0.06, 2.40),
+        "minimax-m2.5" to CoachModelPrice(0.30, 0.03, 1.20),
+        "minimax-m2.5-highspeed" to CoachModelPrice(0.60, 0.03, 2.40),
+        "minimax-m2.1" to CoachModelPrice(0.30, 0.03, 1.20),
+        "minimax-m2.1-highspeed" to CoachModelPrice(0.60, 0.03, 2.40),
+        "minimax-m2" to CoachModelPrice(0.30, 0.03, 1.20),
     )
 
     /** The model strings that always cost $0 (local / scripted). */

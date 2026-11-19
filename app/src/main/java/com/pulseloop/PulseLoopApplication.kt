@@ -5,7 +5,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.pulseloop.data.DataRepairs
+import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.diagnostics.CrashLogger
+import com.pulseloop.diagnostics.DiagnosticsSubscriber
+import com.pulseloop.ring.RWfitSleepJournal
+import com.pulseloop.service.EventPersistenceSubscriber
+import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.widgets.WidgetRefreshWorker
 import com.pulseloop.widgets.WidgetSnapshotPublisher
 import kotlinx.coroutines.CoroutineScope
@@ -22,11 +27,25 @@ class PulseLoopApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.pulseloop.util.L10n.init(this)
         CrashLogger.install(this)
+        RWfitSleepJournal.init(this)
+        // Before any sync can read them: Bedtime tracking no longer needs the schedule (issue #126),
+        // so a Bedtime flag left on under a switched-off schedule is cleared rather than reread.
+        QuietHoursPrefs.migrateIndependentBedtime(this)
+        // Application-scoped so capture runs whether or not the Debug screen is open.
+        DiagnosticsSubscriber(PulseLoopDatabase.getInstance(this)).start(appScope)
+        // Persistence subscribes from here — not from PulseLoopApp's LaunchedEffect — so that
+        // a process launched only for RingSyncWorker / ScheduledSpo2Worker has a collector, and so
+        // that nothing published on activity resume (MainActivity.onResume → refreshPhoneSteps)
+        // races the UI's composition. Idempotent: PulseLoopApp's LaunchedEffect no longer calls start().
+        EventPersistenceSubscriber.shared(this).start()
         // One-time cleanup of activity totals corrupted by the old bucket handling; runs off the
         // main thread and is prefs-gated so it executes once. Safe to race the first sync — the
         // ring can't connect before this completes a couple of DELETE statements.
         appScope.launch { DataRepairs.runIfNeeded(this@PulseLoopApplication) }
+        appScope.launch { DataRepairs.repairSleepDurationsIfNeeded(this@PulseLoopApplication) }
+        appScope.launch { DataRepairs.repairLuckRingActivityIfNeeded(this@PulseLoopApplication) }
 
         // Home-screen widgets (iOS #44): publish the snapshot on every foreground/background
         // edge (the iOS scene-phase triggers — catches goal/unit/profile edits that don't run
@@ -37,8 +56,14 @@ class PulseLoopApplication : Application() {
                 if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_STOP) {
                     WidgetSnapshotPublisher.publish(this)
                 }
+                // Bedtime/DND (issue #83): reconcile the window log with the current Mode in case
+                // the listener was unbound across an edge. The listener records the edges.
+                if (event == Lifecycle.Event.ON_START && QuietHoursPrefs.isZenTrackingActive(this)) {
+                    com.pulseloop.settings.ZenModeTracker.recordCurrentFilter(this)
+                }
             },
         )
         WidgetRefreshWorker.schedule(this)
+
     }
 }

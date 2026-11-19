@@ -50,6 +50,8 @@ object YCBTCoordinator : WearableCoordinator {
         WearableCapability.REALTIME_HEART_RATE,
         WearableCapability.REALTIME_STEPS,
         WearableCapability.MEASUREMENT_INTERVAL,
+        // Vendor offers Shut down on every ring (MeMoreSettingsActivity:101); used by #142's restart.
+        WearableCapability.POWER_OFF,
     )
 
     override val bitmapGatedCapabilities = setOf(

@@ -77,6 +77,11 @@ data class ActivityDailyEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val date: Long,                 // epoch millis, start of day
     val steps: Int = 0,
+    /** Phone-sourced step count for this day (Health Connect), stored separately from [steps].
+     *  Null = no phone value written for this day. The display picks between [steps] and
+     *  [phoneSteps] at read time based on the user's step-source preference; neither column
+     *  overwrites the other, so switching source is reversible. */
+    val phoneSteps: Int? = null,
     val calories: Double = 0.0,
     val distanceMeters: Double = 0.0,
     val activeMinutes: Int = 0,
@@ -87,7 +92,47 @@ data class ActivityDailyEntity(
     /** Ported from iOS #98: net active calories estimated from all-day HR + step buckets when the
      *  ring does not report device-side calories. Read through [effectiveActiveCalories]. */
     val estimatedActiveCalories: Double? = null,
-)
+    /**
+     * What this day's deleted activity buckets contributed, kept so the ring's own cumulative
+     * counter can be corrected for them (issue #70).
+     *
+     * `activity_buckets` holds only the buckets that survive, so a sum over them restates the day
+     * — but the live `ActivityUpdate` total the ring pushes all day is a *cumulative* figure that
+     * still includes the deleted block, and the live path ratchets the day up against it. Without
+     * this the deletion was undone by the next frame, seconds later.
+     *
+     * See [com.pulseloop.data.ActivityBucketDeletion].
+     */
+    val deletedSteps: Int = 0,
+    val deletedDistanceMeters: Double = 0.0,
+) {
+    /**
+     * The step count a screen should show for this day under the user's step-source preference
+     * (Path B read-time selection, PR #98). Ring mode shows the ring's own column; phone mode
+     * shows [phoneSteps] when the phone has a value for the day, falling back to the ring's
+     * column when it does not — so a day the phone never backfilled still shows something.
+     *
+     * `internal` on purpose (review item 5, PR #98). The one production caller is
+     * [com.pulseloop.data.DisplaySteps] — the one place the preference is applied. Leaving
+     * this `public` let each screen, widget, notification and coach path call it directly
+     * and drift; that is the bug the reviewer flagged. New callers use
+     * [com.pulseloop.data.DisplaySteps], not this. Test source sets (same module) can still
+     * exercise it directly.
+     */
+    internal fun displaySteps(preferPhone: Boolean): Int =
+        if (preferPhone) phoneSteps ?: steps else steps
+
+    /**
+     * The whole entity a screen should show, with `steps` projected for display under the user's
+     * step-source preference. Only `steps` is rewritten; `distanceMeters`, `calories`, and the
+     * rest of the row are left as the ring wrote them (Path B — see PR #98's design notes).
+     *
+     * `internal` for the same reason as [displaySteps] — use
+     * [com.pulseloop.data.DisplaySteps.project].
+     */
+    internal fun forDisplay(preferPhone: Boolean): ActivityDailyEntity =
+        if (preferPhone && phoneSteps != null) copy(steps = phoneSteps) else this
+}
 
 /**
  * Ported from [ActivityBucketSample] in PulseModels.swift.
@@ -140,6 +185,15 @@ data class DeviceMeasurementConfigEntity(
     val hrIntervalMinutes: Int = 5,
     val hrEnabled: Boolean = true,
     val spo2Enabled: Boolean = true,
+    /**
+     * All-day SpO₂ sampling interval, minutes — 0 means "follow the heart-rate interval" (issue #66).
+     *
+     * The monitor command takes the same shape for every vital (`01 <key> {enable, interval}`), so
+     * an interval was always settable for blood oxygen; it simply wasn't surfaced, and inherited
+     * whatever heart rate was set to. On a ring running both monitors hourly that is most of the
+     * battery, which is why the reporter asked for it separately.
+     */
+    val spo2IntervalMinutes: Int = 0,
     val stressEnabled: Boolean = true,
     val hrvEnabled: Boolean = true,
     val temperatureEnabled: Boolean = true,
@@ -260,3 +314,25 @@ data class UserGoalEntity(
         const val DEFAULT_CALORIES = 500
     }
 }
+
+/**
+ * A reading the user deleted (issue #60).
+ *
+ * Removing a row is not enough on its own. History-sourced measurements are keyed by
+ * `history:<kind>:<timestamp>` and written with `upsert`, precisely so a re-sync of a day the ring
+ * still holds is idempotent — which also means the next sync would put a deleted reading straight
+ * back. This table is the memory that says not to: the deletion outlives the row, so the same
+ * reading stays gone across every later sync of the same day.
+ *
+ * Only rows the ring can regenerate need an entry; a live reading's id is a fresh UUID that will
+ * never be written again. [MeasurementDeletionDao.record] applies that rule.
+ */
+@Entity(tableName = "measurement_deletions")
+data class MeasurementDeletionEntity(
+    /** The deleted measurement's primary key — deterministic, or this row would be pointless. */
+    @PrimaryKey val measurementId: String,
+    val kindRaw: String,
+    /** The reading's own timestamp, kept so a future retention sweep can age these out. */
+    val timestamp: Long,
+    val deletedAt: Long = System.currentTimeMillis(),
+)

@@ -1,14 +1,21 @@
 package com.pulseloop.ui.viewmodels
 
+import com.pulseloop.util.L10n
+import com.pulseloop.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
+import com.pulseloop.data.ActivityBucketDeletion
 import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.Bucket
+import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.ring.*
 import com.pulseloop.coach.summaries.CoachSummaryKind
 import com.pulseloop.service.DailyCalorieEstimator
+import com.pulseloop.service.DerivedStress
+import com.pulseloop.service.EstimatedSpo2
 import com.pulseloop.service.HeartRateZones
 import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepInsights
@@ -18,6 +25,7 @@ import com.pulseloop.service.SleepScoreResult
 import com.pulseloop.service.UserPhysiologyProfile
 import com.pulseloop.service.VitalSample
 import com.pulseloop.settings.ApiKeyStore
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
 import com.pulseloop.ui.components.MetricThresholds
@@ -34,7 +42,11 @@ import java.time.ZoneId
  * Ported from MetricsService.buildTodaySummary in PulseServices.swift.
  * Uses reactive Flow queries so live ring data appears immediately.
  */
-class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
+class TodayViewModel(
+    db: PulseLoopDatabase,
+    private val apiKeyStore: ApiKeyStore? = null,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     // Local midnight, not UTC — the Today dashboard rolls over at the device's local
     // midnight so daily stats line up with how the rest of the app keys per-day rows.
     private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
@@ -80,7 +92,10 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
 
     init {
         viewModelScope.launch {
-            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { activity ->
+            combine(
+                currentDayValues(todayStart, db.activityDailyDao()::byDayFlow),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { activity, preferPhone -> activity to preferPhone }.collect { (activity, preferPhone) ->
                 // iOS #98: the ring's own calorie figure wins when it reported one; otherwise show
                 // the on-device estimate (BMR accrued so far + net active). Reading `calories`
                 // straight off the row would show 0 all day for rings that report none — which is
@@ -93,7 +108,7 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
                         ?: DailyCalorieEstimator.deviceReportedCalories(row)
                 }
                 _state.update { it.copy(
-                    steps = activity?.steps,
+                    steps = com.pulseloop.data.DisplaySteps.count(activity, preferPhone),
                     calories = calories,
                     distanceMeters = activity?.distanceMeters,
                     activeMinutes = activity?.activeMinutes,
@@ -115,8 +130,11 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
         }
         // 7-day step series for the hero delta (oldest→newest; DAO returns newest-first).
         viewModelScope.launch {
-            db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(steps7d = days.reversed().map { d -> d.steps }) }
+            combine(
+                db.activityDailyDao().recentFlow(7),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { days, preferPhone -> days to preferPhone }.collect { (days, preferPhone) ->
+                _state.update { it.copy(steps7d = com.pulseloop.data.DisplaySteps.counts(days.reversed(), preferPhone)) }
             }
         }
         // Today's coach summary card (kind="today", scopeKey=local date).
@@ -199,7 +217,12 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
  * Day view anchors on the *reference night* (before 4 AM local = yesterday's night);
  * Week/Month/Year anchor on the last recorded session so history still surfaces.
  */
-class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
+class SleepViewModel(
+    private val db: PulseLoopDatabase,
+    /** The night-bridging rule a record delete/edit re-segments with — the sync's own (issue #105). */
+    private val gapBridge: () -> com.pulseloop.service.SleepGapBridge = { com.pulseloop.service.SleepGapBridge.NONE },
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
         // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
@@ -215,8 +238,8 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         val dayOffset: Int = 0,
         /** How far back the stepper may page (0 locks to today when there's no history). */
         val maxDayOffset: Int = 0,
-        /** Local-midnight key of the shown day, for the nav header label. */
-        val shownDayMillis: Long = 0L,
+        /** Local-midnight key of the shown day; valid even before the first database emission. */
+        val shownDayMillis: Long = TimeUtil.referenceNightLocal(),
         val recentSessions: List<SleepSessionEntity> = emptyList(),
         // Aggregate view (week/month/year)
         val rangeSessions: List<SleepSessionEntity> = emptyList(),
@@ -249,7 +272,13 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     init {
         // Any sleep-table change retriggers a rebuild of the selected range.
         viewModelScope.launch {
-            db.sleepSessionDao().recentFlow(7).collect { sessions ->
+            // Combined with the step-source preference (review item 7, PR #98) so the sleep
+            // coach's step figure follows the toggle without waiting for a sleep-table write.
+            // rebuild() reads preferPhone() fresh each call, so the emit is the entire fix.
+            combine(
+                db.sleepSessionDao().recentFlow(7),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { sessions, _ -> sessions }.collect { sessions ->
                 _state.update { it.copy(recentSessions = sessions) }
                 try { rebuild(_state.value.range) } catch (_: Exception) {}
             }
@@ -262,7 +291,12 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
             blocksCache.getOrPut(id) { db.sleepStageBlockDao().forSession(id) }
         // aggregateCoach/averageScore take a synchronous lookup; pre-warm the cache first.
         val goal = try { db.userGoalDao().get()?.sleepMinutes } catch (_: Exception) { null }
-        val steps = try { db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal())?.steps } catch (_: Exception) { null }
+        val steps = try {
+            com.pulseloop.data.DisplaySteps.count(
+                db.activityDailyDao().byDay(TimeUtil.startOfTodayLocal()),
+                stepSourcePrefs.preferPhone(),
+            )
+        } catch (_: Exception) { null }
 
         // ── Today tile (never moves with Day-view navigation) ──
         val todayReference = TimeUtil.referenceNightLocal()
@@ -320,7 +354,7 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         val stageAvg = if (valid.isEmpty()) null else Triple(
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / valid.size,
             valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / valid.size,
-            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "AWAKE" }.sumOf { b -> b.durationMinutes } } / valid.size,
+            valid.sumOf { s -> com.pulseloop.service.awakeMinutes(lookup(s.id)) } / valid.size,
         )
         val bars = when (range) {
             SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, collapsedSessions, lookup)
@@ -378,6 +412,32 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
     /** Step to an older (older = true) or newer day, clamped to [0, maxDayOffset]. */
     fun stepDay(older: Boolean) = jumpToOffset(_state.value.dayOffset + if (older) 1 else -1)
 
+    /**
+     * Delete one ring record (issue #78) and rebuild the day. Returns whether anything was
+     * removed, so the UI can only confirm on a real deletion.
+     */
+    suspend fun deleteSleepRecord(sessionId: String, recordStartAt: Long): Boolean =
+        try {
+            val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt, gapBridge())
+            if (removed) rebuild(_state.value.range)
+            removed
+        } catch (_: Exception) { false }
+
+    /**
+     * Edit one ring record's boundaries (issue #82) and rebuild the day.
+     */
+    suspend fun editSleepRecord(
+        sessionId: String,
+        recordStartAt: Long,
+        newStartAt: Long,
+        newEndAt: Long,
+    ): Boolean =
+        try {
+            val updated = com.pulseloop.data.SleepRecordDeletion.edit(db, sessionId, recordStartAt, newStartAt, newEndAt, gapBridge())
+            if (updated) rebuild(_state.value.range)
+            updated
+        } catch (_: Exception) { false }
+
     /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
     fun jumpToDay(dayMillis: Long) {
         val today = TimeUtil.startOfTodayLocal()
@@ -398,12 +458,48 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
 /**
  * ActivityViewModel — reads Room data for the Activity screen.
  */
-class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+class ActivityViewModel(
+    db: PulseLoopDatabase,
+    private val stepSourcePrefs: StepSourcePrefs,
+) : ViewModel() {
     data class ActivityState(
         val recentDays: List<ActivityDailyEntity> = emptyList(),
         /** All finished sessions, newest first (drives Today + the history sheet). */
         val finishedWorkouts: List<ActivitySessionEntity> = emptyList(),
         val today: ActivityDailyEntity? = null,
+        // ── Day navigation (issue #76 — mirrors SleepViewModel's, iOS #84) ──
+        /** How many days back the shown day is: 0 = today, clamped to [0, maxDayOffset]. */
+        val dayOffset: Int = 0,
+        /** How far the chevrons may page: a week past the earliest stored day, one-year floor.
+        *  0 (locked to today) when nothing is stored yet. */
+        val maxDayOffset: Int = 0,
+        /** Local-midnight key of the shown day — drives the RECORDS card's day query. */
+        val shownDay: Long = 0,
+        /** The shown day's totals (the summary card); `today` stays live for the week widget. */
+        val daySummary: ActivityDailyEntity? = null,
+        /**
+         * Effective calories for the shown day: the ring's own figure when it reported one,
+         * else [DailyCalorieEstimator.effectiveCalories] (BMR accrued through the day so far
+         * plus the net active estimate). Mirrors [TodayViewModel]'s read path so the Today
+         * card and the Activity card cannot disagree about what a day's calories are — a
+         * `phone`-sourced row would otherwise show its raw `calories` column, which is either
+         * the estimator's own fill-in or the stale placeholder written before that path
+         * existed.
+         *
+         * This is the *total* figure (basal + active), which is what the Calories metric text
+         * shows. The calorie goal ring reads [effectiveActiveCalories] instead — the stored
+         * goal is an active-energy goal ([UserGoalEntity.calories] KDoc), so a ring drawn
+         * against this total would sit near-full from the moment the day begins.
+         */
+        val effectiveCalories: Double? = null,
+        /**
+         * The active-energy portion of the shown day's calories — the ring's own reported
+         * figure when it has one, else [DailyCalorieEstimator.effectiveActiveCalories].
+         * Drives the calorie goal ring, whose goal ([UserGoalEntity.calories]) is in the same
+         * active-energy units. Null when the row has neither a device figure nor an estimate.
+         */
+        val effectiveActiveCalories: Double? = null,
         val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
         val activeMinutesGoal: Int = 45,
         val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
@@ -415,22 +511,67 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
     private val _state = MutableStateFlow(ActivityState())
     val state: StateFlow<ActivityState> = _state.asStateFlow()
     private val todayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
+    /** The day the dashboard is looking at; [currentDayValues] handles today's own rollover. */
+    private val shownDayStart = MutableStateFlow(TimeUtil.startOfTodayLocal())
 
     private val db = db
 
     fun refreshCurrentDay() {
         todayStart.value = TimeUtil.startOfTodayLocal()
+        // A resume lands the user back on today, where they left the app from.
+        jumpToOffset(0)
+        // Re-read the pager bound too: it was computed once at init, so days synced (or a
+        // midnight rolled) since then would stay out of reach until the ViewModel was rebuilt.
+        viewModelScope.launch { refreshMaxDayOffset() }
     }
 
     init {
         viewModelScope.launch {
-            db.activityDailyDao().recentFlow(7).collect { days ->
-                _state.update { it.copy(recentDays = days) }
+            combine(
+                db.activityDailyDao().recentFlow(7),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { days, preferPhone -> days to preferPhone }.collect { (days, preferPhone) ->
+                _state.update { it.copy(recentDays = com.pulseloop.data.DisplaySteps.project(days, preferPhone)) }
             }
         }
         viewModelScope.launch {
-            currentDayValues(todayStart, db.activityDailyDao()::byDayFlow).collect { day ->
-                _state.update { it.copy(today = day) }
+            combine(
+                currentDayValues(todayStart, db.activityDailyDao()::byDayFlow),
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { day, preferPhone -> day to preferPhone }.collect { (day, preferPhone) ->
+                _state.update { it.copy(today = com.pulseloop.data.DisplaySteps.project(day, preferPhone)) }
+            }
+        }
+        viewModelScope.launch {
+            combine(
+                shownDayStart.flatMapLatest { day -> db.activityDailyDao().byDayFlow(day) },
+                stepSourcePrefs.preferPhoneFlow(),
+            ) { day, preferPhone -> day to preferPhone }.collect { (day, preferPhone) ->
+                // Effective calories for the shown day — same read path as the Today card
+                // (see TodayViewModel's init), so both screens agree. Reading `day.calories`
+                // straight off the row would surface the ring's value for ring modes, but
+                // for phone-sourced rows it would show the estimator's own fill-in — or, on
+                // older rows, the hardcoded `steps * 0.04` placeholder — as if it were a
+                // device-reported figure. [DailyCalorieEstimator.effectiveCalories] handles
+                // both cases: device figure when there is one, else BMR + active estimate.
+                val profile = db.userProfileDao().get()?.let {
+                    DailyCalorieEstimator.Profile(it.sex, it.age, it.weightKg, it.heightCm)
+                }
+                val calories = day?.let { row ->
+                    profile?.let { DailyCalorieEstimator.effectiveCalories(row, it) }
+                        ?: DailyCalorieEstimator.deviceReportedCalories(row)
+                }
+                // The active-energy read: no profile needed — this is either the device's own
+                // figure or the stored estimate, both already net of BMR. See the state field's
+                // KDoc for why the ring uses this and the metric text does not.
+                val activeCalories = day?.let { DailyCalorieEstimator.effectiveActiveCalories(it) }
+                _state.update {
+                    it.copy(
+                        daySummary = com.pulseloop.data.DisplaySteps.project(day, preferPhone),
+                        effectiveCalories = calories,
+                        effectiveActiveCalories = activeCalories,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -438,12 +579,68 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
                 _state.update { it.copy(finishedWorkouts = sessions.filter { s -> s.statusRaw == "finished" }) }
             }
         }
+        viewModelScope.launch { refreshMaxDayOffset() }
         // Reactive: goals saved from onboarding/Settings show up without a manual reload.
         viewModelScope.launch {
             try {
                 db.userGoalDao().getFlow().collect { if (it != null) reloadGoals() }
             } catch (_: Exception) {}
         }
+    }
+
+    /**
+     * The individual buckets behind one day's total, newest first (issue #70).
+     *
+     * A ring logs activity in intraday blocks, so a day's steps are a couple of dozen rows rather
+     * than one figure — which is what makes a single inflated block (the ring carried rather than
+     * worn, a rough car journey) removable at all.
+     */
+    suspend fun bucketsForDay(day: Long): List<ActivityBucketEntity> =
+        try { db.activityBucketDao().byDay(day).sortedByDescending { it.startEpoch } }
+        catch (_: Exception) { emptyList() }
+
+    /** Delete one bucket and restate its day. Returns the day's remaining buckets. */
+    suspend fun deleteBucket(startEpoch: Long): List<ActivityBucketEntity> {
+        val day = TimeUtil.startOfDayLocal(startEpoch)
+        try { ActivityBucketDeletion.delete(db, startEpoch) } catch (_: Exception) {}
+        // The daily-total flows are reactive; only the live "today" pointer needs a nudge, and
+        // only when the deleted day IS today — a past-day deletion must not yank the dashboard
+        // back from the day the user is inspecting (issue #76).
+        if (day == TimeUtil.startOfTodayLocal()) todayStart.value = day
+        return bucketsForDay(day)
+    }
+
+    // ── Day navigation (issue #76 — mirrors SleepViewModel's, iOS #84) ──
+
+    /** Step to an older (older = true) or newer day, clamped to [0, maxDayOffset]. */
+    fun stepDay(older: Boolean) = jumpToOffset(_state.value.dayOffset + if (older) 1 else -1)
+
+    /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
+    fun jumpToDay(dayMillis: Long) {
+        val today = TimeUtil.startOfTodayLocal()
+        jumpToOffset(((today - TimeUtil.startOfDayLocal(dayMillis)) / 86_400_000L).toInt())
+    }
+
+    /** Return the dashboard to today. */
+    fun resetToToday() = jumpToOffset(0)
+
+    private fun jumpToOffset(target: Int) {
+        val clamped = target.coerceIn(0, _state.value.maxDayOffset)
+        val shown = TimeUtil.startOfTodayLocal() - clamped * 86_400_000L
+        shownDayStart.value = shown
+        _state.update { it.copy(dayOffset = clamped, shownDay = shown) }
+    }
+
+    /** Recompute the pager bound: a week before the earliest stored day, one-year floor.
+    *  Mirrors SleepViewModel.maxDayOffset; 0 (locked to today) when nothing is stored. */
+    private suspend fun refreshMaxDayOffset() {
+        val earliest = try { db.activityDailyDao().earliestDay() } catch (_: Exception) { null }
+        val maxOffset = if (earliest == null) 0 else {
+            val today = TimeUtil.startOfTodayLocal()
+            val floor = maxOf(earliest - 7 * 86_400_000L, today - 365 * 86_400_000L)
+            ((today - floor) / 86_400_000L).toInt().coerceAtLeast(0)
+        }
+        _state.update { it.copy(maxDayOffset = maxOffset) }
     }
 
     suspend fun reloadGoals() {
@@ -482,12 +679,21 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
  * Uses reactive polling so data appears as soon as the ring syncs.
  */
 @OptIn(kotlinx.coroutines.FlowPreview::class)
-class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore? = null) : ViewModel() {
+class VitalsViewModel(
+    private val db: PulseLoopDatabase,
+    private val apiKeyStore: ApiKeyStore? = null,
+    private val scheduledSpo2Prefs: com.pulseloop.settings.ScheduledSpo2Prefs? = null,
+) : ViewModel() {
     data class VitalsState(
         val hrSamples: List<Double> = emptyList(),
         val spo2Samples: List<Double> = emptyList(),
+        /** The 24 h SpO₂ series holds hourly readings this ring computed from heart rate rather than
+         *  measured (issue #103). Never shown unlabelled. Spot readings never set it. */
+        val spo2IsEstimated: Boolean = false,
         val hrvSamples: List<Double> = emptyList(),
         val stressSamples: List<Double> = emptyList(),
+        /** The stress series came from HRV, not from the ring (issue #67). Never shown unlabelled. */
+        val stressIsDerived: Boolean = false,
         val fatigueSamples: List<Double> = emptyList(),
         val tempSamples: List<Double> = emptyList(),
         val latestHr: Int? = null,
@@ -560,7 +766,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
     }
 
     private suspend fun refresh(db: PulseLoopDatabase) {
-        _state.value = buildState(db, apiKeyStore)
+        _state.value = buildState(db, apiKeyStore, scheduledSpo2Prefs)
     }
 
     companion object {
@@ -571,7 +777,11 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
      * ([com.pulseloop.widgets.WidgetSnapshotPublisher]) — a widget tile is built from exactly the
      * same series fetches, offsets, and capability gating as its Vitals/Today card.
      */
-    suspend fun buildState(db: PulseLoopDatabase, apiKeyStore: ApiKeyStore? = null): VitalsState {
+    suspend fun buildState(
+        db: PulseLoopDatabase,
+        apiKeyStore: ApiKeyStore? = null,
+        scheduledSpo2Prefs: com.pulseloop.settings.ScheduledSpo2Prefs? = null,
+    ): VitalsState {
         val now = System.currentTimeMillis()
         val twentyFourHoursAgo = now - 24 * 3600_000L
         val device = db.deviceDao().current()
@@ -611,18 +821,54 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val gluc = if (caps.contains(WearableCapability.BLOOD_SUGAR)) series(MeasurementKind.BLOOD_SUGAR) else emptyList()
         val userProfile = db.userProfileDao().get()
 
+        // Issue #67: a ring whose hardware never answers a stress query (the R100 — 22 sends, 0
+        // replies) advertises STRESS anyway, because the capability list is a static per-family
+        // constant rather than something that ring confirmed, and the user gets a card that can
+        // never fill. Where the ring returns HRV but no stress at all, derive one — labelled as
+        // derived everywhere it is shown, because the ring did not measure it.
+        //
+        // "No stress at all" is a question about the ring, so it is asked of the whole history and
+        // not of this 24 h window. An empty window happens for ordinary reasons — the monitor
+        // switched off for a day, a ring re-paired this morning, a quiet night — and on a ring that
+        // *does* measure stress the card would then show a derived number under the footnote "your
+        // ring doesn't measure stress", which is simply false about that ring.
+        val hrvValues = hrv.map { it.value }
+        val ringEverReportedStress = db.measurementDao().hasReal(MeasurementKind.STRESS.name)
+        val derived = if (stress.isEmpty() && !ringEverReportedStress && hrvValues.isNotEmpty())
+            DerivedStress.scored(hrvValues) else emptyList()
+        // Scores carry the timestamp of the HRV reading each was derived from — the chart, the
+        // card's headline value and its gauge all read the series, so a value list on its own left
+        // every one of them empty under a footnote saying where the number came from.
+        val derivedStressSeries = derived.map { (i, score) -> VitalSample(hrv[i].timestamp, score.toDouble()) }
+        val derivedStress = derivedStressSeries.map { it.value }
+
+        // Issue #103: a ring whose hourly SpO₂ is a fixed function of its heart rate presents that
+        // as a measurement unless we say otherwise. Judged from this ring's own history (not its
+        // family), and only hourly composite rows qualify — a spot reading is a real measurement.
+        val spo2Estimated = if (spo2.isEmpty()) emptySet()
+            else EstimatedSpo2.estimatedTimestamps(db.measurementDao(), twentyFourHoursAgo, now, now)
+
+        val hideEstimated = scheduledSpo2Prefs?.hideEstimated ?: false
+        val displayedSpo2 = if (hideEstimated && spo2Estimated.isNotEmpty()) {
+            spo2.filterNot { it.timestamp in spo2Estimated }
+        } else {
+            spo2
+        }
+
         return VitalsState(
             hrSamples = hr.map { it.value },
-            spo2Samples = spo2.map { it.value },
+            spo2Samples = displayedSpo2.map { it.value },
+            spo2IsEstimated = !hideEstimated && displayedSpo2.any { it.timestamp in spo2Estimated },
             hrvSamples = hrv.map { it.value },
-            stressSamples = stress.map { it.value },
+            stressSamples = stress.map { it.value }.ifEmpty { derivedStress },
+            stressIsDerived = stress.isEmpty() && derivedStress.isNotEmpty(),
             fatigueSamples = fatigue.map { it.value },
             tempSamples = temp.map { it.value },
             latestHr = hr.lastOrNull()?.value?.toInt(),
             restingHr = HeartRateZones.restingHeartRate(hr.map { it.value }),
-            latestSpo2 = spo2.lastOrNull()?.value?.toInt(),
+            latestSpo2 = displayedSpo2.lastOrNull()?.value?.toInt(),
             latestHrv = hrv.lastOrNull()?.value,
-            latestStress = stress.lastOrNull()?.value,
+            latestStress = stress.lastOrNull()?.value ?: derivedStress.lastOrNull(),
             latestFatigue = fatigue.lastOrNull()?.value,
             latestTemp = temp.lastOrNull()?.value,
             // Latest = the series' last sample (iOS `inputs.systolic.last`) — demo seeds today's
@@ -638,9 +884,9 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             bpDiaSamples = bpDia.map { it.value },
             glucoseSamples = gluc.map { it.value + glucoseOffset },
             hrSeries = hr.map { VitalSample(it.timestamp, it.value) },
-            spo2Series = spo2.map { VitalSample(it.timestamp, it.value) },
+            spo2Series = displayedSpo2.map { VitalSample(it.timestamp, it.value) },
             hrvSeries = hrv.map { VitalSample(it.timestamp, it.value) },
-            stressSeries = stress.map { VitalSample(it.timestamp, it.value) },
+            stressSeries = stress.map { VitalSample(it.timestamp, it.value) }.ifEmpty { derivedStressSeries },
             fatigueSeries = fatigue.map { VitalSample(it.timestamp, it.value) },
             tempSeries = temp.map { VitalSample(it.timestamp, it.value) },
             bpSysSeries = bpSys.map { VitalSample(it.timestamp, it.value) },
@@ -709,6 +955,7 @@ fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFacto
         glucose = glucoseSeries,
         latestHr = latestHr?.toDouble(),
         latestSpo2 = latestSpo2?.toDouble(),
+        spo2Estimated = spo2IsEstimated,
         restingHr = restingHr,
         peakHr = peakHr,
         unitSystem = units,
@@ -722,15 +969,25 @@ fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFacto
 class CoachViewModel(
     private val db: PulseLoopDatabase,
     private val orchestrator: com.pulseloop.coach.orchestration.CoachOrchestrator,
+    /**
+     * Resolves the current step-source preference (review item 5, PR #98). Injected as a lambda
+     * rather than a `StepSourcePrefs` so the VM stays context-free like [attachmentPayloads];
+     * the lambda is called per turn so a toggle made mid-session is reflected on the next turn.
+     */
+    private val preferPhone: () -> Boolean = { false },
     /** Resolves staged attachment refs to wire payloads (injected so the VM stays context-free). */
     private val attachmentPayloads: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> List<com.pulseloop.coach.attachments.CoachImagePayload> = { emptyList() },
     /** Opt-in city + weather (iOS #65d), injected so the VM stays context-free like [attachmentPayloads]. */
     private val environmentSnapshot: suspend () -> com.pulseloop.coach.context.EnvironmentContext? = { null },
+    /** Deletes the image files behind attachment refs, when their conversation is deleted (issue #131). */
+    private val deleteAttachments: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> Unit = {},
 ) : ViewModel() {
     data class CoachState(
         val messages: List<ChatMessage> = emptyList(),
         val isThinking: Boolean = false,
         val error: String? = null,
+        /** The thread on screen, so the history sheet can mark it (issue #131). */
+        val conversationId: String? = null,
     )
 
     data class ChatMessage(
@@ -746,8 +1003,7 @@ class CoachViewModel(
         val id: String? = null,
     )
 
-    private val greeting = ChatMessage("assistant",
-        "Hi! I'm your PulseLoop coach. I can answer questions about your sleep, heart rate, activity, and recovery. What would you like to know?")
+    private val greeting get() = ChatMessage("assistant", L10n.get(R.string.coach_greeting))
 
     private val _state = MutableStateFlow(CoachState(messages = listOf(greeting)))
     val state: StateFlow<CoachState> = _state.asStateFlow()
@@ -770,15 +1026,69 @@ class CoachViewModel(
     private suspend fun loadOrCreateConversation() {
         val existing = db.coachConversationDao().recent(limit = 1).firstOrNull()
         if (existing != null) {
-            currentConversation = existing
-            val messages = db.coachMessageDao().forConversation(existing.id)
-            if (messages.isNotEmpty()) {
-                _state.update { it.copy(messages = messages.map { m -> m.toChatMessage() }) }
-            }
+            show(existing)
             return
         }
         currentConversation = CoachConversationEntity()
         db.coachConversationDao().upsert(currentConversation)
+        _state.update { it.copy(conversationId = currentConversation.id) }
+    }
+
+    /** Make [conversation] the active thread and show its persisted messages (or the greeting). */
+    private suspend fun show(conversation: CoachConversationEntity) {
+        currentConversation = conversation
+        val messages = db.coachMessageDao().forConversation(conversation.id)
+        _state.value = CoachState(
+            messages = if (messages.isEmpty()) listOf(greeting) else messages.map { m -> m.toChatMessage() },
+            conversationId = conversation.id,
+        )
+    }
+
+    /** Past conversations for the history sheet (issue #131), newest first, empty ones left out. */
+    val history: Flow<List<com.pulseloop.data.dao.CoachConversationSummary>> =
+        db.coachConversationDao().historyFlow()
+
+    /**
+     * Reopen a past conversation (issue #131). A turn still in flight on the old thread keeps
+     * going and is stored under it; it just no longer lands on screen (see [sendMessage]).
+     */
+    fun openConversation(id: String) {
+        if (id == currentConversation.id) return
+        conversationReady = viewModelScope.launch {
+            val conversation = db.coachConversationDao().byId(id) ?: return@launch
+            show(conversation)
+        }
+    }
+
+    /** Delete one conversation with its messages, tool-call trace and attached images (issue #131).
+     *  Deleting the one on screen starts a new thread in its place. */
+    fun deleteConversation(id: String) {
+        val wasCurrent = id == currentConversation.id
+        if (wasCurrent) newConversation()
+        viewModelScope.launch {
+            val attachments = db.coachMessageDao().attachmentsJsonFor(id)
+            db.withTransaction {
+                db.coachToolCallDao().deleteForConversation(id)
+                db.coachMessageDao().deleteForConversation(id)
+                db.coachConversationDao().deleteById(id)
+            }
+            deleteAttachments(attachments.flatMap { com.pulseloop.coach.attachments.CoachAttachmentRef.decode(it) })
+        }
+    }
+
+    /** Delete every conversation (issue #131) and start a new one. */
+    fun deleteAllConversations() {
+        viewModelScope.launch {
+            conversationReady.join()
+            val attachments = db.coachMessageDao().allAttachmentsJson()
+            db.withTransaction {
+                db.coachToolCallDao().deleteAll()
+                db.coachMessageDao().deleteAll()
+                db.coachConversationDao().deleteAll()
+            }
+            deleteAttachments(attachments.flatMap { com.pulseloop.coach.attachments.CoachAttachmentRef.decode(it) })
+            newConversation()
+        }
     }
 
     /** The active thread's id, for the usage sheet — a one-shot fetch when the sheet opens rather
@@ -808,8 +1118,8 @@ class CoachViewModel(
     /** Reset to a fresh thread (iOS CoachView "+" button). Starts a NEW persisted conversation —
      *  the old one's rows are left in Room untouched, not deleted. */
     fun newConversation() {
-        _state.value = CoachState(messages = listOf(greeting))
         currentConversation = CoachConversationEntity()
+        _state.value = CoachState(messages = listOf(greeting), conversationId = currentConversation.id)
         conversationReady = viewModelScope.launch { db.coachConversationDao().upsert(currentConversation) }
     }
 
@@ -833,7 +1143,11 @@ class CoachViewModel(
                 attachmentsJson = com.pulseloop.coach.attachments.CoachAttachmentRef.encode(attachments),
             ))
             try {
-                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(db, environment = environmentSnapshot())
+                val packet = com.pulseloop.coach.context.CoachContextBuilder.build(
+                    db,
+                    preferPhone = preferPhone(),
+                    environment = environmentSnapshot(),
+                )
                 // Drop error bubbles: they're app-generated diagnostics (a provider HTTP error),
                 // not real assistant turns. Replaying them as assistant history would feed the
                 // model garbage like "Coach error · HTTP 404 …" as if it had said it.
@@ -867,13 +1181,20 @@ class CoachViewModel(
                 // `error`, or CoachScreen renders a duplicate "Error: <code>" footer for the same
                 // failure. `error` stays null here and is reserved for the catch-block path below,
                 // which shows a plain (non-error-bubble) apology and needs the footer.
-                _state.update { it.copy(
-                    messages = it.messages + reply,
-                    isThinking = false,
-                ) }
+                // Only onto the thread it was asked in: after "+" or opening another conversation
+                // mid-turn, the reply is stored under its own thread but not shown on this one.
+                if (currentConversation.id == conversationId) {
+                    _state.update { it.copy(
+                        messages = it.messages + reply,
+                        isThinking = false,
+                    ) }
+                }
                 // A failed turn still burned tokens, so it's persisted too (role "error", not
                 // "assistant") — the context-replay filter above keys off isError, not the
                 // persisted role, so this doesn't leak into future prompts.
+                // Deleted while the provider was answering (issue #131): storing the reply and
+                // touching the row below would bring the conversation back with half its turn.
+                if (db.coachConversationDao().byId(conversationId) == null) return@launch
                 val persistedRole = if (reply.isError) "error" else "assistant"
                 val usage = result.usage
                 // Cost prefers the provider-reported figure (OpenRouter); else the catalog
@@ -910,10 +1231,12 @@ class CoachViewModel(
                 // "+" tap mid-turn already moved `currentConversation` on to a newer one.
                 if (currentConversation.id == conversationId) currentConversation = touched
             } catch (e: Exception) {
-                _state.update { it.copy(
-                    messages = it.messages + ChatMessage("assistant", "Sorry, something went wrong: ${e.message}"),
-                    isThinking = false, error = e.message,
-                ) }
+                if (currentConversation.id == conversationId) {
+                    _state.update { it.copy(
+                        messages = it.messages + ChatMessage("assistant", L10n.get(R.string.coach_something_wrong, e.message ?: "")),
+                        isThinking = false, error = e.message,
+                    ) }
+                }
             }
         }
     }
@@ -921,7 +1244,9 @@ class CoachViewModel(
 
 // ──────────────────────── Vital Detail ────────────────────────
 
-enum class Period(val label: String) { DAY("Today"), WEEK("Week"), MONTH("Month") }
+enum class Period(@androidx.annotation.StringRes val labelRes: Int) {
+    DAY(R.string.period_today), WEEK(R.string.period_week), MONTH(R.string.period_month)
+}
 
 /**
  * VitalDetailViewModel — drives a single-metric detail screen with Today/Week/Month
@@ -932,15 +1257,19 @@ class VitalDetailViewModel(
     private val metric: String,
     private val apiKeyStore: ApiKeyStore? = null,
     private val unitSystem: UnitSystem = UnitSystem.METRIC,
+    private val scheduledSpo2Prefs: com.pulseloop.settings.ScheduledSpo2Prefs? = null,
 ) : ViewModel() {
 
     enum class Trend { UP, DOWN, FLAT }
 
     data class DetailState(
         val period: Period = Period.DAY,
-        // For DAY the anchor is the *end* of a rolling 24-hour window (defaults to now);
-        // for WEEK/MONTH it is the start of the period.
-        val anchor: Long = System.currentTimeMillis(),
+        /** The shown window's start: local midnight, the week's first day, or the 1st (issue #102). */
+        val anchor: Long = VitalPeriods.latestAnchor(Period.DAY, System.currentTimeMillis()),
+        /** The shown calendar window `[windowStart, windowEnd)` — the chart's x domain, so it spans
+         *  the whole period with gaps where the ring wasn't worn rather than first-to-last reading. */
+        val windowStart: Long = 0L,
+        val windowEnd: Long = 0L,
         val points: List<Double> = emptyList(),
         val secondary: List<Double> = emptyList(),
         val labels: List<String> = emptyList(),
@@ -956,6 +1285,34 @@ class VitalDetailViewModel(
         val engineZones: List<com.pulseloop.service.MetricZone> = emptyList(),
         val loading: Boolean = true,
         val isBP: Boolean = false,
+        /** The window's individual readings, newest first — the list the user deletes from
+         *  (issue #60). Demo/seeded rows are included: a user clearing seeded noise out of a
+         *  chart is the same gesture as removing a bad measurement. */
+        val readings: List<Reading> = emptyList(),
+        /** This chart is derived rather than measured (issue #67; hourly SpO₂ computed from heart
+         *  rate, issue #103) — carried so the screen says so.
+         *  A derived figure shown as a measurement would be worse than the empty chart it replaces,
+         *  which is why it travels with the data instead of being re-inferred at the display layer. */
+        val isDerived: Boolean = false,
+    )
+
+    /**
+     * One reading as the detail list shows it (issue #60).
+     *
+     * [ids] is a list because a blood-pressure reading is stored as two rows sharing a timestamp,
+     * and deleting one without the other would leave a systolic charted against no diastolic.
+     * [value]/[secondary] are already in display units, so the list agrees with the chart above it.
+     */
+    data class Reading(
+        val ids: List<String>,
+        val timestamp: Long,
+        val value: Double,
+        val secondary: Double? = null,
+        /** True when the ring supplied this from its own log, so a re-sync could restore it —
+         *  which is why deleting it also writes a tombstone. Shown as provenance in the list. */
+        val fromHistory: Boolean = false,
+        /** True when this hourly SpO₂ reading was computed from heart rate rather than measured. */
+        val isEstimated: Boolean = false,
     )
 
     private val _state = MutableStateFlow(DetailState())
@@ -1028,105 +1385,44 @@ class VitalDetailViewModel(
     }
 
     fun setPeriod(p: Period) {
-        // refresh() treats the WEEK/MONTH anchor as the window START, so the anchor
-        // must be the start of the current period — the trailing 7 days for WEEK,
-        // the first of the month for MONTH. Anchoring at today would aim the window
-        // at the future and leave only today's samples in range.
-        val todayStart = TimeUtil.startOfDayLocal(System.currentTimeMillis())
-        val anchor = when (p) {
-            Period.DAY   -> System.currentTimeMillis()   // rolling last 24h, ending now
-            Period.WEEK  -> todayStart - 6 * 86_400_000L
-            Period.MONTH -> Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                .withDayOfMonth(1).toInstant().toEpochMilli()
-        }
-        _state.update { it.copy(period = p, anchor = anchor) }
+        _state.update { it.copy(period = p, anchor = VitalPeriods.latestAnchor(p, System.currentTimeMillis())) }
         viewModelScope.launch { refresh() }
     }
 
     fun prev() {
         val st = _state.value
-        val newAnchor = when (st.period) {
-            Period.DAY   -> st.anchor - 86_400_000L
-            Period.WEEK  -> st.anchor - 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(st.anchor).atZone(ZoneId.systemDefault())
-                i.minusMonths(1).toInstant().toEpochMilli()
-            }
-        }
-        _state.update { it.copy(anchor = newAnchor) }
+        _state.update { it.copy(anchor = VitalPeriods.step(st.period, st.anchor, -1)) }
         viewModelScope.launch { refresh() }
     }
 
     fun next() {
+        if (!canGoForward()) return
         val st = _state.value
-        val newAnchor = when (st.period) {
-            Period.DAY   -> st.anchor + 86_400_000L
-            Period.WEEK  -> st.anchor + 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(st.anchor).atZone(ZoneId.systemDefault())
-                i.plusMonths(1).toInstant().toEpochMilli()
-            }
-        }
-        val todayStart = TimeUtil.startOfTodayLocal()
-        val maxAnchor = when (st.period) {
-            Period.DAY -> System.currentTimeMillis()  // rolling: end can reach now
-            Period.WEEK -> todayStart - 6 * 86_400_000L  // latest window start (trailing 7 days)
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                i.withDayOfMonth(1).toInstant().toEpochMilli()
-            }
-        }
-        if (newAnchor > maxAnchor) return
-        _state.update { it.copy(anchor = newAnchor) }
+        // Clamped: a week anchor set yesterday is a day off today's grid, so one step forward
+        // after midnight would otherwise land a window six days into the future.
+        val latest = VitalPeriods.latestAnchor(st.period, System.currentTimeMillis())
+        _state.update { it.copy(anchor = minOf(VitalPeriods.step(st.period, st.anchor, 1), latest)) }
         viewModelScope.launch { refresh() }
     }
 
     /** Whether forward navigation is allowed (disabled at the present/latest window). */
     fun canGoForward(): Boolean {
         val st = _state.value
-        val todayStart = TimeUtil.startOfTodayLocal()
-        return when (st.period) {
-            // Enabled only if a full 24h step still fits before now (i.e. we're paged back).
-            Period.DAY   -> st.anchor + 86_400_000L <= System.currentTimeMillis()
-            Period.WEEK  -> st.anchor < todayStart - 6 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                st.anchor < i.withDayOfMonth(1).toInstant().toEpochMilli()
-            }
-        }
+        return st.anchor < VitalPeriods.latestAnchor(st.period, System.currentTimeMillis())
     }
 
     private suspend fun refresh() {
         val st = _state.value
         val period = st.period
+        val anchor = st.anchor
+        val (windowStart, windowEnd) = VitalPeriods.window(period, anchor)
+
+        // The previous period, for the trend read. While this period is still in progress, only
+        // the same elapsed stretch of the previous one counts: today at 08:00 against all of
+        // yesterday would read DOWN every morning (night-time HR against a full day's).
         val now = System.currentTimeMillis()
-        // DAY is a rolling 24h window ending at the anchor; when we're at the latest
-        // (can't page further forward) keep the end pinned to "now" so it truly rolls.
-        val anchor = if (period == Period.DAY && st.anchor + 86_400_000L > now) now else st.anchor
-
-        val windowStart = when (period) {
-            Period.DAY   -> anchor - 86_400_000L   // rolling last 24h
-            else         -> anchor                 // WEEK/MONTH: anchor = window start
-        }
-        val windowEnd = when (period) {
-            Period.DAY   -> anchor
-            Period.WEEK  -> anchor + 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(anchor).atZone(ZoneId.systemDefault())
-                i.plusMonths(1).toInstant().toEpochMilli()
-            }
-        }
-
-        // Previous equal-length window, immediately before this one, for the trend read.
-        val prevEnd = windowStart
-        val prevStart = when (period) {
-            Period.DAY   -> windowStart - 86_400_000L
-            Period.WEEK  -> windowStart - 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(windowStart).atZone(ZoneId.systemDefault())
-                i.minusMonths(1).toInstant().toEpochMilli()
-            }
-        }
+        val prevStart = VitalPeriods.step(period, anchor, -1)
+        val prevEnd = if (now < windowEnd) minOf(windowStart, prevStart + (now - windowStart)) else windowStart
 
         val dao = db.measurementDao()
         // Profile-aware zones for the REFERENCE ZONES card (iOS legend) — HRV gets its
@@ -1152,10 +1448,26 @@ class VitalDetailViewModel(
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val trend = computeTrend(thisAvg, prevAvg, if (allValues.isNotEmpty()) allValues.max() - allValues.min() else 1.0)
 
+            // One list row per reading, pairing each systolic with the diastolic at the same
+            // instant so a delete takes the whole reading.
+            val diaByTime = diaSamples.associateBy { it.timestamp }
+            val bpReadings = sysSamples.map { sys ->
+                val dia = diaByTime[sys.timestamp]
+                Reading(
+                    ids = listOfNotNull(sys.id, dia?.id),
+                    timestamp = sys.timestamp,
+                    value = sys.value,
+                    secondary = dia?.value,
+                    fromHistory = sys.id.startsWith(MeasurementDeletionDao.HISTORY_ID_PREFIX),
+                )
+            }.asReversed()
+
             _state.update { it.copy(
                 anchor = anchor,
+                windowStart = windowStart, windowEnd = windowEnd,
                 points = points, secondary = secondary, labels = labels,
                 timestamps = times,
+                readings = bpReadings,
                 // iOS uses the window's last reading, not the global latest.
                 latest = points.lastOrNull(),
                 min = allValues.minOrNull(), avg = thisAvg, max = allValues.maxOrNull(),
@@ -1182,12 +1494,32 @@ class VitalDetailViewModel(
 
             // Every reading, at its real timestamp — no averaging.
             val samples = dao.range(kindName, windowStart, windowEnd)
-            val times = samples.map { it.timestamp }
-            val points = samples.map { convert(it.value) }
+            // Issue #67: the Vitals card derives stress from HRV for a ring whose hardware reports
+            // none, so the detail it opens has to show the same series — a filled card over an
+            // empty chart reads as a bug in the card. Same gate as the card: only where the ring
+            // has never returned a stress reading at all, never blended with hardware values.
+            val derived = if (kind == MeasurementKind.STRESS && samples.isEmpty() && !dao.hasReal(kindName))
+                derivedStressIn(windowStart, windowEnd) else emptyList()
+            // Issue #103: the hourly SpO₂ the card labels as estimated is charted here too, so the
+            // chart carries the same disclaimer. Only hourly rows count; spot readings never do.
+            val estimatedSpo2 = if (kind == MeasurementKind.SPO2 && samples.isNotEmpty())
+                EstimatedSpo2.estimatedTimestamps(dao, windowStart, windowEnd) else emptySet()
+            val hideEstimated = kind == MeasurementKind.SPO2 && scheduledSpo2Prefs?.hideEstimated == true
+            val effectiveSamples = if (hideEstimated && estimatedSpo2.isNotEmpty())
+                samples.filterNot { it.timestamp in estimatedSpo2 } else samples
+            val times = if (derived.isNotEmpty()) derived.map { it.timestampMs } else effectiveSamples.map { it.timestamp }
+            val points = if (derived.isNotEmpty()) derived.map { it.value } else effectiveSamples.map { convert(it.value) }
             val labels = buildLabels(times, period)
 
             val prevSamples = dao.range(kindName, prevStart, prevEnd)
-            val prevAvg = if (prevSamples.isNotEmpty()) convert(prevSamples.map { it.value }.average()) else null
+            val prevEffective = if (hideEstimated && estimatedSpo2.isNotEmpty())
+                prevSamples.filterNot { it.timestamp in estimatedSpo2 } else prevSamples
+            val prevDerived = if (derived.isNotEmpty()) derivedStressIn(prevStart, prevEnd) else emptyList()
+            val prevAvg = when {
+                prevDerived.isNotEmpty() -> prevDerived.map { it.value }.average()
+                prevEffective.isNotEmpty() -> convert(prevEffective.map { it.value }.average())
+                else -> null
+            }
             val thisAvg = if (points.isNotEmpty()) points.average() else null
             val range = if (points.isNotEmpty()) points.max() - points.min() else 1.0
             val trend = computeTrend(thisAvg, prevAvg, range)
@@ -1199,25 +1531,77 @@ class VitalDetailViewModel(
 
             // HRV zones are baseline-relative; the detail window (Week/Month) carries enough
             // history to establish one (iOS `baselineForChart`).
+            // A calendar Day holds only the hours since midnight, too few early on, so Day keeps the
+            // last 24 h it used to show (issue #102 review).
+            val baselineSamples = if (metric == "hrv" && period == Period.DAY) {
+                val end = minOf(now, windowEnd)
+                dao.range(kindName, end - 86_400_000L, end)
+            } else samples
             val baseline = if (metric == "hrv")
-                com.pulseloop.service.BaselineStats.compute(samples.map { VitalSample(it.timestamp, it.value) })
+                com.pulseloop.service.BaselineStats.compute(baselineSamples.map { VitalSample(it.timestamp, it.value) })
             else null
             val engineZones = engineKind(metric)?.let { k ->
                 com.pulseloop.service.VitalsThresholdEngine.zones(k, physiology, baseline = baseline)
             } ?: emptyList()
 
+            val readings = samples.map {
+                Reading(
+                    ids = listOf(it.id),
+                    timestamp = it.timestamp,
+                    value = convert(it.value),
+                    fromHistory = it.id.startsWith(MeasurementDeletionDao.HISTORY_ID_PREFIX),
+                    isEstimated = it.timestamp in estimatedSpo2,
+                )
+            }.let { if (hideEstimated) it.filterNot { r -> r.isEstimated } else it }.asReversed()
+
             _state.update { it.copy(
                 anchor = anchor,
+                windowStart = windowStart, windowEnd = windowEnd,
                 points = points, secondary = emptyList(), labels = labels,
                 timestamps = times,
+                readings = readings,
                 // iOS uses the window's last reading, not the global latest.
                 latest = points.lastOrNull(),
                 min = points.minOrNull(), avg = thisAvg, max = points.maxOrNull(),
                 resting = resting,
                 trend = trend,
                 engineZones = engineZones,
+                isDerived = derived.isNotEmpty() || (!hideEstimated && samples.any { it.timestamp in estimatedSpo2 }),
                 loading = false,
             ) }
+        }
+    }
+
+    /**
+     * The derived stress series across one window (issue #67), timestamped by the HRV reading each
+     * score came from.
+     *
+     * These are not rows: nothing stored them and [deleteReading] has nothing to remove, which is
+     * why the readings list below stays empty on a derived chart.
+     */
+    private suspend fun derivedStressIn(from: Long, to: Long): List<VitalSample> {
+        val hrv = db.measurementDao().range(MeasurementKind.HRV.name, from, to)
+        if (hrv.isEmpty()) return emptyList()
+        return com.pulseloop.service.DerivedStress.scored(hrv.map { it.value })
+            .map { (i, score) -> VitalSample(hrv[i].timestamp, score.toDouble()) }
+    }
+
+    /**
+     * Remove one reading from the record (issue #60).
+     *
+     * Deletion, never editing: a stored health value may be taken out, but never changed into a
+     * different number. [com.pulseloop.data.MeasurementDeletion] owns the two rules that make it
+     * stick — tombstone anything the ring could re-sync, and take a blood-pressure reading's two
+     * rows together — so this only has to refresh the window afterwards.
+     */
+    fun deleteReading(reading: Reading) {
+        viewModelScope.launch {
+            try {
+                com.pulseloop.data.MeasurementDeletion.deleteByIds(db, reading.ids)
+            } catch (_: Exception) {
+                // A failed delete must not take the screen down; the row simply stays.
+            }
+            try { refresh() } catch (_: Exception) {}
         }
     }
 

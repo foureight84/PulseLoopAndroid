@@ -67,14 +67,41 @@ object ZoneLineSplitter {
     }
 
     /**
+     * Compute the representative sample interval in milliseconds across a series of timestamps.
+     * Uses the median delta between adjacent samples so that occasional spot readings or
+     * midnight double-records (e.g. 22s apart) don't collapse the interval down to seconds
+     * and break the chart line (issue #103).
+     */
+    fun sampleIntervalMs(timestamps: List<Long>): Long? {
+        if (timestamps.size < 2) return null
+        val deltas = (1 until timestamps.size)
+            .map { timestamps[it] - timestamps[it - 1] }
+            .filter { it > 0 }
+            .sorted()
+        if (deltas.isEmpty()) return null
+        return deltas[deltas.size / 2]
+    }
+
+    /**
      * The maximum allowed gap before the line breaks, tuned to the plotted span so denser
      * windows break sooner. Mirrors ChartSampleBuilder.maxGap: 24h→90 min, 7d→36 h,
      * 30d→4 days, longer→45 days.
+     *
+     * In day view ([spanMs] <= 26h), [sampleIntervalMs] scales the break threshold to
+     * `max(90m, interval * 1.5)` so user-configured 120 min or 180 min intervals keep their
+     * points connected while still breaking across real gaps (issue #103).
      */
-    fun maxGapMs(spanMs: Long): Long = when {
-        spanMs <= 26 * 3600_000L -> 90 * 60_000L
-        spanMs <= 8 * 86_400_000L -> 36 * 3600_000L
-        spanMs <= 32 * 86_400_000L -> 4 * 86_400_000L
-        else -> 45 * 86_400_000L
+    fun maxGapMs(spanMs: Long, sampleIntervalMs: Long? = null): Long {
+        val baseGap = when {
+            spanMs <= 26 * 3600_000L -> 90 * 60_000L
+            spanMs <= 8 * 86_400_000L -> 36 * 3600_000L
+            spanMs <= 32 * 86_400_000L -> 4 * 86_400_000L
+            else -> 45 * 86_400_000L
+        }
+        return if (sampleIntervalMs != null && sampleIntervalMs > 0 && spanMs <= 26 * 3600_000L) {
+            maxOf(baseGap, (sampleIntervalMs * 1.5).toLong())
+        } else {
+            baseGap
+        }
     }
 }

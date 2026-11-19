@@ -1,5 +1,9 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,10 +18,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -38,6 +48,7 @@ import com.pulseloop.data.entity.ActivitySessionEntity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.UnitConverter
 import com.pulseloop.settings.UnitSystem
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ui.components.ActivityMeta
 import com.pulseloop.ui.components.ActivityRing
 import com.pulseloop.ui.components.ActivityRings
@@ -52,7 +63,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 
-private val weekLabels = listOf("M", "T", "W", "T", "F", "S", "S")
+private val weekLabels get() = java.time.DayOfWeek.entries.map {
+    it.getDisplayName(java.time.format.TextStyle.NARROW_STANDALONE, java.util.Locale.getDefault()).uppercase()
+}
 
 /**
  * Activity dashboard — ported from ActivityView.swift: the daily summary card (colored stats +
@@ -73,6 +86,10 @@ fun ActivityScreen(
     // remember{}: the ApiKeyStore constructor does Keystore + encrypted-prefs I/O — far
     // too expensive to repeat on every recomposition of this state-collecting screen.
     val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
+    // Read the step-source preference once per composition. Cheap enough to read
+    // unconditionally (plain SharedPreferences, no crypto), and re-read on every entry to
+    // the screen so a toggle made in Settings is reflected on return.
+    val stepSourcePrefs = remember { StepSourcePrefs(context) }
     val scope = rememberCoroutineScope()
     var pickerOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
@@ -126,12 +143,16 @@ fun ActivityScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        // Day navigation (issue #76): the summary + RECORDS cards follow the shown day, so a
+        // past day's steps/distance/calories are reachable the way Sleep already allows.
+        item { ActivityDayNavHeader(state, viewModel) }
+
         item { DailyActivitySummaryCard(state, units) }
 
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "+ Record Activity",
+                    stringResource(R.string.activity_record),
                     fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Color.White,
@@ -153,7 +174,7 @@ fun ActivityScreen(
                         .clickable { historyOpen = true },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.CalendarMonth, "Workout history", tint = PulseColors.textSecondary)
+                    Icon(Icons.Filled.CalendarMonth, stringResource(R.string.activity_workout_history), tint = PulseColors.textSecondary)
                 }
             }
         }
@@ -178,8 +199,8 @@ fun ActivityScreen(
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Log Past Activity", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
-                    Text("Add a workout you forgot to record", fontSize = 12.sp, color = PulseColors.textMuted)
+                    Text(stringResource(R.string.activity_log_past), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+                    Text(stringResource(R.string.activity_log_past_desc), fontSize = 12.sp, color = PulseColors.textMuted)
                 }
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = PulseColors.textMuted)
             }
@@ -187,7 +208,7 @@ fun ActivityScreen(
 
         item {
             Text(
-                "TODAY",
+                stringResource(R.string.header_today),
                 fontSize = 11.sp, fontWeight = FontWeight.Medium,
                 letterSpacing = 1.4.sp, color = PulseColors.textMuted,
             )
@@ -204,8 +225,8 @@ fun ActivityScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("No workouts recorded today", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary)
-                    Text("Start one manually when your ring misses an activity.", fontSize = 12.sp, color = PulseColors.textMuted)
+                    Text(stringResource(R.string.activity_no_workouts_today), fontSize = 14.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary)
+                    Text(stringResource(R.string.activity_no_workouts_hint), fontSize = 12.sp, color = PulseColors.textMuted)
                 }
             }
         } else {
@@ -217,6 +238,34 @@ fun ActivityScreen(
         }
 
         item { WeeklyGoalCard(state, days, onTap = { goalsOpen = true }) }
+        // The blocks behind today's total, each removable (issue #70). Under the summary rather
+        // than beside it: it answers "why is that number wrong", which is a question you only ask
+        // after reading the number.
+        //
+        // Hidden only when the phone is *actually supplying the shown day's steps* (review
+        // item 9, PR #98). The old guard keyed on the user's preference alone, which hid the
+        // card even on days whose `phoneSteps` is null — those days display the ring's total,
+        // so the ring's own buckets are the right records for the number above them, and a
+        // bad bucket in that total needs to be deletable. `phoneOwnsShownDay` asks the two
+        // questions that actually determine it: the preference is Phone, AND the phone wrote
+        // a value for this day. `state.daySummary` is already projected by the ViewModel, so
+        // its `phoneSteps` field is the raw column — untouched by projection.
+        //
+        // On a phone-owned day the records legitimately do not sum to the header (ring
+        // buckets vs. phone total), which reads as a bug rather than a detail view — hide it
+        // for that case. Toggling back to Ring, or landing on a day the phone never
+        // backfilled, restores the card.
+        val phoneOwnsShownDay = stepSourcePrefs.preferPhone() && state.daySummary?.phoneSteps != null
+        if (!phoneOwnsShownDay) {
+            item {
+                ActivityRecordsCard(
+                    viewModel = viewModel,
+                    units = units,
+                    dayStart = shownDayStart(state),
+                    dayLabel = shownDayLabel(state),
+                )
+            }
+        }
         item { Spacer(Modifier.height(64.dp)) }
     }
 
@@ -262,13 +311,97 @@ private fun weeklySteps(state: ActivityViewModel.ActivityState, todayIdx: Int): 
     }
 }
 
+// ─────────────────── Day navigation (issue #76) ───────────────────
+
+/** Local-midnight key of the day the dashboard is showing. */
+private fun shownDayStart(state: ActivityViewModel.ActivityState): Long =
+    if (state.shownDay != 0L) state.shownDay else com.pulseloop.util.TimeUtil.startOfTodayLocal()
+
+/** Label for the RECORDS card's empty text: "today" as before, else the shown date. */
+private fun shownDayLabel(state: ActivityViewModel.ActivityState): String {
+    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    return if (shownDayStart(state) == today) L10n.get(R.string.period_today).lowercase()
+    else dayHeaderLabel(shownDayStart(state)).lowercase()
+}
+
+/** ‹ older · date · newer › stepper above the dashboard — the Sleep header's shape (iOS #84),
+ *  minus the swipe/picker: Activity needs only to reach days the store already holds. */
+@Composable
+private fun ActivityDayNavHeader(state: ActivityViewModel.ActivityState, viewModel: ActivityViewModel?) {
+    val canOlder = state.dayOffset < state.maxDayOffset
+    val canNewer = state.dayOffset > 0
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        ActivityNavChevron(Icons.Filled.ChevronLeft, stringResource(R.string.action_previous_day), canOlder) { viewModel?.stepDay(older = true) }
+        Text(
+            dayHeaderLabel(shownDayStart(state)),
+            fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary,
+            modifier = Modifier.weight(1f),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+        ActivityNavChevron(Icons.Filled.ChevronRight, stringResource(R.string.action_next_day), canNewer) { viewModel?.stepDay(older = false) }
+    }
+}
+
+@Composable
+private fun ActivityNavChevron(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon, contentDescription = label,
+            tint = if (enabled) PulseColors.textPrimary else PulseColors.textMuted.copy(alpha = 0.4f),
+        )
+    }
+}
+
+/** Same phrasing as Sleep's header: Today / Yesterday / weekday / date. */
+private fun dayHeaderLabel(dayMillis: Long): String {
+    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
+    val date = Instant.ofEpochMilli(dayMillis).atZone(ZoneId.systemDefault())
+    return when {
+        daysAgo <= 0 -> L10n.get(R.string.period_today)
+        daysAgo == 1 -> L10n.get(R.string.day_yesterday)
+        daysAgo < 7 -> date.format(DateTimeFormatter.ofPattern("EEEE", java.util.Locale.getDefault())).replaceFirstChar { it.titlecase() }
+        date.year == java.time.Year.now().value -> date.format(com.pulseloop.util.LocaleFormats.formatter("EEEMMMd", "EEE, MMM d"))
+        else -> date.format(com.pulseloop.util.LocaleFormats.formatter("yMMMd", "MMM d, yyyy"))
+    }
+}
+
 // ─────────────────── Daily summary card (stats + rings) ───────────────────
 
 @Composable
 private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, units: UnitSystem) {
     val shape = RoundedCornerShape(20.dp)
-    val today = state.today
+    // The shown day's totals, not always-today: day navigation must move this card (issue #76).
+    // No fallback to today: a day with no stored row is a day with no data, not today's (issue #101).
+    // WeeklyGoalCard keeps reading state.today — a week widget is about the live week.
+    val today = state.daySummary
     val distValue = today?.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
+    // Read the effective calories from the ViewModel rather than the row's raw `calories`
+    // column: the estimator's figure is what the Today card shows, and reading the column
+    // here would surface a phone row's stale hardcoded placeholder (or a ring's pre-toggle
+    // value) as if it were a real total. Same read path as TodayViewModel's, so the two
+    // screens cannot disagree.
+    //
+    // `calories` is the day's *total* (basal + active) — what the Calories metric shows, same
+    // as Today. The goal ring reads the active-only figure instead: UserGoal.calories is an
+    // active-energy goal, so a ring drawn against the total would sit near full from midnight.
+    val calories = state.effectiveCalories
+    val activeCalories = state.effectiveActiveCalories
     Row(
         Modifier
             .fillMaxWidth()
@@ -281,16 +414,17 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row {
-                SummaryMetric("Steps", today?.steps?.let { Formats.count(it) } ?: "—", null, PulseColors.steps, Modifier.weight(1f))
-                SummaryMetric("Distance", distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
+                SummaryMetric(stringResource(R.string.metric_steps), today?.steps?.let { Formats.count(it) } ?: "—", null, PulseColors.steps, Modifier.weight(1f))
+                SummaryMetric(stringResource(R.string.metric_distance), distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
             }
-            SummaryMetric("Calories", today?.calories?.let { Formats.count(it.toInt()) } ?: "—", if (today?.calories != null) "cal" else null, PulseColors.calories)
+            // The same figure the Today screen shows, not the row's raw `calories` (issue #101).
+            SummaryMetric(stringResource(R.string.metric_calories), calories?.let { Formats.count(it.toInt()) } ?: "—", if (calories != null) stringResource(R.string.unit_cal) else null, PulseColors.calories)
         }
         ActivityRings(
             rings = listOf(
                 ActivityRing(today?.steps?.toDouble(), state.stepGoal.toDouble(), PulseColors.steps),
                 ActivityRing(today?.distanceMeters, state.distanceGoalMeters, PulseColors.distance),
-                ActivityRing(today?.calories, state.caloriesGoal.toDouble(), PulseColors.calories),
+                ActivityRing(activeCalories, state.caloriesGoal.toDouble(), PulseColors.calories),
             ),
             size = 112.dp,
             strokeWidth = 11.dp,
@@ -366,7 +500,7 @@ fun ActivityWorkoutRow(session: ActivitySessionEntity, units: UnitSystem, onTap:
                     )
                 }
                 session.avgHeartRate?.let {
-                    Text("${it.toInt()} bpm avg", fontSize = 12.sp, color = PulseColors.textSecondary)
+                    Text(stringResource(R.string.activity_bpm_avg, it.toInt()), fontSize = 12.sp, color = PulseColors.textSecondary)
                 }
                 Spacer(Modifier.weight(1f))
                 if (session.useGps && session.gpsPointCount > 1) {
@@ -406,21 +540,21 @@ private fun WeeklyGoalCard(state: ActivityViewModel.ActivityState, days: List<We
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("$activeMinutes", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
-                    Text("MIN", fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.sp, color = PulseColors.textMuted)
+                    Text(stringResource(R.string.unit_min_caps), fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.sp, color = PulseColors.textMuted)
                 }
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "WEEKLY GOAL",
+                    stringResource(R.string.activity_weekly_goal),
                     fontSize = 11.sp, fontWeight = FontWeight.Medium,
                     letterSpacing = 1.4.sp, color = PulseColors.textMuted,
                 )
-                Text("$activeDayCount of 7 active days", fontSize = 16.sp, color = PulseColors.textPrimary)
+                Text(stringResource(R.string.activity_active_days, activeDayCount), fontSize = 16.sp, color = PulseColors.textPrimary)
             }
         }
         WeeklyPillCalendar(days)
         Text(
-            "TAP TO EDIT GOALS",
+            stringResource(R.string.activity_tap_edit_goals),
             fontSize = 10.sp, fontWeight = FontWeight.Medium,
             letterSpacing = 1.sp, color = PulseColors.textMuted,
         )
@@ -510,7 +644,7 @@ private fun RecordTypePickerDialog(onDismiss: () -> Unit, onStart: (String, Bool
     var useGps by remember { mutableStateOf(true) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Record activity") },
+        title = { Text(stringResource(R.string.activity_record_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 ActivityMeta.ORDER.forEach { type ->
@@ -537,16 +671,16 @@ private fun RecordTypePickerDialog(onDismiss: () -> Unit, onStart: (String, Bool
                         Modifier.fillMaxWidth().padding(top = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Track GPS route", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Text(stringResource(R.string.activity_track_gps), fontSize = 14.sp, modifier = Modifier.weight(1f))
                         Switch(checked = useGps, onCheckedChange = { useGps = it })
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onStart(selected, useGps && ActivityMeta.gpsCapable(selected)) }) { Text("Start") }
+            TextButton(onClick = { onStart(selected, useGps && ActivityMeta.gpsCapable(selected)) }) { Text(stringResource(R.string.action_start)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 }
 
@@ -561,15 +695,15 @@ private fun WorkoutHistoryDialog(
     onSelect: (String) -> Unit,
 ) {
     val zone = remember { ZoneId.systemDefault() }
-    val headerFmt = remember { DateTimeFormatter.ofPattern("EEEE, MMM d") }
+    val headerFmt = remember { com.pulseloop.util.LocaleFormats.formatter("EEEEMMMd", "EEEE, MMM d") }
     val today = remember { LocalDate.now(zone) }
     val groups = remember(sessions) {
         sessions.groupBy { Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate() }
             .toList().sortedByDescending { it.first }
     }
     fun header(day: LocalDate): String = when (day) {
-        today -> "TODAY"
-        today.minusDays(1) -> "YESTERDAY"
+        today -> L10n.get(R.string.header_today)
+        today.minusDays(1) -> L10n.get(R.string.header_yesterday)
         // Locale.ROOT: iOS's uppercased() is locale-insensitive; a Turkish locale would turn
         // month-name i's into dotted İ otherwise.
         else -> headerFmt.format(day).uppercase(java.util.Locale.ROOT)
@@ -577,10 +711,10 @@ private fun WorkoutHistoryDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Workout history") },
+        title = { Text(stringResource(R.string.activity_workout_history)) },
         text = {
             if (groups.isEmpty()) {
-                Text("No workouts yet — recorded workouts will appear here.")
+                Text(stringResource(R.string.activity_history_empty))
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.heightIn(max = 420.dp)) {
                     groups.forEachIndexed { index, (day, daySessions) ->
@@ -603,7 +737,7 @@ private fun WorkoutHistoryDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_done)) } },
     )
 }
 
@@ -620,21 +754,21 @@ private fun GoalEditorDialog(
     var workouts by remember { mutableStateOf(state.workoutsPerWeekGoal.toFloat()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Edit goals") },
+        title = { Text(stringResource(R.string.activity_edit_goals)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                GoalSlider("Steps", Formats.count((steps / 500).toInt() * 500), steps, 2000f..20000f) { steps = it }
-                GoalSlider("Active minutes", "${active.toInt()} min", active, 10f..180f) { active = it }
-                GoalSlider("Sleep", "%.1f h".format((sleepH * 2).toInt() / 2f), sleepH, 5f..10f) { sleepH = it }
-                GoalSlider("Workouts / week", "${workouts.toInt()}", workouts, 1f..7f) { workouts = it }
+                GoalSlider(stringResource(R.string.metric_steps), Formats.count((steps / 500).toInt() * 500), steps, 2000f..20000f) { steps = it }
+                GoalSlider(stringResource(R.string.goal_active_minutes), stringResource(R.string.value_min, active.toInt()), active, 10f..180f) { active = it }
+                GoalSlider(stringResource(R.string.metric_sleep), stringResource(R.string.value_hours_decimal, "%.1f".format((sleepH * 2).toInt() / 2f)), sleepH, 5f..10f) { sleepH = it }
+                GoalSlider(stringResource(R.string.goal_workouts_week), "${workouts.toInt()}", workouts, 1f..7f) { workouts = it }
             }
         },
         confirmButton = {
             TextButton(onClick = {
                 onSave((steps / 500).toInt() * 500, active.toInt(), ((sleepH * 2).toInt() * 30), workouts.toInt())
-            }) { Text("Save") }
+            }) { Text(stringResource(R.string.action_save)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 }
 
@@ -648,3 +782,145 @@ private fun GoalSlider(label: String, valueText: String, value: Float, range: Cl
         Slider(value = value, onValueChange = onChange, valueRange = range)
     }
 }
+
+/**
+ * The individual activity records behind a day's total, each deletable (issue #70).
+ *
+ * The counterpart to the vitals READINGS list from #60, and asked for by the same reporter for the
+ * same reason: a ring logs activity in intraday blocks, so a day's steps are a couple of dozen rows
+ * rather than one figure, and a single block inflated by carrying the ring rather than wearing it
+ * is otherwise stuck in the total for good. Deletion only, like #60 — a recorded value can be
+ * removed, never edited into a different one.
+ *
+ * Collapsed by default and paged, because a day is a couple of dozen rows and a week is not.
+ */
+@Composable
+private fun ActivityRecordsCard(
+    viewModel: ActivityViewModel?,
+    units: UnitSystem,
+    dayStart: Long,
+    dayLabel: String,
+) {
+    val scope = rememberCoroutineScope()
+    var expanded by remember { mutableStateOf(false) }
+    var buckets by remember(dayStart) { mutableStateOf<List<com.pulseloop.data.entity.ActivityBucketEntity>?>(null) }
+    var pending by remember { mutableStateOf<com.pulseloop.data.entity.ActivityBucketEntity?>(null) }
+    var visibleCount by remember(dayStart) { mutableStateOf(ACTIVITY_RECORDS_PAGE_SIZE) }
+    val shape = RoundedCornerShape(20.dp)
+
+    // Loaded only when opened: the list is a query per day and most visits never expand it.
+    LaunchedEffect(expanded, dayStart) {
+        if (expanded && buckets == null) buckets = viewModel?.bucketsForDay(dayStart) ?: emptyList()
+    }
+
+    fun timeOf(startEpoch: Long): String =
+        com.pulseloop.util.LocaleFormats.time()
+            .format(Instant.ofEpochMilli(startEpoch).atZone(ZoneId.systemDefault()))
+
+    Column(
+        Modifier.fillMaxWidth().clip(shape).background(PulseColors.card).border(1.dp, PulseColors.borderSubtle, shape),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                stringResource(R.string.activity_records),
+                fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.sp, color = PulseColors.textMuted,
+            )
+            Spacer(Modifier.weight(1f))
+            buckets?.let {
+                Text(it.size.toString(), fontSize = 12.sp, color = PulseColors.textMuted, modifier = Modifier.padding(end = 6.dp))
+            }
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) stringResource(R.string.activity_records_hide) else stringResource(R.string.activity_records_show),
+                tint = PulseColors.textMuted,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+
+        if (expanded) {
+            val rows = buckets
+            when {
+                rows == null -> Text(
+                    stringResource(R.string.status_loading),
+                    fontSize = 13.sp, color = PulseColors.textMuted,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 12.dp),
+                )
+                rows.isEmpty() -> Text(
+                    stringResource(R.string.activity_records_empty, dayLabel),
+                    fontSize = 13.sp, color = PulseColors.textMuted,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                )
+                else -> {
+                    // Not a nested LazyColumn — this card already sits inside one.
+                    rows.take(visibleCount).forEach { bucket ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                timeOf(bucket.startEpoch),
+                                fontSize = 13.sp, color = PulseColors.textSecondary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                pluralStringResource(R.plurals.steps_count, bucket.steps, Formats.count(bucket.steps)),
+                                fontSize = 13.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary,
+                            )
+                            if (bucket.distanceMeters > 0) {
+                                Text(
+                                    " · %.2f %s".format(UnitConverter.distance(bucket.distanceMeters, units), UnitConverter.distanceUnit(units)),
+                                    fontSize = 11.sp, color = PulseColors.textMuted,
+                                )
+                            }
+                            IconButton(onClick = { pending = bucket }, modifier = Modifier.size(36.dp)) {
+                                Icon(
+                                    Icons.Filled.DeleteOutline,
+                                    contentDescription = stringResource(R.string.activity_record_delete),
+                                    tint = PulseColors.textMuted,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    }
+                    if (rows.size > visibleCount) {
+                        TextButton(
+                            onClick = { visibleCount += ACTIVITY_RECORDS_PAGE_SIZE },
+                            modifier = Modifier.padding(start = 8.dp),
+                        ) {
+                            val more = minOf(ACTIVITY_RECORDS_PAGE_SIZE, rows.size - visibleCount)
+                    Text(pluralStringResource(R.plurals.detail_show_more, more, more), fontSize = 13.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        }
+    }
+
+    pending?.let { bucket ->
+        AlertDialog(
+            onDismissRequest = { pending = null },
+            title = { Text(stringResource(R.string.activity_record_delete_title)) },
+            text = {
+                Text(
+                    stringResource(R.string.activity_record_delete_body, pluralStringResource(R.plurals.steps_count, bucket.steps, Formats.count(bucket.steps)), timeOf(bucket.startEpoch)),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = bucket
+                    pending = null
+                    scope.launch { buckets = viewModel?.deleteBucket(target.startEpoch) ?: buckets }
+                }) { Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pending = null }) { Text(stringResource(R.string.action_cancel)) } },
+        )
+    }
+}
+
+/** How many activity records the list shows before asking (issue #70). */
+private const val ACTIVITY_RECORDS_PAGE_SIZE = 50

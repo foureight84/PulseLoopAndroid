@@ -21,7 +21,7 @@ android {
         // versionCode/versionName are overridable from Gradle properties so the release CI
         // can drive them straight from the git tag (e.g. -PappVersionCode=5 -PappVersionName=1.0.0).
         // Local builds fall back to the literals below.
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 39
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 40
         versionName = (project.findProperty("appVersionName") as String?) ?: "2.7.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -90,6 +90,15 @@ android {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
+            ndk {
+                // The universal APK carries every ABI in the graph, not just the ones listed
+                // in `splits.abi` (that list only governs the per-ABI split APKs). ML Kit's
+                // bundled barcode model ships a ~5 MB libbarhopper_v3.so per ABI, so the x86
+                // and x86_64 copies alone were ~11 MB of the 29 MB release — dead weight on
+                // every phone. Release builds are arm-only; debug keeps all ABIs so x86_64
+                // emulators still work.
+                abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+            }
         }
         debug {
             // Distinct applicationId so a debug build installs ALONGSIDE the release app

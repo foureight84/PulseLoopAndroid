@@ -21,10 +21,17 @@ object SleepSegmentation {
 
     /**
      * Group blocks into chronological sessions, splitting wherever the gap from one block's end to
-     * the next block's start is >= [SESSION_GAP_MINUTES]. Input need not be sorted. Returns
-     * time-ordered groups; empty in -> empty out.
+     * the next block's start is >= [SESSION_GAP_MINUTES], unless [bridge] says the wearer's own
+     * Bedtime window spans it (issue #105). Input need not be sorted. Returns time-ordered groups;
+     * empty in -> empty out.
+     *
+     * Both writers of sessions — the sync's reconcile and `SleepRecordDeletion`'s restate — must pass
+     * the same bridge, or a deletion would split a night the sync had kept whole.
      */
-    fun segment(blocks: List<SleepStageBlockEntity>): List<List<SleepStageBlockEntity>> {
+    fun segment(
+        blocks: List<SleepStageBlockEntity>,
+        bridge: SleepGapBridge = SleepGapBridge.NONE,
+    ): List<List<SleepStageBlockEntity>> {
         val sorted = blocks.sortedBy { it.startAt }
         val first = sorted.firstOrNull() ?: return emptyList()
 
@@ -33,7 +40,7 @@ object SleepSegmentation {
         var prevEnd = first.startAt + first.durationMinutes * 60_000L
 
         for (block in sorted.drop(1)) {
-            if (block.startAt - prevEnd >= GAP_MILLIS) {
+            if (block.startAt - prevEnd >= GAP_MILLIS && !bridge.bridges(prevEnd, block.startAt)) {
                 groups.add(current)
                 current = mutableListOf(block)
             } else {

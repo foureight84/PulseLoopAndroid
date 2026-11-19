@@ -3,10 +3,9 @@ package com.pulseloop.health
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.metadata.Device
 import com.pulseloop.data.entity.SleepSessionEntity
+import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.health.exporters.buildSleepSessionRecord
 import com.pulseloop.ring.SleepStage
-import com.pulseloop.ring.SleepStageSegment
-import com.pulseloop.service.buildTimestampedStageBlocks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -30,17 +29,12 @@ class SleepExporterMappingTest {
             totalMinutes = 360,
             updatedAt = updatedAt,
         )
-        val blocks = buildTimestampedStageBlocks(
-            session.id,
-            session.startAt,
-            session.endAt,
-            listOf(
-                SleepStageSegment(SleepStage.UNKNOWN, start, start.plusSeconds(30 * 60L)),
-                SleepStageSegment(SleepStage.LIGHT, start.plusSeconds(30 * 60L), start.plusSeconds(90 * 60L)),
-                SleepStageSegment(SleepStage.UNKNOWN, start.plusSeconds(90 * 60L), start.plusSeconds(4 * 60 * 60L)),
-                SleepStageSegment(SleepStage.DEEP, start.plusSeconds(4 * 60 * 60L), start.plusSeconds(4 * 60 * 60L + 56 * 60L)),
-                SleepStageSegment(SleepStage.UNKNOWN, start.plusSeconds(4 * 60 * 60L + 56 * 60L), end),
-            ),
+        val blocks = listOf(
+            block(session.id, start, 0, 30, SleepStage.UNKNOWN),
+            block(session.id, start.plusSeconds(30 * 60L), 30, 60, SleepStage.LIGHT),
+            block(session.id, start.plusSeconds(90 * 60L), 90, 150, SleepStage.UNKNOWN),
+            block(session.id, start.plusSeconds(4 * 60 * 60L), 240, 56, SleepStage.DEEP),
+            block(session.id, start.plusSeconds(4 * 60 * 60L + 56 * 60L), 296, 64, SleepStage.UNKNOWN),
         )
         val recordId = HealthConnectTypeMappings.sleepSessionRecordIdV2(session.id)
 
@@ -79,12 +73,7 @@ class SleepExporterMappingTest {
                 totalMinutes = minutes,
                 updatedAt = updatedAt,
             )
-            val blocks = buildTimestampedStageBlocks(
-                session.id,
-                session.startAt,
-                session.endAt,
-                listOf(SleepStageSegment(SleepStage.UNKNOWN, start, end)),
-            )
+            val blocks = listOf(block(session.id, start, 0, minutes, SleepStage.UNKNOWN))
             return buildSleepSessionRecord(
                 session,
                 blocks,
@@ -135,4 +124,18 @@ class SleepExporterMappingTest {
         assertEquals(2, idsAfter.values.toSet().size)
         assertTrue(idsAfter.values.all { it.length <= 100 })
     }
+
+    private fun block(
+        sessionId: String,
+        start: Instant,
+        startMinute: Int,
+        durationMinutes: Int,
+        stage: SleepStage,
+    ) = SleepStageBlockEntity(
+        sessionId = sessionId,
+        startAt = start.toEpochMilli(),
+        startMinute = startMinute,
+        durationMinutes = durationMinutes,
+        stageRaw = stage.name,
+    )
 }

@@ -29,18 +29,49 @@ object RingEncoder {
      */
     fun makeDefaultUserInfoCommand(): ByteArray = hexToBytes("0299b85a00000000000000000000000000000000")
     /**
-     * Request activity + sleep history for the last N days (0x10).
-     * byte[1] = number of days (0-27). The ring sends back 0x10 (steps)
+     * Request activity + sleep history for **one** day (0x10). The ring answers with 0x10 (steps)
      * and 0x11 (sleep) notifications as multi-packet streams.
-     * Matches Gadgetbridge's triggerActivityReportByDays().
+     *
+     * **byte[1] is a day OFFSET, not a count** (issue #73). `0` is today, `1` yesterday, and so on.
+     * The vendor SDK settles it: `IRemoteService.getDataByDay(int type, int day)` reaches
+     * `BluetoothLeService.a(int, int)`, which writes the *type* into `bArr[0]`
+     * (`1` -> 16 = `0x10` activity/sleep, `2` -> 22 = `0x16` heart rate) and then the `day`
+     * argument straight into `bArr[1]` — one day per call, no count anywhere. Its caller loops:
+     * `DupMainActivity.onGetMultipleSportData` decrements `P_SYNC_HISTORY_DAY` on each day's sync-end
+     * and calls `getDataByDay(1, i6)` again, counting down to `0`.
+     *
+     * Read as a count, `0x10/01` asks for *yesterday* and `0x10/03` for the day before last — so
+     * today was never requested and last night's sleep could not arrive at all, which is exactly
+     * what #73 reported on an SR08. Steps and HR still showed up because neither depends on this
+     * request for today: activity arrives on the ring's automatic 0x03 push, and
+     * [makeHistoryMeasurementQueryCommand] already hardcodes offset 0.
+     *
+     * The old doc credited Gadgetbridge's `triggerActivityReportByDays()`; that name appears
+     * nowhere in the vendor SDK and the count reading came with it.
      */
-    fun makeHistoryQueryCommand(days: Int = 1): ByteArray {
+    fun makeHistoryQueryCommand(dayOffset: Int = 0): ByteArray {
         val cmd = ByteArray(20)
         cmd[0] = 0x10
-        cmd[1] = days.coerceIn(0, 27).toByte()
+        cmd[1] = dayOffset.coerceIn(0, 27).toByte()
         return cmd
     }
-    fun makeHistoryMeasurementQueryCommand(): ByteArray = hexToBytes("1600000000000000000000000000000000000000")
+    /**
+     * Request heart-rate history for **one** day (0x16), answered as the multi-packet stream
+     * `RingDecoder.decodeHeartRateHistory` unpacks (`0xF0` header … `0xFF` sync finished).
+     *
+     * byte[1] is a day offset on the same footing as [makeHistoryQueryCommand]'s: the vendor
+     * reaches both through `getDataByDay(int type, int day)`, which picks the opcode from *type*
+     * (`1` -> `0x10`, `2` -> `0x16`) and writes *day* into `bArr[1]` either way. This used to be a
+     * fixed `16 00`, which is why heart rate kept working while sleep did not (issue #73) — and
+     * why it now takes an offset, so [JringHistorySync] can chain each backfilled day's HR behind
+     * that day's activity/sleep the way the vendor does.
+     */
+    fun makeHistoryMeasurementQueryCommand(dayOffset: Int = 0): ByteArray {
+        val cmd = ByteArray(20)
+        cmd[0] = 0x16
+        cmd[1] = dayOffset.coerceIn(0, 27).toByte()
+        return cmd
+    }
     fun makeHeartRateStartCommand(): ByteArray = hexToBytes("14b4000000000000000000000000000000000000")
     fun makeHeartRateStopCommand(): ByteArray = hexToBytes("1500000000000000000000000000000000000000")
     /**

@@ -93,7 +93,7 @@ class LuckRingHistorySyncTest {
 
     @Test
     fun `catalog and vitals subsets are what we expect`() {
-        assertEquals(listOf<UByte>(5u, 6u, 8u, 40u, 41u, 42u, 47u, 53u), LuckRingHistorySync.catalog)
+        assertEquals(listOf<UByte>(5u, 6u, 8u, 40u, 41u, 47u, 53u), LuckRingHistorySync.catalog)
         assertEquals(listOf<UByte>(8u, 40u), LuckRingHistorySync.vitalsTypes)
     }
 }

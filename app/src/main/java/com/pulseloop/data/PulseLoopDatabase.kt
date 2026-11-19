@@ -42,13 +42,16 @@ import com.pulseloop.data.entity.*
         CoachNotificationRecordEntity::class,
         MealEntryEntity::class,
         CachedFoodProductEntity::class,
+        MeasurementDeletionEntity::class,
     ],
-    version = 23,
+    version = 29,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun measurementDao(): MeasurementDao
+    /** Issue #60: the tombstones that keep a deleted reading deleted across re-syncs. */
+    abstract fun measurementDeletionDao(): MeasurementDeletionDao
     abstract fun activityDailyDao(): ActivityDailyDao
     abstract fun activityBucketDao(): ActivityBucketDao
     abstract fun deviceMeasurementConfigDao(): DeviceMeasurementConfigDao
@@ -68,6 +71,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     abstract fun coachSummaryDao(): CoachSummaryDao
     abstract fun wearableLogDao(): WearableLogDao
     abstract fun rawPacketDao(): RawPacketDao
+    abstract fun debugDao(): DebugDao
     abstract fun batterySampleDao(): BatterySampleDao
     abstract fun coachNotificationRecordDao(): CoachNotificationRecordDao
     // iOS #96: Nutrition
@@ -107,7 +111,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             "coach_tool_calls", "user_profiles", "user_goals",
             "raw_packets", "derived_updates", "coach_summaries",
             "wearable_logs", "coach_notification_records",
-            "meal_entries", "food_products",
+            "meal_entries", "food_products", "measurement_deletions",
         )
 
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
@@ -442,6 +446,98 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v23 → v24: the deleted-reading tombstones (issue #60). Deleting a history-sourced
+         * measurement only sticks if the deletion outlives the row — see
+         * [com.pulseloop.data.entity.MeasurementDeletionEntity].
+         */
+        private val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `measurement_deletions` (
+                        `measurementId` TEXT NOT NULL,
+                        `kindRaw` TEXT NOT NULL,
+                        `timestamp` INTEGER NOT NULL,
+                        `deletedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`measurementId`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        /**
+         * v24 -> v25: `raw_packets.deviceTypeRaw`, so the diagnostics report masks each captured
+         * frame against the family that sent it rather than against whichever ring is connected
+         * when the report is exported (a Colmi frame masked with CRP's six-byte header exports five
+         * bytes of samples). Nullable with no backfill on purpose — the family of an already
+         * captured packet is not recoverable, and the redactor masks a row with no family from
+         * byte 1, which is the conservative reading. `raw_packets` is a 1000-row debug ring buffer
+         * (`DiagnosticsRetention`), so existing rows age out within a session or two of use.
+         */
+        private val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `raw_packets` ADD COLUMN `deviceTypeRaw` TEXT")
+            }
+        }
+
+        /**
+         * v25 -> v26: `device_measurement_configs.spo2IntervalMinutes` (issue #66). 0 means "follow
+         * the heart-rate interval", which is exactly what every existing row did implicitly, so the
+         * default backfills losslessly.
+         */
+        private val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `device_measurement_configs` ADD COLUMN `spo2IntervalMinutes` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v26 -> v27: what a day's deleted activity buckets took with them (issue #70).
+         *
+         * The tombstone keeps a deleted bucket from being re-synced, but the ring's *live*
+         * cumulative day counter still includes it and the live path ratchets the day up against
+         * that counter — so today's deletion was undone seconds later. The day has to remember how
+         * much it removed in order to subtract it from every later cumulative reading. 0 for every
+         * existing row is exactly right: nothing had been deleted from them.
+         */
+        private val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `deletedSteps` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `deletedDistanceMeters` REAL NOT NULL DEFAULT 0.0")
+            }
+        }
+
+        /**
+         * v27 -> v28: `sleep_stage_blocks.recordStartAt` (issue #68).
+         *
+         * Which ring record a block came from, so a split night's records can be listed without
+         * guessing the boundary from gaps — this ring reopens a record one minute later, the same
+         * width as the minute-grid rounding seam. 0 backfills every existing row as "unknown",
+         * which keeps those nights on the gap heuristic instead of silently calling them unsplit.
+         */
+        private val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `sleep_stage_blocks` ADD COLUMN `recordStartAt` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v28 -> v29: `activity_daily.phoneSteps` — the phone-source step column.
+         *
+         * Phone-sourced steps live in their own column instead of overwriting [ActivityDailyEntity.steps],
+         * so the ring's totals (steps, calories, distance) are never clobbered and switching the step
+         * source is a read-time choice, not a destructive write. Null for every existing row: no day
+         * has a phone value under the new design yet, and the display falls back to `steps` when null.
+         */
+        private val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `activity_daily` ADD COLUMN `phoneSteps` INTEGER")
+            }
+        }
+
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -531,6 +627,12 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_20_21,
                         MIGRATION_21_22,
                         MIGRATION_22_23,
+                        MIGRATION_23_24,
+                        MIGRATION_24_25,
+                        MIGRATION_25_26,
+                        MIGRATION_26_27,
+                        MIGRATION_27_28,
+                        MIGRATION_28_29,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

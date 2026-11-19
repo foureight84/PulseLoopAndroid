@@ -89,7 +89,7 @@ class LuckRingSyncEngine(
 
     /** No LuckRing power-off/factory-reset opcode is implemented in this pass -- the buttons stay
      *  hidden (not declared in [LuckRingCoordinator.capabilities]), so these are never invoked. */
-    override fun powerOff() {}
+    override fun powerOff(): Boolean = false
     override fun factoryReset() {}
 
     // MARK: Clock / profile

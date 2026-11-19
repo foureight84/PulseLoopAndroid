@@ -128,6 +128,26 @@ object ColmiEncoder {
         )
     }
 
+    /**
+     * `PhoneSportReq.getSportStatus(status, sportType)` = `[0x77, status, sportType]` — the QRing
+     * app's whole live-activity protocol (issue #64). Start on entering the running screen, pause /
+     * resume from its buttons, stop on finish. The ring answers each with an `AppSportRsp` echo and,
+     * between start and stop, pushes `0x78` telemetry on its own.
+     */
+    fun phoneSport(status: UByte, sportType: UByte): ByteArray =
+        byteArrayOf(ColmiCommandID.PHONE_SPORT.toByte(), status.toByte(), sportType.toByte())
+
+    /** The QRing sport type for one of this app's activity types (`ActivityMeta.ORDER`). Anything
+     *  without a vendor counterpart is "Other sports", which is a real entry in QRing's list. */
+    fun sportType(activityType: String): UByte = when (activityType) {
+        "walk" -> ColmiCommandID.SPORT_TYPE_WALK
+        "run" -> ColmiCommandID.SPORT_TYPE_RUN
+        "cycle" -> ColmiCommandID.SPORT_TYPE_CYCLE
+        "hike" -> ColmiCommandID.SPORT_TYPE_HIKE
+        "yoga" -> ColmiCommandID.SPORT_TYPE_YOGA
+        else -> ColmiCommandID.SPORT_TYPE_OTHER
+    }
+
     fun realtimeHeartRate(enable: Boolean): ByteArray =
         byteArrayOf(ColmiCommandID.REALTIME_HEART_RATE.toByte(), if (enable) 0x01 else 0x02)
 
@@ -154,6 +174,25 @@ object ColmiEncoder {
             ColmiCommandID.REALTIME_STOP.toByte(),
             ColmiCommandID.RT_SPO2.toByte(),
             0x00, 0x00,
+        )
+    }
+
+    /**
+     * On-demand HRV / stress / temperature, the same `0x69`/`0x6A` pair as [manualSpO2] with the
+     * vital's reading type. Start is QRing's `StartHeartRateReq.getSimpleReq(type)` =
+     * `[0x69, type, 0x25]`. The HRV and stress stops carry the last raw value the ring streamed, as
+     * the HR stop does (`StopHeartRateReq.stopHrv(b)` / `stopPressure(b)`), so the ring's own log
+     * records it; the ring echoes its final value back in the `0x6A` ack. Temperature does not:
+     * QRing's `stopTemperatureCheck()` is a fixed `[0x6A, 0x0B, 0, 0]` at every call site in
+     * `TemperatureActivity`, so [lastRaw] is ignored for it.
+     */
+    fun spotVital(vital: SpotVital, enable: Boolean, lastRaw: Int = 0): ByteArray = if (enable) {
+        byteArrayOf(ColmiCommandID.MANUAL_HEART_RATE.toByte(), ColmiCommandID.readingType(vital).toByte(), 0x25)
+    } else {
+        byteArrayOf(
+            ColmiCommandID.REALTIME_STOP.toByte(),
+            ColmiCommandID.readingType(vital).toByte(),
+            if (vital == SpotVital.TEMPERATURE) 0x00 else lastRaw.coerceIn(0, 255).toByte(), 0x00,
         )
     }
 

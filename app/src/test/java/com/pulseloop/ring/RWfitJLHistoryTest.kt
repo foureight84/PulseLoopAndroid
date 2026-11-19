@@ -215,6 +215,24 @@ class RWfitJLHistoryTest {
         assertEquals(t0 + 3600, timelines[1]._timestamp.epochSecond)
     }
 
+    @Test
+    fun `decodeSleepWithRemainder isolates completed session and returns trailing unclosed records`() {
+        val completedSession = recSleep(t0, 0x11) +
+            recSleep(t0 + 120, 1) +
+            recSleep(t0 + 240, 0x22)
+        val unclosedTrailing = recSleep(t0 + 3600, 0x11) +
+            recSleep(t0 + 3720, 2)
+        val p = completedSession + unclosedTrailing
+
+        val (events, remainder) = RWfitJLHistory.decodeSleepWithRemainder(p)
+        val timelines = events.filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(1, timelines.size)
+        assertEquals(t0, timelines[0]._timestamp.epochSecond)
+        org.junit.Assert.assertNotNull(remainder)
+        org.junit.Assert.assertArrayEquals(unclosedTrailing, remainder)
+    }
+
     // ── Temperature (U, id -68) ─────────────────────────────────────────────────
 
     @Test

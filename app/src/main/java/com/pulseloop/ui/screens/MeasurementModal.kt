@@ -1,5 +1,7 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
@@ -40,19 +42,19 @@ fun MeasurementModal(
         else -> MaterialTheme.colorScheme.primary
     }
     val name = when (kind) {
-        MeasurementKind.HEART_RATE -> "Heart Rate"
-        MeasurementKind.SPO2 -> "Blood Oxygen"
-        else -> "Measurement"
+        MeasurementKind.HEART_RATE -> stringResource(R.string.metric_heart_rate)
+        MeasurementKind.SPO2 -> stringResource(R.string.metric_blood_oxygen)
+        else -> stringResource(R.string.measure_generic)
     }
     val unit = when (kind) {
-        MeasurementKind.HEART_RATE -> "bpm"
+        MeasurementKind.HEART_RATE -> stringResource(R.string.unit_bpm)
         MeasurementKind.SPO2 -> "%"
         else -> ""
     }
     val instruction = when (kind) {
-        MeasurementKind.HEART_RATE -> "Keep your hand still and rest your wrist on a flat surface."
-        MeasurementKind.SPO2 -> "Breathe normally. Keep the sensor pressed firmly to your skin."
-        else -> "Stay still during the measurement."
+        MeasurementKind.HEART_RATE -> stringResource(R.string.measure_hint_hr)
+        MeasurementKind.SPO2 -> stringResource(R.string.measure_hint_spo2)
+        else -> stringResource(R.string.measure_hint_generic)
     }
 
     var phase by remember { mutableStateOf(MeasurePhase.PREPARING) }
@@ -114,11 +116,11 @@ fun MeasurementModal(
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
             Column {
-                Text("MEASURING", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.measure_measuring_caps), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
             TextButton(onClick = onDismiss) {
-                Text(if (phase == MeasurePhase.MEASURING) "Finish" else "Cancel")
+                Text(if (phase == MeasurePhase.MEASURING) stringResource(R.string.record_finish) else stringResource(R.string.action_cancel))
             }
         }
 
@@ -132,11 +134,11 @@ fun MeasurementModal(
                     }
                 }
                 Text(
-                    "Couldn't get a reading. Make sure the ring is snug and worn on your finger, then try again.",
+                    stringResource(R.string.measure_failed),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Button(onClick = onDismiss) { Text("Close") }
+                Button(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
             }
         } else {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.size(240.dp)) {
@@ -158,7 +160,7 @@ fun MeasurementModal(
                                 Text(unit.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             } else {
                                 Text(
-                                    if (phase == MeasurePhase.PREPARING) "READY" else "MEASURING",
+                                    if (phase == MeasurePhase.PREPARING) stringResource(R.string.measure_ready_caps) else stringResource(R.string.measure_measuring_caps),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Medium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -173,8 +175,8 @@ fun MeasurementModal(
             Text(
                 when (phase) {
                     MeasurePhase.PREPARING -> instruction
-                    MeasurePhase.MEASURING -> if (kind == MeasurementKind.SPO2) "Measuring SpO₂… keep your hand still." else "Measuring… stay still."
-                    MeasurePhase.RESULT -> "Reading saved."
+                    MeasurePhase.MEASURING -> if (kind == MeasurementKind.SPO2) stringResource(R.string.measure_spo2_progress) else stringResource(R.string.measure_progress)
+            MeasurePhase.RESULT -> stringResource(R.string.measure_saved_msg)
                     MeasurePhase.ERROR -> ""
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -189,7 +191,7 @@ fun MeasurementModal(
                 Modifier.fillMaxWidth().padding(bottom = 28.dp).clip(RoundedCornerShape(16.dp)),
                 color = Color(0xFF4CAF50).copy(alpha = 0.1f),
             ) {
-                Text("Saved", Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                Text(stringResource(R.string.status_saved), Modifier.fillMaxWidth().padding(vertical = 14.dp),
                     style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium,
                     color = Color(0xFF4CAF50), textAlign = TextAlign.Center)
             }

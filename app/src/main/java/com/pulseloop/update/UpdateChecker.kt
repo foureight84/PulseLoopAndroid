@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 @Serializable
 data class GithubRelease(
@@ -65,6 +66,16 @@ sealed class UpdateCheckResult {
 object UpdateChecker {
     private val json = Json { ignoreUnknownKeys = true }
     private val client = OkHttpClient()
+
+    /**
+     * Separate client for the APK body. The check client's 10 s OkHttp defaults are fine for a
+     * small JSON reply but tight for a release asset that grew past 30 MB — a stall on mobile
+     * data would otherwise abort the download mid-file.
+     */
+    private val downloadClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
 
     private const val PREFS = "self_update"
     private const val KEY_ETAG = "etag"
@@ -167,35 +178,52 @@ object UpdateChecker {
         ))
     }
 
-    /** Download the APK to cacheDir/updates, reporting progress in 0f..1f. Returns the file or null. */
+    /**
+     * Download the APK to cacheDir/updates, reporting progress in 0f..1f. Returns the file, or
+     * null if the download failed or arrived short.
+     *
+     * The short-file check is the important one: a body that ends early without throwing (a
+     * dropped connection on a chunked reply, a captive portal cutting in) leaves a truncated
+     * APK, and the system package installer reports that as "There was a problem parsing the
+     * package" — which reads as a broken release rather than a failed download. Better to fail
+     * the download honestly and let the user retry.
+     */
     suspend fun download(
         context: Context,
         info: UpdateInfo,
         onProgress: (Float) -> Unit,
     ): File? = withContext(Dispatchers.IO) {
+        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val out = File(dir, "pulseloop-${info.versionCode}.apk")
         try {
-            client.newCall(Request.Builder().url(info.apkUrl).build()).execute().use { resp ->
+            downloadClient.newCall(Request.Builder().url(info.apkUrl).build()).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
-                val stream = resp.body?.byteStream() ?: return@withContext null
-                val total = resp.body?.contentLength()?.takeIf { it > 0 } ?: info.apkSize
+                val body = resp.body ?: return@withContext null
+                val stream = body.byteStream()
+                val total = body.contentLength().takeIf { it > 0 } ?: info.apkSize
 
-                val dir = File(context.cacheDir, "updates").apply { mkdirs() }
                 dir.listFiles()?.forEach { it.delete() }   // drop any stale download
-                val out = File(dir, "pulseloop-${info.versionCode}.apk")
 
+                var downloaded = 0L
                 out.outputStream().use { fos ->
                     val buf = ByteArray(64 * 1024)
-                    var downloaded = 0L
                     var read: Int
                     while (stream.read(buf).also { read = it } != -1) {
                         fos.write(buf, 0, read)
                         downloaded += read
                         if (total > 0) onProgress((downloaded.toFloat() / total).coerceIn(0f, 1f))
                     }
+                    fos.flush()
+                }
+
+                if (total > 0 && downloaded != total) {
+                    out.delete()
+                    return@withContext null
                 }
                 out
             }
         } catch (_: Exception) {
+            out.delete()
             null
         }
     }

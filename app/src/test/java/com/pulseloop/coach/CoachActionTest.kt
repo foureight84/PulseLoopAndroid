@@ -180,7 +180,7 @@ class CoachActionTest {
         assertTrue(flags.coachEnabled)
         assertFalse(flags.webSearchEnabled)
         assertFalse(flags.writeToolsEnabled)
-        assertEquals("gpt-5.4", flags.model)
+        assertEquals(com.pulseloop.coach.config.OpenAIModel.DEFAULT.slug, flags.model)
         assertEquals(15, flags.maxRounds)
         assertEquals(30, flags.maxToolCalls)
     }

@@ -17,6 +17,7 @@ object CoachContextBuilder {
 
     suspend fun build(
         db: PulseLoopDatabase,
+        preferPhone: Boolean,
         conversationSummary: String? = null,
         environment: EnvironmentContext? = null,
     ): CoachContextPacket {
@@ -39,8 +40,11 @@ object CoachContextBuilder {
         val sevenDaysAgo = todayStart - 7 * 24 * 3600_000L
         val activityWeek = (if (activityHasReal) db.activityDailyDao().recentReal(7)
             else db.activityDailyDao().recent(7)).filter { it.date >= sevenDaysAgo }
-        val stepsWeek = activityWeek.map { it.steps.toDouble() }
-        val daysAvailable = activityWeek.count { it.steps > 0 }
+        // Display steps: ring mode reads `steps`, phone mode reads `phoneSteps` when present
+        // (review item 5, PR #98). Same figure the Today tile shows, so the coach cannot quote
+        // 9,800 while Today reads 8,200. Falls back to the ring's value on an un-backfilled day.
+        val stepsWeek = com.pulseloop.data.DisplaySteps.counts(activityWeek, preferPhone).map { it.toDouble() }
+        val daysAvailable = com.pulseloop.data.DisplaySteps.counts(activityWeek, preferPhone).count { it > 0 }
 
         // Resting HR: average of HR values in the last 24h while at rest (approximated as lowest 25th percentile)
         val hr24h = if (db.measurementDao().hasReal(MeasurementKind.HEART_RATE.name))

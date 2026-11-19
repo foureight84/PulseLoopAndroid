@@ -154,6 +154,19 @@ class LocalOpenAICompatClientTest {
         assertNull(body["response_format"])
     }
 
+    /** iOS 6d006ec: on Ollama/llama.cpp the grammar blocks native `tool_calls`. */
+    @Test
+    fun `a round that carries tools sends no response_format`() {
+        val withTools = client(structured = LocalStructuredOutput.JSON_SCHEMA)
+            .buildRequestBody(request(listOf(msg("user", "hi")), tools = listOf(functionTool)))
+        assertNotNull(withTools["tools"])
+        assertNull(withTools["response_format"])
+        // The tool-less repair turn still gets the configured grammar.
+        val repair = client(structured = LocalStructuredOutput.JSON_SCHEMA)
+            .buildRequestBody(request(listOf(msg("user", "hi"))))
+        assertNotNull(repair["response_format"])
+    }
+
     @Test
     fun `json_object and json_schema send the expected response_format`() {
         val obj = client(structured = LocalStructuredOutput.JSON_OBJECT)

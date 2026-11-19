@@ -1,5 +1,6 @@
 package com.pulseloop.ui.components
 
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,6 +50,7 @@ fun DeviceHeroCard(
     onOpenWearable: () -> Unit,
     onConnect: () -> Unit,
     onSetUp: () -> Unit,
+    onDisconnect: () -> Unit = {},
 ) {
     val deviceType = bleState.activeDeviceType ?: storedDevice?.deviceType
     val wearableModel = WearableModel.model(bleState.activeWearableModelID)
@@ -62,6 +64,7 @@ fun DeviceHeroCard(
         batteryPercent = battery,
         lastSyncAt = lastSyncAt,
         now = System.currentTimeMillis(),
+        bluetoothOff = bleState.bluetoothOff,
     )
 
     Column(
@@ -142,7 +145,7 @@ fun DeviceHeroCard(
                 }
                 Icon(
                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = "Opens ring settings",
+                    contentDescription = stringResource(R.string.hero_opens_settings),
                     modifier = Modifier.size(20.dp),
                     tint = PulseColors.textMuted,
                 )
@@ -150,8 +153,9 @@ fun DeviceHeroCard(
         }
 
         // The connected card is purely informational and opens Wearable settings, where
-        // Disconnect lives. Setup/reconnect remain available here only when not connected.
-        if (status.action != DeviceHeroStatus.Action.DISCONNECT) {
+        // Disconnect lives. Setup/reconnect remain available here only when not connected, and
+        // automatic recovery offers Disconnect so the user can stop it (issue #124).
+        if (!connected) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text(
                     status.actionTitle,
@@ -166,7 +170,11 @@ fun DeviceHeroCard(
                             when (status.action) {
                                 DeviceHeroStatus.Action.CONNECT -> onConnect()
                                 DeviceHeroStatus.Action.SET_UP -> onSetUp()
-                                else -> {}
+                                // Reached while RECONNECTING: stops automatic recovery through
+                                // the same sticky userDisconnect path as the Settings button.
+                                DeviceHeroStatus.Action.DISCONNECT -> onDisconnect()
+                                // Already inert: actionEnabled is false while a connect is in flight.
+                                DeviceHeroStatus.Action.PENDING -> {}
                             }
                         }
                         .padding(horizontal = 12.dp)

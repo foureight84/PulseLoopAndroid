@@ -102,6 +102,50 @@ class YCBTHistoryTransferTest {
         assertEquals(listOf(71.0, 66.0), heartRates(done))
     }
 
+    /**
+     * Issue #69: the header's packet count is an estimate the ring contradicts one frame later, and
+     * requiring the two to agree threw away every composite record on a reporter's ring.
+     *
+     * Their `05 09` header declared **5** packets for 840 bytes; the ring then sent **6**, because it
+     * packs whole 20-byte records into each frame (7 × 20 = 140) instead of filling it. Bytes and CRC
+     * were correct on every transfer. The vendor ignores the count too — at `Sync_Block_Verify`
+     * `DataUnpack` reads the two bytes into locals it never compares, sizes its buffer from the
+     * terminal's own length, and accepts on the CRC alone.
+     */
+    @Test
+    fun `a header packet count the ring contradicts does not fail the transfer`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+        transfer.start(types = listOf(YCBTHistoryType.HEART))
+
+        transfer.handle(cmd = 0x06, payload = header(records = 2, packets = 5, bytes = heartBuffer.size))
+        transfer.handle(cmd = 0x15, payload = heartBuffer)
+
+        writer.sent.clear()
+        val done = transfer.handle(cmd = 0x80, payload = terminal(packets = 6, buffer = heartBuffer))
+
+        assertEquals("the records are kept", listOf(71.0, 66.0), heartRates(done))
+        assertArrayEquals("and the block is accepted", ackAccepted, writer.sent[0])
+    }
+
+    /** The byte count the terminal itself reports must still match what arrived — that is the check
+     *  that catches a genuinely short transfer, and it is independent of the packet estimate. */
+    @Test
+    fun `a terminal reporting more bytes than arrived still nacks`() {
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(writer = writer)
+        transfer.start(types = listOf(YCBTHistoryType.HEART))
+
+        transfer.handle(cmd = 0x06, payload = header(records = 2, packets = 1, bytes = heartBuffer.size))
+        transfer.handle(cmd = 0x15, payload = heartBuffer.copyOfRange(0, 6))
+
+        writer.sent.clear()
+        val out = transfer.handle(cmd = 0x80, payload = terminal(packets = 1, buffer = heartBuffer))
+
+        assertTrue("nothing is decoded from a short buffer", heartRates(out).isEmpty())
+        assertArrayEquals(ackCrcFailure, writer.sent[0])
+    }
+
     @Test
     fun `CRC mismatch nacks and retries the type once`() {
         val writer = FakeWriter()

@@ -42,6 +42,37 @@ class LuckRingDriverTest {
         assertEquals(90, battery.percent)
     }
 
+    // MARK: HRV omitted (issue #112)
+
+    @Test
+    fun `hrv frames are acked but never surface as readings`() {
+        val writer = FakeWriter()
+        val driver = LuckRingDriver(writer)
+        // One `[time u32 LE][value u8]` record behind the `[total u16][items u8]` envelope -- the
+        // 141 is one of the TK18 readings from issue #112.
+        val record = listOf<UByte>(5u, 0u, 1u, 0x80u, 0x4Fu, 0x09u, 0x69u, 141u)
+
+        for ((seq, type) in listOf(LuckRingDataType.REAL_HRV, LuckRingDataType.HISTORY_HRV).withIndex()) {
+            val frame = LuckRingFrame(LuckRingCmdType.SEND, type, record, seq = seq.toUByte(), devType = 2u)
+            assertTrue("decoder still reads the record", LuckRingDecoder.decode(frame).any {
+                it is RingDecodedEvent.HrvSample || it is RingDecodedEvent.HistoryMeasurement
+            })
+            val events = driver.ingest(packets(frame)[0], LuckRingUUIDs.NOTIFY)
+            assertTrue("type $type must not yield HRV, got $events", events.none {
+                it is RingDecodedEvent.HrvSample ||
+                    (it is RingDecodedEvent.HistoryMeasurement && it.kind_field == MeasurementKind.HRV)
+            })
+        }
+        assertEquals("each HRV SEND is still ACKed", 2, writer.sent.size)
+    }
+
+    @Test
+    fun `luckring declares no hrv capability`() {
+        val caps = LuckRingCoordinator.capabilities
+        assertFalse(WearableCapability.HRV in caps)
+        assertFalse(WearableCapability.MANUAL_HRV in caps)
+    }
+
     @Test
     fun `device ack is not acked`() {
         val writer = FakeWriter()

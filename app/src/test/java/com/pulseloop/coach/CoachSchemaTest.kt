@@ -1,6 +1,7 @@
 package com.pulseloop.coach.schema
 
 import com.pulseloop.coach.orchestration.CoachResponseParser
+import com.pulseloop.coach.orchestration.CoachResponseSchema
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -74,6 +75,80 @@ class CoachSchemaTest {
         assertTrue(text.contains("You did well today."))
         assertTrue(text.contains("Steps: 8000"))
         assertTrue(text.contains("HR: 72 bpm"))
+    }
+
+    private fun assertStrictSchema(node: JsonObject, path: String) {
+        val type = node["type"]
+        val typeNames = when (type) {
+            is JsonPrimitive -> listOf(type.content)
+            is JsonArray -> type.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            else -> emptyList()
+        }
+        if ("object" in typeNames) {
+            val additional = node["additionalProperties"]
+            assertTrue(
+                "$path must declare additionalProperties: false under strict mode",
+                additional is JsonPrimitive && additional.content == "false",
+            )
+            val required = (node["required"] as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                ?: emptyList()
+            val props = node["properties"] as? JsonObject
+            val propKeys = props?.keys ?: emptySet()
+            assertEquals(
+                "$path: strict mode requires EVERY property to be listed in required",
+                propKeys,
+                required.toSet(),
+            )
+        }
+        (node["properties"] as? JsonObject)?.forEach { (name, value) ->
+            val sub = value as? JsonObject ?: return@forEach
+            val subType = sub["type"]
+            if (subType is JsonArray) {
+                assertTrue(
+                    "$path.properties.$name: a nullable union must include null",
+                    subType.any { (it as? JsonPrimitive)?.contentOrNull == "null" },
+                )
+            }
+            assertStrictSchema(sub, "$path.properties.$name")
+            (sub["items"] as? JsonObject)?.let { assertStrictSchema(it, "$path.properties.$name.items") }
+        }
+    }
+
+    @Test
+    fun `the coach_response schema satisfies OpenAI strict structured outputs`() {
+        // Issue #77: the coach chat sends `strict: true`, under which OpenAI validates the
+        // SCHEMA itself before the model ever sees the request — every object must declare
+        // `additionalProperties: false`, and every property must be listed in `required`
+        // (optionality is a null union, not a missing key). `chart` shipped without either,
+        // so every native-OpenAI coach turn 400'd with:
+        //   Invalid schema for response_format 'coach_response': In context=('properties',
+        //   'chart'), 'additionalProperties' is required to be supplied and to be false.
+        // This walk re-checks the whole tree so the next schema field can't reintroduce it.
+        assertStrictSchema(CoachResponseSchema.schema, "coach_response")
+    }
+
+    @Test
+    fun `every coach tool schema satisfies OpenAI strict mode`() {
+        val flags = com.pulseloop.coach.tools.CoachFeatureFlags(
+            writeToolsEnabled = true,
+            liveMeasurementsEnabled = true,
+        )
+        val registry = com.pulseloop.coach.tools.ToolRegistry(flags)
+        val tools = registry.toolSpecs
+
+        assertTrue("Expected tools in registry", tools.isNotEmpty())
+        for (spec in tools) {
+            val type = (spec["type"] as? JsonPrimitive)?.contentOrNull
+            if (type != "function") continue
+            val name = (spec["name"] as? JsonPrimitive)?.contentOrNull ?: "unknown"
+            val isStrict = (spec["strict"] as? JsonPrimitive)?.booleanOrNull ?: false
+            if (!isStrict) continue
+
+            val params = spec["parameters"] as? JsonObject
+            assertNotNull("Tool $name must declare a parameters object", params)
+            assertStrictSchema(params!!, "tool:$name.parameters")
+        }
     }
 
     @Test

@@ -63,6 +63,10 @@ Decompiled refs: `sources/com/oudmon/ble/base/communication/req/BaseReqCmd.java`
 | `0x38` (56) | HRV auto | `HRVSettingReq` | `AUTO_HRV_PREF` | simple on/off pref |
 | `0x3A` (58) | Temp auto | (settings) | `AUTO_TEMP_PREF` | extra `0x03` framing byte |
 | `0x3C` (60) | **Device support / capabilities** | `DeviceSupportReq` / `DeviceSupportFunctionRsp` | `DEVICE_SUPPORT` (**added**) | carries `supportBlePair` — see §5 |
+| `0x69` (105) | Spot / live measurement start | `StartHeartRateReq` / `StartHeartRateRsp` | `MANUAL_HEART_RATE` | the **only** measurement start QRing sends — see §4a |
+| `0x6A` (106) | Measurement stop | `StopHeartRateReq` | `REALTIME_STOP` | `6a <type> <lastValue> 00` |
+| `0x1E` (30) | Realtime HR | **none — receive-only** | `REALTIME_HEART_RATE` | GadgetBridge-derived request; R09 rejects it — see §4a |
+| `0x9E` (158) | Realtime-HR rejection | — | `REALTIME_HEART_RATE_ERROR` | `9e ee` = "I don't do `0x1E`" |
 | `0xBC` (188) | Big-data channel | `LargeDataHandler` | `BIG_DATA_V2` | **read/sync only** — NOT an enable switch |
 
 **Trap for the next investigator:** `0xBC` has `ACTION_Interval_Heart_Rate = 0x75` etc.
@@ -112,6 +116,47 @@ reads only `v[2]`/`v[3]`, so it tolerates the longer reply unchanged.
 > the ring's `0x16` **read reply** parses correctly on RT09 (byte offsets), because a
 > misparse would make the seeding logic believe HR is already on and skip the enable. See
 > `ColmiSyncEngine.handleRawNotify`.
+
+## 4a. Live workout HR — `0x1E` is not a QRing command, and the R09 refuses it
+
+**Symptom (issue #55):** on an R09 (`R09_9D07`, firmware `RT09_3.10.22_260420`) a workout showed
+no bpm at all, while history sync, battery and spot SpO₂ all worked.
+
+**What the capture shows.** Every `0x1E` frame the app sent — start (`1e 01`), stop (`1e 02`) and
+the 20 s continue (`1e 03`) alike — came back as `9e ee`, ~300 ms later, eleven for eleven. The
+ring never streamed a single HR frame. In the same session `69 03 25` (spot SpO₂, the sibling
+command) streamed warm-up frames for ~25 s and then returned real readings, so the link, the
+sensor and the measurement family were all fine.
+
+**Where `0x1E` came from.** Not from the vendor. **No `BaseReqCmd` subclass in the QRing decompile
+is constructed with opcode 30** — grep `super((byte)` across
+`sources/com/oudmon/ble/base/communication/req/` and 30 is absent from the list. The SDK only
+*receives* it: `BeanFactory` case 30 → `RealTimeHeartRateRsp`, whose `acceptData` reads a bare
+`heart = bArr[0]`, i.e. an unsolicited bpm push. `0x1E` as a *request* is GadgetBridge's
+(`YawellRingDeviceSupport.onEnableRealtimeHeartRateMeasurement` → `{CMD_REALTIME_HEART_RATE,
+enable}`), and that is where PulseLoop's `realtimeHeartRate()` came from. GadgetBridge has no
+handler for `0x9E` either, so it fails the same way on this firmware.
+
+**What QRing actually does for a live reading.** One command, `0x69`:
+`StartHeartRateReq.getSimpleReq(TYPE_HEARTRATE = 1)` → `69 01 00`. The ring then streams
+`[0x69, type, errCode, value]` frames (`StartHeartRateRsp`) until `StopHeartRateReq.stopHeartRate`
+sends `6a 01 <lastBpm> 00`. `HeartActivity` just cancels its countdown on the first good frame;
+`errCode == 1` is the wearing-detection failure. `StartHeartRateReq` *defines* a
+`TYPE_REALTIMEHEARTRATE = 6` (`getRealtimeHeartRate`, with `ACTION_START/PAUSE/CONTINUE/STOP`),
+but **nothing in the app calls it** — it is dead code, so it is a guess, not a reference.
+
+**The fix (implemented).** `ColmiSyncEngine` still probes with `0x1E` — it is one frame, and rings
+that answer it keep the cheaper stream. A `0x9E` reply flips a sticky `realtimeRejected` flag,
+cancels the `1e 03` keepalive, and restarts the session on `0x69 01`; later workouts on the same
+connection skip the probe. The keepalive becomes idle-gated (re-issue the start only after 30 s of
+silence) because the ring streams on its own and a mid-measurement restart would throw the reading
+away. `ColmiDecoder` already decoded `[0x69, 1, err, bpm]` into `HeartRateSample`, so nothing
+downstream changed. Files: `ColmiSyncEngine.kt` (`onRealtimeHeartRateRejected`,
+`startFallbackHeartRateStream`), tests in `ColmiRealtimeHeartRateFallbackTest.kt`.
+
+**Not yet hardware-validated:** that the R09 streams `0x69 01` continuously rather than stopping
+after one reading. Both outcomes are an improvement over the current zero readings, but if a
+capture shows the stream ending early, the re-arm window is the knob to shorten.
 
 ## 5. Pairing — root causes and fixes
 

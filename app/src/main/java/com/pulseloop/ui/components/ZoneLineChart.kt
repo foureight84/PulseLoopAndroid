@@ -55,6 +55,12 @@ fun ZoneLineChart(
      * turns sparse multi-day series (daily HRV/temp) into the scatter of isolated dots.
      */
     maxGapMs: Long = 90 * 60_000L,
+    /**
+     * Instants to rule a faint vertical line at — day or hour boundaries, so a reader can tell
+     * *when* a trend happened rather than only its shape (issue #65). Empty for every other chart,
+     * which is why this is opt-in rather than a default.
+     */
+    verticalGridlines: List<Long> = emptyList(),
 ) {
     if (samples.size < 2) return
     val minTs = samples.first().timestampMs
@@ -87,6 +93,16 @@ fun ZoneLineChart(
                         size = Size(size.width, (bottom - top).coerceAtLeast(0f)),
                     )
                 }
+                // Time grid, behind the data and quiet enough not to compete with it.
+                verticalGridlines.forEach { at ->
+                    if (at in minTs..maxTs) {
+                        drawLine(
+                            color = PulseColors.textMuted.copy(alpha = 0.22f),
+                            start = Offset(x(at), 0f), end = Offset(x(at), size.height),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+                }
                 // Dashed rules.
                 dashedRules.forEach { rule ->
                     val ry = y(rule)
@@ -98,7 +114,10 @@ fun ZoneLineChart(
                     )
                 }
                 // Zone-colored line, broken across data gaps.
-                val runs = ZoneLineSplitter.segmentsByGap(samples.map { it.timestampMs }, maxGapMs)
+                val timestamps = samples.map { it.timestampMs }
+                val sampleInterval = ZoneLineSplitter.sampleIntervalMs(timestamps)
+                val effectiveMaxGapMs = ZoneLineSplitter.maxGapMs(span, sampleInterval).coerceAtLeast(maxGapMs)
+                val runs = ZoneLineSplitter.segmentsByGap(timestamps, effectiveMaxGapMs)
                 runs.forEach { run ->
                     // A gap-isolated single sample would otherwise draw nothing — sparse series
                     // (daily HRV/temp, fatigue) must still show their readings.
@@ -169,9 +188,7 @@ fun ZoneLineChart(
 private fun timeLabel(ts: Long, spanMs: Long): String {
     val t = Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault())
     if (spanMs > 48 * 3600_000L) {
-        return "${t.dayOfMonth} ${t.month.name.take(3).lowercase().replaceFirstChar { it.uppercase() }}"
+        return t.format(com.pulseloop.util.LocaleFormats.formatter("dMMM", "d MMM"))
     }
-    val h = t.hour % 12
-    val displayH = if (h == 0) 12 else h
-    return "$displayH ${if (t.hour < 12) "AM" else "PM"}"
+    return t.format(com.pulseloop.util.LocaleFormats.formatter("j", "h a"))
 }

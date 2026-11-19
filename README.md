@@ -1,5 +1,7 @@
 # PulseLoop Android
 
+🇷🇺 [Русская версия README](README.ru.md)
+
 > ⚠️ **Disclaimer:** This app is provided as-is and is not a medical application.
 > The rings are not medical devices. This app does not replace professional
 > healthcare. Always consult your doctor for any medical concerns.
@@ -89,6 +91,7 @@ calibration offsets.
 - **Blood pressure calibration** (Settings → Calibration) — enter reference systolic/diastolic values from a cuff to apply an offset. 56ff/Jring only.
 - **Blood sugar calibration** (Settings → Calibration) — enter a reference glucose reading from lab work or a glucometer to calibrate the ring's profile-derived blood sugar estimates. 56ff/Jring only.
 - **Privacy & Data** (Settings → Privacy & Data) — demo-data controls (reseed/clear) and the anonymized diagnostics export for bug reports.
+- **MQTT** (Settings → MQTT) — publishes real ring vitals, daily activity, sleep stages, and live workout streaming (~5 s throttle) to any MQTT broker with configurable topics, auto-discovery payloads, and background sync intervals. See [docs/mqtt.md](docs/mqtt.md) for topic formats, capability-based sensor selection, and example payloads.
 
 ### Simplified Ring Management
 - **Forget ring** — removes the ring from the app in one tap. The unbind command is sent to the ring to release it for pairing with other apps.
@@ -124,6 +127,10 @@ The Debug console shows a live view of what the app and ring are doing:
 - **Raw BLE packet trace** — every frame sent/received, with hex payload and the decoded packet kind
 - **Live event log** — the decoded event stream (measurements, sync stages, connection changes) as it flows through the app
 - **Database stats** — row counts per table, so you can see whether history sync is actually landing data
+
+Packets and events are captured in the background and stored on the device, so they survive leaving
+the screen and restarting the app. They are trimmed to the newest 1,000 packets and 2,000 log
+entries every 50 writes, so either can briefly run a few dozen over.
 
 ### Exporting a diagnostics report
 
@@ -244,4 +251,11 @@ Min SDK: 26 (Android 8.0+). Target SDK: 34.
 
 ## License
 
-This project is part of the PulseLoop ecosystem. See the parent repository for license information.
+This project is licensed under [Creative Commons Attribution 4.0 International (CC BY 4.0)](LICENSE),
+the same license as the [PulseLoop iOS app](https://github.com/saksham2001/PulseLoopiOS) it is ported from.
+
+You're free to share and adapt the work, including commercially, **as long as
+you give appropriate credit**. Please attribute:
+
+> PulseLoop Android — <https://github.com/foureight84/PulseLoopAndroid>, ported from
+> PulseLoop by Saksham Bhutani — <https://github.com/saksham2001/PulseLoopiOS>

@@ -22,10 +22,37 @@ enum class MeasurementKind(val key: String, val unit: String) {
 }
 
 /**
+ * A vital the ring measures on demand by **streaming** values until it is stopped — QRing's manual
+ * HRV, stress and temperature screens (`HrvActivity`, `DayPressureFragment`, `TemperatureActivity`
+ * in decompiled-qring-official/). Distinct from the all-day history of the same kinds.
+ *
+ * Everything that varies per vital lives here, so adding one is one new entry:
+ * [capability] gates its control, [label] names the button and [description] the caption.
+ */
+enum class SpotVital(
+    val kind: MeasurementKind,
+    val capability: WearableCapability,
+    val label: String,
+    val description: String,
+) {
+    HRV(MeasurementKind.HRV, WearableCapability.MANUAL_HRV, "HRV", "heart rate variability"),
+    STRESS(MeasurementKind.STRESS, WearableCapability.MANUAL_STRESS, "Stress", "stress"),
+    TEMPERATURE(MeasurementKind.TEMPERATURE, WearableCapability.MANUAL_TEMPERATURE, "Temp", "temperature"),
+}
+
+/**
  * Ported from [SleepStage] in PulseModels.swift.
  */
 enum class SleepStage {
-    LIGHT, DEEP, AWAKE, UNKNOWN, REM;
+    LIGHT, DEEP, AWAKE, UNKNOWN, REM,
+
+    /**
+     * Minutes the wearer added to a ring record by editing it over time the ring missed (issue
+     * #106). Asleep, but unstaged: counted in time asleep, left out of the stage breakdown and the
+     * score. No decoder ever produces it — only `editedRecordBlocks` (SleepRecordExtension.kt) does.
+     * Deliberately not [UNKNOWN], which is a stage byte the ring *did* record and we can't read.
+     */
+    ADDED;
 
     companion object {
         /**
@@ -44,28 +71,6 @@ enum class SleepStage {
             else -> UNKNOWN
         }
     }
-}
-
-data class SleepStageSegment(
-    val stage: SleepStage,
-    val start: Instant,
-    val end: Instant,
-)
-
-internal fun contiguousSleepSegments(start: Instant, stages: List<SleepStage>): List<SleepStageSegment> {
-    if (stages.isEmpty()) return emptyList()
-    val segments = mutableListOf<SleepStageSegment>()
-    var stage = stages.first()
-    var segmentStart = start
-    for (index in 1 until stages.size) {
-        if (stages[index] == stage) continue
-        val segmentEnd = start.plusSeconds(index * 60L)
-        segments += SleepStageSegment(stage, segmentStart, segmentEnd)
-        stage = stages[index]
-        segmentStart = segmentEnd
-    }
-    segments += SleepStageSegment(stage, segmentStart, start.plusSeconds(stages.size * 60L))
-    return segments
 }
 
 /**
@@ -91,11 +96,16 @@ sealed class RingDecodedEvent {
         is ActivityBucket -> this._timestamp
         is HeartRateSample -> this._timestamp
         is HeartRateComplete -> this._timestamp
+        is SportTelemetry -> this._timestamp
         is Spo2Progress -> this._timestamp
         is Spo2Result -> this._timestamp
         is Spo2Complete -> this._timestamp
+        is MeasurementComplete -> this._timestamp
         is SleepTimeline -> this._timestamp
         is HistoryMeasurement -> this._timestamp
+        is SpotVitalSample -> this._timestamp
+        is SpotVitalNoReading -> this._timestamp
+        is RealtimeStopAck -> this._timestamp
         is StressSample -> this._timestamp
         is HrvSample -> this._timestamp
         is TemperatureSample -> this._timestamp
@@ -117,6 +127,8 @@ sealed class RingDecodedEvent {
         is BloodPressureSample -> this._timestamp
         is BloodSugarSample -> this._timestamp
         is Unknown -> Instant.EPOCH
+        is FramePending -> Instant.EPOCH
+        is RejectedVitalResult -> Instant.EPOCH
     }
 
     data class ActivityUpdate(
@@ -149,6 +161,21 @@ sealed class RingDecodedEvent {
         override val kind = "hr_sample"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"bpm":$bpm,"error":$isError}"""
+    }
+
+    /**
+     * A Colmi `0x78` sport-session telemetry push (issue #64), emitted for *every* such frame so
+     * the diagnostics redactor has a health kind to mask. The bpm rides separately as a
+     * [HeartRateSample] when it is plausible; a warm-up frame carries bpm 0 but still carries the
+     * workout's live step count, distance and calories, which must not reach a report in clear.
+     */
+    data class SportTelemetry(
+        val bpm: Int,
+        val _timestamp: Instant
+    ) : RingDecodedEvent() {
+        override val kind = "sport_telemetry"
+        override val confidence = DecodeConfidence.PARTIAL
+        override val debugJSON = """{"bpm":$bpm}"""
     }
 
     data class HeartRateComplete(
@@ -185,31 +212,34 @@ sealed class RingDecodedEvent {
         override val debugJSON = "{}"
     }
 
+    /**
+     * The ring itself ended a spot measurement and said how it went (YCBT `04 0e`, issue #59).
+     *
+     * [mode] is the same measurement-mode byte the start command carried ([YCBTMeasurementMode]),
+     * so a completion can only ever end the measurement it names. [success] is the vendor's
+     * `bArr[1] == 1`; 2 is "failed" and anything else "cancelled", which are both failures here.
+     *
+     * Carries no value on purpose: the vendor app reacts to a success by re-syncing history
+     * (`BaseMeasureActivity.onDataResponse` → `syncData()`), never by reading a reading out of
+     * this frame. Its job is to say *when* the measurement is over, which is exactly what the app
+     * could not tell before — the ring goes quiet and the leg idled out its whole window.
+     */
+    data class MeasurementComplete(
+        val mode: Int,
+        val success: Boolean,
+        val _timestamp: Instant
+    ) : RingDecodedEvent() {
+        override val kind = "measurement_complete"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"mode":$mode,"success":$success}"""
+    }
+
     data class SleepTimeline(
-        val sessionStart: Instant,
-        val sessionEnd: Instant,
-        val segments: List<SleepStageSegment>,
+        val _timestamp: Instant,
+        val stages: List<SleepStage>,
         /** True when this event is the ring's complete authoritative session, not one packet. */
         val completeSession: Boolean = false,
     ) : RingDecodedEvent() {
-        constructor(
-            _timestamp: Instant,
-            stages: List<SleepStage>,
-            completeSession: Boolean = false,
-        ) : this(
-            sessionStart = _timestamp,
-            sessionEnd = _timestamp.plusSeconds(stages.size * 60L),
-            segments = contiguousSleepSegments(_timestamp, stages),
-            completeSession = completeSession,
-        )
-
-        val _timestamp: Instant get() = sessionStart
-        val stages: List<SleepStage> get() = segments.flatMap { segment ->
-            val minutes = kotlin.math.round(
-                java.time.Duration.between(segment.start, segment.end).seconds / 60.0
-            ).toInt().coerceAtLeast(0)
-            List(minutes) { segment.stage }
-        }
         override val kind = "sleep_timeline"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = "{}"
@@ -318,6 +348,46 @@ sealed class RingDecodedEvent {
         override val kind = "measurement_rejected"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"mode":$mode}"""
+    }
+
+    /**
+     * One value streamed during an on-demand [SpotVital] measurement. Deliberately not a
+     * [StressSample]/[HrvSample]/[TemperatureSample]: those are stored as they arrive, and a spot
+     * measurement's output is one settled reading, not the stream it settled from (issue #60).
+     */
+    data class SpotVitalSample(
+        val vital: SpotVital,
+        val value: Double,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "spot_vital_sample"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"vital":"${vital.name}","value":$value}"""
+    }
+
+    /**
+     * The ring acknowledged a realtime stop (Colmi `0x6A <readingType> <final value>`). Every
+     * capture shows it landing *after* the last trailing `0x69` frame the ring sends once told to
+     * stop, so it is the point after which the measured kind's live samples are real again. The
+     * value is not used — the leg has already settled — but it is a reading, hence masked.
+     */
+    data class RealtimeStopAck(
+        val readingType: Int,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "realtime_stop_ack"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"reading_type":$readingType}"""
+    }
+
+    /** The ring ended an on-demand [SpotVital] measurement with an error (not worn / no contact). */
+    data class SpotVitalNoReading(
+        val vital: SpotVital,
+        val _timestamp: Instant,
+    ) : RingDecodedEvent() {
+        override val kind = "spot_vital_no_reading"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = """{"vital":"${vital.name}"}"""
     }
 
     data class StressSample(
@@ -440,6 +510,50 @@ sealed class RingDecodedEvent {
         override val kind = "blood_sugar_sample"
         override val confidence = DecodeConfidence.KNOWN
         override val debugJSON = """{"mgdl":$mgdl}"""
+    }
+
+    /**
+     * A live vital result whose value is outside its plausible band, including the ring's own
+     * "no reading" values (0, 0xFF, an empty payload). Carries no value and produces nothing to
+     * persist; it exists so the raw-packet log names the frame and the diagnostics export masks
+     * it. Left undecoded, it would be logged `unknown`, which is exported whole on purpose for
+     * control frames — the decode-gap-becomes-privacy-gap failure from issue #58.
+     */
+    data class RejectedVitalResult(val measurementKind: MeasurementKind) : RingDecodedEvent() {
+        override val kind = "rejected_vital_result"
+        override val confidence = DecodeConfidence.KNOWN
+        override val debugJSON = "{}"
+    }
+
+    /**
+     * One notification of a logical frame that is still being reassembled — no decode yet, and
+     * possibly never one of its own (the frame decodes as a whole).
+     *
+     * It exists for the diagnostics report. A mid-frame chunk used to reach the raw-packet log as
+     * [Unknown], and `unknown` is deliberately *not* masked on export — control and pairing frames
+     * are the data most connection bugs need, and they decode to nothing. But an intermediate chunk
+     * of a multi-frame **health** reply carries samples in exactly the same shape, so those were
+     * exported whole: the same class of defect as issue #58's undecoded temperature frames, where a
+     * decode gap had quietly become a privacy gap. A chunk is now named for what it is, and the
+     * redactor masks it because it cannot know what the assembled frame will turn out to be.
+     */
+    data class FramePending(val raw: ByteArray, val startsFrame: Boolean) : RingDecodedEvent() {
+        /**
+         * The two cases are named apart because they mask differently: only the opening chunk holds
+         * the frame's routing header, so a continuation chunk keeping six bytes "of header" would be
+         * keeping six bytes of samples.
+         */
+        override val kind = if (startsFrame) "frame_start" else "frame_chunk"
+        override val confidence = DecodeConfidence.UNKNOWN
+        override val debugJSON = "{}"
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is FramePending) return false
+            return raw.contentEquals(other.raw) && startsFrame == other.startsFrame
+        }
+
+        override fun hashCode(): Int = 31 * raw.contentHashCode() + startsFrame.hashCode()
     }
 
     data class Unknown(

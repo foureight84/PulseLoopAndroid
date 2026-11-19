@@ -15,6 +15,17 @@ import kotlinx.coroutines.launch
  * Typed events published on the bus for subscribers to consume.
  */
 sealed class PulseEvent {
+    /**
+     * A transport diagnostic for the wearable log. Never put health values or raw payloads in
+     * [message]. [traffic] marks a per-packet TX/RX line, as opposed to a connection event.
+     */
+    data class Diagnostic(
+        val message: String,
+        val deviceType: RingDeviceType? = null,
+        val error: Boolean = false,
+        val traffic: Boolean = false,
+        val timestamp: Long = System.currentTimeMillis(),
+    ) : PulseEvent()
     data class DeviceStateChanged(
         val state: RingConnectionState,
         val address: String?,
@@ -33,24 +44,98 @@ sealed class PulseEvent {
     /** Emitted when the user forgets the ring, so persistence clears the stored model identity. */
     data object DeviceForgotten : PulseEvent()
     data class BatteryLevel(val percent: Int) : PulseEvent()
-    data class RawPacket(val direction: PacketDirection, val data: ByteArray, val decoded: RingDecodedEvent) : PulseEvent() {
+    /**
+     * One BLE frame as it went over the wire, for the debug log and the diagnostics report.
+     *
+     * [deviceType] is the family that sent or received it, captured here rather than looked up at
+     * export time: the report masks a health frame by keeping its routing header, how long that
+     * header is depends on the family, and the ring connected when a report is exported is not
+     * necessarily the one that produced the packets in it.
+     */
+    data class RawPacket(
+        val direction: PacketDirection,
+        val data: ByteArray,
+        val decoded: RingDecodedEvent,
+        val deviceType: RingDeviceType? = null,
+        val capturedAt: Long = System.currentTimeMillis(),
+        val transportJSON: String? = null,
+    ) : PulseEvent() {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (other !is RawPacket) return false
-            return direction == other.direction && data.contentEquals(other.data) && decoded == other.decoded
+            return direction == other.direction && data.contentEquals(other.data) &&
+                    decoded == other.decoded && deviceType == other.deviceType
         }
-        override fun hashCode(): Int = 31 * (31 * direction.hashCode() + data.contentHashCode()) + decoded.hashCode()
+        override fun hashCode(): Int =
+            31 * (31 * (31 * direction.hashCode() + data.contentHashCode()) + decoded.hashCode()) +
+                    (deviceType?.hashCode() ?: 0)
     }
     data class ActivityUpdate(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double, val calories: Double) : PulseEvent()
     data class ActivityBucket(val timestamp: java.time.Instant, val steps: Int, val distanceMeters: Double) : PulseEvent()
     data object ActivitySyncReset : PulseEvent()
-    data class HeartRateSample(val bpm: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /** Steps counted by the phone's own pedometer, published by the app's
+     *  [com.pulseloop.PhoneStepManager] when the user has chosen "phone" as their step source.
+     *  Distinct from [ActivityUpdate], which carries the ring's cumulative counter.
+     *
+     *  Only `steps` is carried. Distance and calories are deliberately not baked in here:
+     *  calories come from [com.pulseloop.service.DailyCalorieEstimator] (which needs the
+     *  user's weight, HR, and workout history), and workout distance is credited to the
+     *  day by [com.pulseloop.service.ActivityRollup]. Writing either from this event would
+     *  overwrite what those paths computed. */
+    data class PhoneStepsUpdate(
+        val timestamp: java.time.Instant,
+        val steps: Int,
+    ) : PulseEvent()
+
+    /**
+     * The phone step reader failed to produce a value this pass — Health Connect unreachable,
+     * or READ_STEPS not granted. Published by [com.pulseloop.MainActivity.refreshPhoneSteps]
+     * on a `refresh()` false return. [com.pulseloop.service.EventPersistenceSubscriber]
+     * handles it by clearing *today's* `phoneSteps` on the `activity_daily` row, so the
+     * display's read-time pick (`phoneSteps ?: steps`) falls back to the ring's live count
+     * instead of showing whatever stale phone value was last written. Historical days keep
+     * their `phoneSteps` — that data was real when collected, and a permission loss today
+     * does not retract it.
+     */
+    data object PhoneStepSourceUnavailable : PulseEvent()
+    /**
+     * [spot] marks the one settled reading a spot measurement publishes for itself (issue #60);
+     * false for the ring's live stream. [ringWillLogIt] additionally says this ring writes that
+     * measurement into its **own** history, so a later sync will hand the same reading back and
+     * the two copies have to be reconciled — true only for a family whose ring reports its own
+     * completion (`RingSyncEngine.signalsMeasurementCompletion`), which is the same property:
+     * the ring decides the number and the vendor app re-reads it. Meaningless unless [spot].
+     */
+    data class HeartRateSample(
+        val bpm: Int,
+        val timestamp: java.time.Instant,
+        val spot: Boolean = false,
+        val ringWillLogIt: Boolean = false,
+        val sourceRaw: String? = null,
+    ) : PulseEvent()
     data class HeartRateComplete(val timestamp: java.time.Instant) : PulseEvent()
-    data class Spo2Result(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /** [spot] and [ringWillLogIt] as on [HeartRateSample]. */
+    data class Spo2Result(
+        val value: Int,
+        val timestamp: java.time.Instant,
+        val spot: Boolean = false,
+        val ringWillLogIt: Boolean = false,
+        val sourceRaw: String? = null,
+    ) : PulseEvent()
     /** The ring ended a live-SpO₂ run (error or natural finish) — no more results coming. */
     data class Spo2Complete(val timestamp: java.time.Instant) : PulseEvent()
     /** A live measurement command was refused (not worn, sensor busy, unsupported). */
     data class MeasurementRejected(val mode: Int) : PulseEvent()
+    /** The ring ended a spot measurement on its own and reported the verdict (issue #59).
+     *  [mode] names which measurement finished; [success] is the ring's own success byte. */
+    data class MeasurementComplete(val mode: Int, val success: Boolean, val timestamp: java.time.Instant) : PulseEvent()
+    /**
+     * The coordinator opening or closing the gate on storing [kind]'s live samples (issue #60).
+     * Travels through the bus rather than a shared flag so it is ordered against the samples it
+     * governs: everything the ring streamed before the gate reopened is dropped, whatever the
+     * persistence collector's lag, and the settled reading published after it is stored.
+     */
+    data class LiveSampleGate(val kind: MeasurementKind, val closed: Boolean) : PulseEvent()
     data class BloodPressureSample(
         val systolic: Int,
         val diastolic: Int,
@@ -61,32 +146,18 @@ sealed class PulseEvent {
     data class HistoryMeasurement(val kind: MeasurementKind, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class StressSample(val value: Int, val timestamp: java.time.Instant, val isHistory: Boolean = false) : PulseEvent()
     data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /** A value streamed during an on-demand HRV/stress/temperature measurement. Never stored —
+     *  the coordinator settles the run and publishes the one reading as a sample event above. */
+    data class SpotVitalSample(val vital: SpotVital, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
+    data class SpotVitalNoReading(val vital: SpotVital, val timestamp: java.time.Instant) : PulseEvent()
+    /** The ring has stopped streaming [kind] and sent everything it will send for that run. */
+    data class RealtimeStreamStopped(val kind: MeasurementKind, val timestamp: java.time.Instant) : PulseEvent()
     data class TemperatureSample(val celsius: Double, val timestamp: java.time.Instant, val isHistory: Boolean = false) : PulseEvent()
     data class SleepTimeline(
-        val sessionStart: java.time.Instant,
-        val sessionEnd: java.time.Instant,
-        val segments: List<SleepStageSegment>,
+        val timestamp: java.time.Instant,
+        val stages: List<SleepStage>,
         val completeSession: Boolean = false,
-    ) : PulseEvent() {
-        constructor(
-            timestamp: java.time.Instant,
-            stages: List<SleepStage>,
-            completeSession: Boolean = false,
-        ) : this(
-            sessionStart = timestamp,
-            sessionEnd = timestamp.plusSeconds(stages.size * 60L),
-            segments = contiguousSleepSegments(timestamp, stages),
-            completeSession = completeSession,
-        )
-
-        val timestamp: java.time.Instant get() = sessionStart
-        val stages: List<SleepStage> get() = segments.flatMap { segment ->
-            val minutes = kotlin.math.round(
-                java.time.Duration.between(segment.start, segment.end).seconds / 60.0
-            ).toInt().coerceAtLeast(0)
-            List(minutes) { segment.stage }
-        }
-    }
+    ) : PulseEvent()
     data class SyncProgress(val stage: String) : PulseEvent()
     data class FirmwareVersion(val version: Int?) : PulseEvent()
     /** The ring's firmware version as a display string (CRP `3/3` → `MOY-R1K3-2.1.6`). Distinct
@@ -115,6 +186,13 @@ object PulseEventBus {
 
     init {
         dispatchScope.launch {
+            // The drain runs from process start. Subscribers must attach by the time
+            // Application.onCreate returns — DiagnosticsSubscriber and (since PR #98)
+            // EventPersistenceSubscriber both do. Every real publisher — ring, phone, sync — runs
+            // after that, so no event published by the app can reach a drain with no subscriber.
+            // A publisher added inside Application.onCreate *before* those subscribers start
+            // would lose its event here; if that ever becomes necessary, the fix is to attach the
+            // subscribers first, not to hold this drain.
             // The bus is process-long and single-drained: an uncaught throw here would kill the
             // dispatcher and silently stop every subscriber for the rest of the process (the
             // SupervisorJob does not restart it). Isolate each emit so one bad event can't do that.

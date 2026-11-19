@@ -3,9 +3,13 @@ package com.pulseloop.service
 import android.content.Context
 import androidx.room.withTransaction
 import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
+import com.pulseloop.settings.QuietHoursPrefs
+import com.pulseloop.settings.StepSourcePrefs
 import com.pulseloop.ring.*
+import com.pulseloop.widgets.WidgetSnapshotPublisher
 import kotlinx.coroutines.*
 
 /**
@@ -22,6 +26,26 @@ class EventPersistenceSubscriber(
      */
     private val onDataPersisted: (() -> Unit)? = null,
 ) {
+    /**
+     * The kinds whose live samples are currently *not* stored, because a spot measurement is
+     * settling them (issue #60). Driven by [PulseEvent.LiveSampleGate], which the coordinator
+     * sends through the same bus as the samples, so this collector sees the gate close before the
+     * samples it must drop and reopen before the settled reading it must keep — whatever its lag
+     * behind the ring. Only touched from the collector, so it needs no lock.
+     */
+    private val closedGates = mutableSetOf<MeasurementKind>()
+
+    /**
+     * Timestamps of the spot readings this app stored itself, per kind — the rows a ring that
+     * logs its own spot measurements will later re-supply from history (issue #60, RC-1: two HR
+     * rows per measurement, same minute, values a few bpm apart). Loaded lazily from the table
+     * and kept current here so the history path can answer "is this the ring's copy of one of
+     * ours?" without a query per history sample. See [adoptRingsCopy].
+     */
+    private val spotReadings = mutableMapOf<MeasurementKind, MutableList<Long>>()
+    /** #142: this sync pass's ring-copy bookkeeping for the stopped-clock check. */
+    private val clockPass = RingClockStall.Pass(SPOT_MATCH_MS)
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var job: Job? = null
 
@@ -34,7 +58,12 @@ class EventPersistenceSubscriber(
 
     fun start() {
         if (job != null) return
-        job = scope.launch {
+        // UNDISPATCHED: the collect call registers its subscriber synchronously, before start()
+        // returns. Without this, `scope.launch` merely schedules the coroutine and there is still
+        // a window between start() returning and the subscriber attaching — which is exactly the
+        // window MainActivity.onResume → refreshPhoneSteps publishes into on a cold start.
+        // Review item 1, PR #98. Idempotent (the `if (job != null)` guard above).
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             PulseEventBus.events.collect { event -> persist(event) }
         }
     }
@@ -64,13 +93,123 @@ class EventPersistenceSubscriber(
         is PulseEvent.TemperatureSample,
         is PulseEvent.ActivityUpdate,
         is PulseEvent.ActivityBucket,
+        is PulseEvent.PhoneStepsUpdate,
         is PulseEvent.SleepTimeline -> true
         else -> false
     }
 
+    /**
+     * Write a measurement the ring can re-supply — unless the user deleted it (issue #60).
+     *
+     * Every caller here uses a deterministic `history:<kind>:<timestamp>` id so that re-syncing a
+     * day the ring still holds updates the same row instead of duplicating it. That idempotence is
+     * exactly what would undo a deletion, so the tombstone is checked on the way in. A reading with
+     * no tombstone is written as before.
+     */
+    private suspend fun upsertUnlessDeleted(measurement: MeasurementEntity): Boolean {
+        if (db.measurementDeletionDao().isDeleted(measurement.id)) return false
+        // The same reading deleted from the other side. A spot reading the user removed before the
+        // ring's copy of it arrived has no `history:` tombstone to find — its row was a UUID — so
+        // without this the ring's copy is written under an id nothing suppresses and the reading
+        // comes back, needing a second delete. Only kinds `adoptRingsCopy` reconciles can produce
+        // such a tombstone, so no other write pays for the lookup.
+        if (measurement.kindRaw in SPOT_RECONCILED_KINDS &&
+            db.measurementDeletionDao().isSpotDeleted(
+                measurement.kindRaw,
+                measurement.timestamp - SPOT_MATCH_MS,
+                measurement.timestamp + SPOT_MATCH_MS,
+            )
+        ) return false
+        db.measurementDao().upsert(measurement)
+        return true
+    }
+
+    /**
+     * A live reading of [kind]: the ring's stream, or a spot measurement's settled value.
+     *
+     * [awaitingRingsCopy] marks the second case *on a ring that logs its own spot measurements*,
+     * so a later history sync can recognise the ring's copy and replace ours ([adoptRingsCopy]).
+     * A spot reading from a ring that does not log one is stored exactly as before — a plain live
+     * row, with no pending reconciliation and nothing that could delete it.
+     */
+    private suspend fun storeLiveReading(
+        kind: MeasurementKind,
+        value: Double,
+        unit: String,
+        at: Long,
+        awaitingRingsCopy: Boolean,
+        sourceRaw: String? = null,
+    ) {
+        val resolvedSource = sourceRaw ?: if (awaitingRingsCopy) SOURCE_SPOT else "live"
+        db.measurementDao().insert(MeasurementEntity(
+            kindRaw = kind.name, value = value, unit = unit, timestamp = at,
+            sourceRaw = resolvedSource,
+        ))
+        if (awaitingRingsCopy) spotReadingsOf(kind).add(at)
+    }
+
+    private suspend fun spotReadingsOf(kind: MeasurementKind): MutableList<Long> =
+        spotReadings.getOrPut(kind) {
+            db.measurementDao().timestampsBySource(kind.name, SOURCE_SPOT, System.currentTimeMillis() - SPOT_LOOKBACK_MS)
+                .toMutableList()
+        }
+
+    /**
+     * The ring's copy of a spot reading replaces ours (issue #60, confirmed on RC-2).
+     *
+     * The YCBT ring logs every spot measurement into its own history — verified by reading five
+     * SpO₂ runs back out of the ring's memory at the exact times they were taken — and the vendor
+     * app's whole reaction to a `04 0e` success is to re-sync that history: the ring decides the
+     * number, the app re-reads it. So when a history sample of the same kind lands within
+     * [SPOT_MATCH_MS] of a reading we stored for our own settled value, it is that measurement
+     * seen from the ring's side, and keeping both is the doubled row the tester saw. The ring's
+     * row wins because it is the one that regenerates on every sync (and so the one a tombstone
+     * can hold down); ours is deleted outright.
+     *
+     * **Only rings that actually log spot readings take part.** A row is marked [SOURCE_SPOT] at
+     * write time only when the ring reported its own completion, so this can never fire on a CRP
+     * or Colmi ring — where the nearest history sample is an unrelated point on the five-minute
+     * all-day grid and would land inside [SPOT_MATCH_MS] of most measurements.
+     */
+    private suspend fun adoptRingsCopy(kind: MeasurementKind, historyAt: Long) {
+        if (kind != MeasurementKind.HEART_RATE && kind != MeasurementKind.SPO2) return
+        val ours = spotReadingsOf(kind)
+        val matched = if (ours.isEmpty()) emptyList() else spotReadingsMatching(ours, historyAt)
+        // #142: every vitals sample counts — a reading adopted earlier this pass may still find a
+        // closer copy, since the first sample in the window can be one of the ring's automatic ones.
+        clockPass.onHistory(kind.name, historyAt, matched)
+        if (matched.isEmpty()) return
+        db.measurementDao().deleteBySourceBetween(kind.name, SOURCE_SPOT, historyAt - SPOT_MATCH_MS, historyAt + SPOT_MATCH_MS)
+        ours.removeAll(matched)
+    }
+
+    /**
+     * End of a sync pass (#142). Judge each spot reading the ring's copy adopted this pass against
+     * the closest copy seen, and — only if the pass delivered vitals history at all — count a
+     * reading that still has no copy as evidence that the copy was stamped somewhere else entirely.
+     * A sleep-only pass (opening the Sleep screen) or one whose vitals transfer was skipped says
+     * nothing about the ring's clock.
+     */
+    private suspend fun checkRingClock() {
+        if (!clockPass.vitalsSeen) return
+        val now = System.currentTimeMillis()
+        val since = now - RingClockStall.EVIDENCE_WINDOW_MS
+        val unmatched = listOf(MeasurementKind.HEART_RATE, MeasurementKind.SPO2).flatMap {
+            db.measurementDao().timestampsBySource(it.name, SOURCE_SPOT, since)
+        }
+        RingClockStallStore.update(context) { start -> clockPass.finish(start, unmatched, now) ?: start }
+    }
+
     private suspend fun persistUnsafe(event: PulseEvent) {
         when (event) {
+            // A start/end verdict for one spot measurement (issue #59) — a control signal for the
+            // coordinator's poll loop, carrying no value of its own. Nothing to store.
+            is PulseEvent.MeasurementComplete -> Unit
             is PulseEvent.DeviceStateChanged -> {
+                // #142: the clock-stall warning belongs to a YCBT ring; another family can't have it.
+                val family = event.deviceType
+                if (event.state == RingConnectionState.CONNECTED && family != null &&
+                    family !in RingClockStall.AFFECTED_FAMILIES) RingClockStallStore.reset(context)
                 // Never resurrect a forgotten ring: after Forget / Factory Reset clears the
                 // device row, the ring's own teardown still emits a late DISCONNECTED — only
                 // a connection-establishing event may create a fresh row.
@@ -98,8 +237,9 @@ class EventPersistenceSubscriber(
                         // History, because this keeps getting re-added: connect used to clear *all*
                         // sleep for every family except YCBT and rebuild it from the ring. No ring
                         // re-supplies more than its own buffer, and the two smallest re-supply a
-                        // single day — CRP sends `queryHistorySleep(daysAgo=0)`, jring
-                        // `makeHistoryQueryCommand()` with its 1-day default (JringDriver.kt:105,
+                        // single day — CRP sends `queryHistorySleep(daysAgo=0)`, jring asked
+                        // `makeHistoryQueryCommand()` for one day (and, until issue #73, for the
+                        // wrong one: byte 1 is a day offset, so it never asked for today at all;
                         // NOT `syncWindowDays`, which only sizes the progress bar) — so every
                         // connect destroyed each night older than that, and a new night replaced
                         // the last one instead of joining it (issue #43, zaggash's R11). The
@@ -150,6 +290,8 @@ class EventPersistenceSubscriber(
                 // This event is queued after all earlier ring events, so deleting here prevents a
                 // pre-forget CONNECTED event still in the bus from recreating the cleared row.
                 db.deviceDao().currentReal()?.let { db.deviceDao().deleteById(it.id) }
+                clockPass.clear()
+                RingClockStallStore.reset(context)
             }
             is PulseEvent.BatteryLevel -> {
                 val device = db.deviceDao().currentReal() ?: DeviceEntity()
@@ -159,31 +301,42 @@ class EventPersistenceSubscriber(
                     updatedAt = now,
                 ))
                 recordBatterySample(event.percent, now)
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
+            }
+            is PulseEvent.LiveSampleGate -> {
+                if (event.closed) closedGates.add(event.kind) else closedGates.remove(event.kind)
             }
             is PulseEvent.HeartRateSample -> {
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.HEART_RATE.name,
-                    value = event.bpm.toDouble(), unit = "bpm",
-                    timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
-                ))
+                if (!event.spot && MeasurementKind.HEART_RATE in closedGates) return
+                storeLiveReading(
+                    MeasurementKind.HEART_RATE, event.bpm.toDouble(), "bpm",
+                    event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                    sourceRaw = event.sourceRaw,
+                )
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.Spo2Result -> {
-                db.measurementDao().insert(MeasurementEntity(
-                    kindRaw = MeasurementKind.SPO2.name,
-                    value = event.value.toDouble(), unit = "%",
-                    timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
-                ))
+                if (!event.spot && MeasurementKind.SPO2 in closedGates) return
+                storeLiveReading(
+                    MeasurementKind.SPO2, event.value.toDouble(), "%",
+                    event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
+                    sourceRaw = event.sourceRaw,
+                )
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.HistoryMeasurement -> {
-                db.measurementDao().upsert(MeasurementEntity(
-                    id = historyMeasurementId(event.kind, event.timestamp.toEpochMilli()),
+                val at = event.timestamp.toEpochMilli()
+                val written = upsertUnlessDeleted(MeasurementEntity(
+                    id = historyMeasurementId(event.kind, at),
                     kindRaw = event.kind.name,
                     value = event.value, unit = event.kind.unit,
-                    timestamp = event.timestamp.toEpochMilli(),
+                    timestamp = at,
                     sourceRaw = "history",
                 ))
+                // A sample the user deleted adopts nothing: it is re-sent on every sync, and
+                // letting it retire our spot rows within ±90 s would delete a retaken reading
+                // each time the ring re-supplied the one that was already deleted.
+                if (written) adoptRingsCopy(event.kind, at)
             }
             is PulseEvent.StressSample -> {
                 val measurement = MeasurementEntity(
@@ -197,8 +350,11 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "colmi",
                 )
-                if (event.isHistory) db.measurementDao().upsert(measurement)
-                else db.measurementDao().insert(measurement)
+                if (event.isHistory) upsertUnlessDeleted(measurement)
+                else {
+                    db.measurementDao().insert(measurement)
+                    com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
+                }
             }
             is PulseEvent.HrvSample -> {
                 db.measurementDao().insert(MeasurementEntity(
@@ -207,6 +363,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 ))
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.BloodPressureSample -> {
                 db.withTransaction {
@@ -233,13 +390,14 @@ class EventPersistenceSubscriber(
                         sourceRaw = if (event.isHistory) "history" else "live",
                     )
                     if (event.isHistory) {
-                        db.measurementDao().upsert(systolic)
-                        db.measurementDao().upsert(diastolic)
+                        upsertUnlessDeleted(systolic)
+                        upsertUnlessDeleted(diastolic)
                     } else {
                         db.measurementDao().insert(systolic)
                         db.measurementDao().insert(diastolic)
                     }
                 }
+                if (!event.isHistory) com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.BloodSugarSample -> {
                 db.measurementDao().insert(MeasurementEntity(
@@ -249,6 +407,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 ))
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.TemperatureSample -> {
                 val measurement = MeasurementEntity(
@@ -262,11 +421,18 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 )
-                if (event.isHistory) db.measurementDao().upsert(measurement)
-                else db.measurementDao().insert(measurement)
+                if (event.isHistory) upsertUnlessDeleted(measurement)
+                else {
+                    db.measurementDao().insert(measurement)
+                    com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
+                }
             }
             is PulseEvent.ActivityUpdate -> {
+                // The ring always writes its own totals, in every mode. Under Path B the phone's
+                // count lives in `phoneSteps`, so there is no ownership conflict to gate on — the
+                // read path picks which column to show at display time.
                 upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.ActivityBucket -> {
                 // Per-slice ring history: upserted by timestamp + the day total recomputed as the
@@ -275,13 +441,22 @@ class EventPersistenceSubscriber(
                 // its single largest bucket. Calories omitted (unverified ring field).
                 applyActivityBucket(event.timestamp.toEpochMilli(), event.steps, event.distanceMeters)
             }
+            is PulseEvent.PhoneStepsUpdate -> {
+                upsertActivityDailyFromPhone(event.timestamp.toEpochMilli(), event.steps)
+            }
+            // The phone reader just failed (permission revoked mid-day, provider gone, HC
+            // unavailable). Clear *today's* phoneSteps so the display's read-time pick falls
+            // back to the ring's live `steps` — otherwise the last value the phone wrote
+            // stays on the Today tile, widget and check-ins for the rest of the day while
+            // the ring's own count climbs unseen. Historical days keep their phoneSteps: a
+            // permission loss today does not retract data that was real when collected.
+            is PulseEvent.PhoneStepSourceUnavailable -> {
+                val dayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+                val existing = db.activityDailyDao().byDay(dayStart)
+                clearPhoneStepsOnRow(existing)?.let { db.activityDailyDao().upsert(it) }
+            }
             is PulseEvent.SleepTimeline -> {
-                upsertSleepSession(
-                    event.sessionStart.toEpochMilli(),
-                    event.sessionEnd.toEpochMilli(),
-                    event.segments,
-                    event.completeSession,
-                )
+                upsertSleepSession(event.timestamp.toEpochMilli(), event.stages, event.completeSession)
             }
             is PulseEvent.SyncProgress -> {
                 if (event.stage == "done") {
@@ -289,6 +464,7 @@ class EventPersistenceSubscriber(
                     if (device != null) {
                         db.deviceDao().upsert(device.copy(lastFullSyncAt = System.currentTimeMillis()))
                     }
+                    checkRingClock()
                     reconcileRecentlyFinishedWorkouts()
                     recomputeCalorieEstimates()
                     // iOS #95: re-learn the resting-HR baseline that drives the "auto" HR zone
@@ -299,20 +475,21 @@ class EventPersistenceSubscriber(
                     // moment new measurements can have landed. Debounced 15 s + REPLACE in the
                     // worker, so this is cheap to fire on every done.
                     HealthConnectExportWorker.enqueue(context)
+                    com.pulseloop.mqtt.MqttExportWorker.enqueue(context)
                 }
             }
             is PulseEvent.HeartRateComplete -> {}
             is PulseEvent.Spo2Complete -> {}
             is PulseEvent.MeasurementRejected -> {} // Product orchestration only; no persistence.
+            // A streamed spot value is not a reading: the coordinator settles the run and publishes
+            // the one reading as an HrvSample/StressSample/TemperatureSample (issue #60's rule).
+            is PulseEvent.SpotVitalSample -> {}
+            is PulseEvent.SpotVitalNoReading -> {}
+            is PulseEvent.RealtimeStreamStopped -> {}
             is PulseEvent.WearState -> {} // Product orchestration only (fast-fail a measure); not persisted.
-            is PulseEvent.RawPacket -> {
-                db.rawPacketDao().insert(RawPacketEntity(
-                    directionRaw = event.direction.name,
-                    commandId = event.data.getOrNull(0)?.toInt()?.and(0xFF) ?: 0,
-                    hexPayload = event.data.joinToString("") { "%02x".format(it) },
-                    decodedKind = event.decoded.kind,
-                ))
-            }
+            // Both persisted by DiagnosticsSubscriber, which also stamps and bounds them.
+            is PulseEvent.RawPacket -> {}
+            is PulseEvent.Diagnostic -> {}
             is PulseEvent.ActivitySyncReset -> {}
             is PulseEvent.FirmwareVersion -> {
                 // 0xF6 must NOT write the firmware version. The ring streams two distinct 0xF6
@@ -380,18 +557,83 @@ class EventPersistenceSubscriber(
             // live-activity decode before this fix — overwrite it so the day self-heals instead
             // of staying stuck at a garbage number until midnight.
             val stale = existing.steps > 200_000
+            // The ring's counter is cumulative for the day, so it still contains any bucket the
+            // user deleted (issue #70) — ratcheting against it raw restored the deleted block
+            // within seconds, and again on every reconnect. See [ActivityBucketDeletion].
+            val deletion = com.pulseloop.data.ActivityBucketDeletion
+            val hasDeletion = existing.deletedSteps > 0 || existing.deletedDistanceMeters > 0.0
             db.activityDailyDao().upsert(existing.copy(
-                steps = if (stale) steps else maxOf(existing.steps, steps),
-                calories = if (stale) calories else maxOf(existing.calories, calories),
-                distanceMeters = if (stale) distanceM else maxOf(existing.distanceMeters, distanceM),
+                // A row the phone created first (`source == "phone"`) flips to `"ring"` when the
+                // ring writes. The `source` column still has two downstream consumers —
+                // `HealthConnectTypeMappings.EXCLUDED_SOURCES` (which filters demo/mock, not
+                // phone) and [DailyCalorieEstimator.deviceReportedCalories] — but only the latter
+                // cares about `"phone"`, and it reads the column as "who last wrote these data
+                // columns". So once the ring has supplied `steps`/`calories`/`distance`, the row
+                // belongs to the ring and the estimator must see it that way. Other sources
+                // ("ring_history", "manual_recording", "hr_and_manual") are preserved as before.
+                source = if (existing.source == StepSourcePrefs.SOURCE_PHONE) StepSourcePrefs.SOURCE_RING else existing.source,
+                steps = if (stale) steps
+                else deletion.ratchetAgainstRing(existing.steps, steps, existing.deletedSteps),
+                // A bucket carries no calorie field, so there is nothing to subtract from the
+                // ring's own figure — the deletion drops it and the app's estimate takes over
+                // (see [com.pulseloop.data.ActivityBucketDeletion]). Ratcheting here would put it
+                // straight back.
+                calories = if (stale) calories
+                else if (hasDeletion) existing.calories
+                else maxOf(existing.calories, calories),
+                distanceMeters = if (stale) distanceM else deletion.ratchetAgainstRing(
+                    existing.distanceMeters, distanceM, existing.deletedDistanceMeters,
+                ),
                 updatedAt = System.currentTimeMillis(),
             ))
         } else {
             db.activityDailyDao().upsert(ActivityDailyEntity(
                 date = dayStart, steps = steps, calories = calories,
-                distanceMeters = distanceM, source = "ring",
+                distanceMeters = distanceM, source = StepSourcePrefs.SOURCE_RING,
             ))
         }
+    }
+
+    /**
+     * Persist the phone's step count for one day, in its own column.
+     *
+     * Under the separate-column design ([ActivityDailyEntity.phoneSteps]), an existing row's
+     * **data columns** are untouched except for `phoneSteps`: `steps`, `distanceMeters`,
+     * `calories`, and `source` are left exactly as the ring wrote them. `syncedAt` also moves —
+     * metadata, not data. `updatedAt` is *preserved* (review item 10): it is what
+     * [com.pulseloop.health.exporters.ActivityExporter] selects on, so bumping it for a
+     * `phoneSteps`-only change would re-select the row and re-export unchanged ring data. The
+     * display picks between `steps` and `phoneSteps` at read time based on the user's
+     * step-source preference, so switching source is a read-time choice, not a destructive
+     * write: the ring's totals are never clobbered and switching back is instant.
+     *
+     * A brand-new row (phone wrote first, ring hasn't yet) is created with
+     * `source = "phone"` so the day is visible in the "real" DAO queries
+     * (`source NOT IN ('demo','mock')`) even before the ring has data for it. The old design
+     * also needed the source label to keep the row out of the Health Connect export, via
+     * `HealthConnectTypeMappings.EXCLUDED_SOURCES` — that exclusion is gone (the phone's value
+     * used to land in `steps`, the exported column; under the separate-column design the
+     * self-feedback loop is broken by construction). A phone-first day still produces no HC
+     * record: it carries `steps = 0`, and `isPlausibleSteps` floors at 1, so the plausibility
+     * guards skip it regardless of source. A phone-first row also stamps `updatedAt = now`
+     * (see [phoneStepRow]) so the exporter's watermark query picks it up.
+     *
+     * A later ring write flips `source` from `"phone"` to `"ring"` — see [upsertActivityDaily].
+     * That is not a mismatch: `source` means "who last wrote the data columns", and once the
+     * ring has supplied `steps`/`calories`/`distance`, the row belongs to the ring.
+     * [DailyCalorieEstimator.deviceReportedCalories] reads `source` for exactly that question.
+     * The phone's step value is kept visible by the separate `phoneSteps` column, not by the
+     * source label — the old "overwrite source and reset it back to ring on next ring write"
+     * dance existed because the phone used to occupy `steps`; under the separate-column design
+     * nothing needs it any more.
+     *
+     * A no-op when the day already holds this exact phone value: on every foreground the phone
+     * reader re-publishes today's total, so a value that hasn't moved must not produce a write.
+     */
+    private suspend fun upsertActivityDailyFromPhone(ts: Long, steps: Int) {
+        val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        val existing = db.activityDailyDao().byDay(dayStart)
+        phoneStepRow(existing, dayStart, steps)?.let { db.activityDailyDao().upsert(it) }
     }
 
     /**
@@ -407,6 +649,14 @@ class EventPersistenceSubscriber(
 
     private suspend fun applyActivityBucketAtomic(ts: Long, steps: Int, distanceM: Double) {
         val dayStart = com.pulseloop.util.TimeUtil.startOfDayLocal(ts)
+        // A bucket the user deleted (issue #70). Buckets upsert by start time so the day's total is
+        // the sum of distinct buckets rather than an accumulation — which is also what would write
+        // a deleted one straight back on the next sync of that day, exactly as it would have for a
+        // deleted reading in #60.
+        if (db.measurementDeletionDao().isActivityBucketDeleted(
+                com.pulseloop.data.ActivityBucketDeletion.tombstoneId(ts)
+            )
+        ) return
         db.activityBucketDao().upsert(ActivityBucketEntity(
             startEpoch = ts,
             date = dayStart,
@@ -428,73 +678,125 @@ class EventPersistenceSubscriber(
         val isToday = dayStart == com.pulseloop.util.TimeUtil.startOfTodayLocal()
         val stale = existing != null && existing.steps > 200_000
         val ratchet = isToday && existing != null && !stale
+        // Under Path B the ring always writes: the phone never occupies `steps`, so there is no
+        // ownership gate to skip this upsert. The phone's value lives in `phoneSteps`, untouched
+        // by anything here.
+        val effectiveSource = if (existing?.source == StepSourcePrefs.SOURCE_PHONE) "ring_history"
+        else if (ratchet) existing!!.source else "ring_history"
         db.activityDailyDao().upsert(
             (existing ?: ActivityDailyEntity(date = dayStart, source = "ring_history")).copy(
                 steps = if (ratchet) maxOf(existing!!.steps, totalSteps) else totalSteps,
                 distanceMeters = if (ratchet) maxOf(existing!!.distanceMeters, totalDistance) else totalDistance,
-                source = if (ratchet) existing!!.source else "ring_history",
+                source = effectiveSource,
                 syncedAt = System.currentTimeMillis(),
                 updatedAt = System.currentTimeMillis(),
             )
         )
     }
 
-    private suspend fun upsertSleepSession(
-        sessionStart: Long,
-        sessionEnd: Long,
-        segments: List<com.pulseloop.ring.SleepStageSegment>,
-        completeSession: Boolean,
-    ) {
-        if (segments.isEmpty() || sessionEnd <= sessionStart ||
-            sessionEnd - sessionStart > MAX_SLEEP_TIMELINE_MILLIS) return
+    private suspend fun upsertSleepSession(ts: Long, stages: List<SleepStage>, completeSession: Boolean) {
+        if (stages.isEmpty() || stages.size > MAX_SLEEP_TIMELINE_MINUTES) return
+        var effectiveTs = ts
+        var effectiveStages = stages
+
+        // Quiet-hours gate (issue #79, #83), opt-in and off by default: the record is trimmed to the
+        // minutes inside the window before any write — the still-wrist/sofa case — rather than
+        // judged by its start, because the ring often runs the sofa hour and the real night as one
+        // record. Already-imported nights are untouched (this never deletes), and the gate is read
+        // per record so a settings change takes effect on the next packet, not the next launch.
+        // The schedule and Bedtime tracking are independent (issue #126); with neither on this
+        // keeps the whole record.
+        val kept = QuietHoursPrefs(context).keptMinutesForRecord(effectiveTs, effectiveStages.size, context)
+            ?: return
+        effectiveTs = effectiveTs + kept.first * 60_000L
+        effectiveStages = effectiveStages.subList(kept.first, kept.last + 1)
+
+        // Sleep record deletion gate: drop if the user deleted this entire record (issue #78, #82)
+        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(effectiveTs)
+        val origDayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
+        if (db.measurementDeletionDao().isSleepRecordDeleted(dayStart, ts) ||
+            db.measurementDeletionDao().isSleepRecordDeleted(origDayStart, ts)
+        ) {
+            return
+        }
+
+        // Sleep record edit gate (issue #82, #106): the user's bounds for this record, re-applied
+        // inside the transaction below — trimming *and* re-creating any minutes they added over
+        // time the ring missed, through the same function the edit itself used.
+        val edit = db.measurementDeletionDao().getSleepEdit(dayStart, ts)
+            ?: db.measurementDeletionDao().getSleepEdit(origDayStart, ts)
+
         db.withTransaction {
-            upsertSleepSessionAtomic(sessionStart, sessionEnd, segments, completeSession)
+            upsertSleepSessionAtomic(effectiveTs, effectiveStages, completeSession, originalRecordStart = ts, edit = edit)
         }
     }
 
     private suspend fun upsertSleepSessionAtomic(
-        sessionStart: Long,
-        sessionEnd: Long,
-        segments: List<com.pulseloop.ring.SleepStageSegment>,
+        ts: Long,
+        stages: List<SleepStage>,
         completeSession: Boolean,
+        originalRecordStart: Long = ts,
+        edit: com.pulseloop.data.dao.SleepRecordEditBounds? = null,
     ) {
         // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
         // a night that starts before midnight lands under the morning of waking instead of being
         // split into two sessions at midnight. Matches the iOS reference
         // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
-        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(sessionStart)
+        val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
+        val ringEnd = ts + stages.size * 60_000L
         // Include legacy rows keyed to the wrong day if they overlap this packet. Reconciliation
         // re-points their surviving blocks to the correct waking day.
-        val overlapping = db.sleepSessionDao().ringOverlapping(sessionStart, sessionEnd)
+        val overlapping = db.sleepSessionDao().ringOverlapping(ts, ringEnd)
         val existing = (db.sleepSessionDao().ringAllByDay(dayStart) + overlapping).distinctBy { it.id }
         val existingBlocks =
             if (existing.isEmpty()) emptyList()
             else db.sleepStageBlockDao().forSessions(existing.map { it.id })
 
-        // YCBT complete records are authoritative for their interval, including shortened
-        // revisions. Packet-based families replace only the packet interval. In both cases the
-        // unaffected blocks remain available for SleepSegmentation to preserve separate naps.
-        val replacements = buildTimestampedStageBlocks("", sessionStart, sessionEnd, segments)
-        if (replacements.isEmpty()) return
-        val replacedSessionIds = if (completeSession) {
-            overlapping.mapTo(mutableSetOf()) { it.id }
-        } else {
-            emptySet()
+        var recordBlocks = buildStageBlocks("", ts, stages, recordStartAt = originalRecordStart)
+        if (edit != null) {
+            // Re-apply the user's edit (issue #82, #106) with `editedRecordBlocks`, the function
+            // `SleepRecordDeletion.edit` used, so this sync reproduces the edit's blocks — the same
+            // `startAt`s, so tombstones and the restate stay idempotent. Added minutes give way to
+            // any other record already stored: the ring's measurement beats an extension.
+            val (nightStart, nightEnd) = nightWindow(dayStart)
+            val (start, end) = clampEditToNeighbours(
+                edit.newStartAt, edit.newEndAt, ts, ringEnd,
+                others = existingBlocks.filter { it.recordStartAt != originalRecordStart },
+                nightStart = nightStart, nightEnd = nightEnd,
+            )
+            recordBlocks = editedRecordBlocks(recordBlocks, originalRecordStart, start, end) ?: return
         }
+        // The interval this packet is authoritative for: the record as edited, added minutes and all.
+        val packetStart = recordBlocks.minOf { it.startAt }
+        val packetEnd = recordBlocks.maxOf { it.startAt + it.durationMinutes * 60_000L }
+
+        // YCBT complete records are authoritative for the ring session they describe, including
+        // shortened revisions. Packet-based families replace only the packet interval. In both
+        // cases the unaffected blocks remain available for SleepSegmentation to preserve
+        // separate naps — and, for a complete record, the *other* ring sessions of the same night
+        // (issue #63): see [completeSessionSurvivors] for why "the session it describes" is a
+        // contiguous run of blocks and not every block of every row the packet touches.
+        val replacements = recordBlocks
+            // Tombstone check (issue #78): a deleted ring record's blocks come back with the same
+            // `startAt` values on every re-send of that night, so the re-derive must drop them
+            // here or `SleepRecordDeletion`'s work lasts exactly one sync.
+            .filterNot { block ->
+                db.measurementDeletionDao().isDeleted(
+                    MeasurementDeletionDao.sleepBlockId(dayStart, block.startAt),
+                )
+            }
         val dayBlocks = replaceOverlappingSleepBlocks(
-            existing = existingBlocks,
+            existing = if (completeSession) {
+                completeSessionSurvivors(existingBlocks, packetStart, packetEnd)
+            } else {
+                existingBlocks
+            },
             replacements = replacements,
-            replacementStart = sessionStart,
-            replacementEnd = sessionEnd,
-            removeSessionIds = replacedSessionIds,
+            replacementStart = packetStart,
+            replacementEnd = packetEnd,
         )
 
-        reconcileWakingDay(
-            dayStart,
-            existing,
-            dayBlocks,
-            authoritativeBounds = if (completeSession) sessionStart to sessionEnd else null,
-        )
+        reconcileWakingDay(dayStart, existing, dayBlocks)
     }
 
     /**
@@ -524,9 +826,8 @@ class EventPersistenceSubscriber(
         dayStart: Long,
         existing: List<SleepSessionEntity>,
         dayBlocks: List<SleepStageBlockEntity>,
-        authoritativeBounds: Pair<Long, Long>? = null,
     ) = db.withTransaction {
-        val groups = buildSleepReconcileGroups(dayBlocks, authoritativeBounds)
+        val groups = SleepSegmentation.segment(dayBlocks, SleepGapBridge.fromSettings(context))
 
         // No blocks left on this day — drop the empty rows entirely (their blocks cascade).
         if (groups.isEmpty()) {
@@ -534,22 +835,45 @@ class EventPersistenceSubscriber(
             return@withTransaction
         }
 
-        val plan = buildSleepReconcilePlan(existing, groups)
+        data class Segment(val blocks: List<SleepStageBlockEntity>, val start: Long, val end: Long)
+        val segments = groups.map { g ->
+            val sorted = g.sortedBy { it.startAt }
+            val start = sorted.first().startAt
+            val end = sorted.maxOf { it.startAt + it.durationMinutes * 60_000L }
+            Segment(sorted, start, end)
+        }
+
+        fun overlap(a0: Long, a1: Long, b0: Long, b1: Long): Long =
+            maxOf(0L, minOf(a1, b1) - maxOf(a0, b0))
+
+        // Greedily match each segment to the best-overlapping unused row; a row also matches when it
+        // contains the segment's start (covers a freshly-created zero-length container row). The
+        // rows' pre-mutation bounds are the match key — `existing` is read before any write below.
+        val available = existing.toMutableList()
+        val matched: List<Pair<Segment, SleepSessionEntity?>> = segments.map { seg ->
+            val best = available.maxByOrNull { overlap(seg.start, seg.end, it.startAt, it.endAt) }
+            if (best != null && (overlap(seg.start, seg.end, best.startAt, best.endAt) > 0L ||
+                        best.startAt in seg.start..seg.end)) {
+                available.remove(best)
+                seg to best
+            } else {
+                seg to null
+            }
+        }
 
         // Clear every existing row's blocks up front so re-pointing a block between sessions can't
         // leave a transient duplicate keyed to two sessions at once.
         existing.forEach { db.sleepStageBlockDao().deleteBySession(it.id) }
 
         val now = System.currentTimeMillis()
-        for (match in plan.matches) {
-            val seg = match.group
-            val row = match.session
+        for ((seg, row) in matched) {
             val id = row?.id ?: "sleep-$dayStart-${seg.start}"
-            val totalMin = ((seg.end - seg.start) / 60_000L).toInt().coerceAtLeast(0)
+            val totalMin = asleepMinutes(seg.blocks)
             val deepMin = seg.blocks
                 .filter { it.stageRaw == SleepStage.DEEP.name }
                 .sumOf { it.durationMinutes }
-            val score = computeSleepScore(deepMin, totalMin)
+            // Scored on the minutes the ring measured: added ones are asleep but unstaged (#106).
+            val score = computeSleepScore(deepMin, measuredAsleepMinutes(seg.blocks))
 
             // Parent session BEFORE its blocks (FK sleep_stage_blocks -> sleep_sessions.id).
             db.sleepSessionDao().upsert(
@@ -578,7 +902,7 @@ class EventPersistenceSubscriber(
         }
 
         // Rows not matched to any segment had all their blocks re-pointed away — delete them.
-        plan.deleteSessionIds.forEach { db.sleepSessionDao().deleteById(it) }
+        available.forEach { db.sleepSessionDao().deleteById(it.id) }
     }
 
     /**
@@ -586,16 +910,10 @@ class EventPersistenceSubscriber(
      * Medical research: optimal deep sleep = 15-25% of total.
      * Matches the official app's scoring.
      */
-    private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? {
-        if (totalMin == 0) return null
-        val deepPct = (deepMin.toFloat() / totalMin * 100).toInt()
-        return when {
-            deepPct >= 20 -> 90
-            deepPct >= 15 -> 75
-            deepPct >= 10 -> 60
-            else -> 40
-        }
-    }
+    private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
+        // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
+        // same banding, so one function owns it.
+        sleepStageScore(deepMin, totalMin)
 
     // ── Calorie estimation recompute (iOS #98) ───────────────────────────────────
 
@@ -613,175 +931,197 @@ class EventPersistenceSubscriber(
         }
     }
 
-    private companion object {
-        const val MAX_SLEEP_TIMELINE_MILLIS = 24 * 60 * 60_000L
+    companion object {
+        /** `sourceRaw` of a spot measurement's settled reading **on a ring that will also log it
+         *  itself** (issue #60) — i.e. a row still awaiting reconciliation with the ring's copy.
+         *  Reads alongside `"live"` everywhere a source is filtered; nothing treats the two apart
+         *  except [adoptRingsCopy]. */
+        const val SOURCE_SPOT = "spot"
+        /** How far a ring-history sample may sit from one of our spot readings and still be the
+         *  ring's copy of it. The measurement itself runs 35–63 s and the ring stamps its log to
+         *  the minute, so 90 s covers a stamp at either end of the run without reaching the ring's
+         *  own all-day samples five minutes apart. */
+        const val SPOT_MATCH_MS = 90_000L
+        /** The kinds [adoptRingsCopy] reconciles, and so the only ones a `spot:` range tombstone
+         *  can exist for. Kept as the raw names the measurement rows carry. */
+        val SPOT_RECONCILED_KINDS = setOf(MeasurementKind.HEART_RATE.name, MeasurementKind.SPO2.name)
+        /** How far back [spotReadings] is primed from the table on first use. */
+        const val SPOT_LOOKBACK_MS = 7L * 24 * 60 * 60_000
+        private const val MAX_SLEEP_TIMELINE_MINUTES = 24 * 60
+
+        @Volatile private var shared: EventPersistenceSubscriber? = null
+
+        /**
+         * The process's one subscriber, started from `PulseLoopApplication.onCreate`.
+         *
+         * It used to be built and started only by the UI's startup (`AppServices` /
+         * `PulseLoopApp`). A process Android launched just to run `RingSyncWorker` never got
+         * there, and the bus keeps no backlog (`replay = 0`), so everything that background sync
+         * pulled from the ring was published to no one and dropped.
+         */
+        fun shared(context: Context): EventPersistenceSubscriber =
+            shared ?: synchronized(this) {
+                shared ?: context.applicationContext.let { app ->
+                    // Every persisted ring-sync batch republishes the widget snapshot (debounced
+                    // 2 s), mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
+                    EventPersistenceSubscriber(
+                        app, PulseLoopDatabase.getInstance(app),
+                        onDataPersisted = { WidgetSnapshotPublisher.publishDebounced(app) },
+                    )
+                }.also { shared = it }
+            }
     }
+}
+
+/**
+ * The row a [PulseEvent.PhoneStepsUpdate] should write for one day — or null when it would be a
+ * no-op.
+ *
+ * Pure, so the phone write's column-only contract can be tested without a Room instance (same
+ * pattern as the sleep-merge helpers below). The contract, all of which is asserted in
+ * `EventPersistencePhoneWriteTest`:
+ *
+ *  - **Only two columns change on an existing row:** `phoneSteps` and `syncedAt`. `steps`,
+ *    `calories`, `distanceMeters`, `source`, and `updatedAt` are carried through untouched —
+ *    the first four keep the source switch reversible, and preserving `updatedAt` stops
+ *    [com.pulseloop.health.exporters.ActivityExporter] from re-selecting the row for unchanged
+ *    ring data (review item 10).
+ *  - **A brand-new row is created with `source = "phone"`**, so the day is visible in the
+ *    "real" DAO queries even before the ring has data for it. New rows also stamp
+ *    `updatedAt = now` so a phone-first day is picked up by the exporter's watermark query.
+ *  - **Writing the same value twice is a no-op** (returns null): the phone reader re-publishes
+ *    today's total on every foreground, so a value that hasn't moved must not produce a write.
+ *  - **`phoneSteps = 0` is a real value, distinct from null.** `null → 0` writes (the midnight
+ *    gap: the phone has begun counting and counted zero); `0 → 0` is a no-op.
+ */
+internal fun phoneStepRow(
+    existing: ActivityDailyEntity?,
+    dayStart: Long,
+    steps: Int,
+    now: Long = System.currentTimeMillis(),
+): ActivityDailyEntity? = when {
+    // No-op when the day already holds this exact phone value.
+    existing != null && existing.phoneSteps == steps -> null
+    // Existing row: phoneSteps and syncedAt only. updatedAt is preserved — ActivityExporter
+    // selects on it, so a metadata-only phone write must not re-select the row and re-export
+    // unchanged ring steps/calories/distance (review item 10).
+    existing != null -> existing.copy(phoneSteps = steps, syncedAt = now)
+    // New phone-first row: updatedAt stamps "this row just appeared" so the exporter picks
+    // it up.
+    else -> ActivityDailyEntity(
+        date = dayStart,
+        source = StepSourcePrefs.SOURCE_PHONE,
+        phoneSteps = steps,
+        syncedAt = now,
+        updatedAt = now,
+    )
+}
+
+/**
+ * The row a [PulseEvent.PhoneStepSourceUnavailable] should write for today — or null when it
+ * would be a no-op.
+ *
+ * Review item 4, PR #98. When the phone reader fails mid-day (permission revoked, provider
+ * uninstalled, HC unreachable), the last `phoneSteps` value it wrote stays on the row and the
+ * display — which picks `phoneSteps ?: steps` — keeps showing it, hiding the ring's live count
+ * for the rest of the day. Clearing today's `phoneSteps` restores the fallback.
+ *
+ * Pure, so the contract can be tested without Room (same pattern as [phoneStepRow]).
+ *
+ * The contract:
+ *  - **Returns null when the row is absent** — nothing to clear. `source = "phone"` on a
+ *    phone-first row is preserved (see [phoneStepRow]'s KDoc for why that matters).
+ *  - **Returns null when `phoneSteps` is already null** — the row already falls back to the
+ *    ring. Repeated `PhoneStepSourceUnavailable` events are common (every failed foreground),
+ *    and each one must be a no-op after the first.
+ *  - **Returns a copy with only `phoneSteps = null`** — `steps`, `calories`, `distanceMeters`,
+ *    `source`, `syncedAt` and `updatedAt` are untouched. Not bumping `updatedAt` is deliberate:
+ *    [com.pulseloop.health.exporters.ActivityExporter] selects rows by it, and a metadata-only
+ *    change here would re-export unchanged ring data. (This is also review item 10's rule
+ *    applied proactively to this path.)
+ */
+internal fun clearPhoneStepsOnRow(existing: ActivityDailyEntity?): ActivityDailyEntity? =
+    if (existing == null || existing.phoneSteps == null) null
+    else existing.copy(phoneSteps = null)
+
+/**
+ * Is this reading one the ring will hand back from its own history, so that the two copies have to
+ * be reconciled later ([EventPersistenceSubscriber.adoptRingsCopy])? Both halves are required:
+ * a streamed sample is not a spot reading, and a spot reading from a ring that keeps no log of it
+ * has no second copy coming. Getting the second half wrong is not cosmetic — on a CRP or Colmi
+ * ring the nearest history sample is an unrelated point on the five-minute all-day grid, so the
+ * reconciliation would delete readings the user deliberately took (issue #60).
+ */
+internal fun awaitsRingsCopy(spot: Boolean, ringWillLogIt: Boolean): Boolean = spot && ringWillLogIt
+
+/**
+ * Which of our spot readings ([ours], epoch millis) a ring-history sample stamped [historyAt] is
+ * the ring's own copy of — the pure half of [EventPersistenceSubscriber.adoptRingsCopy]
+ * (issue #60): within [window] either side, and nothing else.
+ */
+internal fun spotReadingsMatching(
+    ours: List<Long>,
+    historyAt: Long,
+    window: Long = EventPersistenceSubscriber.SPOT_MATCH_MS,
+): List<Long> = ours.filter { kotlin.math.abs(it - historyAt) <= window }
+
+/**
+ * Build SleepStageBlockEntity entries with run-length encoding.
+ * Consecutive minutes of the same stage are merged into one block.
+ *
+ * Every block carries [startTs] as its `recordStartAt` — the declared start of the ring record
+ * these stages arrived in (issue #68). This is the only point at which that is known: the night
+ * is merged into one session immediately afterwards, and the record boundary is not recoverable
+ * from the stored timeline, because this ring reopens a record a single minute after closing
+ * one and that is the same width as the minute-grid rounding seam between two blocks of the
+ * same record.
+ */
+internal fun buildStageBlocks(
+    sessionId: String,
+    startTs: Long,
+    stages: List<SleepStage>,
+    recordStartAt: Long = startTs,
+): List<SleepStageBlockEntity> {
+    if (stages.isEmpty()) return emptyList()
+    val blocks = mutableListOf<SleepStageBlockEntity>()
+    var currentStage = stages[0]
+    var blockStart = startTs
+    var blockMinute = 0
+    var duration = 1
+
+    for (i in 1 until stages.size) {
+        val stage = stages[i]
+        if (stage == currentStage) {
+            duration++
+        } else {
+            blocks.add(SleepStageBlockEntity(
+                sessionId = sessionId,
+                startAt = blockStart,
+                startMinute = blockMinute,
+                durationMinutes = duration,
+                stageRaw = currentStage.name,
+                recordStartAt = recordStartAt,
+            ))
+            currentStage = stage
+            blockStart = startTs + i * 60_000L
+            blockMinute = i
+            duration = 1
+        }
+    }
+    // Final block
+    blocks.add(SleepStageBlockEntity(
+        sessionId = sessionId,
+        startAt = blockStart,
+        startMinute = blockMinute,
+        durationMinutes = duration,
+        stageRaw = currentStage.name,
+        recordStartAt = recordStartAt,
+    ))
+    return blocks
 }
 
 internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
     "history:${kind.key}:$timestamp"
-
-internal fun buildTimestampedStageBlocks(
-    sessionId: String,
-    sessionStart: Long,
-    sessionEnd: Long,
-    segments: List<com.pulseloop.ring.SleepStageSegment>,
-): List<SleepStageBlockEntity> {
-    if (sessionEnd <= sessionStart) return emptyList()
-
-    data class Span(val stage: SleepStage, val durationMillis: Long)
-
-    val normalized = mutableListOf<Span>()
-    var cursor = sessionStart
-    for (segment in segments.sortedWith(compareBy<SleepStageSegment> { it.start }.thenBy { it.end })) {
-        val clippedStart = segment.start.toEpochMilli().coerceIn(sessionStart, sessionEnd)
-        val end = segment.end.toEpochMilli().coerceIn(sessionStart, sessionEnd)
-        val start = maxOf(clippedStart, cursor)
-        if (end <= start) continue
-        if (start > cursor) normalized += Span(SleepStage.UNKNOWN, start - cursor)
-        normalized += Span(segment.stage, end - start)
-        cursor = end
-    }
-    if (cursor < sessionEnd) normalized += Span(SleepStage.UNKNOWN, sessionEnd - cursor)
-    if (normalized.isEmpty()) return emptyList()
-
-    val totalMinutes = (sessionEnd - sessionStart) / 60_000L
-    if (totalMinutes <= 0L) return emptyList()
-
-    // Diffuse each fractional-minute remainder into the following segment. Unlike flooring every
-    // absolute boundary, this preserves the session's cumulative floor exactly (for example three
-    // 90-second spans become 1, 2, 1 minutes rather than losing the middle transition).
-    val minutes = LongArray(normalized.size)
-    var remainder = 0L
-    normalized.forEachIndexed { index, span ->
-        val withRemainder = span.durationMillis + remainder
-        minutes[index] = withRemainder / 60_000L
-        remainder = withRemainder % 60_000L
-    }
-
-    // A short explicit transition is fidelity, not noise. When there is at least one Room minute
-    // available per positive span, reserve one for every span that error diffusion rounded to zero
-    // and take it from the currently most over-represented multi-minute span.
-    if (totalMinutes >= normalized.size) {
-        for (index in minutes.indices) {
-            if (minutes[index] != 0L) continue
-            val donor = minutes.indices
-                .filter { minutes[it] > 1L }
-                .maxWithOrNull(
-                    compareBy<Int> { minutes[it] * 60_000L - normalized[it].durationMillis }
-                        .thenByDescending { it },
-                ) ?: continue
-            minutes[index] = 1L
-            minutes[donor]--
-        }
-    }
-
-    val blocks = mutableListOf<SleepStageBlockEntity>()
-    var startMinute = 0L
-    normalized.forEachIndexed { index, span ->
-        val durationMinutes = minutes[index]
-        if (durationMinutes <= 0L) return@forEachIndexed
-        blocks += SleepStageBlockEntity(
-            sessionId = sessionId,
-            startAt = sessionStart + startMinute * 60_000L,
-            startMinute = startMinute.toInt(),
-            durationMinutes = durationMinutes.toInt(),
-            stageRaw = span.stage.name,
-        )
-        startMinute += durationMinutes
-    }
-    return blocks
-}
-
-internal fun nextSleepUpdatedAt(wallClockNow: Long, existingUpdatedAt: Long): Long {
-    val successor = if (existingUpdatedAt == Long.MAX_VALUE) Long.MAX_VALUE else existingUpdatedAt + 1L
-    return maxOf(wallClockNow, successor)
-}
-
-internal data class SleepReconcileGroup(
-    val blocks: List<SleepStageBlockEntity>,
-    val start: Long,
-    val end: Long,
-)
-
-internal data class SleepReconcileMatch(
-    val group: SleepReconcileGroup,
-    val session: SleepSessionEntity?,
-)
-
-internal data class SleepReconcilePlan(
-    val matches: List<SleepReconcileMatch>,
-    val deleteSessionIds: Set<String>,
-)
-
-internal fun buildSleepReconcilePlan(
-    existing: List<SleepSessionEntity>,
-    groups: List<SleepReconcileGroup>,
-): SleepReconcilePlan {
-    fun overlap(a0: Long, a1: Long, b0: Long, b1: Long): Long =
-        maxOf(0L, minOf(a1, b1) - maxOf(a0, b0))
-
-    // Match against pre-mutation bounds so correcting a malformed parent cannot change later
-    // matches in the same reconciliation pass.
-    val available = existing.toMutableList()
-    val matches = groups.map { group ->
-        val best = available.maxByOrNull { overlap(group.start, group.end, it.startAt, it.endAt) }
-        if (best != null && (overlap(group.start, group.end, best.startAt, best.endAt) > 0L ||
-                best.startAt in group.start..group.end)) {
-            available.remove(best)
-            SleepReconcileMatch(group, best)
-        } else {
-            SleepReconcileMatch(group, null)
-        }
-    }
-    return SleepReconcilePlan(matches, available.mapTo(linkedSetOf()) { it.id })
-}
-
-internal fun buildSleepReconcileGroups(
-    blocks: List<SleepStageBlockEntity>,
-    authoritativeBounds: Pair<Long, Long>? = null,
-): List<SleepReconcileGroup> {
-    fun naturalGroups(input: List<SleepStageBlockEntity>) = SleepSegmentation.segment(input).map { group ->
-        val sorted = group.sortedBy { it.startAt }
-        SleepReconcileGroup(
-            blocks = sorted,
-            start = sorted.first().startAt,
-            end = sorted.maxOf { it.startAt + it.durationMinutes * 60_000L },
-        )
-    }
-
-    val bounds = authoritativeBounds ?: return naturalGroups(blocks)
-    val (explicitStart, explicitEnd) = bounds
-    val before = mutableListOf<SleepStageBlockEntity>()
-    val authoritative = mutableListOf<SleepStageBlockEntity>()
-    val after = mutableListOf<SleepStageBlockEntity>()
-    for (block in blocks) {
-        val blockEnd = block.startAt + block.durationMinutes * 60_000L
-        when {
-            blockEnd <= explicitStart -> before += block
-            block.startAt >= explicitEnd -> after += block
-            else -> {
-                val boundedStart = maxOf(block.startAt, explicitStart)
-                val boundedEnd = minOf(blockEnd, explicitEnd)
-                val boundedMinutes = ((boundedEnd - boundedStart) / 60_000L).toInt()
-                if (boundedMinutes > 0) {
-                    authoritative += block.copy(
-                        startAt = boundedStart,
-                        durationMinutes = boundedMinutes,
-                    )
-                }
-            }
-        }
-    }
-
-    return buildList {
-        addAll(naturalGroups(before))
-        if (authoritative.isNotEmpty()) {
-            add(SleepReconcileGroup(authoritative.sortedBy { it.startAt }, explicitStart, explicitEnd))
-        }
-        addAll(naturalGroups(after))
-    }
-}
 
 /**
  * True when a `DeviceStateChanged(CONNECTED, …)` is a real connection transition rather than a
@@ -849,16 +1189,55 @@ internal fun shouldReplaceCompleteSleep(
     incomingMinutes: Int,
 ): Boolean = existingStart == incomingStart || incomingMinutes > existingMinutes
 
+/**
+ * The stored stage blocks a *complete* ring session leaves standing (issue #63).
+ *
+ * A YCBT ring closes a sleep session when it sees the wearer get up and opens a new one when they
+ * settle again, so one night can be two `af fa` records three minutes apart. SleepSegmentation
+ * (60-minute gap) rightly merges those into one stored row. The old rule then treated a complete
+ * record as authoritative for **every block of every row it overlapped** — so on the next sync
+ * pass, when the second record arrived on top of the merged row, it wiped the first record's
+ * three hours along with its own stale copy, and the night read 4 h 06 instead of 6 h 08. The
+ * vendor app keeps every record as its own session and never lets one displace another.
+ *
+ * What a complete record *is* authoritative for is the ring session it describes: the blocks its
+ * own interval overlaps, and nothing else. Blocks overlapping the interval are dropped here rather
+ * than trimmed; the caller's interval replace would only trim them, and a complete record has no
+ * use for what it trimmed off.
+ *
+ * **Abutting blocks are left standing, and that is a correction.** This rule used to grow the run
+ * across any block meeting it end-to-start, so a shortened re-send could retire its own stale tail.
+ * But a block has no record identity — `sessionId` is the *merged* row, shared by every record of
+ * the night — so "my stale tail" and "the neighbouring record" are the same shape seen from the
+ * same side, and the rule could not tell them apart. Two records meeting with no gap therefore read
+ * as one run and the second wiped the first: on the reporter's ring the records sit 33 seconds
+ * apart, which is a coin toss on whether they round to the same minute, and losing that toss costs
+ * a whole session. The shortened-re-send case is also much weaker than it was — since a record's
+ * timeline is placed against its own declared header bounds, a re-send of the same record produces
+ * the same end rather than one that drifted — so the trade is a stale tail surviving until the
+ * record is re-sent shorter *again* against a session that could vanish outright. Carrying the
+ * originating record's start on each block would allow both, and is the fix if the tail ever
+ * actually bites.
+ */
+internal fun completeSessionSurvivors(
+    existing: List<SleepStageBlockEntity>,
+    replacementStart: Long,
+    replacementEnd: Long,
+): List<SleepStageBlockEntity> {
+    fun end(block: SleepStageBlockEntity) = block.startAt + block.durationMinutes * 60_000L
+    return existing.filterNot { block ->
+        block.startAt < replacementEnd && end(block) > replacementStart
+    }
+}
+
 internal fun replaceOverlappingSleepBlocks(
     existing: List<SleepStageBlockEntity>,
     replacements: List<SleepStageBlockEntity>,
     replacementStart: Long,
     replacementEnd: Long,
-    removeSessionIds: Set<String> = emptySet(),
 ): List<SleepStageBlockEntity> {
     val byStart = LinkedHashMap<Long, SleepStageBlockEntity>()
     for (block in existing) {
-        if (block.sessionId in removeSessionIds) continue
         val blockEnd = block.startAt + block.durationMinutes * 60_000L
         if (blockEnd <= replacementStart || block.startAt >= replacementEnd) {
             byStart[block.startAt] = block
@@ -880,6 +1259,11 @@ internal fun replaceOverlappingSleepBlocks(
 
     for (block in replacements) byStart[block.startAt] = block
     return byStart.values.sortedBy { it.startAt }
+}
+
+internal fun nextSleepUpdatedAt(wallClockNow: Long, existingUpdatedAt: Long): Long {
+    val successor = if (existingUpdatedAt == Long.MAX_VALUE) Long.MAX_VALUE else existingUpdatedAt + 1L
+    return maxOf(wallClockNow, successor)
 }
 
 // Extension for Set<WearableCapability> CSV from WearableCapability.kt

@@ -40,7 +40,7 @@ object RingEventBridge {
             listOf(PulseEvent.Spo2Result(decoded.value, decoded._timestamp))
 
         is RingDecodedEvent.HistoryMeasurement -> {
-            if (!isPlausibleHistoryMeasurement(decoded.kind_field, decoded.value)) emptyList()
+            if (!isPlausible(decoded.kind_field, decoded.value)) emptyList()
             // A ring's on-device log can still hold records stamped under a previous clock — e.g.
             // a jring that logged against a UTC RTC before the app started setting it to local
             // time. Those decode hours into the future. Drop anything outside the history horizon
@@ -53,6 +53,20 @@ object RingEventBridge {
             if (decoded.value !in stressRange) emptyList()
             else listOf(PulseEvent.StressSample(decoded.value, decoded._timestamp, decoded.isHistory))
         }
+
+        is RingDecodedEvent.SpotVitalSample ->
+            listOf(PulseEvent.SpotVitalSample(decoded.vital, decoded.value, decoded._timestamp))
+
+        is RingDecodedEvent.RealtimeStopAck -> when (decoded.readingType) {
+            ColmiCommandID.RT_HEART_RATE.toInt() ->
+                listOf(PulseEvent.RealtimeStreamStopped(MeasurementKind.HEART_RATE, decoded._timestamp))
+            ColmiCommandID.RT_SPO2.toInt() ->
+                listOf(PulseEvent.RealtimeStreamStopped(MeasurementKind.SPO2, decoded._timestamp))
+            else -> emptyList()
+        }
+
+        is RingDecodedEvent.SpotVitalNoReading ->
+            listOf(PulseEvent.SpotVitalNoReading(decoded.vital, decoded._timestamp))
 
         is RingDecodedEvent.HrvSample -> {
             if (decoded.value !in hrvRange) emptyList()
@@ -71,15 +85,11 @@ object RingEventBridge {
             listOf(PulseEvent.SyncProgress("done"))
 
         is RingDecodedEvent.SleepTimeline -> {
-            if (!isWithinHistoryWindow(decoded.sessionStart, now) ||
-                !isWithinHistoryWindow(decoded.sessionEnd, now) ||
-                decoded.sessionEnd <= decoded.sessionStart || decoded.segments.isEmpty()) emptyList()
-            else listOf(PulseEvent.SleepTimeline(
-                decoded.sessionStart,
-                decoded.sessionEnd,
-                decoded.segments,
-                decoded.completeSession,
-            ))
+            val end = decoded._timestamp.plusSeconds(decoded.stages.size * 60L)
+            if (!isWithinHistoryWindow(decoded._timestamp, now) ||
+                !isWithinHistoryWindow(end, now) ||
+                decoded.stages.isEmpty()) emptyList()
+            else listOf(PulseEvent.SleepTimeline(decoded._timestamp, decoded.stages, decoded.completeSession))
         }
 
         is RingDecodedEvent.Battery -> {
@@ -89,6 +99,9 @@ object RingEventBridge {
 
         is RingDecodedEvent.Status ->
             listOf(PulseEvent.DeviceStateChanged(RingConnectionState.CONNECTED, decoded.address, decoded.firmware))
+
+        // Sport telemetry is a diagnostics marker; its bpm arrives as its own HeartRateSample.
+        is RingDecodedEvent.SportTelemetry -> emptyList()
 
         is RingDecodedEvent.TimeSyncAck, is RingDecodedEvent.CommandAck, is RingDecodedEvent.Unknown ->
             emptyList()
@@ -103,6 +116,9 @@ object RingEventBridge {
 
         is RingDecodedEvent.Spo2Complete ->
             listOf(PulseEvent.Spo2Complete(decoded._timestamp))
+
+        is RingDecodedEvent.MeasurementComplete ->
+            listOf(PulseEvent.MeasurementComplete(decoded.mode, decoded.success, decoded._timestamp))
 
         is RingDecodedEvent.Spo2Progress ->
             emptyList() // Phase 1 does not fan these out
@@ -146,9 +162,16 @@ object RingEventBridge {
             if (decoded.mgdl in bloodSugarRange) listOf(PulseEvent.BloodSugarSample(decoded.mgdl, decoded._timestamp))
             else emptyList()
         }
+
+        // Half a frame carries nothing to act on; it exists only so the raw-packet log can mask it.
+        is RingDecodedEvent.FramePending -> emptyList()
+
+        // An out-of-band vital result carries no reading; it exists only so the log can mask it.
+        is RingDecodedEvent.RejectedVitalResult -> emptyList()
     }
 
-    private fun isPlausibleHistoryMeasurement(kind: MeasurementKind, value: Double): Boolean {
+    /** The one plausibility band per kind — history rows and on-demand spot readings alike. */
+    fun isPlausible(kind: MeasurementKind, value: Double): Boolean {
         if (!value.isFinite()) return false
         return when (kind) {
             MeasurementKind.HEART_RATE -> value.toInt() in hrRange

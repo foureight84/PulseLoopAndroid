@@ -4,6 +4,7 @@ import androidx.annotation.DrawableRes
 import androidx.compose.ui.graphics.Color
 import com.pulseloop.R
 import com.pulseloop.ring.RingDeviceType
+import com.pulseloop.ring.WearableCapability
 import com.pulseloop.ui.theme.PulseColors
 
 /**
@@ -38,8 +39,34 @@ data class WearableModel(
      * §5a. Expand this only when a model is shown to need it on real hardware.
      */
     val requiresOsBond: Boolean = false,
+    /**
+     * Capabilities this model has beyond its family's [com.pulseloop.ring.WearableCoordinator.capabilities],
+     * added to the connected ring's set when this model is resolved. For features the family's
+     * protocol carries but nothing on the wire says a given ring supports — QRing decides those
+     * from a server-side per-model feature list, not from the `0x3C` reply. Same rule as
+     * [requiresOsBond]: add a model only once it is shown to work on real hardware. Granted only
+     * when the ring's advertised name identifies this model, never from the carousel fallback.
+     */
+    val extraCapabilities: Set<WearableCapability> = emptySet(),
 ) {
     companion object {
+        /**
+         * The SmartHealth naming convention: model, one space, four hex digits — the
+         * space-versus-underscore split that separates a SmartHealth-flavoured Colmi (`R99 54DC`)
+         * from a QRing one (`R02_A1B2`). Anchored end to end.
+         *
+         * The model half allows `-` because resellers badge these rings under their own hyphenated
+         * names: the unit in issue #56 advertises as `Ale-Hop2211 E1C7`, a textbook SmartHealth
+         * name that the original `[A-Za-z0-9]`-only class rejected on the hyphen alone. Widening it
+         * cannot pull in a QRing-Colmi — those have no space before the hex — and this is the
+         * broadest card in [CATALOG], scanned last, so every narrower model still gets first shot.
+         *
+         * Shared with `ColmiSmartHealthCoordinator`, which used to keep its own copy of the same
+         * literal. Two copies of one convention is exactly how issue #56 slipped through; keep it
+         * at one.
+         */
+        const val SMARTHEALTH_NAME_PATTERN = "^[A-Za-z0-9-]+( [A-Za-z0-9-]+)* [0-9A-Fa-f]{4}$"
+
         // "jring" is intentionally lowercase — that's how the brand styles its name.
         val JRING = WearableModel(
             id = "jring", displayName = "jring", brand = "jring", family = RingDeviceType.JRING,
@@ -64,6 +91,17 @@ data class WearableModel(
         val COLMI_R11 = colmi("colmi-r11", "Colmi R11", "Colmi", "^R11C_[0-9A-F]{4}$", R.drawable.ring_yawell_r11,
             requiresOsBond = true)
         val COLMI_R12 = colmi("colmi-r12", "Colmi R12", "Colmi", "^COLMI R12_.*", R.drawable.ring_colmi_r12)
+        // Ring 2 Pro advertises its full marketing name with no `_<hex>` serial (hardware capture,
+        // 2026-10-03). QRing drives it over the same UART/big-data pair as the rest of this family
+        // and does not OS-bond it. Reports hardware `RY10H…`. Art is QRing's own device picture.
+        // On-demand HRV / stress / temperature (`0x69` types 10/8/11) captured from QRing on it.
+        val COLMI_RING_2_PRO = colmi("colmi-ring-2-pro", "Colmi Ring 2 Pro", "Colmi",
+            "^COLMI Ring 2 Pro$", R.drawable.ring_colmi_ring_2_pro,
+            extraCapabilities = setOf(
+                WearableCapability.MANUAL_HRV,
+                WearableCapability.MANUAL_STRESS,
+                WearableCapability.MANUAL_TEMPERATURE,
+            ))
 
         /**
          * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
@@ -101,6 +139,30 @@ data class WearableModel(
             imageRes = R.drawable.ring_yawell_r11,
         )
 
+        /**
+         * The **R100** (issue #58) — a white-label CRP ring that ships with the same Moyoung
+         * "Da Rings" app as [COLMI_R11_CRP], firmware `MOY-R2E3-*`. Its reporter had to know to
+         * pick the R11 card for it; this card is so they don't.
+         *
+         * Unlike the R11 it advertises a usable name, so it can be matched at scan instead of
+         * relying on the post-connect `fdda` re-route. The pattern is deliberately loose about the
+         * suffix because the only capture we have is a redacted diagnostics report, which strips a
+         * `_<hex>` serial — the raw name is `R100` or `R100_<hex>`. The underscore is what keeps
+         * this off [SMARTHEALTH_NAME_PATTERN], whose serial is **space**-separated: an earlier
+         * `^R100([ _-].*)?$` also matched `R100 1A2B`, and because this entry precedes
+         * [COLMI_SMARTHEALTH] in [CATALOG] it would have taken a SmartHealth-firmware ring onto the
+         * CRP driver, which connects and then never syncs. It cannot collide with the Colmi
+         * `^R10_[0-9A-F]{4}$` either.
+         *
+         * Blurb omits stress: the R100 answers neither the stress-history query (`2/47`) nor the
+         * stress monitor-state read-back (`2/45`) — 22 sends, 0 replies in the #58 capture.
+         */
+        val R100 = WearableModel(
+            id = "r100", displayName = "R100", brand = "Da Rings", family = RingDeviceType.CRP,
+            tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Temp · Sleep",
+            advertisedNamePatterns = listOf("^R100(_[0-9A-Fa-f]+)?$"),
+        )
+
         // Yawell-branded variants
         val YAWELL_R05 = colmi("yawell-r05", "Yawell R05", "Yawell", "^R05_[0-9A-F]{4}$", R.drawable.ring_yawell_r05)
         val YAWELL_R10 = colmi("yawell-r10", "Yawell R10", "Yawell", "^R10_[0-9A-F]{4}$", R.drawable.ring_yawell_r10)
@@ -131,7 +193,7 @@ data class WearableModel(
             id = "colmi-smarthealth", displayName = "Colmi / Yawell (SmartHealth app)", brand = "Colmi",
             family = RingDeviceType.COLMI_SMART_HEALTH,
             tint = PulseColors.hrv, blurb = "HR · SpO₂ · Sleep",
-            advertisedNamePatterns = listOf("^[A-Za-z0-9]+( [A-Za-z0-9]+)* [0-9A-Fa-f]{4}$"),
+            advertisedNamePatterns = listOf(SMARTHEALTH_NAME_PATTERN),
         )
 
         // TK18 -- the LuckRing app / "K6" protocol (company ID 0xFF64). The only hardware-tested unit
@@ -163,12 +225,14 @@ data class WearableModel(
             pattern: String,
             @DrawableRes imageRes: Int?,
             requiresOsBond: Boolean = false,
+            extraCapabilities: Set<WearableCapability> = emptySet(),
         ) = WearableModel(
             id = id, displayName = name, brand = brand, family = RingDeviceType.COLMI_R02,
             tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Stress · Temp · Sleep",
             advertisedNamePatterns = listOf(pattern),
             imageRes = imageRes,
             requiresOsBond = requiresOsBond,
+            extraCapabilities = extraCapabilities,
         )
 
         private fun ycbt(
@@ -187,8 +251,8 @@ data class WearableModel(
         /** Every supported model. The pairing screen groups by brand and sorts each tab alphabetically. */
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
-            COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12,
-            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP, RWFIT,
+            COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12, COLMI_RING_2_PRO,
+            YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP, R100, RWFIT,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.
             COLMI_SMARTHEALTH,
@@ -205,15 +269,27 @@ data class WearableModel(
          * anchor themselves (`^…$`/`^…`), so `containsMatchIn` mirrors iOS's
          * `NSRegularExpression.firstMatch`.
          */
+        /**
+         * Compiled once per distinct pattern, not once per call: four coordinators consult
+         * [modelForAdvertisedName] and [com.pulseloop.ring.AdvertisementMatcher] now walks the
+         * registry once per manufacturer block, so a single scan result used to recompile the
+         * whole catalog's regexes dozens of times on the scan callback thread. A pattern that
+         * fails to compile maps to `null` and simply never matches, as before.
+         */
+        private val compiledNamePatterns: Map<String, Regex?> =
+            CATALOG.flatMap { it.advertisedNamePatterns }.distinct().associateWith { pattern ->
+                try {
+                    Regex(pattern)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+
         fun modelForAdvertisedName(advertisedName: String?): WearableModel? {
             if (advertisedName == null) return null
             return CATALOG.firstOrNull { model ->
                 model.advertisedNamePatterns.any { pattern ->
-                    try {
-                        Regex(pattern).containsMatchIn(advertisedName)
-                    } catch (_: Exception) {
-                        false
-                    }
+                    compiledNamePatterns[pattern]?.containsMatchIn(advertisedName) == true
                 }
             }
         }

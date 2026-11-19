@@ -28,6 +28,33 @@ object CoachDataAccess {
         } catch (_: Exception) { null }
     }
 
+    /**
+     * A tool's `start_time` on [date], in epoch millis. Accepts the documented 24-hour clock
+     * (`19:00`), the `7:00 PM` spelling local models favour, and a full ISO timestamp (with or
+     * without an offset). Null when [time] is blank or unreadable — the caller then falls back to
+     * its own default. [parseLocalDate] alone kept only the date part, so `19:00` fell back to
+     * noon and an ISO timestamp landed on midnight (iOS 6d006ec).
+     */
+    fun resolveStart(date: String, time: String?, zone: ZoneId = ZoneId.systemDefault()): Long? {
+        val value = time?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        // `2026-10-14 19:00` (SQL-style space instead of `T`) is as common from models as ISO.
+        val iso = if (DATE_SPACE_TIME.matches(value)) value.replaceFirst(' ', 'T') else value
+        try { return java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli() } catch (_: Exception) {}
+        try { return java.time.LocalDateTime.parse(iso).atZone(zone).toInstant().toEpochMilli() } catch (_: Exception) {}
+        val day = try { LocalDate.parse(date.trim().take(10), DateTimeFormatter.ISO_LOCAL_DATE) } catch (_: Exception) { return null }
+        for (formatter in CLOCK_FORMATTERS) {
+            val clock = try { java.time.LocalTime.parse(value, formatter) } catch (_: Exception) { continue }
+            return day.atTime(clock.hour, clock.minute).atZone(zone).toInstant().toEpochMilli()
+        }
+        return null
+    }
+
+    private val DATE_SPACE_TIME = Regex("""\d{4}-\d{2}-\d{2} \d.*""")
+    private val CLOCK_FORMATTERS = listOf("HH:mm", "H:mm", "HH:mm:ss", "H:mm:ss", "h:mm a", "h:mma").map {
+        java.time.format.DateTimeFormatterBuilder()
+            .parseCaseInsensitive().appendPattern(it).toFormatter(java.util.Locale.US)
+    }
+
     fun startOfDay(ts: Long): Long =
         Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.DAYS)
             .toInstant().toEpochMilli()
@@ -102,13 +129,14 @@ object CoachDataAccess {
     // ── Daily series ──────────────────────────────────────────────────────
 
     suspend fun dailySeries(
-        db: PulseLoopDatabase, metric: String, start: String, end: String
+        db: PulseLoopDatabase, metric: String, start: String, end: String,
+        preferPhone: Boolean,
     ): List<Pair<Long, Double>> {
         return when (metric) {
             "steps", "calories", "distance", "active_minutes" -> {
                 activityRows(db, start, end).map { row ->
                     val v = when (metric) {
-                        "steps" -> row.steps.toDouble()
+                        "steps" -> com.pulseloop.data.DisplaySteps.count(row, preferPhone)?.toDouble() ?: 0.0
                         "calories" -> row.calories
                         "distance" -> (row.distanceMeters / 1000.0).roundTo(2)
                         "active_minutes" -> row.activeMinutes.toDouble()
@@ -139,7 +167,8 @@ object CoachDataAccess {
     // ── Series points ─────────────────────────────────────────────────────
 
     suspend fun seriesPoints(
-        db: PulseLoopDatabase, metric: String, start: String, end: String, granularity: String
+        db: PulseLoopDatabase, metric: String, start: String, end: String, granularity: String,
+        preferPhone: Boolean,
     ): List<Pair<String, Double>> {
         val labeler: (Long) -> String = when (granularity) {
             "hour" -> { ts -> hourLabel(ts) }
@@ -155,7 +184,7 @@ object CoachDataAccess {
                         Instant.ofEpochMilli(it.timestamp).atZone(ZoneId.systemDefault())
                             .truncatedTo(ChronoUnit.HOURS).toInstant().toEpochMilli()
                     }.map { (h, ms) -> h to ms.map { it.value }.average().roundTo(1) }.sortedBy { it.first }
-                    "day" -> dailySeries(db, metric, start, end)
+                    "day" -> dailySeries(db, metric, start, end, preferPhone)
                     else -> rows.map { it.timestamp to it.value }
                 }
             }
@@ -166,11 +195,11 @@ object CoachDataAccess {
                         Instant.ofEpochMilli(it.timestamp).atZone(ZoneId.systemDefault())
                             .truncatedTo(ChronoUnit.HOURS).toInstant().toEpochMilli()
                     }.map { (h, ms) -> h to ms.map { it.value }.average().roundTo(1) }.sortedBy { it.first }
-                    "day" -> dailySeries(db, metric, start, end)
+                    "day" -> dailySeries(db, metric, start, end, preferPhone)
                     else -> rows.map { it.timestamp to it.value }
                 }
             }
-            else -> dailySeries(db, metric, start, end)
+            else -> dailySeries(db, metric, start, end, preferPhone)
         }
 
         return downsample(dated, 300).map { labeler(it.first) to it.second }

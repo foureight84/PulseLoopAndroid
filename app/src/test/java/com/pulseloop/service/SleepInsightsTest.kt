@@ -101,6 +101,40 @@ class SleepInsightsTest {
         assertTrue("Score ${result.score} should be <= 100", result.score <= 100)
     }
 
+    /**
+     * Since issue #63 `totalMinutes` is time asleep, so a night's blocks always cover at least
+     * that many minutes. Judged against it, the "does this ring label awake at all" coverage
+     * heuristic would be true for every ring, and a ring that never labels awake would be handed
+     * the full awake sub-score for nothing. It is judged against the span instead.
+     */
+    @Test
+    fun `a ring that never labels awake and covers only part of the night reports no awake share`() {
+        // 8 h in bed, 6 h of labelled sleep, no AWAKE blocks anywhere: 75% coverage of the span.
+        val s = session(360).copy(endAt = session(360).startAt + 480 * 60_000L)
+        val blocks = buildList {
+            repeat(300) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "LIGHT")) }
+            repeat(60) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "DEEP")) }
+        }
+        val result = SleepScore.calculate(s, blocks)
+        assertNull("no awake signal: coverage is 75% of the span, not 100% of time asleep", result.awakePct)
+        assertEquals("stage shares are of time asleep", 17, result.deepPct)   // 60/360
+    }
+
+    @Test
+    fun `the awake share is of time in bed, and the stage shares of time asleep`() {
+        // 7 h in bed = 420 min span; 30 min awake; 390 min asleep.
+        val s = session(390).copy(endAt = session(390).startAt + 420 * 60_000L)
+        val blocks = buildList {
+            repeat(300) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "LIGHT")) }
+            repeat(90) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "DEEP")) }
+            repeat(30) { add(SleepStageBlockEntity(sessionId = s.id, startAt = 0, startMinute = 0, durationMinutes = 1, stageRaw = "AWAKE")) }
+        }
+        val result = SleepScore.calculate(s, blocks)
+        assertEquals(7, result.awakePct)    // 30/420
+        assertEquals(23, result.deepPct)    // 90/390
+        assertEquals(77, result.lightPct)   // 300/390
+    }
+
     @Test
     fun testQualityLabelThresholds() {
         assertEquals(SleepQualityLabel.EXCELLENT, SleepScore.qualityLabel(85))

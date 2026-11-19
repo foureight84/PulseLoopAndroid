@@ -283,8 +283,16 @@ class LocalOpenAICompatClient(
             "model" to JsonPrimitive(model),
             "messages" to JsonArray(allMessages),
         )
-        if (tools.isNotEmpty()) body["tools"] = JsonArray(tools)
-        responseFormat(callerFormat)?.let { body["response_format"] = it }
+        if (tools.isNotEmpty()) {
+            body["tools"] = JsonArray(tools)
+            // Ollama/llama.cpp apply `response_format` as a grammar to the whole assistant
+            // generation, which keeps the model from emitting the `tool_calls` envelope: small
+            // models then write a function-looking object as plain text and may claim the write
+            // ran. Tool rounds stay unconstrained; if their final prose misses coach_response, the
+            // orchestrator's repair turn carries no tools and gets the grammar (iOS 6d006ec).
+        } else {
+            responseFormat(callerFormat)?.let { body["response_format"] = it }
+        }
         maxOutputTokens?.takeIf { it > 0 }?.let { body["max_tokens"] = JsonPrimitive(it) }
         return JsonObject(body)
     }

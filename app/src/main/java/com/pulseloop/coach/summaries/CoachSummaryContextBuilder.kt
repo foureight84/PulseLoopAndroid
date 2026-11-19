@@ -1,9 +1,12 @@
 package com.pulseloop.coach.summaries
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.context.CoachContextBuilder
 import com.pulseloop.coach.context.CoachContextPacket
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.*
+import com.pulseloop.ring.SleepStage
 import com.pulseloop.service.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -28,8 +31,8 @@ object CoachSummaryContextBuilder {
 
     // ── Today ────────────────────────────────────────────────────────────
 
-    suspend fun today(db: PulseLoopDatabase): Built {
-        val packet = CoachContextBuilder.build(db)
+    suspend fun today(db: PulseLoopDatabase, preferPhone: Boolean): Built {
+        val packet = CoachContextBuilder.build(db, preferPhone)
         val todayDate = packet.today
 
         @Serializable
@@ -52,7 +55,7 @@ object CoachSummaryContextBuilder {
 
         val tp = TodayPacket(
             today = todayDate,
-            steps = activity?.steps,
+            steps = com.pulseloop.data.DisplaySteps.count(activity, preferPhone),
             calories = activity?.calories,
             distanceKm = activity?.distanceMeters?.let { it / 1000 },
             activeMinutes = activity?.activeMinutes,
@@ -62,29 +65,33 @@ object CoachSummaryContextBuilder {
         )
         val contextJson = json.encodeToString(tp)
 
+        // The signature must include the *display* step figure, not the raw column — a phone-mode
+        // change that leaves `steps` untouched but moves `phoneSteps` has to trigger a regeneration
+        // or the card would keep quoting the old value (review item 5, PR #98).
         val sig = signature(listOf(
-            activity?.steps?.toString(), activity?.calories?.toInt()?.toString(),
+            tp.steps?.toString(), activity?.calories?.toInt()?.toString(),
             activity?.activeMinutes?.toString(), tp.distanceKm?.toString(),
             latestHr?.toInt()?.toString(), latestSpo2?.toInt()?.toString(),
         ))
 
-        // Scripted fallback
-        val title = if (activity != null && activity.steps > 0) "Today's snapshot" else "No activity synced yet"
-        val body = if (activity != null && activity.steps > 0)
-            "${activity.steps} steps so far today. Your ring is tracking — sync for the latest readings."
-        else "I don't have today's activity from the ring yet. Wear your ring and sync for a daily recap."
+        // Scripted fallback — same display value as the Today tile, so the two cannot disagree.
+        val displaySteps = tp.steps ?: 0
+        val title = if (displaySteps > 0) L10n.get(R.string.summary_fb_today_title) else L10n.get(R.string.fb_no_activity_title)
+        val body = if (displaySteps > 0)
+            L10n.plural(R.plurals.summary_fb_today_body, displaySteps, displaySteps)
+        else L10n.get(R.string.summary_fb_today_empty)
 
         return Built(
             scopeKey = todayDate,
             contextJson = contextJson,
             signature = sig,
-            fallback = CoachSummaryContent(title, body, listOf("How am I doing today?", "Summarize my week")),
+            fallback = CoachSummaryContent(title, body, listOf(L10n.get(R.string.coach_suggest_today), L10n.get(R.string.coach_suggest_week))),
         )
     }
 
     // ── Sleep Day ────────────────────────────────────────────────────────
 
-    suspend fun sleepDay(db: PulseLoopDatabase): Built? {
+    suspend fun sleepDay(db: PulseLoopDatabase, preferPhone: Boolean): Built? {
         val todayStart = java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault())
             .toInstant().toEpochMilli()
         val session = db.sleepSessionDao().byDay(todayStart) ?: return null
@@ -92,7 +99,9 @@ object CoachSummaryContextBuilder {
 
         val blocks = db.sleepStageBlockDao().forSession(session.id)
         val score = SleepScore.calculate(session, blocks)
-        val activitySteps = db.activityDailyDao().byDay(todayStart)?.steps
+        val activitySteps = com.pulseloop.data.DisplaySteps.count(
+            db.activityDailyDao().byDay(todayStart), preferPhone,
+        )
 
         @Serializable
         data class SleepDayPacket(
@@ -107,9 +116,12 @@ object CoachSummaryContextBuilder {
             val deepPct: Int,
             val activitySteps: Int?,
         )
-        val deepMin = blocks.filter { it.stageRaw == "deep" }.sumOf { it.durationMinutes }
-        val lightMin = blocks.filter { it.stageRaw == "light" }.sumOf { it.durationMinutes }
-        val awakeMin = blocks.filter { it.stageRaw == "awake" }.sumOf { it.durationMinutes }
+        // stageRaw is persisted as the SleepStage enum NAME, which is uppercase. These three
+        // matched lowercase literals and were therefore always zero, so every sleep summary the
+        // coach has ever been given said the user had no deep, light or awake sleep at all.
+        val deepMin = blocks.filter { it.stageRaw == SleepStage.DEEP.name }.sumOf { it.durationMinutes }
+        val lightMin = blocks.filter { it.stageRaw == SleepStage.LIGHT.name }.sumOf { it.durationMinutes }
+        val awakeMin = blocks.filter { it.stageRaw == SleepStage.AWAKE.name }.sumOf { it.durationMinutes }
 
         val p = SleepDayPacket(
             date = session.date.toString(),
@@ -141,6 +153,19 @@ object CoachSummaryContextBuilder {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    /**
+     * The coach writes in the app's language, so a cached card is stale after a language
+     * switch even when the data hasn't moved. Non-English languages are folded into the
+     * signature; English adds nothing, so signatures stored before localization still match.
+     */
     private fun signature(parts: List<String?>): String =
-        parts.joinToString("|") { it ?: "·" }
+        parts.joinToString("|") { it ?: "·" } + languageSuffix(com.pulseloop.coach.context.CoachLanguage.languageName())
+
+    private const val LANGUAGE_MARK = "|lang="
+
+    internal fun languageSuffix(language: String?): String = language?.let { LANGUAGE_MARK + it }.orEmpty()
+
+    /** The language part of a stored signature ("" for English). */
+    internal fun languageOf(signature: String): String =
+        signature.substringAfter(LANGUAGE_MARK, missingDelimiterValue = "")
 }

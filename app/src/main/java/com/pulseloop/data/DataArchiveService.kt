@@ -80,6 +80,9 @@ object DataArchiveService {
                     syncedAt = c.longOrNull("syncedAt"), createdAt = c.long("createdAt"),
                     updatedAt = c.long("updatedAt"),
                     estimatedActiveCalories = c.dblOrNull("estimatedActiveCalories"),
+                    deletedSteps = c.int_("deletedSteps"),
+                    deletedDistanceMeters = c.dbl("deletedDistanceMeters"),
+                    phoneSteps = c.intOrNull("phoneSteps"),
                 )
             },
             activityBuckets = collect("activity_buckets") { c ->
@@ -167,7 +170,7 @@ object DataArchiveService {
                 SleepStageBlockDTO(
                     id = c.str("id"), sessionId = c.str("sessionId"), startAt = c.long("startAt"),
                     startMinute = c.int_("startMinute"), durationMinutes = c.int_("durationMinutes"),
-                    stageRaw = c.str("stageRaw"),
+                    stageRaw = c.str("stageRaw"), recordStartAt = c.long("recordStartAt"),
                 )
             },
             coachConversations = collect("coach_conversations") { c ->
@@ -242,6 +245,7 @@ object DataArchiveService {
                     directionRaw = c.str("directionRaw"), commandId = c.int_("commandId"),
                     hexPayload = c.str("hexPayload"), decodedKind = c.strOrNull("decodedKind"),
                     decodedJSON = c.strOrNull("decodedJSON"), confidenceRaw = c.str("confidenceRaw"),
+                    deviceTypeRaw = c.strOrNull("deviceTypeRaw"),
                     createdAt = c.long("createdAt"),
                 )
             },
@@ -310,6 +314,12 @@ object DataArchiveService {
                     lastUsedAt = c.long("lastUsedAt"), useCount = c.int_("useCount"),
                 )
             },
+            measurementDeletions = collect("measurement_deletions") { c ->
+                MeasurementDeletionDTO(
+                    measurementId = c.str("measurementId"), kindRaw = c.str("kindRaw"),
+                    timestamp = c.long("timestamp"), deletedAt = c.long("deletedAt"),
+                )
+            },
         )
     }
 
@@ -369,6 +379,18 @@ object DataArchiveService {
                     rawPacketId = m.rawPacketId, createdAt = m.createdAt,
                 ))
             }
+            // Restore the tombstones BEFORE anything can sync against them (issue #60): a restored
+            // history reading the user had deleted must not survive the round trip.
+            if (archive.measurementDeletions.isNotEmpty()) {
+                db.measurementDeletionDao().insertAll(
+                    archive.measurementDeletions.map {
+                        MeasurementDeletionEntity(
+                            measurementId = it.measurementId, kindRaw = it.kindRaw,
+                            timestamp = it.timestamp, deletedAt = it.deletedAt,
+                        )
+                    }
+                )
+            }
             for (a in archive.activityDaily) {
                 db.activityDailyDao().upsert(ActivityDailyEntity(
                     id = a.id, date = a.date, steps = a.steps, calories = a.calories,
@@ -376,6 +398,9 @@ object DataArchiveService {
                     source = a.source, syncedAt = a.syncedAt, createdAt = a.createdAt,
                     updatedAt = a.updatedAt,
                     estimatedActiveCalories = a.estimatedActiveCalories,
+                    deletedSteps = a.deletedSteps,
+                    deletedDistanceMeters = a.deletedDistanceMeters,
+                    phoneSteps = a.phoneSteps,
                 ))
             }
             for (b in archive.activityBuckets) {
@@ -448,20 +473,32 @@ object DataArchiveService {
                     sp.errorMessage?.let { put("errorMessage", it) }
                 })
             }
+            // A backup written before issue #63 stores each night's span as its duration, and the
+            // one-time repair has already run (and will not again) on the install restoring it —
+            // so restate every restored night from its own blocks here, exactly as the repair
+            // does, rather than carry the archived number through verbatim. A session with no
+            // blocks in the archive keeps what it had; there is nothing to recompute from.
+            val restoredBlocks = archive.sleepStageBlocks.map { block ->
+                SleepStageBlockEntity(
+                    id = block.id, sessionId = block.sessionId, startAt = block.startAt,
+                    startMinute = block.startMinute, durationMinutes = block.durationMinutes,
+                    stageRaw = block.stageRaw, recordStartAt = block.recordStartAt,
+                )
+            }.groupBy { it.sessionId }
             for (ss in archive.sleepSessions) {
-                db.sleepSessionDao().upsert(SleepSessionEntity(
+                val archived = SleepSessionEntity(
                     id = ss.id, date = ss.date, startAt = ss.startAt, endAt = ss.endAt,
                     totalMinutes = ss.totalMinutes, score = ss.score, syncedAt = ss.syncedAt,
                     sourceRaw = ss.sourceRaw, createdAt = ss.createdAt, updatedAt = ss.updatedAt,
-                ))
+                )
+                val blocks = restoredBlocks[ss.id].orEmpty()
+                val restated = if (blocks.isEmpty()) archived else {
+                    val asleep = archived.copy(totalMinutes = com.pulseloop.service.asleepMinutes(blocks))
+                    asleep.copy(score = com.pulseloop.service.SleepScore.calculate(asleep, blocks).score)
+                }
+                db.sleepSessionDao().upsert(restated)
             }
-            for (block in archive.sleepStageBlocks) {
-                db.sleepStageBlockDao().insert(SleepStageBlockEntity(
-                    id = block.id, sessionId = block.sessionId, startAt = block.startAt,
-                    startMinute = block.startMinute, durationMinutes = block.durationMinutes,
-                    stageRaw = block.stageRaw,
-                ))
-            }
+            restoredBlocks.values.flatten().forEach { db.sleepStageBlockDao().insert(it) }
             for (conv in archive.coachConversations) {
                 db.coachConversationDao().upsert(CoachConversationEntity(
                     id = conv.id, title = conv.title, createdAt = conv.createdAt,
@@ -530,7 +567,8 @@ object DataArchiveService {
                     id = rp.id, timestamp = rp.timestamp, directionRaw = rp.directionRaw,
                     commandId = rp.commandId, hexPayload = rp.hexPayload,
                     decodedKind = rp.decodedKind, decodedJSON = rp.decodedJSON,
-                    confidenceRaw = rp.confidenceRaw, createdAt = rp.createdAt,
+                    confidenceRaw = rp.confidenceRaw, deviceTypeRaw = rp.deviceTypeRaw,
+                    createdAt = rp.createdAt,
                 ))
             }
             for (du in archive.derivedUpdates) {

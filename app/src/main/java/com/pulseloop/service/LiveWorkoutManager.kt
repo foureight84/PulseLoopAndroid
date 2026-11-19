@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.content.Context
 import android.content.Intent
 import androidx.work.WorkManager
@@ -77,14 +79,15 @@ class LiveWorkoutManager(
         )
         db.activitySessionDao().upsert(session)
 
-        coordinator.startWorkoutHeartRate()
+        coordinator.startWorkoutHeartRate(type)
         if (useGps) gps.start(session.id, type)
         polling.start(session.id)
-        startForegroundService(session.type)
+        startForegroundService(session.useGps)
 
         startTick(session)
         // Fresh state (not copy): clears any previous workout's finishedSessionId/paused flags.
         _state.value = WorkoutState(isRecording = true, activeSession = session)
+        com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
         return session
     }
 
@@ -115,6 +118,7 @@ class LiveWorkoutManager(
         polling.pause()
         tickJob?.cancel()
         _state.value = _state.value.copy(isPaused = true, activeSession = updated)
+        com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
         refreshNotification()
     }
 
@@ -138,6 +142,7 @@ class LiveWorkoutManager(
         polling.resume()
         startTick(updated)
         _state.value = _state.value.copy(isPaused = false, activeSession = updated)
+        com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
         refreshNotification()
     }
 
@@ -164,6 +169,7 @@ class LiveWorkoutManager(
         coordinator.stopWorkoutHeartRate()
         finishForegroundService(summarized)
         _state.value = WorkoutState(finishedSessionId = summarized.id)
+        com.pulseloop.mqtt.MqttLivePublisher.onWorkoutFinished(context)
         uploadToStravaIfConnected()
     }
 
@@ -195,6 +201,7 @@ class LiveWorkoutManager(
         ))
         coordinator.stopWorkoutHeartRate()
         _state.value = WorkoutState()
+        com.pulseloop.mqtt.MqttLivePublisher.onWorkoutFinished(context)
     }
 
     // MARK: - Tick loop
@@ -220,7 +227,10 @@ class LiveWorkoutManager(
                     hrZone = zone,
                 )
 
-                if (elapsed % 5 == 0) refreshNotification()
+                if (elapsed % 5 == 0) {
+            refreshNotification()
+            com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
+        }
                 delay(1000)
             }
         }
@@ -232,21 +242,26 @@ class LiveWorkoutManager(
         serviceIntent.apply {
             val s = _state.value
             val notification = Intent(context, WorkoutForegroundService::class.java).apply {
-                putExtra("activityName", s.activeSession?.let { ActivityMeta.label(it.type) } ?: "Workout")
+                putExtra("activityName", s.activeSession?.let { ActivityMeta.label(it.type) } ?: L10n.get(R.string.workout_generic))
                 putExtra("status", if (s.isPaused) "paused" else "recording")
                 putExtra("elapsedSeconds", s.elapsedSeconds)
                 putExtra("distanceMeters", s.distanceMeters)
                 putExtra("heartRate", s.latestHeartRate ?: 0)
+                s.activeSession?.let { putExtra(WorkoutForegroundService.EXTRA_USE_GPS, it.useGps) }
             }
             context.startService(notification)
         }
     }
 
-    private fun startForegroundService(name: String) {
+    private fun startForegroundService(useGps: Boolean) {
+        // Started while the user is on the workout screen: a location-type foreground service
+        // must be started from the foreground to keep while-in-use location (#139).
+        val intent = Intent(context, WorkoutForegroundService::class.java)
+            .putExtra(WorkoutForegroundService.EXTRA_USE_GPS, useGps)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            context.startForegroundService(Intent(context, WorkoutForegroundService::class.java))
+            context.startForegroundService(intent)
         } else {
-            context.startService(Intent(context, WorkoutForegroundService::class.java))
+            context.startService(intent)
         }
     }
 

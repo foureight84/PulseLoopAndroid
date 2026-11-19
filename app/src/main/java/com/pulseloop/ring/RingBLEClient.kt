@@ -1,5 +1,7 @@
 package com.pulseloop.ring
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.*
@@ -16,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.util.UUID
 
 /**
@@ -67,7 +71,9 @@ class RingBLEClient(
         val connectionState: RingConnectionState = RingConnectionState.IDLE,
         val discovered: List<DiscoveredRing> = emptyList(),
         val batteryPercent: Int? = null,
-        val isBluetoothReady: Boolean = false,
+        /** Phone Bluetooth adapter is off (#136). Defaults false so a placeholder state never
+         *  claims it; the client sets it from the adapter at init and on every state change. */
+        val bluetoothOff: Boolean = false,
         val lastError: String? = null,
         val activeDeviceType: RingDeviceType? = null,
         /** Exact catalog model of the active connection (iOS #49), resolved at connect time. */
@@ -206,6 +212,45 @@ class RingBLEClient(
     private var watchdogJob: Job? = null
     private var ownershipRetryJob: Job? = null
     @Volatile private var watchdogReconnectPaused = false
+    @Volatile private var teardownWaitJob: Job? = null
+    private var teardownWaitAddress: String? = null
+    @Volatile private var teardownScanAddress: String? = null
+    /** The queued teardown wait/scan came from an explicit pairing [connectTo], not recovery. */
+    @Volatile private var teardownUserInitiated = false
+    /** The caller's connect parameters, carried through a teardown fallback scan so a pairing
+     *  that honoured the carousel over a generic "SMART_RING" match (#29) is not rescanned as
+     *  JRING. Null when no fallback scan is pending. */
+    private data class TeardownConnect(
+        val deviceType: RingDeviceType?,
+        val selectedModelID: String?,
+        val scanDetectedType: RingDeviceType?,
+    )
+    @Volatile private var teardownScanConnect: TeardownConnect? = null
+    private val teardownWaitEpoch = java.util.concurrent.atomic.AtomicLong()
+
+    private val crpReconnect = CRPReconnect(
+        scope = scope,
+        canRetry = {
+            activeCoordinator?.deviceType == RingDeviceType.CRP &&
+                lastKnownIdentifier != null && !watchdogReconnectPaused &&
+                !prefs.getBoolean(USER_DISCONNECTED_KEY, false) &&
+                !synchronized(forgetLock) { forgetPending || forgetFinalizing } &&
+                bluetoothAdapter.isEnabled && hasPermissions() &&
+                reconnectAttempts < MAX_RECONNECT_ATTEMPTS &&
+                _state.value.connectionState !in setOf(
+                    RingConnectionState.CONNECTED, RingConnectionState.CONNECTING,
+                )
+        },
+        onPending = {
+            recordDiagnostic("CRP reconnect scheduled in 3000ms")
+            updateState { copy(connectionState = RingConnectionState.RECONNECTING) }
+            PulseEventBus.publishBlocking(
+                PulseEvent.DeviceStateChanged(RingConnectionState.RECONNECTING, lastKnownIdentifier)
+            )
+        },
+        onRetry = { connectLastKnownInternal() },
+        onAbandoned = { finishCrpRecovery() },
+    )
 
     // MARK: Service-discovery gate
     //
@@ -221,7 +266,75 @@ class RingBLEClient(
     // after ~1000ms if rejected, and never overlaps discovery with another GATT op.
     private val serviceDiscoveryStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    init { startConnectionWatchdog() }
+    /**
+     * Phone Bluetooth turned off (#136). No `onConnectionStateChange` arrives when the adapter
+     * goes down, and the watchdog skips its probes while it is off, so without this the UI kept
+     * showing "Connected" until Bluetooth came back. Every ring family needs it, not just CRP.
+     */
+    private val adapterStateReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: android.content.Intent) {
+            if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> scope.launch {
+                    updateState { copy(bluetoothOff = true) }
+                    onBluetoothOff()
+                }
+                // Back on: the message no longer describes anything, even if the ring is out of range.
+                BluetoothAdapter.STATE_ON -> scope.launch {
+                    val wasOff = _state.value.bluetoothOff
+                    updateState {
+                        copy(bluetoothOff = false, lastError = if (wasOff || lastError == BLUETOOTH_OFF_ERROR) null else lastError)
+                    }
+                }
+            }
+        }
+    }
+    private var adapterReceiverRegistered = false
+
+    init {
+        // No broadcast arrives for a state the adapter is already in, e.g. a launch with Bluetooth off.
+        updateState { copy(bluetoothOff = !isBluetoothEnabled) }
+        startConnectionWatchdog()
+        // Bluetooth broadcasts come from a privileged process outside the system UID;
+        // NOT_EXPORTED can silently miss them (same as CRPTeardownMonitor).
+        adapterReceiverRegistered = try {
+            ContextCompat.registerReceiver(
+                context.applicationContext, adapterStateReceiver,
+                android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+            true
+        } catch (e: Exception) {
+            Log.w("RingBLEClient", "Bluetooth state receiver unavailable; relying on watchdog", e)
+            false
+        }
+    }
+
+    /** Mark the link down when the adapter turns off; reconnect resumes via the watchdog. */
+    private fun onBluetoothOff() {
+        val gatt = bluetoothGatt
+        val shown = _state.value.connectionState
+        when {
+            gatt != null -> handleDisconnect(gatt)
+            shown == RingConnectionState.CONNECTED || shown == RingConnectionState.CONNECTING ||
+                shown == RingConnectionState.RECONNECTING -> {
+                updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
+                PulseEventBus.publishBlocking(
+                    PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
+                )
+            }
+            else -> return
+        }
+        Log.i("RingBLEClient", "Phone Bluetooth turned off; link marked disconnected")
+        connectingStartedAt = 0
+        // Nothing can reconnect until the adapter is back; don't leave a recovery scan pending.
+        if (crpReconnect.isRecovering || crpReconnect.isPending || teardownScanAddress != null) {
+            finishCrpRecovery()
+        }
+        if (!prefs.getBoolean(USER_DISCONNECTED_KEY, false)) {
+            updateState { copy(lastError = BLUETOOTH_OFF_ERROR) }
+        }
+    }
 
     // MARK: Public API
 
@@ -234,12 +347,19 @@ class RingBLEClient(
     }
 
     fun startScanning() {
+        // A pairing scan supersedes automatic recovery. Recovery's own scans use the private
+        // entry point so their pending presentation survives until the ring is found.
+        finishCrpRecovery()
+        startScanningInternal()
+    }
+
+    private fun startScanningInternal() {
         if (!hasPermissions()) {
-            updateState { copy(lastError = "BLE permissions not granted") }
+            updateState { copy(lastError = L10n.get(R.string.ble_permissions)) }
             return
         }
         if (!bluetoothAdapter.isEnabled) {
-            updateState { copy(lastError = "Bluetooth is not powered on") }
+            updateState { copy(lastError = L10n.get(R.string.ble_off)) }
             return
         }
         // A user-initiated scan (pairing screen) must never be hijacked by a leftover
@@ -247,7 +367,9 @@ class RingBLEClient(
         reconnectScanPending = false
         updateState {
             copy(
-                connectionState = RingConnectionState.SCANNING,
+                connectionState = if (crpReconnect.isRecovering || teardownScanAddress != null)
+                    RingConnectionState.RECONNECTING
+                    else RingConnectionState.SCANNING,
                 discovered = emptyList(),
                 lastError = null,
             )
@@ -261,9 +383,11 @@ class RingBLEClient(
     }
 
     fun stopScanning() {
+        finishCrpRecovery()
         reconnectScanPending = false
         scanner?.stopScan(scanCallback)
-        if (_state.value.connectionState == RingConnectionState.SCANNING) {
+        if (_state.value.connectionState in setOf(
+                RingConnectionState.SCANNING, RingConnectionState.RECONNECTING)) {
             updateState { copy(connectionState = RingConnectionState.IDLE) }
         }
     }
@@ -272,7 +396,7 @@ class RingBLEClient(
         val target = discoveredPeripherals[id] ?: run {
             try { bluetoothAdapter.getRemoteDevice(id) } catch (_: Exception) { null }
         } ?: run {
-            updateState { copy(lastError = "Ring no longer available; scan again.") }
+            updateState { copy(lastError = L10n.get(R.string.ble_ring_gone)) }
             return
         }
         val discoveredRing = _state.value.discovered.firstOrNull { it.id == id }
@@ -309,11 +433,22 @@ class RingBLEClient(
                 else discoveredRing?.wearableModelID ?: selectedModelID,
             advertisedName = discoveredRing?.name ?: target.name,
             scanDetectedType = detectedType,
+            userInitiated = true,
         )
     }
 
     /**
-     * Reconnect to the stored ring, alternating strategies like the official QRing app
+     * **Auto-reconnect only. A user tapping "Connect" must call [userConnect] instead.**
+     *
+     * This path deliberately honours the stay-off flag [userDisconnect] persists, so it returns
+     * without doing anything at all — no scan, no state change, no error — whenever the user has
+     * manually disconnected. That is correct for every caller here (app foreground, the watchdog,
+     * `RingSyncWorker`, the coach runner) and silently wrong for a button: wiring the Settings hero
+     * card's Connect to this made it a no-op in precisely the situation it exists for, with nothing
+     * on screen to say why (issue #72). [userConnect] clears the flag first, which is what makes a
+     * user's Connect mean "I want the ring back" rather than "retry, if you're still allowed to".
+     *
+     * Reconnects to the stored ring, alternating strategies like the official QRing app
      * (BleBaseControl: `count % 3` picks direct-connect vs scan-then-connect): a direct
      * connect is fastest right after a drop, but parks uselessly against a ring that
      * isn't advertising — a scan first proves reachability. Attempts are capped
@@ -325,6 +460,9 @@ class RingBLEClient(
     }
 
     private fun connectLastKnownInternal() {
+        // A callback-driven CRP retry owns the next attempt until its timer fires.
+        if (crpReconnect.isPending) return
+        if (teardownWaitJob?.isActive == true) return
         if (!bluetoothAdapter.isEnabled) return
         // Honor a user-initiated Disconnect: stay off until the user reconnects ([userConnect])
         // or pairs a new ring ([connectTo]). Every auto-reconnect path — foreground
@@ -332,7 +470,10 @@ class RingBLEClient(
         // here, so this one guard makes "Disconnect" actually stick.
         if (prefs.getBoolean(USER_DISCONNECTED_KEY, false)) return
         val lastId = lastKnownIdentifier ?: return
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            if (crpReconnect.isRecovering || teardownScanAddress != null) finishCrpRecovery()
+            return
+        }
         // A still-pending reconnect scan means the last attempt never sighted the ring.
         if (reconnectScanPending) {
             reconnectScanPending = false
@@ -342,7 +483,7 @@ class RingBLEClient(
                 // The classic wedge: the ring still thinks it's connected (stale ACL in
                 // the phone's stack) so it never advertises. Only the user can fix that.
                 updateState { copy(lastError =
-                    "Ring not found in scans. It may be held by a stale Bluetooth connection — try toggling Bluetooth off and on.") }
+                    L10n.get(R.string.ble_stale)) }
             }
         }
         reconnectAttempts++
@@ -350,7 +491,7 @@ class RingBLEClient(
             bluetoothAdapter.getRemoteDevice(lastId)
         } catch (_: Exception) { null }
         if (device == null) {
-            startScanning()
+            startScanningInternal()
             return
         }
         if (reconnectAttempts % 3 == 1) {
@@ -361,14 +502,16 @@ class RingBLEClient(
                 advertisedName = try { device.name } catch (_: Exception) { null },
             )
         } else {
-            startScanning()
-            // Set AFTER startScanning (which clears it to protect pairing scans).
+            startScanningInternal()
+            // Set AFTER startScanningInternal (which clears it to protect pairing scans).
             reconnectScanPending = true
         }
     }
 
     /** Clear the reconnect throttling — called on user action and app foreground. */
     private fun resetReconnectBackoff() {
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         reconnectAttempts = 0
         sightlessScans = 0
         reconnectScanPending = false
@@ -383,6 +526,8 @@ class RingBLEClient(
     fun reconnectIfNeeded() {
         if (!bluetoothAdapter.isEnabled || !hasPermissions()) return
         val lastId = lastKnownIdentifier ?: return
+        // Foregrounding must not restart an already scheduled recovery or abandon its scan.
+        if (crpReconnect.isRecovering || teardownWaitJob?.isActive == true || teardownScanAddress != null) return
         // Fresh user attention = fresh retry budget (the cap exists to stop unattended
         // background churn, not to block a user actively waiting on the connection).
         resetReconnectBackoff()
@@ -421,8 +566,24 @@ class RingBLEClient(
     }
 
     private fun connectionWatchdogTick() {
-        if (!bluetoothAdapter.isEnabled || !hasPermissions()) return
+        // Keep the UI's Bluetooth-off flag honest if an ACTION_STATE_CHANGED broadcast was missed.
+        val adapterOff = !isBluetoothEnabled
+        if (_state.value.bluetoothOff != adapterOff) updateState { copy(bluetoothOff = adapterOff) }
+        if (!bluetoothAdapter.isEnabled || !hasPermissions()) {
+            // Fallback for a missed ACTION_STATE_CHANGED broadcast (#136).
+            if (!bluetoothAdapter.isEnabled && (bluetoothGatt != null ||
+                    _state.value.connectionState == RingConnectionState.CONNECTED)) {
+                onBluetoothOff()
+                return
+            }
+            if (crpReconnect.isRecovering || teardownWaitJob != null || teardownScanAddress != null) {
+                finishCrpRecovery()
+            }
+            return
+        }
         if (watchdogReconnectPaused) return
+        if (crpReconnect.isPending) return
+        if (teardownWaitJob?.isActive == true) return
         // Time out a hung CONNECTING attempt FIRST — before the last-known-ring guard below —
         // so it also covers a first-ever pairing (no stored ring yet). The official QRing app
         // arms this timeout on every connect (mTimeoutRunnable). Without it, a first pair that
@@ -440,7 +601,13 @@ class RingBLEClient(
             }
             return
         }
-        if (lastKnownIdentifier == null) return
+        if (lastKnownIdentifier == null) {
+            // Another client forgot the ring: stop this client's recovery scan, but leave an
+            // explicit pairing that is waiting out a teardown alone.
+            if (crpReconnect.isRecovering ||
+                (teardownScanAddress != null && !teardownUserInitiated)) finishCrpRecovery()
+            return
+        }
         when (_state.value.connectionState) {
             RingConnectionState.CONNECTED -> {
                 if (activeCoordinator?.deviceType == RingDeviceType.JRING) {
@@ -470,6 +637,11 @@ class RingBLEClient(
             RingConnectionState.DISCONNECTED,
             RingConnectionState.FAILED,
             RingConnectionState.IDLE -> connectLastKnownInternal()
+            RingConnectionState.RECONNECTING -> {
+                // The short timer handles failed attempts; this advances a recovery scan that
+                // found nothing for a whole watchdog interval, preserving the retry cap.
+                if (crpReconnect.isRecovering || teardownScanAddress != null) connectLastKnownInternal()
+            }
             // CONNECTING is handled above (before the last-known-ring guard).
             else -> {
                 // SCANNING: a pairing scan proceeds untouched, but a reconnect scan that
@@ -487,11 +659,13 @@ class RingBLEClient(
     }
 
     /**
-     * Abort a stalled connect attempt that has no stored ring to retry (a first pairing that
-     * hung). Tears the half-open GATT down and surfaces an error so the pairing UI leaves the
-     * "Connecting…" state instead of spinning forever.
+     * Abort an unusable connection setup and tear its half-open GATT down. A known CRP ring
+     * gets the vendor's delayed recovery even if no further disconnect callback arrives;
+     * first pairing and other families retain their existing failure behavior.
      */
     private fun failConnectAttempt(reason: String) {
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         val gatt = bluetoothGatt
         bluetoothGatt = null
         activeDriver?.connectionDidEnd()
@@ -499,8 +673,11 @@ class RingBLEClient(
         subscriptionGate = null
         resetOpQueue()
         if (gatt != null) {
-            try { gatt.disconnect() } catch (_: Exception) {}
-            closeGattQuietly(gatt)
+            if (activeCoordinator?.deviceType == RingDeviceType.CRP) disconnectCrpGatt(gatt)
+            else {
+                try { gatt.disconnect() } catch (_: Exception) {}
+                closeGattQuietly(gatt)
+            }
         }
         releaseConnectionOwnership()
         connectingStartedAt = 0
@@ -508,6 +685,7 @@ class RingBLEClient(
         PulseEventBus.publishBlocking(
             PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
         )
+        scheduleCrpRecovery()
     }
 
     /**
@@ -522,6 +700,9 @@ class RingBLEClient(
         // Lifecycle/worker teardown is intentional. Leave genuine link-loss callbacks eligible
         // for watchdog recovery, but do not let this client undo an explicit transient teardown.
         watchdogReconnectPaused = true
+        crpReconnect.cancel()
+        cancelTeardownConnect()
+        reconnectScanPending = false
         ownershipRetryJob?.cancel(); ownershipRetryJob = null
         val shouldPublishDisconnect =
             _state.value.connectionState != RingConnectionState.DISCONNECTED
@@ -532,14 +713,16 @@ class RingBLEClient(
         activeDriver?.connectionDidEnd()
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         resetOpQueue()
-        if (gatt != null) {
+        if (gatt != null && activeCoordinator?.deviceType == RingDeviceType.CRP) {
+            disconnectCrpGatt(gatt)
+        } else if (gatt != null) {
             try { gatt.disconnect() } catch (_: Exception) {}
             // The official QRing app waits ~500 ms between disconnect() and close() so
             // the stack finishes the LL teardown before the client handle disappears.
             scope.launch {
                 delay(GATT_CLOSE_DELAY_MS)
                 closeGattQuietly(gatt)
-                releaseConnectionOwnership()
+                if (bluetoothGatt == null) releaseConnectionOwnership()
             }
         } else {
             releaseConnectionOwnership()
@@ -593,6 +776,87 @@ class RingBLEClient(
         try { gatt.close() } catch (_: Exception) {}
     }
 
+    private fun disconnectCrpGatt(gatt: BluetoothGatt) {
+        recordDiagnostic("CRP physical teardown started")
+        CRPTeardownMonitor.get(context).disconnect(gatt) {
+            closeGattQuietly(gatt)
+            recordDiagnostic("CRP previous GATT closed")
+            // A close for the old ring must not release a newer connection's ownership.
+            if (bluetoothGatt == null) releaseConnectionOwnership()
+        }
+    }
+
+    private fun cancelTeardownConnect() {
+        teardownWaitEpoch.incrementAndGet()
+        teardownWaitJob?.cancel()
+        teardownWaitJob = null
+        teardownWaitAddress = null
+        teardownScanAddress = null
+        teardownUserInitiated = false
+        teardownScanConnect = null
+    }
+
+    /**
+     * Automatic recovery may only resume toward the ring that is still stored. Another client
+     * (the foreground one) can Forget while this one waits; its in-memory state is stale here,
+     * so re-read the shared prefs. An explicit pairing [connectTo] is exempt: its target is not
+     * stored until the connection succeeds.
+     */
+    private fun teardownTargetStillWanted(address: String, userInitiated: Boolean): Boolean =
+        userInitiated || address == lastKnownIdentifier
+
+    private fun waitForCrpTeardown(
+        monitor: CRPTeardownMonitor,
+        target: BluetoothDevice,
+        deviceType: RingDeviceType?,
+        selectedModelID: String?,
+        advertisedName: String?,
+        scanDetectedType: RingDeviceType?,
+        userInitiated: Boolean,
+    ) {
+        if (teardownWaitJob?.isActive == true && teardownWaitAddress == target.address) return
+        cancelTeardownConnect()
+        crpReconnect.cancelPending()
+        teardownUserInitiated = userInitiated
+        val epoch = teardownWaitEpoch.get()
+        recordDiagnostic("CRP waiting for previous physical disconnect")
+        // A fresh pairing is still "Connecting…" to the user; only recovery is "Reconnecting…".
+        val waitState = if (userInitiated) RingConnectionState.CONNECTING
+            else RingConnectionState.RECONNECTING
+        updateState { copy(connectionState = waitState) }
+        PulseEventBus.publishBlocking(
+            PulseEvent.DeviceStateChanged(waitState, target.address)
+        )
+        teardownWaitAddress = target.address
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val ready = monitor.gate.await(target.address)
+            if (epoch != teardownWaitEpoch.get()) return@launch
+            teardownWaitJob = null
+            teardownWaitAddress = null
+            if (watchdogReconnectPaused || prefs.getBoolean(USER_DISCONNECTED_KEY, false) ||
+                !bluetoothAdapter.isEnabled || !hasPermissions() ||
+                synchronized(forgetLock) { forgetPending || forgetFinalizing } ||
+                !teardownTargetStillWanted(target.address, userInitiated)) {
+                finishCrpRecovery()
+                return@launch
+            }
+            if (ready) {
+                recordDiagnostic("CRP teardown finished; resuming connection")
+                beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType,
+                    userInitiated)
+            } else {
+                recordDiagnostic("CRP teardown confirmation missing; requiring fresh advertisement")
+                teardownScanAddress = target.address
+                teardownUserInitiated = userInitiated
+                teardownScanConnect = TeardownConnect(deviceType, selectedModelID, scanDetectedType)
+                startScanningInternal()
+                reconnectScanPending = true
+            }
+        }
+        teardownWaitJob = job
+        job.start()
+    }
+
     /**
      * Explicit "Forget Ring" action. Mirrors the official app: send the ring-side
      * UNBOND (0x4B 05) and wait for the ring's UNBOND_ACK before tearing down, so
@@ -621,6 +885,8 @@ class RingBLEClient(
             forgetFinalizing = false
             forgetRequestGeneration = forgetGeneration
         }
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         // Clear the known-ring id up front so the watchdog/auto-reconnect can't grab
         // the ring back during or after the unbind window.
         prefs.edit()
@@ -709,6 +975,28 @@ class RingBLEClient(
         enqueueOp(GattOp.CommandWrite(framed, useCommand))
     }
 
+    /**
+     * Remove queued command writes that match [predicate].
+     * Returns true if any matching op was removed from [opQueue].
+     */
+    fun cancelQueuedCommand(predicate: (ByteArray) -> Boolean): Boolean {
+        return synchronized(opLock) {
+            var removed = false
+            val it = opQueue.iterator()
+            while (it.hasNext()) {
+                val op = it.next()
+                if (op is GattOp.CommandWrite && predicate(op.data)) {
+                    it.remove()
+                    removed = true
+                }
+            }
+            removed
+        }
+    }
+
+    val isConnected: Boolean
+        get() = _state.value.connectionState == RingConnectionState.CONNECTED
+
     fun readBattery() {
         val ch = batteryChar ?: return
         enqueueOp(GattOp.Read(ch))
@@ -742,9 +1030,28 @@ class RingBLEClient(
          *  the attempt didn't come from a fresh scan match. [DriverReroute.shouldRerouteToJring]
          *  needs it to tell a generic-"SMART_RING" guess apart from a confident family match. */
         scanDetectedType: RingDeviceType? = null,
+        /** An explicit pairing [connectTo]; recovery must otherwise target the stored ring. */
+        userInitiated: Boolean = false,
     ) {
         if (watchdogReconnectPaused) return
         if (synchronized(forgetLock) { forgetPending || forgetFinalizing }) return
+        // A hard reconnect can also replace a still-live CRP handle. Start its physical
+        // teardown before checking the shared gate, rather than reopening against that link.
+        if (activeCoordinator?.deviceType == RingDeviceType.CRP) {
+            bluetoothGatt?.let { old ->
+                bluetoothGatt = null
+                activeDriver?.connectionDidEnd()
+                resetOpQueue()
+                disconnectCrpGatt(old)
+            }
+        }
+        val teardownMonitor = CRPTeardownMonitor.current()
+        if (teardownMonitor?.gate?.isPending(target.address) == true) {
+            waitForCrpTeardown(teardownMonitor, target, deviceType, selectedModelID,
+                advertisedName, scanDetectedType, userInitiated)
+            return
+        }
+        cancelTeardownConnect()
         if (!claimConnectionOwnership()) {
             Log.i("RingBLEClient", "Connection skipped: another PulseLoop BLE client owns GATT")
             updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
@@ -753,11 +1060,13 @@ class RingBLEClient(
                 ownershipRetryJob = scope.launch {
                     delay(PROCESS_OWNER_RETRY_MS)
                     ownershipRetryJob = null
-                    beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType)
+                    beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType,
+                        userInitiated)
                 }
             }
             return
         }
+        crpReconnect.cancelPending()
         ownershipRetryJob = null
         scanner?.stopScan(scanCallback)
         // Close any stale GATT from a previous (now-dead) connection before opening a new
@@ -785,7 +1094,8 @@ class RingBLEClient(
             family = coordinator.deviceType,
         )?.id
         installDriver(coordinator)
-        updateState { copy(activeWearableModelID = resolvedModelID, diagnostics = emptyList()) }
+        setActiveModel(resolvedModelID)
+        updateState { copy(diagnostics = emptyList()) }
         recordDiagnostic("connect ${advertisedName ?: "unknown"}")
         connectingStartedAt = System.currentTimeMillis()
         updateState { copy(connectionState = RingConnectionState.CONNECTING) }
@@ -807,6 +1117,33 @@ class RingBLEClient(
             target.connectGatt(context, false, gattCallback)
         }
     }
+
+    /**
+     * Record the exact model for this connection and add its per-model capabilities
+     * ([com.pulseloop.wearables.WearableModel.extraCapabilities]) to the active set. Additive like
+     * [refineActiveCapabilities], and only for a model of the installed family; [installDriver]
+     * resets the set to the family baseline, so a re-route never inherits the old model's extras.
+     *
+     * The extras are granted only when the ring's own name identifies that model. [WearableModel.resolve]
+     * falls back to the carousel choice (and CONNECTED to the last known model), which is fine for
+     * the picture and the bond allowlist but not for features: a ring matched by service UUID while
+     * the carousel sits on the Ring 2 Pro would otherwise get HRV / stress / temperature controls it
+     * was never shown to support, each running its 75 s ceiling before failing.
+     */
+    private fun setActiveModel(modelID: String?) {
+        val extras = modelExtraCapabilities(modelID)
+        updateState { copy(activeWearableModelID = modelID, activeCapabilities = activeCapabilities + extras) }
+    }
+
+    private fun modelExtraCapabilities(modelID: String?): Set<WearableCapability> =
+        com.pulseloop.wearables.WearableModel.model(modelID)
+            ?.takeIf { it.family == activeCoordinator?.deviceType }
+            ?.takeIf {
+                com.pulseloop.wearables.WearableModel.modelForAdvertisedName(
+                    activeAdvertisedName ?: connectingName,
+                )?.id == it.id
+            }
+            ?.extraCapabilities.orEmpty()
 
     /** True only when the connected model is one we deliberately OS-bond (currently the R09 and
      *  the R11/Yawell R11). See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
@@ -1053,18 +1390,26 @@ class RingBLEClient(
                         target.value = op.data
                         // Publish the outgoing packet once, on the first issue attempt only — a
                         // retry storm used to log 200 duplicate CommandAcks, flooding the 200-entry
-                        // diagnostics ring buffer and evicting the real reply packets.
-                        if (op.attempts == 0) {
+                        // diagnostics ring buffer and evicting the real reply packets. A driver that
+                        // asks for transport detail gets every attempt; capture retention bounds it.
+                        val verbose = activeDriver?.verboseTransportDiagnostics == true
+                        if (op.attempts == 0 || verbose) {
                             PulseEventBus.publishBlocking(
                                 PulseEvent.RawPacket(PacketDirection.OUTGOING, op.data,
-                                    RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u))
+                                    RingDecodedEvent.CommandAck(commandId = if (op.data.isNotEmpty()) op.data[0].toUByte() else 0u),
+                                    deviceType = activeCoordinator?.deviceType,
+                                    transportJSON = packetMetadata(target.uuid.toString(), op.attempts + 1))
                             )
                         }
                         if (op.attempts == 0) {
                             val prefix = op.data.take(4).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
                             recordDiagnostic("write issue $prefix len=${op.data.size}")
                         }
-                        gatt.writeCharacteristic(target)
+                        val accepted = gatt.writeCharacteristic(target)
+                        if (verbose) {
+                            recordDiagnostic("TX ${routeLabel(op.data)} attempt=${op.attempts + 1} accepted=$accepted", traffic = true)
+                        }
+                        accepted
                     }
                 }
                 is GattOp.Read -> gatt.readCharacteristic(op.characteristic)
@@ -1092,6 +1437,7 @@ class RingBLEClient(
                         // callback for a timed-out write could otherwise retire its successor.
                         // Reset the link instead of issuing another ambiguous command write.
                         if (op is GattOp.CommandWrite) {
+                            recordDiagnostic("GATT write acknowledgement timed out", error = true)
                             recoverWedgedLink()
                             return@launch
                         }
@@ -1132,6 +1478,7 @@ class RingBLEClient(
                 }
                 return
             }
+            recordDiagnostic("GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${opLabel(op)}", error = true)
             Log.w("RingBLEClient", "GATT op dropped after $MAX_OP_ATTEMPTS attempts: ${opLabel(op)}")
             if (op is GattOp.DescriptorWrite &&
                 subscriptionGate?.isRequired(op.descriptor.characteristic.uuid.toString()) == true
@@ -1159,13 +1506,18 @@ class RingBLEClient(
 
     private fun matchDeviceType(name: String?, scanRecord: ScanRecord?): RingDeviceType? {
         val serviceUUIDs = scanRecord?.serviceUuids?.map { it.uuid.toString() } ?: emptyList()
-        // Iterate all manufacturer-specific data entries to find a match
-        var mfg: ByteArray? = null
+        // Flatten the SparseArray to (companyId, value) pairs — every entry, not just index 0.
+        // [AdvertisementMatcher] puts the company ID back in front of each value: Android strips
+        // it into the key, the coordinators match it as a prefix, and without it every
+        // manufacturer-data fallback in the registry was unreachable (issue #56).
+        val manufacturerEntries = mutableListOf<Pair<Int, ByteArray>>()
         scanRecord?.manufacturerSpecificData?.let { data ->
-            if (data.size() > 0) mfg = data.valueAt(0)
+            for (i in 0 until data.size()) {
+                val value = data.valueAt(i) ?: continue
+                manufacturerEntries.add(data.keyAt(i) to value)
+            }
         }
-        val info = AdvertisementInfo(serviceUUIDs, mfg)
-        return coordinators.firstOrNull { it.matches(name, info) }?.deviceType
+        return AdvertisementMatcher.match(coordinators, name, serviceUUIDs, manufacturerEntries)
     }
 
     private inline fun updateState(crossinline update: BLEState.() -> BLEState) {
@@ -1173,12 +1525,46 @@ class RingBLEClient(
     }
 
     @Synchronized
-    private fun recordDiagnostic(message: String) {
+    private fun recordDiagnostic(
+        message: String,
+        error: Boolean = false,
+        traffic: Boolean = false,
+    ) {
+        // `generation` is the forget generation: it separates one pairing's traffic from the next,
+        // not one reconnect from another.
+        PulseEventBus.publishBlocking(PulseEvent.Diagnostic(
+            "generation=$forgetGeneration $message", activeCoordinator?.deviceType, error, traffic,
+        ))
         Log.i("RingBLEClient", message)
         _state.update { current ->
             current.copy(diagnostics = (current.diagnostics + message).takeLast(6))
         }
     }
+
+    private fun routeLabel(data: ByteArray): String =
+        activeDriver?.diagnosticRoute(data) ?: "bytes=${data.size}"
+
+    /**
+     * Records a notification or read from a characteristic outside the driver's decode path (the
+     * standard blood-pressure, glucose and battery characteristics, or one the driver does not
+     * subscribe to). It is logged as a continuation chunk so the export masks everything after
+     * byte 0: these payloads are health values or unknown, and nothing here decodes them.
+     */
+    private fun captureAuxiliary(uuid: String, bytes: ByteArray) {
+        val copy = bytes.copyOf()
+        PulseEventBus.publishBlocking(PulseEvent.RawPacket(PacketDirection.INCOMING, copy,
+            RingDecodedEvent.FramePending(copy, startsFrame = false), activeCoordinator?.deviceType,
+            transportJSON = packetMetadata(uuid)))
+    }
+
+    /** Transport facts stored with a raw packet; the export keeps only these keys
+     *  ([com.pulseloop.diagnostics.DiagnosticsExporter.transportMetadata]). */
+    private fun packetMetadata(uuid: String, attempt: Int = 0): String =
+        buildJsonObject {
+            put("characteristic", uuid)
+            put("generation", forgetGeneration)
+            if (attempt > 0) put("attempt", attempt)
+        }.toString()
 
     // MARK: Scan callback
 
@@ -1193,18 +1579,46 @@ class RingBLEClient(
             val matchedModel = com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)
             discoveredPeripherals[device.address] = device
 
+            val teardownScan = device.address == teardownScanAddress
+            if (teardownScan && !teardownTargetStillWanted(device.address, teardownUserInitiated)) {
+                // Forgotten (possibly by another client) while this recovery scan was running.
+                finishCrpRecovery()
+                return
+            }
+            if (teardownScan && CRPTeardownMonitor.current()?.gate
+                    ?.freshAdvertisement(device.address, result.timestampNanos) == false) return
+
             // Reconnect scan: the known ring is advertising again — grab it now.
-            if (reconnectScanPending && device.address == lastKnownIdentifier) {
+            if (reconnectScanPending && (teardownScan || device.address == lastKnownIdentifier)) {
+                val userInitiated = teardownScan && teardownUserInitiated
+                val carried = if (teardownScan) teardownScanConnect else null
+                teardownScanAddress = null
+                teardownUserInitiated = false
+                teardownScanConnect = null
                 reconnectScanPending = false
                 sightlessScans = 0
                 scanner?.stopScan(this)
                 connectingName = name
+                if (carried != null) {
+                    // Resume exactly the attempt that hit the gate; a pairing must not pick up
+                    // the previously stored ring's family or model.
+                    beginConnect(
+                        device,
+                        carried.deviceType ?: matchedType,
+                        selectedModelID = carried.selectedModelID,
+                        advertisedName = name,
+                        scanDetectedType = carried.scanDetectedType ?: matchedType,
+                        userInitiated = userInitiated,
+                    )
+                    return
+                }
                 beginConnect(
                     device,
-                    matchedType ?: lastKnownDeviceType,
-                    selectedModelID = lastKnownWearableModelID,
+                    matchedType ?: lastKnownDeviceType ?: activeCoordinator?.deviceType,
+                    selectedModelID = lastKnownWearableModelID ?: _state.value.activeWearableModelID,
                     advertisedName = name,
                     scanDetectedType = matchedType,
+                    userInitiated = userInitiated,
                 )
                 return
             }
@@ -1229,7 +1643,7 @@ class RingBLEClient(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            updateState { copy(lastError = "Scan failed: $errorCode") }
+            updateState { copy(lastError = L10n.get(R.string.ble_scan_failed, errorCode)) }
         }
     }
 
@@ -1277,7 +1691,7 @@ class RingBLEClient(
                             }
                         }
                     } else {
-                        updateState { copy(lastError = "GATT connect failed: $status") }
+                        updateState { copy(lastError = L10n.get(R.string.ble_connect_failed_gatt, status)) }
                         handleDisconnect(gatt, status)
                     }
                 }
@@ -1292,6 +1706,13 @@ class RingBLEClient(
             recordDiagnostic("services status=$status count=${gatt.services.size}")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 failConnectAttempt("Service discovery failed (GATT $status)")
+                return
+            }
+            // A manual disconnect/reconnect can reuse an Android link whose ATT channel is
+            // already gone. The October 17 capture returns GATT_SUCCESS with an empty cache in
+            // both reproductions. This is failed discovery, not proof that the ring lacks fdd3.
+            if (gatt.services.isEmpty() && activeCoordinator?.deviceType == RingDeviceType.CRP) {
+                failConnectAttempt("Ring service discovery returned no services")
                 return
             }
 
@@ -1326,7 +1747,7 @@ class RingBLEClient(
                     selectedModelID = _state.value.activeWearableModelID,
                     family = RingDeviceType.COLMI_R02,
                 )?.id ?: com.pulseloop.wearables.WearableModel.COLMI_R02.id
-                updateState { copy(activeWearableModelID = remodel) }
+                setActiveModel(remodel)
             }
 
             // Post-connect re-route (issue #29), CRP-firmware sibling of the Colmi case above: the
@@ -1358,7 +1779,7 @@ class RingBLEClient(
                     selectedModelID = _state.value.activeWearableModelID,
                     family = RingDeviceType.CRP,
                 )?.id ?: com.pulseloop.wearables.WearableModel.COLMI_R11_CRP.id
-                updateState { copy(activeWearableModelID = remodel) }
+                setActiveModel(remodel)
             }
 
             // Post-connect re-route (issue #29), the *inverse* of the two above: `connectTo`'s
@@ -1384,7 +1805,7 @@ class RingBLEClient(
                     selectedModelID = _state.value.activeWearableModelID,
                     family = RingDeviceType.JRING,
                 )?.id ?: com.pulseloop.wearables.WearableModel.JRING.id
-                updateState { copy(activeWearableModelID = remodel) }
+                setActiveModel(remodel)
             }
 
             val driver = activeDriver ?: return
@@ -1486,6 +1907,11 @@ class RingBLEClient(
         ) {
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT read completed — link is alive
+            val value: ByteArray? = characteristic.value
+            if (activeDriver?.verboseTransportDiagnostics == true) {
+                recordDiagnostic("read ${characteristic.uuid} status=$status", error = status != BluetoothGatt.GATT_SUCCESS)
+                if (status == BluetoothGatt.GATT_SUCCESS) value?.let { captureAuxiliary(characteristic.uuid.toString(), it) }
+            }
             resetOpFailures()
             // Retire the in-flight op regardless of payload, before any early return —
             // but only if it IS the read this callback answers (a stale post-timeout ACK
@@ -1493,7 +1919,6 @@ class RingBLEClient(
             completeOp { it is GattOp.Read && it.characteristic === characteristic }
             if (status != BluetoothGatt.GATT_SUCCESS) return
             if (characteristic.uuid.toString() == activeDriver?.batteryCharUUID) {
-                val value = characteristic.value
                 if (value != null && value.isNotEmpty()) {
                     val pct = value[0].toInt() and 0xFF
                     updateState { copy(batteryPercent = pct) }
@@ -1502,7 +1927,7 @@ class RingBLEClient(
             } else if (characteristic.uuid == FW_REV_UUID ||
                        characteristic.uuid.toString().startsWith("00002a26") ||
                        characteristic.uuid.toString().startsWith("00002a28")) {
-                val fw = characteristic.value?.let { String(it) }?.trim()
+                val fw = value?.let { String(it) }?.trim()
                 if (fw != null && fw.isNotEmpty()) {
                     updateState { copy(firmwareVersion = fw) }
                     onFirmwareRead?.invoke(fw)
@@ -1517,7 +1942,8 @@ class RingBLEClient(
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                updateState { copy(lastError = "Ring command write failed (GATT $status)") }
+                recordDiagnostic("GATT write failed ($status)", error = true)
+                updateState { copy(lastError = L10n.get(R.string.ble_write_failed_gatt, status)) }
                 // Do not advance into the next command: the failed operation may be one of the
                 // required post-subscription handshake writes, and callbacks share a channel.
                 recoverWedgedLink()
@@ -1535,6 +1961,10 @@ class RingBLEClient(
             val value = characteristic.value ?: return
             val uuid = characteristic.uuid.toString()
             val callbackForgetGeneration = forgetGeneration
+            if (activeDriver?.verboseTransportDiagnostics == true &&
+                (uuid !in activeDriver?.notifyUUIDs.orEmpty() || uuid.startsWith("00002a35") || uuid.startsWith("00002a18"))) {
+                captureAuxiliary(uuid, value)
+            }
 
             // Standard BLE health services — read before the ring-service guard
             if (uuid.startsWith("00002a35")) {
@@ -1574,15 +2004,27 @@ class RingBLEClient(
                 activeSyncEngine?.handleRawNotify(value)
             }
 
-            val decodedEvents = driver.ingest(value, characteristic.uuid.toString())
+            val capturedAt = System.currentTimeMillis()
+            val captured = value.copyOf()
+            val decodedEvents = driver.ingest(captured, uuid)
             if (acceptsCallback(callbackForgetGeneration)) {
+                // A frame that decodes to nothing is logged `unknown` and exported whole: control
+                // and pairing frames are what connection reports need. Partial frames arrive as the
+                // decoder's own FramePending, which the export masks.
                 val diagnostic = decodedEvents.firstOrNull() ?: RingDecodedEvent.Unknown(
-                    commandId = value.firstOrNull()?.toUByte() ?: 0u,
-                    raw = value,
+                    commandId = captured.firstOrNull()?.toUByte() ?: 0u,
+                    raw = captured,
                 )
                 PulseEventBus.publishBlocking(
-                    PulseEvent.RawPacket(PacketDirection.INCOMING, value, diagnostic)
+                    PulseEvent.RawPacket(PacketDirection.INCOMING, captured, diagnostic,
+                        deviceType = activeCoordinator?.deviceType, capturedAt = capturedAt,
+                        transportJSON = packetMetadata(uuid))
                 )
+                if (driver.verboseTransportDiagnostics) {
+                    val kinds = decodedEvents.groupingBy { it.kind }.eachCount().entries.joinToString { "${it.key}:${it.value}" }
+                    recordDiagnostic("RX ${routeLabel(captured)} on $uuid decoded=${kinds.ifEmpty { "unrecognized" }}",
+                        traffic = true)
+                }
                 for (decoded in decodedEvents) {
                     if (!acceptsCallback(callbackForgetGeneration)) break
                     if (decoded is RingDecodedEvent.SupportFunctions) {
@@ -1610,7 +2052,7 @@ class RingBLEClient(
         override fun onDescriptorWrite(
             gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
         ) {
-            recordDiagnostic("notify ${descriptor.characteristic.uuid.toString().take(8)} status=$status")
+            recordDiagnostic("notify ${descriptor.characteristic.uuid.toString().take(8)} status=$status", error = status != BluetoothGatt.GATT_SUCCESS)
             if (gatt !== bluetoothGatt) return  // late callback from a superseded connection
             lastActivityAt = System.currentTimeMillis()  // descriptor ACK — link is alive
             resetOpFailures()
@@ -1650,7 +2092,12 @@ class RingBLEClient(
                 prependCommandWrites(immediateCommands)
             }
 
-            updateState { copy(connectionState = RingConnectionState.CONNECTED) }
+            updateState {
+                copy(
+                    connectionState = RingConnectionState.CONNECTED,
+                    lastError = lastError.takeUnless { it == BLUETOOTH_OFF_ERROR },
+                )
+            }
             lastActivityAt = System.currentTimeMillis()  // fresh link — start the staleness clock
             resetReconnectBackoff()
             startKeepalive()  // Jring only — Colmi links idle without pings (official behavior)
@@ -1664,7 +2111,7 @@ class RingBLEClient(
                 com.pulseloop.wearables.WearableModel.model(prev)?.family ==
                     activeCoordinator?.deviceType
             }
-            if (modelID != resolvedID) updateState { copy(activeWearableModelID = modelID) }
+            if (modelID != resolvedID) setActiveModel(modelID)
             val editor = prefs.edit()
                 .putString(LAST_PERIPHERAL_KEY, device.address)
                 .putString(LAST_DEVICE_TYPE_KEY, activeCoordinator?.deviceType?.name)
@@ -1686,7 +2133,7 @@ class RingBLEClient(
                         deviceType = coord.deviceType,
                         wearableModelID = modelID,
                         advertisedName = activeAdvertisedName ?: connectingName,
-                        capabilities = coord.capabilities,
+                        capabilities = coord.capabilities + modelExtraCapabilities(modelID),
                     )
                 )
             }
@@ -1736,14 +2183,8 @@ class RingBLEClient(
         // Ignore late callbacks from a GATT we already superseded during a reconnect
         // (we close the old handle in beginConnect). Acting on them would clobber the
         // CONNECTING state of the fresh attempt with a spurious DISCONNECTED.
-        if (bluetoothGatt != null && gatt !== bluetoothGatt) {
-            closeGattQuietly(gatt)
-            return
-        }
-        // Duplicate callback for a GATT we already tore down (bluetoothGatt is null
-        // after teardown): don't re-publish DISCONNECTED or re-close.
-        if (bluetoothGatt == null &&
-            _state.value.connectionState == RingConnectionState.DISCONNECTED) {
+        if (gatt !== bluetoothGatt) {
+            if (bluetoothGatt != null) closeGattQuietly(gatt)
             return
         }
         resetOpQueue()
@@ -1753,8 +2194,8 @@ class RingBLEClient(
         // Release the dead client immediately (the link is already down, so no
         // disconnect/delay needed): refresh the GATT cache and close, matching the
         // official QRing app's teardown. Holding the old handle for autoConnect is
-        // what left zombie clients in the stack — the watchdog now owns reconnection
-        // and always starts from a fresh connectGatt.
+        // what left zombie clients in the stack — both CRP's short retry and the watchdog
+        // start from a fresh connectGatt.
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         subscriptionGate = null
@@ -1772,24 +2213,58 @@ class RingBLEClient(
                 lastError = when {
                     requestedByUser -> lastError
                     status == BluetoothGatt.GATT_SUCCESS -> null
-                    else -> "Ring disconnected (GATT $status)"
+                    else -> L10n.get(R.string.ble_disconnected_gatt, status)
                 },
+            )
+        }
+        scheduleCrpRecovery()
+    }
+
+    private fun scheduleCrpRecovery() {
+        if (!crpReconnect.schedule() && crpReconnect.isRecovering && !crpReconnect.isPending) {
+            finishCrpRecovery()
+        }
+    }
+
+    private fun finishCrpRecovery() {
+        // A pairing that was waiting out a teardown shows CONNECTING with no GATT yet.
+        val pairingWait = teardownUserInitiated && bluetoothGatt == null
+        crpReconnect.cancel()
+        cancelTeardownConnect()
+        if (reconnectScanPending) scanner?.stopScan(scanCallback)
+        reconnectScanPending = false
+        val shown = _state.value.connectionState
+        if (shown == RingConnectionState.RECONNECTING ||
+            (pairingWait && shown == RingConnectionState.CONNECTING)) {
+            updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
+            PulseEventBus.publishBlocking(
+                PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
             )
         }
     }
 
     /** Tear down this client. Returns true only if it owned PulseLoop's process-wide GATT slot. */
     fun destroy(): Boolean {
+        watchdogReconnectPaused = true
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         watchdogJob?.cancel()
+        if (adapterReceiverRegistered) {
+            try { context.applicationContext.unregisterReceiver(adapterStateReceiver) } catch (_: Exception) {}
+            adapterReceiverRegistered = false
+        }
         ownershipRetryJob?.cancel(); ownershipRetryJob = null
         stopKeepalive()
         scanner?.stopScan(scanCallback)
         activeDriver?.connectionDidEnd()
-        // The scope is about to die, so the graceful delayed close in disconnect()
-        // would never run — tear the GATT down synchronously instead.
+        // The client scope is about to die. CRP close lives in the shared process monitor so
+        // a foreground client can wait for it; other families still close synchronously here.
         bluetoothGatt?.let { gatt ->
-            try { gatt.disconnect() } catch (_: Exception) {}
-            closeGattQuietly(gatt)
+            if (activeCoordinator?.deviceType == RingDeviceType.CRP) disconnectCrpGatt(gatt)
+            else {
+                try { gatt.disconnect() } catch (_: Exception) {}
+                closeGattQuietly(gatt)
+            }
         }
         bluetoothGatt = null
         val releasedConnection = releaseConnectionOwnership()
@@ -1820,6 +2295,7 @@ class RingBLEClient(
         private const val PROCESS_OWNER_RETRY_MS = 1_000L
         /** How often the liveness watchdog runs. */
         private const val WATCHDOG_INTERVAL_MS = 15_000L
+        internal val BLUETOOTH_OFF_ERROR: String get() = L10n.get(R.string.hero_bluetooth_off)
         /** No GATT activity for this long while CONNECTED ⇒ zombie link ⇒ reconnect.
          *  Comfortably longer than the 15s keepalive so a single missed ACK won't trip it. */
         private const val LINK_STALE_MS = 50_000L

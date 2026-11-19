@@ -126,6 +126,11 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         send(CRPProtocol.queryTimingHrvHistory())
         send(CRPProtocol.queryTimingStressHistory())
         send(CRPProtocol.queryHistoryTemp())
+        // The ring dates its sleep replies by its own clock against the 20:00 turnover, and the
+        // decoder by the phone's when the reply lands. Straddling 20:00, the two disagree by a day
+        // and the night is filed a day early again — #107's bug, after #109's one-time repair has
+        // run. So a pass this close to 20:00 leaves sleep to the next one (~30 min later).
+        if (CRPDecoder.nearSleepDayRollover(java.time.Instant.now())) return
         send(CRPProtocol.queryHistorySleep())
         sendSleepBackfill()
     }
@@ -146,6 +151,8 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
      * Safe to send blind. Each reply is self-describing: `payload[0]` is the ring's own day index,
      * so [CRPDecoder.decodeSleep] dates a night from the reply rather than from what we asked for,
      * and a day the ring has no record of simply produces no reply — the same nothing we get today.
+     * That index counts back from the ring's sleep day, which turns over at 20:00, not midnight:
+     * after 8 PM last night is day 1 (see [CRPDecoder.decodeSleep]).
      *
      * Once per connection, and deliberately short of the decoder's 14-day ceiling: [runStartup] is
      * also the ~30-minute background sync, and this ring funnels the handshake, timing config,
@@ -160,10 +167,13 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     }
 
     /** The last frame index each timing vital emits before its day is complete (vendor terminal
-     *  index: HR/SpO2/stress finalize at frame 1 — two 144-slot frames; HRV at frame 3 — four
-     *  72-slot frames). A reply below this index triggers a pull of the next frame. */
-    private fun terminalFrameIndex(cmd: Int): Int =
-        if (cmd == CRPCommands.CMD_QUERY_TIMING_HRV) 3 else 1
+     *  index: HR/SpO2/stress finalize at frame 1 — two 144-slot frames; HRV and temperature at
+     *  frame 3 — four 72-slot frames, since both carry 2 bytes per slot; `e1/m.d` requests the
+     *  next frame until `3 == index`). A reply below this index triggers a pull of the next frame. */
+    private fun terminalFrameIndex(cmd: Int): Int = when (cmd) {
+        CRPCommands.CMD_QUERY_TIMING_HRV, CRPCommands.CMD_QUERY_HISTORY_TEMP -> 3
+        else -> 1
+    }
 
     /** Build the next-frame query for a timing vital, or null for a non-timing cmd. */
     private fun timingQuery(cmd: Int, day: Int, frameIndex: Int): ByteArray? = when (cmd) {
@@ -171,6 +181,7 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         CRPCommands.CMD_QUERY_TIMING_HRV -> CRPProtocol.queryTimingHrvHistory(day, frameIndex)
         CRPCommands.CMD_QUERY_TIMING_SPO2 -> CRPProtocol.queryTimingSpO2History(day, frameIndex)
         CRPCommands.CMD_QUERY_TIMING_STRESS -> CRPProtocol.queryTimingStressHistory(day, frameIndex)
+        CRPCommands.CMD_QUERY_HISTORY_TEMP -> CRPProtocol.queryHistoryTemp(day, frameIndex)
         else -> null
     }
 
@@ -204,9 +215,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     override fun factoryReset() { send(CRPProtocol.factoryReset()) }
 
-    override fun powerOff() {
+    override fun powerOff(): Boolean {
         // No confirmed shut-down opcode in the v1 subset (the vendor uses a callback-gated
         // notification write). Left unsupported rather than sending a guessed command.
+        return false
     }
 
     override fun setGoal(steps: Int) {
@@ -230,9 +242,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
     }
 
     /** Send the all-day enable/disable command for every vital. The CRP protocol takes a single
-     *  interval byte per enable, and [MeasurementSettings] carries only [MeasurementSettings.hrIntervalMinutes]
-     *  (no per-vital cadence), so the HR interval is shared across the board. Disabled vitals are
-     *  explicitly turned off so a reconnect can't leave a previously-enabled monitor running. */
+     *  interval byte per enable, and [MeasurementSettings] carries a per-vital cadence only for
+     *  blood oxygen (issue #66) — HRV and stress still share the heart-rate interval. Disabled
+     *  vitals are explicitly turned off so a reconnect can't leave a previously-enabled monitor
+     *  running. */
     private fun applyTimingSettings(settings: MeasurementSettings) {
         if (settings.hrEnabled) send(CRPProtocol.enableTimingHeartRate(settings.hrIntervalMinutes))
         else send(CRPProtocol.disableTimingHeartRate())
@@ -240,7 +253,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         else send(CRPProtocol.disableTimingHRV())
         if (settings.stressEnabled) send(CRPProtocol.enableTimingStress(settings.hrIntervalMinutes))
         else send(CRPProtocol.disableTimingStress())
-        if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(settings.hrIntervalMinutes))
+        // 0 means "follow heart rate", which is what this leg did unconditionally before.
+        if (settings.spo2Enabled) send(CRPProtocol.enableTimingSpO2(
+            settings.spo2IntervalMinutes.takeIf { it > 0 } ?: settings.hrIntervalMinutes
+        ))
         else send(CRPProtocol.disableTimingSpO2())
         if (settings.temperatureEnabled) send(CRPProtocol.enableTimingTemp())
         else send(CRPProtocol.disableTimingTemp())

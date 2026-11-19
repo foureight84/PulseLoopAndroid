@@ -16,6 +16,19 @@ import java.time.Instant
  * Builds a shareable diagnostics bundle (JSON): app/OS/device info + recent WearableLog timeline.
  */
 object DiagnosticsExporter {
+    /** The keys `RingBLEClient` stores in `raw_packets.decodedJSON` for each packet. */
+    private val TRANSPORT_KEYS = setOf("characteristic", "generation", "attempt")
+
+    /**
+     * The transport facts of one stored packet, or null if it has none. Older rows may hold decoder
+     * JSON in the same column, so only [TRANSPORT_KEYS] are exported, never arbitrary values.
+     */
+    internal fun transportMetadata(metadata: String?): JsonObject? {
+        val parsed = metadata?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+        return parsed?.filterKeys { it in TRANSPORT_KEYS }
+            ?.takeIf { it.isNotEmpty() }?.let { JsonObject(it) }
+    }
+
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
     /**
@@ -88,8 +101,16 @@ object DiagnosticsExporter {
                     addJsonObject {
                         put("at", Instant.ofEpochMilli(pkt.timestamp).toString())
                         put("direction", pkt.directionRaw)
-                        put("hex", if (mask) DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind) else pkt.hexPayload)
+                        // The family that captured the packet, not the one connected now: a report
+                        // exported after switching rings would otherwise mask each frame with the
+                        // wrong header length, and the family with the longest header (CRP, 6
+                        // bytes) would keep five bytes of another family's samples. A row from
+                        // before the family was recorded has none, and masks from byte 1.
+                        put("hex", if (mask) {
+                            DiagnosticsRedactor.maskPacketHex(pkt.hexPayload, kind, pkt.deviceTypeRaw ?: "")
+                        } else pkt.hexPayload)
                         put("decoded", kind)
+                        transportMetadata(pkt.decodedJSON)?.let { put("transport", it) }
                     }
                 }
             }

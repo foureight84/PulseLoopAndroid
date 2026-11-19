@@ -1,5 +1,8 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -43,8 +46,8 @@ fun WorkoutMapView(
             contentAlignment = Alignment.Center,
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("No route yet", style = MaterialTheme.typography.labelMedium, color = Color.White)
-                Text("Move outdoors to start tracking your route.", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f))
+                Text(stringResource(R.string.map_no_route), style = MaterialTheme.typography.labelMedium, color = Color.White)
+                Text(stringResource(R.string.map_no_route_hint), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f))
             }
         }
     } else {
@@ -99,7 +102,7 @@ fun WorkoutMapView(
 
             // Info overlay
             val accuracy = points.last().horizontalAccuracy
-            val infoText = if (accuracy != null) "±${accuracy.toInt()}m · ${points.size} pts" else "${points.size} pts"
+            val infoText = if (accuracy != null) L10n.get(R.string.map_info_accuracy, accuracy.toInt(), points.size) else L10n.get(R.string.map_info_points, points.size)
             Text(
                 infoText,
                 modifier = Modifier.align(Alignment.BottomStart).padding(8.dp),

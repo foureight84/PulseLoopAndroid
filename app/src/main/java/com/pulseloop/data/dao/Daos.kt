@@ -54,6 +54,10 @@ interface MeasurementDao {
     @Query("SELECT value FROM measurements WHERE kindRaw = :kind AND timestamp <= :before ORDER BY timestamp DESC LIMIT 1")
     suspend fun latest(kind: String, before: Long = System.currentTimeMillis()): Double?
 
+    /** Latest real (non-demo/mock) measurement of [kind], for exports (MQTT) that must never surface seeded demo data. */
+    @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND sourceRaw NOT IN ('demo','mock') ORDER BY timestamp DESC LIMIT 1")
+    suspend fun latestReal(kind: String): MeasurementEntity?
+
     /** Newest measurement of any kind — iOS `latestMeasurementTimestamp()`, the live-data leg of
      *  the coach check-in's hasRecentData freshness fallback. */
     @Query("SELECT MAX(timestamp) FROM measurements")
@@ -73,8 +77,28 @@ interface MeasurementDao {
     @Insert
     suspend fun insert(measurement: MeasurementEntity)
 
+    /** Timestamps of one kind's rows from one source since [since] — primes the persistence
+     *  subscriber's memory of the spot readings it stored (issue #60). */
+    @Query("SELECT timestamp FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp >= :since")
+    suspend fun timestampsBySource(kind: String, source: String, since: Long): List<Long>
+
+    /** Remove one kind's rows from one source inside a window — how a spot reading yields to the
+     *  ring's own copy of it once history supplies that (issue #60). */
+    @Query("DELETE FROM measurements WHERE kindRaw = :kind AND sourceRaw = :source AND timestamp BETWEEN :start AND :end")
+    suspend fun deleteBySourceBetween(kind: String, source: String, start: Long, end: Long): Int
+
     @Upsert
     suspend fun upsert(measurement: MeasurementEntity)
+
+    /** The rows behind a set of ids — how the readings list resolves a user's pick back into the
+     *  entities [com.pulseloop.data.MeasurementDeletion] needs to tombstone (issue #60). */
+    @Query("SELECT * FROM measurements WHERE id IN (:ids)")
+    suspend fun byIds(ids: List<String>): List<MeasurementEntity>
+
+    /** Delete one reading (issue #60). Pair with [MeasurementDeletionDao.record] for anything the
+     *  ring could re-sync, or the next history pass writes it back. */
+    @Query("DELETE FROM measurements WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
 
     @Query("DELETE FROM measurements WHERE sourceRaw = 'demo'")
     suspend fun clearDemo()
@@ -139,6 +163,10 @@ interface ActivityDailyDao {
     @Query("SELECT * FROM activity_daily WHERE source NOT IN ('demo','mock') ORDER BY date DESC LIMIT :limit")
     suspend fun recentReal(limit: Int = 7): List<ActivityDailyEntity>
 
+    /** Earliest tracked day key (local midnight millis) — bounds how far Activity day navigation can page back (issue #76). */
+    @Query("SELECT MIN(date) FROM activity_daily")
+    suspend fun earliestDay(): Long?
+
     /** Whether the ring has ever synced a day. */
     @Query("SELECT EXISTS(SELECT 1 FROM activity_daily WHERE source NOT IN ('demo','mock'))")
     suspend fun hasReal(): Boolean
@@ -179,6 +207,10 @@ interface ActivityBucketDao {
 
     @Upsert
     suspend fun upsert(bucket: ActivityBucketEntity)
+
+    /** One bucket, by its start time — what the Activity screen's records list deletes (issue #70). */
+    @Query("DELETE FROM activity_buckets WHERE startEpoch = :startEpoch")
+    suspend fun deleteByStart(startEpoch: Long)
 
     @Query("DELETE FROM activity_buckets")
     suspend fun clear()
@@ -294,6 +326,9 @@ interface SleepSessionDao {
     @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY (sourceRaw = 'demo') ASC, totalMinutes DESC LIMIT 1")
     suspend fun byDay(day: Long): SleepSessionEntity?
 
+    @Query("SELECT * FROM sleep_sessions WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): SleepSessionEntity?
+
     /** All sessions for a day, earliest first — feeds the Day-view carousel. */
     @Query("SELECT * FROM sleep_sessions WHERE date = :day ORDER BY startAt ASC")
     suspend fun allByDay(day: Long): List<SleepSessionEntity>
@@ -348,6 +383,10 @@ interface SleepSessionDao {
     @Query("SELECT MIN(date) FROM sleep_sessions WHERE totalMinutes > 0")
     suspend fun earliestDay(): Long?
 
+    /** Every stored session, for the one-time repairs in `DataRepairs`. */
+    @Query("SELECT * FROM sleep_sessions")
+    suspend fun all(): List<SleepSessionEntity>
+
     @Upsert
     suspend fun upsert(session: SleepSessionEntity)
 
@@ -380,6 +419,10 @@ interface SleepStageBlockDao {
     @Query("DELETE FROM sleep_stage_blocks WHERE sessionId = :sessionId")
     suspend fun deleteBySession(sessionId: String)
 
+    /** Remove one run-length block — the delete affordance on the sleep RECORDS card (issue #78). */
+    @Query("DELETE FROM sleep_stage_blocks WHERE sessionId = :sessionId AND startAt = :startAt")
+    suspend fun deleteByStart(sessionId: String, startAt: Long)
+
     @Query("DELETE FROM sleep_stage_blocks")
     suspend fun clear()
 
@@ -398,7 +441,43 @@ interface CoachConversationDao {
 
     @Upsert
     suspend fun upsert(conversation: CoachConversationEntity)
+
+    @Query("SELECT * FROM coach_conversations WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): CoachConversationEntity?
+
+    /**
+     * The coach's past conversations for the history sheet (issue #131), newest first. Only ones
+     * with at least one message: "+" persists its thread up front, so an unused one is an empty
+     * row that would otherwise list as a blank entry.
+     */
+    @Query(
+        """SELECT c.id, c.createdAt, c.updatedAt,
+            (SELECT m.body FROM coach_messages m WHERE m.conversationId = c.id AND m.role = 'user'
+                ORDER BY m.createdAt ASC LIMIT 1) AS firstQuestion,
+            (SELECT COUNT(*) FROM coach_messages m WHERE m.conversationId = c.id) AS messageCount
+        FROM coach_conversations c
+        WHERE EXISTS (SELECT 1 FROM coach_messages m WHERE m.conversationId = c.id)
+        ORDER BY c.updatedAt DESC"""
+    )
+    fun historyFlow(): Flow<List<CoachConversationSummary>>
+
+    /** Delete its messages and tool calls first — see [CoachMessageDao], [CoachToolCallDao]. */
+    @Query("DELETE FROM coach_conversations WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM coach_conversations")
+    suspend fun deleteAll()
 }
+
+/** One row of the coach history sheet (issue #131). */
+data class CoachConversationSummary(
+    val id: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    /** The first thing the user asked; null only if the thread holds no user message. */
+    val firstQuestion: String?,
+    val messageCount: Int,
+)
 
 @Dao
 interface CoachMessageDao {
@@ -410,6 +489,20 @@ interface CoachMessageDao {
 
     @Insert
     suspend fun insert(message: CoachMessageEntity)
+
+    /** Attachment refs of a conversation's messages, so deleting it can delete the image files. */
+    @Query("SELECT attachmentsJson FROM coach_messages WHERE conversationId = :convId AND attachmentsJson IS NOT NULL")
+    suspend fun attachmentsJsonFor(convId: String): List<String>
+
+    @Query("SELECT attachmentsJson FROM coach_messages WHERE attachmentsJson IS NOT NULL")
+    suspend fun allAttachmentsJson(): List<String>
+
+    /** Explicit rather than trusting the cascade, which only fires with SQLite's foreign keys on. */
+    @Query("DELETE FROM coach_messages WHERE conversationId = :convId")
+    suspend fun deleteForConversation(convId: String)
+
+    @Query("DELETE FROM coach_messages")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -440,6 +533,13 @@ interface CoachToolCallDao {
 
     @Insert
     suspend fun insert(call: CoachToolCallEntity)
+
+    /** `coach_tool_calls` has no foreign key to its conversation, so a delete has to clear it. */
+    @Query("DELETE FROM coach_tool_calls WHERE conversationId = :convId")
+    suspend fun deleteForConversation(convId: String)
+
+    @Query("DELETE FROM coach_tool_calls")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -465,6 +565,8 @@ interface UserGoalDao {
 
 @Dao
 interface WearableLogDao {
+    @Query("SELECT * FROM wearable_logs ORDER BY timestamp DESC, rowid DESC LIMIT :limit")
+    fun observeRecent(limit: Int = 200): Flow<List<WearableLogEntity>>
     @Query("SELECT * FROM wearable_logs ORDER BY timestamp DESC LIMIT :limit")
     suspend fun recent(limit: Int = 500): List<WearableLogEntity>
 
@@ -473,15 +575,28 @@ interface WearableLogDao {
 
     @Query("DELETE FROM wearable_logs WHERE timestamp < :before")
     suspend fun deleteOlderThan(before: Long)
+
+    /** Keeps the newest [keep] rows. See `DiagnosticsRetention`. */
+    @Query("DELETE FROM wearable_logs WHERE rowid NOT IN (SELECT rowid FROM wearable_logs ORDER BY timestamp DESC, rowid DESC LIMIT :keep)")
+    suspend fun trimTo(keep: Int)
 }
 
 @Dao
 interface RawPacketDao {
+    @Query("SELECT count(*) FROM raw_packets")
+    fun observeCount(): Flow<Int>
+
+    @Query("SELECT * FROM raw_packets ORDER BY timestamp DESC, rowid DESC LIMIT :limit")
+    fun observeRecent(limit: Int = 100): Flow<List<RawPacketEntity>>
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(packet: RawPacketEntity)
 
     @Query("SELECT * FROM raw_packets ORDER BY timestamp DESC LIMIT :limit")
     suspend fun recent(limit: Int = 500): List<RawPacketEntity>
+
+    /** Keeps the newest [keep] rows. See `DiagnosticsRetention`. */
+    @Query("DELETE FROM raw_packets WHERE rowid NOT IN (SELECT rowid FROM raw_packets ORDER BY timestamp DESC, rowid DESC LIMIT :keep)")
+    suspend fun trimTo(keep: Int)
 }
 
 @Dao
@@ -598,3 +713,217 @@ interface FoodProductDao {
     @Query("DELETE FROM food_products")
     suspend fun clear()
 }
+
+/**
+ * The tombstones behind "delete this reading" (issue #60) — see [MeasurementDeletionEntity] for
+ * why a delete needs a memory at all.
+ */
+@Dao
+interface MeasurementDeletionDao {
+    /** Asked on every history write, so a re-sync can't restore a reading the user removed. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurement_deletions WHERE measurementId = :id)")
+    suspend fun isDeleted(id: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(rows: List<MeasurementDeletionEntity>)
+
+    /**
+     * Is the ring's own copy of a deleted spot reading due back? A `spot` row's id is a fresh UUID,
+     * so it cannot be tombstoned by id — but the reading it holds *is* regenerable, under the
+     * `history:` id the ring's copy arrives with up to
+     * [EventPersistenceSubscriber.SPOT_MATCH_MS][com.pulseloop.service.EventPersistenceSubscriber.Companion.SPOT_MATCH_MS]
+     * away. Matched the way `adoptRingsCopy` matches the pair it reconciles: same kind, within the
+     * window either side.
+     */
+    @Query("""
+        SELECT EXISTS(SELECT 1 FROM measurement_deletions
+        WHERE kindRaw = :kind AND measurementId LIKE 'spot:%' AND timestamp BETWEEN :from AND :to)
+    """)
+    suspend fun isSpotDeleted(kind: String, from: Long, to: Long): Boolean
+
+    /**
+     * Remember [measurements] as deleted — but only the ones a later sync could actually rewrite.
+     * A live reading is stored under a fresh UUID that nothing regenerates, so tombstoning it would
+     * grow this table for no benefit.
+     *
+     * **A `spot` row is the exception, and it needs a range.** It carries a UUID like any live row,
+     * but it exists precisely because the ring logs that measurement itself and will hand it back
+     * under a `history:` id on the next sync ([isSpotDeleted]) — so tombstoning by id alone let the
+     * ring's copy walk straight back in, and the reading had to be deleted twice. The ring stamps
+     * its log to the minute rather than to our settled instant, so the tombstone cannot name the id
+     * it has to suppress; it records the kind and our timestamp instead, under a deterministic
+     * `spot:` key so re-deleting the same reading replaces the row rather than growing the table.
+     *
+     * A measurement retaken inside that window inherits the suppression: the retake itself is
+     * stored and displayed (it is our own row, not a history write), it simply never adopts the
+     * ring's copy and stays marked `spot`. That is the same ±90 s ambiguity `adoptRingsCopy`
+     * already carries, and it fails in the direction that keeps a reading the user asked for.
+     */
+    suspend fun record(measurements: List<MeasurementEntity>) {
+        val regenerable = measurements.mapNotNull { row ->
+            when {
+                row.id.startsWith(HISTORY_ID_PREFIX) ->
+                    MeasurementDeletionEntity(measurementId = row.id, kindRaw = row.kindRaw, timestamp = row.timestamp)
+                row.sourceRaw == SPOT_SOURCE ->
+                    MeasurementDeletionEntity(
+                        measurementId = "$SPOT_ID_PREFIX${row.kindRaw}:${row.timestamp}",
+                        kindRaw = row.kindRaw,
+                        timestamp = row.timestamp,
+                    )
+                else -> null
+            }
+        }
+        if (regenerable.isNotEmpty()) insertAll(regenerable)
+    }
+
+    /**
+     * Remember a deleted activity bucket (issue #70).
+     *
+     * `activity_buckets` is keyed by the bucket's own start time and written with `upsert` for
+     * exactly the reason history readings are — re-syncing a day the ring still holds must replace
+     * each bucket rather than accumulate it, or the daily total drifts upward on every pass. So a
+     * deleted bucket has the same problem a deleted reading had: the next sync writes it straight
+     * back. Buckets live in their own table with an epoch-millis key rather than a string id, hence
+     * the [ACTIVITY_ID_PREFIX] key rather than a second tombstone table — the row means the same
+     * thing (something regenerable the user removed) and rides the archive with the rest.
+     */
+    suspend fun recordActivity(startEpochs: List<Long>) {
+        if (startEpochs.isEmpty()) return
+        insertAll(startEpochs.map {
+            MeasurementDeletionEntity(
+                measurementId = "$ACTIVITY_ID_PREFIX$it",
+                kindRaw = ACTIVITY_KIND,
+                timestamp = it,
+            )
+        })
+    }
+
+    /** Asked before every bucket write, so a re-sync can't restore one the user removed. */
+    @Query("SELECT EXISTS(SELECT 1 FROM measurement_deletions WHERE measurementId = :id)")
+    suspend fun isActivityBucketDeleted(id: String): Boolean
+
+    /**
+     * Remember a deleted ring sleep record (issue #78) — one tombstone per stage block.
+     *
+     * Sleep's write path never upserts a session by id: [com.pulseloop.service.EventPersistenceSubscriber]
+     * re-derives the whole waking day from the raw stage blocks the ring re-sends, so deleting a
+     * session row alone would let the next sync of that night rebuild it exactly. A block is
+     * minute-grid RLE over the record's stages, so the same record re-sent reproduces its blocks
+     * with the same `startAt` values — which is the stable identity, the same role the bucket
+     * startEpoch plays above. Keyed by the waking day as well, because the same wall-clock minute
+     * legitimately recurs on different days.
+     */
+    suspend fun recordSleepBlocks(dayStart: Long, startAts: List<Long>) {
+        if (startAts.isEmpty()) return
+        insertAll(startAts.map {
+            MeasurementDeletionEntity(
+                measurementId = sleepBlockId(dayStart, it),
+                kindRaw = SLEEP_RECORD_KIND,
+                timestamp = it,
+            )
+        })
+    }
+
+    /**
+     * Remember an edited ring sleep record's adjusted boundaries (issue #82).
+     */
+    suspend fun recordSleepEdit(dayStart: Long, recordStartAt: Long, newStartAt: Long, newEndAt: Long) {
+        deleteSleepEdit(dayStart, recordStartAt)
+        insertAll(listOf(
+            MeasurementDeletionEntity(
+                measurementId = sleepEditId(dayStart, recordStartAt, newStartAt, newEndAt),
+                kindRaw = SLEEP_EDIT_KIND,
+                timestamp = recordStartAt,
+            )
+        ))
+    }
+
+    @Query("DELETE FROM measurement_deletions WHERE kindRaw = 'SLEEP_RECORD_EDIT' AND measurementId LIKE 'sleep:edit:' || :dayStart || ':' || :recordStartAt || ':%'")
+    suspend fun deleteSleepEdit(dayStart: Long, recordStartAt: Long)
+
+    @Query("SELECT measurementId FROM measurement_deletions WHERE kindRaw = 'SLEEP_RECORD_EDIT' AND measurementId LIKE 'sleep:edit:' || :dayStart || ':' || :recordStartAt || ':%' LIMIT 1")
+    suspend fun getSleepEditId(dayStart: Long, recordStartAt: Long): String?
+
+    suspend fun getSleepEdit(dayStart: Long, recordStartAt: Long): SleepRecordEditBounds? {
+        val id = getSleepEditId(dayStart, recordStartAt) ?: return null
+        return parseSleepEditId(id)
+    }
+
+    /**
+     * Remember an entirely deleted ring sleep record. Prevents head/tail stages from resurrecting
+     * if the record was previously trimmed via an edit before deletion.
+     */
+    suspend fun recordSleepRecordDeleted(dayStart: Long, recordStartAt: Long) {
+        insertAll(listOf(
+            MeasurementDeletionEntity(
+                measurementId = sleepRecordDeleteId(dayStart, recordStartAt),
+                kindRaw = SLEEP_RECORD_DELETE_KIND,
+                timestamp = recordStartAt,
+            )
+        ))
+    }
+
+    suspend fun isSleepRecordDeleted(dayStart: Long, recordStartAt: Long): Boolean =
+        isDeleted(sleepRecordDeleteId(dayStart, recordStartAt))
+
+    companion object {
+        /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.
+         *  A measurement whose id starts with this is one the ring can hand us again. */
+        const val HISTORY_ID_PREFIX = "history:"
+        /** Key prefix for a range tombstone standing in for a deleted `spot` row — see [record].
+         *  Distinct from [HISTORY_ID_PREFIX] so `isDeleted`'s id lookup can never match one. */
+        const val SPOT_ID_PREFIX = "spot:"
+        /** `EventPersistenceSubscriber.SOURCE_SPOT`, duplicated to keep this DAO off the service
+         *  layer. Asserted equal in `MeasurementDeletionTest`. */
+        const val SPOT_SOURCE = "spot"
+        /** Key prefix for a deleted activity bucket (issue #70), keyed by its `startEpoch`. */
+        const val ACTIVITY_ID_PREFIX = "activity:"
+        /** `kindRaw` for an activity tombstone. Not a [com.pulseloop.ring.MeasurementKind] — buckets
+         *  are not measurements — so it is deliberately a name no kind can collide with. */
+        const val ACTIVITY_KIND = "ACTIVITY_BUCKET"
+
+        /** Key prefix for a deleted ring sleep record's blocks (issue #78) — see [recordSleepBlocks]. */
+        const val SLEEP_ID_PREFIX = "sleep:"
+        /** `kindRaw` for a sleep-record tombstone — a name no measurement kind can collide with. */
+        const val SLEEP_RECORD_KIND = "SLEEP_RECORD_BLOCK"
+
+        /** Key prefix for an edited ring sleep record's trimmed boundaries (issue #82). */
+        const val SLEEP_EDIT_PREFIX = "sleep:edit:"
+        /** `kindRaw` for a sleep-record boundary edit tombstone. */
+        const val SLEEP_EDIT_KIND = "SLEEP_RECORD_EDIT"
+
+        /** Key prefix for an entirely deleted ring sleep record. */
+        const val SLEEP_RECORD_DELETE_PREFIX = "sleep:record:"
+        /** `kindRaw` for an entirely deleted sleep record tombstone. */
+        const val SLEEP_RECORD_DELETE_KIND = "SLEEP_RECORD_DELETE"
+
+        /** The tombstone key for an entirely deleted sleep record. */
+        fun sleepRecordDeleteId(dayStart: Long, recordStartAt: Long): String =
+            "$SLEEP_RECORD_DELETE_PREFIX$dayStart:$recordStartAt"
+
+        /** The tombstone key for the bucket starting at [startEpoch]. */
+        fun activityBucketId(startEpoch: Long): String = "$ACTIVITY_ID_PREFIX$startEpoch"
+
+        /** The tombstone key for the sleep stage block starting at [startAt] on waking day [dayStart]. */
+        fun sleepBlockId(dayStart: Long, startAt: Long): String = "$SLEEP_ID_PREFIX$dayStart:$startAt"
+
+        /** The tombstone key for an edited sleep record boundary. */
+        fun sleepEditId(dayStart: Long, recordStartAt: Long, newStartAt: Long, newEndAt: Long): String =
+            "$SLEEP_EDIT_PREFIX$dayStart:$recordStartAt:$newStartAt:$newEndAt"
+
+        fun parseSleepEditId(id: String): SleepRecordEditBounds? {
+            val parts = id.split(":")
+            if (parts.size >= 6 && parts[0] == "sleep" && parts[1] == "edit") {
+                val start = parts[4].toLongOrNull() ?: return null
+                val end = parts[5].toLongOrNull() ?: return null
+                return SleepRecordEditBounds(start, end)
+            }
+            return null
+        }
+    }
+}
+
+data class SleepRecordEditBounds(
+    val newStartAt: Long,
+    val newEndAt: Long,
+)

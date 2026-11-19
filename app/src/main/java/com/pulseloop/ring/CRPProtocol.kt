@@ -107,8 +107,13 @@ object CRPCommands {
     /** Temperature history. **Not 48** — `q.b(2,48)` is the vendor's `querySleepState` (`d1/b.java`
      *  line 650); the real temperature history is `i0.b(day, frameIndex)` = `q.c(2,22, [day, idx])`,
      *  the same `[day, frameIndex]` shape as the other timing histories. We queried 48 for months and
-     *  the ring never answered — see zaggash's 2026-07-25 capture, 23 sends and 0 replies. Its sample
-     *  layout is still unconfirmed by a non-empty capture, so the reply stays an ack for now. */
+     *  the ring never answered — see zaggash's 2026-07-25 capture, 23 sends and 0 replies.
+     *
+     *  The sample layout is confirmed as of issue #58, whose R100 capture is the first non-empty
+     *  temperature reply anyone has sent us: little-endian 2-byte tenths of a degree Celsius, one
+     *  per 5-minute slot, 72 slots per frame, four frames per day (terminal index 3). The vendor
+     *  parser is `e1/m` — `d()` splits `[day][frameIndex]` off the front, `e()` walks the rest two
+     *  bytes at a time, and `a()` divides by 10 and rejects anything outside 28.0–50.0 °C. */
     const val CMD_QUERY_HISTORY_TEMP = 22     // b1/i0.b: q.c(2,22, [day, frameIndex])
     const val HISTORY_DAY_TODAY = 0           // CRPHistoryDay.TODAY; YESTERDAY = 1
 

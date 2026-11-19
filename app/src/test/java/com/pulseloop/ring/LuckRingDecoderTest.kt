@@ -131,10 +131,30 @@ class LuckRingDecoderTest {
         val record = LuckRingBytes.le32(base) + LuckRingBytes.le32(1234) +
             le24(5000) + listOf<UByte>(0u) + le24(300) + listOf<UByte>(0u) + le24(600) + listOf<UByte>(0u)
         val events = LuckRingDecoder.decode(frame(5u, envelope(1, listOf(record))))
-        val bucket = events.first() as? RingDecodedEvent.ActivityBucket ?: return fail("expected activityBucket, got $events")
-        assertEquals(baseDate, bucket._timestamp)
-        assertEquals(1234, bucket.steps)
-        assertEquals(5000, bucket.distanceMeters)
+        val update = events.first() as? RingDecodedEvent.ActivityUpdate ?: return fail("expected activityUpdate, got $events")
+        assertEquals(baseDate, update._timestamp)
+        assertEquals(1234, update.steps)
+        assertEquals(5000, update.distanceMeters)
+    }
+
+    /**
+     * Issue #112: the TK18's live sport pushes during a walk (from the reporter's diagnostics):
+     * each is the day's running total with a new timestamp. They must decode as day totals, never
+     * as buckets — eleven buckets of ~600 summed to ~6,600 steps for a 30-second walk.
+     */
+    @Test
+    fun `live sport pushes are day totals, not buckets`() {
+        val pushes = listOf(0 to 584, 112 to 594, 115 to 599, 118 to 604, 121 to 610, 124 to 616)
+        val events = pushes.flatMap { (offset, steps) ->
+            val record = LuckRingBytes.le32(base + offset) + LuckRingBytes.le32(steps.toLong()) +
+                le24(steps * 7 / 10) + listOf<UByte>(0u) + le24(0) + listOf<UByte>(0u) + le24(0) + listOf<UByte>(0u)
+            LuckRingDecoder.decode(frame(4u, envelope(1, listOf(record))))
+        }
+        assertTrue(events.none { it is RingDecodedEvent.ActivityBucket })
+        val totals = events.filterIsInstance<RingDecodedEvent.ActivityUpdate>()
+        assertEquals(pushes.size, totals.size)
+        // The day row keeps the largest of these — the latest — not their 3,607 sum.
+        assertEquals(616, totals.maxOf { it.steps })
     }
 
     // MARK: Sleep

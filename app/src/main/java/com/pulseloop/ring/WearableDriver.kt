@@ -40,6 +40,16 @@ interface WearableDriver {
     /** Whether an outbound frame must go to the commandUUID characteristic. */
     fun usesCommandChannel(frame: ByteArray): Boolean = false
 
+    /**
+     * Log every write attempt and every notification to the wearable log, not just the first
+     * attempt of each command. Off by default; worth it for a ring that funnels handshake, history
+     * and measurements through one channel, where attempt-level timing is the evidence.
+     */
+    val verboseTransportDiagnostics: Boolean get() = false
+
+    /** A payload-free label for a frame in the wearable log (its route, never its values). */
+    fun diagnosticRoute(frame: ByteArray): String = "bytes=${frame.size}"
+
     /** Decode one inbound notify frame → 0..n events. */
     fun ingest(data: ByteArray, from: String): List<RingDecodedEvent>
 
@@ -72,6 +82,8 @@ data class MeasurementSettings(
     /** All-day HR sampling interval in minutes (Colmi clamps to 5..60 in 5-min steps). */
     val hrIntervalMinutes: Int,
     val spo2Enabled: Boolean,
+    /** All-day SpO₂ interval in minutes; 0 follows [hrIntervalMinutes] (issue #66). */
+    val spo2IntervalMinutes: Int = 0,
     val stressEnabled: Boolean,
     val hrvEnabled: Boolean,
     val temperatureEnabled: Boolean,
@@ -120,9 +132,52 @@ data class UserProfileValues(
  * Per-device orchestration of command flows.
  */
 interface RingSyncEngine {
+    companion object {
+        /**
+         * Fallback bound on the live-HR leg of a spot measurement, for a family that gives no
+         * other signal that it has finished. Long enough for a settled optical reading, short
+         * enough that a ring which will never produce one doesn't hold the sensor on.
+         */
+        const val DEFAULT_SPOT_HEART_RATE_SECONDS = 30
+        /** Default ceiling on the SpO₂ leg. iOS raised this 40 → 60 (`c8969a4`): the R99's
+         *  successful sweep took 38 s while another ran past 41 s with no result. */
+        const val DEFAULT_SPOT_SPO2_SECONDS = 60
+    }
+
     /** True only for protocols with one native command that returns a combined vitals packet.
      * Capability bits such as manual BP/glucose do not imply this transport feature. */
     val supportsCombinedMeasurement: Boolean get() = false
+
+    /**
+     * How long the live-HR leg of a spot measurement may run on this family (issue #59).
+     *
+     * A ceiling, not a duration: the leg ends the moment the ring says it is done. Only a family
+     * that never says so actually spends this long, which is why it can be raised for a family
+     * that *does* — the ring in #59 needs ~26 s of warm-up before its PPG converges and ends the
+     * measurement itself at ~35 s, so at the default it was cut off just as its readings became
+     * real, while raising the default for everyone would make every other family's measurement
+     * visibly slower for nothing.
+     */
+    val spotHeartRateSeconds: Int get() = DEFAULT_SPOT_HEART_RATE_SECONDS
+
+    /**
+     * Ceiling on the SpO₂ leg of a spot measurement, in seconds. The same reasoning as
+     * [spotHeartRateSeconds]: a family whose ring ends the measurement itself may need a longer
+     * fallback bound than the default, because the ring's own `04 0e` is what actually ends the
+     * leg and the window must be long enough for it to arrive.
+     */
+    val spotSpo2Seconds: Int get() = DEFAULT_SPOT_SPO2_SECONDS
+
+    /**
+     * True when this family's ring tells us a spot measurement has ended (issue #59's `04 0e`).
+     *
+     * It gates whether a leg may keep collecting: a leg that waits for a completion signal no
+     * family sends would simply idle out its whole window, which is why the SpO2 leg keeps its
+     * "first plausible value wins" behaviour everywhere else. The CRP R11 in particular answers a
+     * spot SpO2 with one value after ~48 s of silence and nothing further — waiting past it would
+     * turn a working measurement into a minute-long stare at a progress bar for no gain.
+     */
+    val signalsMeasurementCompletion: Boolean get() = false
 
     fun runStartup()
     fun handle(event: RingDecodedEvent)
@@ -144,11 +199,36 @@ interface RingSyncEngine {
     fun syncSleepNow() {}
     fun startHeartRate()
     fun stopHeartRate()
+    /**
+     * Begin the live-HR stream for a workout of [activityType] (`ActivityMeta.ORDER`). Defaults to
+     * the plain stream; a family whose vendor app runs a live activity as a ring-side *sport
+     * session* rather than a bare HR stream overrides this (Colmi, issue #64). Idempotent: the
+     * coordinator calls it again after every interruption to bring the stream back.
+     */
+    fun startWorkoutHeartRate(activityType: String) { startHeartRate() }
+    /** End what [startWorkoutHeartRate] began. Distinct from [stopHeartRate] so a spot measure's
+     *  stop mid-workout cannot end the ring's sport session. */
+    fun stopWorkoutHeartRate() { stopHeartRate() }
     fun measureHeartRateSpot() { startHeartRate() }
     fun startSpO2()
     fun stopSpO2()
     fun startHRV() {}
     fun stopHRV() {}
+    /** True when this family measures HRV/stress/temperature on demand by streaming values until
+     *  stopped ([startSpotVital]) rather than through [startHRV]'s first-value poll. */
+    val streamsSpotVitals: Boolean get() = false
+    fun startSpotVital(vital: SpotVital) {}
+    /** Stop what [startSpotVital] began; [settled] is the reading the app settled on (null = none). */
+    fun stopSpotVital(vital: SpotVital, settled: Double?) {}
+    /**
+     * True when the stop just sent for [kind] ([stopHeartRate] / [stopSpO2]) is one the ring will
+     * acknowledge with [PulseEvent.RealtimeStreamStopped], so the coordinator should hold the
+     * kind's live-sample gate closed until it arrives (see `LiveGateReopen`). Consumed by the
+     * call: it answers for the stop that preceded it. False for every family that never
+     * acknowledges, and for a stop call that sent nothing — either way nothing will arrive to
+     * wait for, so the gate reopens at once.
+     */
+    fun stopAwaitsAck(kind: MeasurementKind): Boolean = false
     fun startBloodPressure() {}
     fun stopBloodPressure() {}
     /** Combined measurement: HR + systolic + diastolic + SpO₂ + fatigue + stress + blood sugar + HRV. No-op if unsupported. */
@@ -156,7 +236,8 @@ interface RingSyncEngine {
     fun stopCombinedMeasurement() {}
     fun findDevice()
     fun setGoal(steps: Int)
-    fun powerOff()
+    /** Power the ring off. Returns true only if a command was actually queued. */
+    fun powerOff(): Boolean
     fun factoryReset()
     /** Push user anthropometrics (age/sex/height/weight) so on-device BP/sugar/calorie
      *  algorithms have real inputs. No-op if unsupported. */
@@ -206,6 +287,12 @@ interface RingSyncEngine {
 
 /**
  * Ported from [AdvertisementInfo] in WearableCoordinator.swift.
+ *
+ * [manufacturerData] is one manufacturer-specific data block in its **on-air layout**: the
+ * little-endian company ID first, then the vendor bytes. That is what CoreBluetooth hands iOS,
+ * and it is what every coordinator's prefix matches (`1078…`, `64ff…`, `d605…`). Android's
+ * `ScanRecord` splits the same field the other way, so build this through
+ * [AdvertisementMatcher.manufacturerBlocks] rather than from `valueAt()` directly.
  */
 data class AdvertisementInfo(
     val serviceUUIDs: List<String>,
@@ -220,6 +307,63 @@ data class AdvertisementInfo(
 
     override fun hashCode(): Int =
         31 * serviceUUIDs.hashCode() + manufacturerData.contentHashCode()
+}
+
+/**
+ * Turns Android's parsed advertisement fields into the [AdvertisementInfo]s the coordinators
+ * expect, and walks the registry against them.
+ *
+ * Exists because of a platform mismatch that made every manufacturer-data fallback dead code on
+ * Android (issue #56). `ScanRecord.getManufacturerSpecificData()` returns a `SparseArray` **keyed
+ * by company ID with the ID stripped from the value**; the coordinators were ported from Swift,
+ * where CoreBluetooth includes the company ID in the bytes, so they all match a little-endian
+ * company-ID prefix (`TK5Coordinator` `10786501`, `ColmiSmartHealthCoordinator` `1078`,
+ * `LuckRingCoordinator` `64ff`, `RWfitProtocol.MANUFACTURER_HEX_PREFIXES` `d605…`/`d606…`). Those
+ * prefixes can never appear in a `valueAt()` payload, so the fallback never fired for any YCBT,
+ * LuckRing or RWfit ring — a ring whose name the catalog doesn't recognise was simply invisible.
+ */
+object AdvertisementMatcher {
+
+    /**
+     * Re-attach the company ID to each entry, little-endian, restoring the on-air layout.
+     *
+     * Returns one block per entry — **all** of them, not just index 0: a device may advertise
+     * several company blocks and nothing guarantees the family marker is the first. A device with
+     * no manufacturer data yields a single `null` block, so the service/name matches still run.
+     */
+    fun manufacturerBlocks(entries: List<Pair<Int, ByteArray>>): List<ByteArray?> {
+        if (entries.isEmpty()) return listOf(null)
+        return entries.map { (companyId, value) ->
+            byteArrayOf(
+                (companyId and 0xFF).toByte(),
+                ((companyId shr 8) and 0xFF).toByte(),
+            ) + value
+        }
+    }
+
+    /**
+     * First coordinator in registry order that claims the advertisement, or `null`.
+     *
+     * Registry order stays the outer loop — it is load-bearing (see `RingBLEClient.coordinators`) —
+     * so a coordinator listed earlier still wins even when a later one matches a different
+     * manufacturer block of the same device.
+     */
+    fun match(
+        coordinators: List<WearableCoordinator>,
+        name: String?,
+        serviceUUIDs: List<String>,
+        manufacturerEntries: List<Pair<Int, ByteArray>>,
+    ): RingDeviceType? {
+        val blocks = manufacturerBlocks(manufacturerEntries)
+        for (coordinator in coordinators) {
+            for (block in blocks) {
+                if (coordinator.matches(name, AdvertisementInfo(serviceUUIDs, block))) {
+                    return coordinator.deviceType
+                }
+            }
+        }
+        return null
+    }
 }
 
 /**

@@ -29,14 +29,15 @@ class LuckRingHistorySync(
     private val progressSink: ((PulseEvent) -> Unit)? = null,
 ) {
     companion object {
-        /** The full catalog, in request order. `mixSport` (10 -- workout records) is skipped in v1. */
+        /** The full catalog, in request order. `mixSport` (10 -- workout records) is skipped in v1,
+         *  and HRV (42) is never requested: the app doesn't use its value (issue #112, see
+         *  [LuckRingCoordinator.capabilities]). */
         val catalog: List<UByte> = listOf(
             LuckRingDataType.HISTORY_SPORT,   // 5
             LuckRingDataType.SLEEP,           // 6
             LuckRingDataType.HISTORY_HEART,   // 8
             LuckRingDataType.HISTORY_O2,      // 40
             LuckRingDataType.HISTORY_BP,      // 41
-            LuckRingDataType.HISTORY_HRV,     // 42
             LuckRingDataType.HISTORY_TEMP,    // 47
             LuckRingDataType.STRESS_HISTORY,  // 53
         )

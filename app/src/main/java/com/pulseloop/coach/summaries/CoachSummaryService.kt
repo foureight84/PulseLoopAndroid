@@ -26,6 +26,12 @@ class CoachSummaryService(
      *  `CoachClientResolver` (Gemini/OpenRouter follow the provider picker).
      *  null keeps the legacy OpenAI-only behavior. */
     private val providerSettings: CoachProviderSettingsStore? = null,
+    /** The user's step-source preference (review item 5, PR #98). Applied per regeneration so
+     *  the coach's today/sleep summaries quote the same steps Today shows — Path B's separate
+     *  columns otherwise let the coach read ring steps while Today read phone steps. */
+    private val stepSourcePrefs: com.pulseloop.settings.StepSourcePrefs,
+    /** Given the stored night's end: is the wearer's Bedtime / quiet-hours window still open (#140)? */
+    private val nightInProgress: (sessionEndAt: Long) -> Boolean = { false },
 ) {
     /** Minimum gap between Today / aggregate-sleep regenerations. */
     private val minIntervalMs = 2 * 3600_000L // 2 hours
@@ -42,33 +48,34 @@ class CoachSummaryService(
     // ── Refresh (self-gating) ────────────────────────────────────────────
 
     suspend fun refreshTodayIfNeeded() {
-        val built = CoachSummaryContextBuilder.today(db)
+        val built = CoachSummaryContextBuilder.today(db, stepSourcePrefs.preferPhone())
         val existing = db.coachSummaryDao().get(CoachSummaryKind.TODAY.rawValue, built.scopeKey)
         val now = System.currentTimeMillis()
 
         if (existing != null) {
             if (existing.dataSignature == built.signature) return       // no new data
-            if (now - existing.updatedAt < minIntervalMs) return        // rate limited
+            if (now - existing.updatedAt < minIntervalMs && sameLanguage(existing, built)) return // rate limited
         }
         generateAndUpsert(CoachSummaryKind.TODAY, built, existing)
     }
 
     suspend fun refreshSleepDayIfNeeded(now: Long = System.currentTimeMillis()) {
-        val built = CoachSummaryContextBuilder.sleepDay(db) ?: return
+        val built = CoachSummaryContextBuilder.sleepDay(db, stepSourcePrefs.preferPhone()) ?: return
         val endAt = built.sleepSessionEnd ?: return
         val lastFullSyncAt = db.deviceDao().current()?.lastFullSyncAt
-        if (!CoachSleepSyncGate.sleepDaySafeToSummarize(endAt, lastFullSyncAt, now)) return
+        if (!CoachSleepSyncGate.sleepDaySafeToSummarize(endAt, lastFullSyncAt, now, nightInProgress(endAt))) return
 
-        // Signature-based upsert: regenerate only when the signature differs AND the
-        // existing row is older than the minInterval floor — allows one corrective pass
-        // if a late sync grows the night, without churning.
+        // Signature-based upsert: regenerate when the signature differs and the floor has
+        // passed, or straight away when a late sync grew the night (#140).
         val existing = db.coachSummaryDao().get(CoachSummaryKind.SLEEP_DAY.rawValue, built.scopeKey)
-        if (existing != null) {
-            if (existing.dataSignature == built.signature) return
-            if (now - existing.updatedAt < minIntervalMs) return
-        }
+        if (existing != null && !CoachSleepSyncGate.sleepCardRewriteDue(
+                existing.dataSignature, existing.updatedAt, built.signature, now, minIntervalMs)) return
         generateAndUpsert(CoachSummaryKind.SLEEP_DAY, built, existing)
     }
+
+    /** A card written in another language is replaced at once; the rate limit is for data churn. */
+    private fun sameLanguage(existing: CoachSummaryEntity, built: CoachSummaryContextBuilder.Built): Boolean =
+        CoachSummaryContextBuilder.languageOf(existing.dataSignature) == CoachSummaryContextBuilder.languageOf(built.signature)
 
     // ── Generate + Persist ───────────────────────────────────────────────
 
@@ -84,12 +91,12 @@ class CoachSummaryService(
         val apiKey = if (resolution != null) resolution.key ?: "" else apiKeyStore.apiKey
         val model = snapshot
             ?.let { CoachClientResolver.activeModel(it, apiKeyStore.model) }
-            ?: apiKeyStore.model.ifEmpty { "gpt-5.4" }
+            ?: apiKeyStore.model.ifEmpty { com.pulseloop.coach.config.OpenAIModel.DEFAULT.slug }
         val flags = CoachFeatureFlags(
             coachEnabled = apiKeyStore.coachEnabled && apiKey.isNotEmpty(),
             webSearchEnabled = apiKeyStore.webSearchEnabled,
             model = model,
-            settings = CoachClientResolver.coachSettings(snapshot),
+            settings = CoachClientResolver.coachSettings(snapshot, model),
         )
         val angle = CoachVarietyHints.angle(built.scopeKey + kind.rawValue)
         val recentTexts = recentSummaryTexts(kind, excludeId = existing?.id)

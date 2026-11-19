@@ -23,6 +23,63 @@ class SleepSegmentationTest {
             startMinute = startMin, durationMinutes = durMin, stageRaw = stage.name,
         )
 
+    // ── asleepMinutes / spanMinutes (issue #63) ──────────────────────────
+
+    /**
+     * The reporter's night: the ring split it into two records nine minutes apart, 23:51–05:02 and
+     * 05:11–08:02, and the app reported 8 h 10 — the span, including the gap and the awake time
+     * inside each record. The vendor app reports `deepSleepTotal + lightSleepTotal + remTotal`
+     * instead (`SleepActivity:695`) and shows the span only as a range.
+     */
+    @Test
+    fun `a duration is time asleep, and the span is a separate number`() {
+        val base = 0L
+        val blocks = listOf(
+            block(base, 0, 240, SleepStage.LIGHT),      // 23:51 record: 4h asleep
+            block(base, 240, 71, SleepStage.DEEP),      //   … 1h11 more, ends at min 311
+            block(base, 320, 100, SleepStage.LIGHT),    // 05:11 record after a 9-minute gap
+            block(base, 420, 40, SleepStage.REM),
+        )
+        assertEquals("deep + light + rem, gap excluded", 451, asleepMinutes(blocks))
+    }
+
+    @Test
+    fun `awake blocks are excluded from the duration but not from the span`() {
+        val base = 0L
+        val blocks = listOf(
+            block(base, 0, 120, SleepStage.LIGHT),
+            block(base, 120, 30, SleepStage.AWAKE),
+            block(base, 150, 90, SleepStage.DEEP),
+        )
+        assertEquals(210, asleepMinutes(blocks))
+        val row = SleepSessionEntity(
+            id = "s", date = base, startAt = base, endAt = base + 240 * minute,
+            totalMinutes = asleepMinutes(blocks),
+        )
+        assertEquals("the span still covers the awake stretch", 240, row.spanMinutes)
+    }
+
+    /**
+     * UNKNOWN is the `else` branch of every sleep decoder in this app — a stage byte we did not
+     * recognise inside a record the ring called sleep. Those minutes were slept, so summing three
+     * named stages instead of excluding AWAKE would silently drop them.
+     */
+    @Test
+    fun `an unrecognised stage still counts as sleep`() {
+        val base = 0L
+        val blocks = listOf(
+            block(base, 0, 60, SleepStage.UNKNOWN),
+            block(base, 60, 60, SleepStage.LIGHT),
+            block(base, 120, 20, SleepStage.AWAKE),
+        )
+        assertEquals(120, asleepMinutes(blocks))
+    }
+
+    @Test
+    fun `a night with no blocks has no duration`() {
+        assertEquals(0, asleepMinutes(emptyList()))
+    }
+
     // ── segment ──────────────────────────────────────────────────────────
 
     @Test

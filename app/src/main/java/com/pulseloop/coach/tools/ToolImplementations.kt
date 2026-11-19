@@ -1,5 +1,7 @@
 package com.pulseloop.coach.tools
 
+import com.pulseloop.util.L10n
+import com.pulseloop.R
 import com.pulseloop.ring.MeasurementKind
 import kotlinx.serialization.json.*
 
@@ -17,9 +19,14 @@ object RetrievalTools {
 
     private fun makeProfile() = CoachToolDef(
         name = "get_profile_context",
-        publicLabel = "Checking your profile and ring status",
+        publicLabelRes = R.string.tool_profile,
         description = "Get user profile, goals, device sync status, and data-quality warnings.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()), "additionalProperties" to JsonPrimitive(false))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db
         if (db == null) {
@@ -37,7 +44,7 @@ object RetrievalTools {
 
     private fun makeDailySummary() = CoachToolDef(
         name = "get_daily_summary",
-        publicLabel = "Reading that day's ring data",
+        publicLabelRes = R.string.tool_day,
         description = "Fetch daily activity and biometric summary for a local date (YYYY-MM-DD).",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -55,20 +62,21 @@ object RetrievalTools {
             val dayTs = CoachDataAccess.parseLocalDate(date)
             if (dayTs == null) return@runBlocking """{"error":"invalid date: $date"}"""
             val activity = db.activityDailyDao().byDay(dayTs)
+            val displaySteps = com.pulseloop.data.DisplaySteps.count(activity, ctx.preferPhone)
             val hrVals = db.measurementDao().range(MeasurementKind.HEART_RATE.name, dayTs, dayTs + 86400000L)
             val hrStats = if (hrVals.isNotEmpty()) {
                 val vals = hrVals.map { it.value }
                 """"mean":${(vals.average() * 10).toLong() / 10.0},"min":${vals.minOrNull()!!.toInt()},"max":${vals.maxOrNull()!!.toInt()}""""
             } else null
             val sleep = db.sleepSessionDao().byDay(dayTs)
-            """{"date":"$date","data_available":${activity != null || hrVals.isNotEmpty()},"activity":{"${if (activity != null) """steps":${activity.steps},"calories":${(activity.calories * 10).toLong() / 10.0},"distance_km":${(activity.distanceMeters / 1000 * 10).toLong() / 10.0},"active_minutes":${activity.activeMinutes}""" else """steps":0,"calories":0,"distance_km":0,"active_minutes":0"""}},"hr":{${hrStats ?: """"mean":null,"min":null,"max":null""""}},"sleep":${if (sleep != null) """{"total_min":${sleep.totalMinutes},"score":${sleep.totalMinutes / 5}}""" else "null"}}"""
+            """{"date":"$date","data_available":${activity != null || hrVals.isNotEmpty()},"activity":{"${if (activity != null) """steps":${displaySteps ?: 0},"calories":${(activity.calories * 10).toLong() / 10.0},"distance_km":${(activity.distanceMeters / 1000 * 10).toLong() / 10.0},"active_minutes":${activity.activeMinutes}""" else """steps":0,"calories":0,"distance_km":0,"active_minutes":0"""}},"hr":{${hrStats ?: """"mean":null,"min":null,"max":null""""}},"sleep":${if (sleep != null) """{"total_min":${sleep.totalMinutes},"score":${sleep.totalMinutes / 5}}""" else "null"}}"""
         }
         ToolResult(result)
     }
 
     private fun makeMetricSeries() = CoachToolDef(
         name = "get_metric_series",
-        publicLabel = "Fetching your trend data",
+        publicLabelRes = R.string.tool_trend_data,
         description = "Fetch a time series for a metric over a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -90,7 +98,7 @@ object RetrievalTools {
         val start = params["start_date"] ?: return@CoachToolDef ToolResult("""{"error":"missing 'start_date'"}""", isError = true)
         val end = params["end_date"] ?: start
         val result = kotlinx.coroutines.runBlocking {
-            val points = CoachDataAccess.seriesPoints(db, metric, start, end, "day")
+            val points = CoachDataAccess.seriesPoints(db, metric, start, end, "day", ctx.preferPhone)
             val sb = StringBuilder()
             sb.append("""{"metric":"$metric","points":[""")
             points.forEachIndexed { i, (date, value) ->
@@ -105,22 +113,22 @@ object RetrievalTools {
 
     private fun makeSleepSummary() = CoachToolDef(
         name = "get_sleep_summary",
-        publicLabel = "Looking at your sleep",
+        publicLabelRes = R.string.tool_sleep,
         description = "Get sleep summary for a date or date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
                 "start_date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "end_date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                "end_date" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("start_date"))),
+            "required" to JsonArray(listOf(JsonPrimitive("start_date"), JsonPrimitive("end_date"))),
             "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, ctx ->
         val db = ctx.db
         if (db == null) return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
         val json = Json { ignoreUnknownKeys = true }
-        val params = try { json.decodeFromString<Map<String, String>>(args) } catch (_: Exception) { null }
+        val params = try { json.decodeFromString<Map<String, String?>>(args) } catch (_: Exception) { null }
             ?: return@CoachToolDef ToolResult("""{"error":"invalid arguments"}""", isError = true)
         val start = params["start_date"] ?: return@CoachToolDef ToolResult("""{"error":"missing 'start_date'"}""", isError = true)
         val end = params["end_date"] ?: start
@@ -143,7 +151,7 @@ object RetrievalTools {
 
     private fun makeRangeSummary() = CoachToolDef(
         name = "get_range_summary",
-        publicLabel = "Fetching your ring data for that range",
+        publicLabelRes = R.string.tool_range,
         description = "Fetch summarized activity, HR, SpO2, and sleep over a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -157,6 +165,7 @@ object RetrievalTools {
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("start_date"), JsonPrimitive("end_date"), JsonPrimitive("include"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { jsonParams, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -172,7 +181,7 @@ object RetrievalTools {
                     val d = java.time.Instant.ofEpochMilli(it.date).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
                     d >= start && d <= end
                 }
-                val totalSteps = rows.sumOf { it.steps }
+                val totalSteps = com.pulseloop.data.DisplaySteps.counts(rows, ctx.preferPhone).sum()
                 sb.append(""""activity":{"days_available":${rows.size},"totals":{"steps":$totalSteps,"calories":${rows.sumOf { it.calories }},"active_minutes":${rows.sumOf { it.activeMinutes }}}},""")
             }
             val hrData = db.measurementDao().range(MeasurementKind.HEART_RATE.name, 0, System.currentTimeMillis())
@@ -188,7 +197,7 @@ object RetrievalTools {
 
     private fun makeActivitySessions() = CoachToolDef(
         name = "get_activity_sessions",
-        publicLabel = "Looking up your workouts",
+        publicLabelRes = R.string.tool_workouts,
         description = "Fetch saved activity sessions over a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -197,6 +206,7 @@ object RetrievalTools {
                 "end_date" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("start_date"), JsonPrimitive("end_date"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -217,12 +227,13 @@ object RetrievalTools {
 
     private fun makeSummarizeSession() = CoachToolDef(
         name = "summarize_activity_session",
-        publicLabel = "Summarizing that workout",
+        publicLabelRes = R.string.tool_workout_summary,
         description = "Compute summary statistics for one activity session.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf("activity_id" to JsonObject(mapOf("type" to JsonPrimitive("string"))))),
             "required" to JsonArray(listOf(JsonPrimitive("activity_id"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { jsonParams, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -238,9 +249,14 @@ object RetrievalTools {
 
     private fun makeSyncStatus() = CoachToolDef(
         name = "get_sync_status",
-        publicLabel = "Checking ring connection",
+        publicLabelRes = R.string.tool_ring_connection,
         description = "Get the ring's current connection state, battery, last sync time.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
         val device = kotlinx.coroutines.runBlocking { db.deviceDao().current() }
@@ -251,7 +267,7 @@ object RetrievalTools {
 
     private fun makeDataAvailability() = CoachToolDef(
         name = "get_data_availability",
-        publicLabel = "Checking what data exists",
+        publicLabelRes = R.string.tool_data_coverage,
         description = "Report how many readings exist per metric in a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -260,6 +276,7 @@ object RetrievalTools {
                 "end" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("start"), JsonPrimitive("end"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -274,7 +291,7 @@ object RetrievalTools {
 
     private fun makeSleepTrends() = CoachToolDef(
         name = "get_sleep_trends",
-        publicLabel = "Reviewing your sleep",
+        publicLabelRes = R.string.tool_sleep_summary,
         description = "Summarize sleep over a range: average duration, nights tracked.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -283,6 +300,7 @@ object RetrievalTools {
                 "enum" to JsonArray(listOf("week","month","year").map { JsonPrimitive(it) }),
             )))),
             "required" to JsonArray(listOf(JsonPrimitive("range"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { jsonParams, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
@@ -298,27 +316,39 @@ object RetrievalTools {
 
     private fun makeGoalProgress() = CoachToolDef(
         name = "get_goal_progress",
-        publicLabel = "Checking your goals",
+        publicLabelRes = R.string.tool_goals,
         description = "Compare today's metrics against the user's goals.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
         val goal = kotlinx.coroutines.runBlocking { db.userGoalDao().get() }
         val todayStart = java.time.Instant.now().atZone(java.time.ZoneId.systemDefault()).truncatedTo(java.time.temporal.ChronoUnit.DAYS).toInstant().toEpochMilli()
         val today = kotlinx.coroutines.runBlocking { db.activityDailyDao().byDay(todayStart) }
-        ToolResult("""{"today":{"steps":${today?.steps ?: 0},"steps_goal":${goal?.steps ?: 10000},"active_minutes":${today?.activeMinutes ?: 0},"active_minutes_goal":${goal?.activeMinutes ?: 45}},"sleep_hours_goal":${(goal?.sleepMinutes ?: 480) / 60}}""")
+        val displaySteps = com.pulseloop.data.DisplaySteps.count(today, ctx.preferPhone) ?: 0
+        ToolResult("""{"today":{"steps":$displaySteps,"steps_goal":${goal?.steps ?: 10000},"active_minutes":${today?.activeMinutes ?: 0},"active_minutes_goal":${goal?.activeMinutes ?: 45}},"sleep_hours_goal":${(goal?.sleepMinutes ?: 480) / 60}}""")
     }
 
     // ── get_recent_anomalies ───────────────────────────────────────────
 
     private fun makeRecentAnomalies() = CoachToolDef(
         name = "get_recent_anomalies",
-        publicLabel = "Scanning for anything unusual",
+        publicLabelRes = R.string.tool_anomalies,
         description = "Detect statistical outliers in steps and resting HR over last ~14 days.",
-        parameters = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
+        parameters = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(emptyMap()),
+            "required" to JsonArray(emptyList()),
+            "additionalProperties" to JsonPrimitive(false),
+        )),
     ) { _, ctx ->
         val db = ctx.db ?: return@CoachToolDef ToolResult("""{"error":"database not available"}""", isError = true)
-        val recentSteps = kotlinx.coroutines.runBlocking { db.activityDailyDao().recent(14) }.map { it.steps.toDouble() }
+        val recentRows = kotlinx.coroutines.runBlocking { db.activityDailyDao().recent(14) }
+        val recentSteps = com.pulseloop.data.DisplaySteps.counts(recentRows, ctx.preferPhone).map { it.toDouble() }
         val stepOutliers = AnalysisEngine.outliers(recentSteps)
         ToolResult("""{"steps_outliers":${stepOutliers.size},"steps_analyzed":${recentSteps.size}}""")
     }
@@ -333,7 +363,7 @@ object AnalysisTools {
 
     private val analyzeTrend = CoachToolDef(
         name = "analyze_trend",
-        publicLabel = "Analyzing your trends",
+        publicLabelRes = R.string.tool_trends,
         description = "Run a basic trend analysis on a metric series (returns slope, direction, significance).",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -363,7 +393,7 @@ object AnalysisTools {
 
     private val comparePeriods = CoachToolDef(
         name = "compare_periods",
-        publicLabel = "Comparing two time periods",
+        publicLabelRes = R.string.tool_compare_periods,
         description = "Compare a metric between two time periods (e.g., this week vs last week).",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -372,10 +402,11 @@ object AnalysisTools {
                     "items" to JsonObject(mapOf("type" to JsonPrimitive("number"))))),
                 "period_b" to JsonObject(mapOf("type" to JsonPrimitive("array"),
                     "items" to JsonObject(mapOf("type" to JsonPrimitive("number"))))),
-                "label_a" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "label_b" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                "label_a" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
+                "label_b" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("period_a"), JsonPrimitive("period_b"))),
+            "required" to JsonArray(listOf(JsonPrimitive("period_a"), JsonPrimitive("period_b"), JsonPrimitive("label_a"), JsonPrimitive("label_b"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -390,7 +421,7 @@ object AnalysisTools {
 
     private val computeCorrelation = CoachToolDef(
         name = "compute_correlation",
-        publicLabel = "Computing correlation",
+        publicLabelRes = R.string.tool_correlation,
         description = "Compute Pearson correlation between two sets of paired values.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -403,10 +434,13 @@ object AnalysisTools {
                             "x" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
                             "y" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
                         )),
+                        "required" to JsonArray(listOf(JsonPrimitive("x"), JsonPrimitive("y"))),
+                        "additionalProperties" to JsonPrimitive(false),
                     )),
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("pairs"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -423,7 +457,7 @@ object AnalysisTools {
 
     private val detectOutliers = CoachToolDef(
         name = "detect_outliers",
-        publicLabel = "Detecting outliers",
+        publicLabelRes = R.string.tool_outliers,
         description = "Detect statistical outliers (z-score > 2) in a series of values.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -434,6 +468,7 @@ object AnalysisTools {
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("values"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -454,7 +489,7 @@ object AnalysisTools {
 
     private val summarizeDistribution = CoachToolDef(
         name = "summarize_distribution",
-        publicLabel = "Summarizing distribution",
+        publicLabelRes = R.string.tool_distribution,
         description = "Compute statistical summary: mean, median, min, max, std dev.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -465,6 +500,7 @@ object AnalysisTools {
                 )),
             )),
             "required" to JsonArray(listOf(JsonPrimitive("values"))),
+            "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, _ ->
         val json = Json { ignoreUnknownKeys = true }
@@ -483,7 +519,7 @@ object ChartTools {
 
     private val prepareChart = CoachToolDef(
         name = "prepare_chart",
-        publicLabel = "Preparing a chart",
+        publicLabelRes = R.string.tool_chart,
         description = "Generate a chart from data points. Call this when you want to show a chart.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -525,16 +561,16 @@ object MemoryTools {
 
     private val saveMemory = CoachToolDef(
         name = "save_memory",
-        publicLabel = "Saving this for later",
+        publicLabelRes = R.string.tool_memory,
         description = "Save a key-value memory for future conversations.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
                 "key" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                 "value" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                "importance" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
+                "importance" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("key"), JsonPrimitive("value"))),
+            "required" to JsonArray(listOf(JsonPrimitive("key"), JsonPrimitive("value"), JsonPrimitive("importance"))),
             "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, ctx ->
@@ -543,9 +579,9 @@ object MemoryTools {
         val json = Json { ignoreUnknownKeys = true }
         val params = try { json.decodeFromString<Map<String, JsonElement>>(args) } catch (_: Exception) { null }
         if (params == null) return@CoachToolDef ToolResult("""{"saved":false,"error":"invalid arguments"}""", isError = true)
-        val key = params["key"]?.jsonPrimitive?.content ?: return@CoachToolDef ToolResult("""{"saved":false,"error":"missing key"}""", isError = true)
-        val value = params["value"]?.jsonPrimitive?.content ?: ""
-        val importance = params["importance"]?.jsonPrimitive?.int ?: 5
+        val key = params["key"]?.jsonPrimitive?.contentOrNull ?: return@CoachToolDef ToolResult("""{"saved":false,"error":"missing key"}""", isError = true)
+        val value = params["value"]?.jsonPrimitive?.contentOrNull ?: ""
+        val importance = params["importance"]?.jsonPrimitive?.intOrNull ?: 5
         kotlinx.coroutines.runBlocking {
             val existing = db.coachMemoryDao().byKey(key)
             db.coachMemoryDao().upsert(
@@ -583,16 +619,16 @@ object ActionTools {
 
     private val setGoal = CoachToolDef(
         name = "set_goal",
-        publicLabel = "Setting your goal",
+        publicLabelRes = R.string.tool_set_goal,
         description = "Set a daily step goal.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
             "properties" to JsonObject(mapOf(
                 "steps" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
-                "sleep_minutes" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
-                "active_minutes" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
+                "sleep_minutes" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
+                "active_minutes" to JsonObject(mapOf("type" to JsonArray(listOf(JsonPrimitive("number"), JsonPrimitive("null"))))),
             )),
-            "required" to JsonArray(listOf(JsonPrimitive("steps"))),
+            "required" to JsonArray(listOf(JsonPrimitive("steps"), JsonPrimitive("sleep_minutes"), JsonPrimitive("active_minutes"))),
             "additionalProperties" to JsonPrimitive(false),
         )),
     ) { args, ctx ->
@@ -617,7 +653,7 @@ object ActionTools {
 
     private val triggerMeasurement = CoachToolDef(
         name = "trigger_measurement",
-        publicLabel = "Taking a live reading",
+        publicLabelRes = R.string.tool_live_reading,
         description = "Trigger a live heart rate or SpO2 measurement from the ring.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -635,16 +671,17 @@ object ActionTools {
         if (coordinator == null || !coordinator.isConnected) {
             ToolResult("""{"status":"unavailable","note":"Ring is not connected — cannot take a live reading."}""")
         } else {
-            kotlinx.coroutines.runBlocking {
+            // The leg's return value is the measurement's only output (issue #59/#60): the
+            // settled reading, or null when it failed. The live mirrors are deliberately NOT it —
+            // they hold the last raw sample the ring streamed, which on a converging sensor is the
+            // pre-converged plateau, and they are not cleared when a measurement fails. Reading
+            // them here reported a stale 46 bpm as a completed measurement.
+            val value = kotlinx.coroutines.runBlocking {
                 when (kind) {
                     "hr" -> coordinator.measureHR()
                     "spo2" -> coordinator.measureSpO2()
+                    else -> null
                 }
-            }
-            val value = when (kind) {
-                "hr" -> coordinator.latestHRValue
-                "spo2" -> coordinator.latestSpO2Value
-                else -> null
             }
             if (value != null) {
                 ToolResult("""{"status":"completed","kind":"$kind","value":$value,"unit":"${if (kind == "hr") "bpm" else "%"}"}""")
@@ -658,7 +695,7 @@ object ActionTools {
 
     private val logUserNote = CoachToolDef(
         name = "log_user_note",
-        publicLabel = "Noting that down",
+        publicLabelRes = R.string.tool_note,
         description = "Save a dated note about symptoms, perceived exertion, mood, injury, sleep, diet, or activity context.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -694,7 +731,7 @@ object ActionTools {
 
     private val logActivityCorrection = CoachToolDef(
         name = "log_activity_correction",
-        publicLabel = "Logging your activity",
+        publicLabelRes = R.string.tool_log_activity,
         description = "Log or correct a user-stated activity the ring missed or misclassified.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -738,7 +775,7 @@ object ActionTools {
 
     private val createActivitySession = CoachToolDef(
         name = "create_activity_session_from_description",
-        publicLabel = "Logging your session",
+        publicLabelRes = R.string.tool_log_session,
         description = "Create a finished manual workout from a description.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -770,13 +807,15 @@ object ActionTools {
         val startTime = params["start_time"]?.jsonPrimitive?.contentOrNull
 
         val now = System.currentTimeMillis()
-        var startTs = startTime?.let { CoachDataAccess.parseLocalDate(it) }
+        val givenStart = CoachDataAccess.resolveStart(date, startTime)
+        var startTs = givenStart
             ?: CoachDataAccess.parseLocalDate(date)?.plus(12 * 3600_000L)
             ?: now
         // The same-day noon default can land in the future (logging "today" in the morning) and
-        // ManualActivityService rejects future-ending sessions; pull an unspecified start back so
-        // the session ends by now (mirrors ActionTools.swift's createActivitySession).
-        if (startTime == null && startTs + (durMin * 60_000).toLong() > now) {
+        // ManualActivityService rejects future-ending sessions; pull a defaulted start back so
+        // the session ends by now (mirrors ActionTools.swift's createActivitySession). That
+        // includes a start_time we couldn't read, which used to skip this and fail the write.
+        if (givenStart == null && startTs + (durMin * 60_000).toLong() > now) {
             startTs = now - (durMin * 60_000).toLong()
         }
 
@@ -802,7 +841,7 @@ object ActionTools {
 
     private val updateActivitySession = CoachToolDef(
         name = "update_activity_session",
-        publicLabel = "Updating that workout",
+        publicLabelRes = R.string.tool_update_workout,
         description = "Edit a saved workout. For older sessions returns needs_confirmation.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -851,8 +890,8 @@ object ActionTools {
             ctx.pendingActions.add(com.pulseloop.coach.orchestration.PendingAction(
                 kind = com.pulseloop.coach.orchestration.PendingActionKind.UPDATE_ACTIVITY_SESSION,
                 activityId = activityId,
-                summary = "Update your ${session.type} session from ${CoachDataAccess.localDateString(session.startedAt)}?",
-                confirmLabel = "Save changes",
+                summary = L10n.get(R.string.pa_confirm_update_session, com.pulseloop.coach.orchestration.PendingActionExecutor.typeLabel(session.type), CoachDataAccess.localDateString(session.startedAt)),
+                confirmLabel = L10n.get(R.string.action_save_changes),
                 updates = updates,
             ))
             ToolResult("""{"ok":true,"needs_confirmation":true,"summary":"Awaiting your confirmation to edit that workout."}""")
@@ -863,7 +902,7 @@ object ActionTools {
 
     private val deleteActivitySession = CoachToolDef(
         name = "delete_activity_session",
-        publicLabel = "Removing that workout",
+        publicLabelRes = R.string.tool_delete_workout,
         description = "Delete a workout. Always returns needs_confirmation.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -888,8 +927,8 @@ object ActionTools {
         ctx.pendingActions.add(com.pulseloop.coach.orchestration.PendingAction(
             kind = com.pulseloop.coach.orchestration.PendingActionKind.DELETE_ACTIVITY_SESSION,
             activityId = activityId,
-            summary = "Delete your ${session.type} session from ${CoachDataAccess.localDateString(session.startedAt)}? This can't be undone.",
-            confirmLabel = "Delete",
+            summary = L10n.get(R.string.pa_confirm_delete_session, com.pulseloop.coach.orchestration.PendingActionExecutor.typeLabel(session.type), CoachDataAccess.localDateString(session.startedAt)),
+            confirmLabel = L10n.get(R.string.action_delete),
         ))
         ToolResult("""{"ok":true,"needs_confirmation":true,"summary":"Awaiting your confirmation to delete that workout."}""")
     }

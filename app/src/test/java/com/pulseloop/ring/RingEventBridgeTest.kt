@@ -207,26 +207,6 @@ class RingEventBridgeTest {
     }
 
     @Test
-    fun `normalized sleep timeline preserves explicit bounds and timestamped segments`() {
-        val start = now.minus(6, ChronoUnit.HOURS)
-        val end = now
-        val segments = listOf(
-            SleepStageSegment(SleepStage.UNKNOWN, start, start.plus(30, ChronoUnit.MINUTES)),
-            SleepStageSegment(SleepStage.AWAKE, start.plus(30, ChronoUnit.MINUTES), end),
-        )
-
-        val event = RingEventBridge.eventsFor(
-            RingDecodedEvent.SleepTimeline(start, end, segments, completeSession = true),
-            now,
-        ).single() as PulseEvent.SleepTimeline
-
-        assertEquals(start, event.sessionStart)
-        assertEquals(end, event.sessionEnd)
-        assertEquals(segments, event.segments)
-        assertTrue(event.completeSession)
-    }
-
-    @Test
     fun `sleep timeline with empty stages is dropped`() {
         val sleep = RingDecodedEvent.SleepTimeline(
             _timestamp = now.minus(4, ChronoUnit.HOURS),
@@ -256,13 +236,10 @@ class RingEventBridgeTest {
     @Test
     fun `sleep timeline whose end is over one hour in the future is dropped`() {
         val start = now.minus(30, ChronoUnit.MINUTES)
-        val end = now.plus(2, ChronoUnit.HOURS)
         val sleep = RingDecodedEvent.SleepTimeline(
-            start,
-            end,
-            listOf(SleepStageSegment(SleepStage.LIGHT, start, end)),
+            _timestamp = start,
+            stages = List(150) { SleepStage.LIGHT },
         )
-
         assertTrue(RingEventBridge.eventsFor(sleep, now).isEmpty())
     }
 

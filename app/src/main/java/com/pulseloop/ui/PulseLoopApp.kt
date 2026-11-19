@@ -1,5 +1,7 @@
 package com.pulseloop.ui
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -20,21 +22,23 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.pulseloop.AppServices
 import com.pulseloop.coach.orchestration.CoachOrchestrator
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.tools.*
-import com.pulseloop.data.PulseLoopDatabase
-import com.pulseloop.ring.RingBLEClient
+import com.pulseloop.diagnostics.DiagnosticsRepository
+import com.pulseloop.diagnostics.DiagnosticsViewModel
 import com.pulseloop.service.*
-import com.pulseloop.coach.summaries.CoachSummaryCoordinator
-import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.ui.components.AppHeader
 import com.pulseloop.ui.screens.*
 import com.pulseloop.ui.theme.PulseLoopTheme
@@ -61,40 +65,24 @@ fun PulseLoopApp() {
         val context = LocalContext.current
 
         // ── Singletons ───────────────────────────────────────────────────
-        val db = remember { PulseLoopDatabase.getInstance(context) }
-        val bleClient = remember { RingBLEClient(context) }
-        val apiKeyStore = remember { ApiKeyStore(context) }
-        val coordinator = remember { RingSyncCoordinator(bleClient, db, apiKeyStore) }
-        val gpsRecorder = remember { GpsRouteRecorder(context, db) }
-        val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
-        val persistence = remember {
-            // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
-            // mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
-            EventPersistenceSubscriber(context, db) {
-                com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
-            }
-        }
-        val batteryAlerts = remember { com.pulseloop.service.BatteryAlertMonitor(context) }
-        val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
-        val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
-        // iOS #94: runs the due check-in slot the moment a full sync completes, so a
-        // slot the periodic worker skipped for stale data is delivered a few minutes
-        // later instead of being lost. Same app-lifetime lifecycle as the coordinator.
-        val checkinDataTrigger = remember {
-            com.pulseloop.notifications.CoachNotificationDataTrigger(
-                context = context,
-                checkinSettings = {
-                    com.pulseloop.notifications.CoachCheckinSettings(
-                        coachEnabled = apiKeyStore.coachEnabled,
-                        notificationsEnabled = apiKeyStore.notificationsEnabled,
-                        apiKey = apiKeyStore.apiKey,
-                        model = apiKeyStore.model,
-                        morningHour = apiKeyStore.morningHour,
-                        eveningHour = apiKeyStore.eveningHour,
-                    )
-                },
-            )
-        }
+        // Process-scoped (issue #113): this composition is rebuilt with the Activity on every
+        // configuration change, and a second RingBLEClient would find the first still holding
+        // the ring. See AppServices.
+        val services = remember { AppServices.get(context) }
+        val db = services.db
+        val bleClient = services.bleClient
+        val apiKeyStore = services.apiKeyStore
+        val coordinator = services.coordinator
+        val liveWorkout = services.liveWorkout
+        val persistence = services.persistence
+        val batteryAlerts = services.batteryAlerts
+        val providerStore = services.providerStore
+        val summaryCoordinator = services.summaryCoordinator
+        val checkinDataTrigger = services.checkinDataTrigger
+        // Whether this composition is the process's first. A later one (a recreated Activity)
+        // finds the ring already wired and connected, so it skips the one-shot startup below and
+        // must not treat its first ON_START as already handled by it.
+        val isFirstComposition = remember { services.claimStartup() }
 
         // ── Coach wiring ─────────────────────────────────────────────────
         // Both the client AND the feature flags are resolved per turn through
@@ -115,15 +103,16 @@ fun PulseLoopApp() {
                 flagsProvider = {
                     val resolution = com.pulseloop.coach.config.CoachClientResolver.resolve(providerStore, apiKeyStore)
                     val providerSettings = providerStore.snapshot()
+                    val activeModel = com.pulseloop.coach.config.CoachClientResolver.activeModel(
+                        providerSettings, apiKeyStore.model,
+                    )
                     CoachFeatureFlags(
                         coachEnabled = apiKeyStore.coachEnabled && resolution.key != null,
                         webSearchEnabled = apiKeyStore.webSearchEnabled,
                         writeToolsEnabled = false,  // safe default
                         liveMeasurementsEnabled = true,
-                        model = com.pulseloop.coach.config.CoachClientResolver.activeModel(
-                            providerSettings, apiKeyStore.model,
-                        ),
-                        settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings),
+                        model = activeModel,
+                        settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings, activeModel),
                         providerMode = providerSettings.providerMode,
                     )
                 },
@@ -133,24 +122,39 @@ fun PulseLoopApp() {
                         flags = flags,
                         coordinator = coordinator,
                         foodClient = foodClient,
+                        // Review item 5, part 2 of 3 — resolved per turn so a toggle made
+                        // mid-session is reflected on the next tool call.
+                        preferPhone = services.stepSourcePrefs.preferPhone(),
                     )
                 },
             )
         }
 
         // ── ViewModels ───────────────────────────────────────────────────
-        val todayVM = remember { TodayViewModel(db, apiKeyStore) }
-        val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
-        val sleepVM = remember { SleepViewModel(db) }
-        val activityVM = remember { ActivityViewModel(db) }
+        val stepSourcePrefs = remember { com.pulseloop.settings.StepSourcePrefs(context) }
+        val todayVM = remember { TodayViewModel(db, apiKeyStore, stepSourcePrefs) }
+        val vitalsVM = remember { VitalsViewModel(db, apiKeyStore, com.pulseloop.settings.ScheduledSpo2Prefs(context)) }
+        val sleepVM = remember {
+            val appContext = context.applicationContext
+            SleepViewModel(
+                db,
+                gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) },
+                stepSourcePrefs = stepSourcePrefs,
+            )
+        }
+        val activityVM = remember { ActivityViewModel(db, stepSourcePrefs) }
         val weatherContextService = remember { com.pulseloop.coach.context.WeatherContextService(context) }
         val coachVM = remember {
             CoachViewModel(
                 db, coachOrchestrator,
+                preferPhone = { stepSourcePrefs.preferPhone() },
                 attachmentPayloads = { refs ->
                     com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
                 },
                 environmentSnapshot = { weatherContextService.snapshot() },
+                deleteAttachments = { refs ->
+                    refs.forEach { com.pulseloop.coach.attachments.CoachAttachmentStore.delete(context, it) }
+                },
             )
         }
 
@@ -172,60 +176,70 @@ fun PulseLoopApp() {
             }
         }
 
-        // ── Start services (one-shot on composition) ─────────────────────
+        // ── Start services (one-shot per process) ────────────────────────
         LaunchedEffect(Unit) {
-            // Wire onConnected → run the startup/history sync only (matches iOS). Connecting
-            // does NOT force a measurement; the ring's own periodic monitoring is pulled in via
-            // history, and on-demand readings come from the Vitals "Measure" button.
-            bleClient.onConnected = { coordinator.runStartupSequence() }
+            if (!isFirstComposition) return@LaunchedEffect
 
-            // Wire firmware read → persist to DB
-            bleClient.onFirmwareRead = { fw ->
-                kotlinx.coroutines.runBlocking {
-                    val dev = db.deviceDao().current()
-                    // Standard DIS (2A26/2A28) firmware is only a fallback. The official app
-                    // displays the custom-protocol device-info version ("…V138"), not the DIS
-                    // string, so never overwrite a value that already carries the "V" version.
-                    if (dev != null && (dev.firmwareVersion.isNullOrBlank() || !dev.firmwareVersion!!.contains("V"))) {
-                        db.deviceDao().upsert(dev.copy(firmwareVersion = fw, updatedAt = System.currentTimeMillis()))
+            // Run in the process scope, not this effect's: the gate above is already claimed, so if
+            // a rotation or theme change disposed this composition mid-startup, nothing would ever
+            // finish it (issue #113 review).
+            services.startupScope.launch {
+                // Wire onConnected → run the startup/history sync only (matches iOS). Connecting
+                // does NOT force a measurement; the ring's own periodic monitoring is pulled in via
+                // history, and on-demand readings come from the Vitals "Measure" button.
+                bleClient.onConnected = { coordinator.runStartupSequence() }
+
+                // Wire firmware read → persist to DB
+                bleClient.onFirmwareRead = { fw ->
+                    kotlinx.coroutines.runBlocking {
+                        val dev = db.deviceDao().current()
+                        // Standard DIS (2A26/2A28) firmware is only a fallback. The official app
+                        // displays the custom-protocol device-info version ("…V138"), not the DIS
+                        // string, so never overwrite a value that already carries the "V" version.
+                        if (dev != null && (dev.firmwareVersion.isNullOrBlank() || !dev.firmwareVersion!!.contains("V"))) {
+                            db.deviceDao().upsert(dev.copy(firmwareVersion = fw, updatedAt = System.currentTimeMillis()))
+                        }
                     }
                 }
-            }
 
-            // Start services
-            persistence.start()
-            batteryAlerts.start()
-            coordinator.start()
-            summaryCoordinator.start()
-            checkinDataTrigger.start()
+                // Start services. Persistence is already started from PulseLoopApplication.onCreate
+                // (review item 1, PR #98): it must be subscribed before MainActivity.onResume's
+                // refreshPhoneSteps publishes.
+                batteryAlerts.start()
+                coordinator.start()
+                summaryCoordinator.start()
+                checkinDataTrigger.start()
 
-            // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
-            // process restart — the live GATT is gone, so the views would otherwise show a
-            // false "Connected". Reset until a real connection re-confirms it.
-            db.deviceDao().current()?.let { dev ->
-                if (dev.stateRaw == "CONNECTED" || dev.stateRaw == "CONNECTING") {
-                    db.deviceDao().upsert(dev.copy(stateRaw = "DISCONNECTED", updatedAt = System.currentTimeMillis()))
+                // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
+                // process restart — the live GATT is gone, so the views would otherwise show a
+                // false "Connected". Reset until a real connection re-confirms it.
+                db.deviceDao().current()?.let { dev ->
+                    if (dev.stateRaw in setOf("CONNECTED", "CONNECTING", "RECONNECTING")) {
+                        db.deviceDao().upsert(dev.copy(stateRaw = "DISCONNECTED", updatedAt = System.currentTimeMillis()))
+                    }
                 }
+
+                // Auto-reconnect to last-known ring if any
+                if (bleClient.hasPermissions()) {
+                    bleClient.connectLastKnown()
+                }
+
+                // Schedule periodic background sync (matches official app behavior)
+                RingSyncWorker.schedule(context.applicationContext)
+                // Opt-in app-started spot SpO₂ (issue #103); revives the chain if it was cancelled.
+                com.pulseloop.service.ScheduledSpo2Worker.ensureScheduled(context.applicationContext)
+
+                // NOTE: demo data is never auto-seeded. A clean install starts empty so the UI
+                // reflects only real ring data. Demo data is seeded exclusively via the
+                // confirmation-gated "Reseed Demo Data" button in Settings.
             }
-
-            // Auto-reconnect to last-known ring if any
-            if (bleClient.hasPermissions()) {
-                bleClient.connectLastKnown()
-            }
-
-            // Schedule periodic background sync (matches official app behavior)
-            RingSyncWorker.schedule(context)
-
-            // NOTE: demo data is never auto-seeded. A clean install starts empty so the UI
-            // reflects only real ring data. Demo data is seeded exclusively via the
-            // confirmation-gated "Reseed Demo Data" button in Settings.
         }
 
         // ── Connection lifecycle on foreground/background ────────────────
         // ON_START: re-attempt the link. The OS may have torn the GATT down during Doze
         // (autoConnect=false won't recover it), so reconnect on every foreground so the user
-        // never has to force-close to reconnect. The first ON_START is handled by the
-        // LaunchedEffect above, so skip it here.
+        // never has to force-close to reconnect. The process's first ON_START is handled by the
+        // LaunchedEffect above, so skip it here; a recreated Activity's first one is not.
         // ON_STOP: drop the live link a short grace period after backgrounding so the ring can
         // sleep (a held-open link keeps the ~17mAh ring awake and blocks its advertising). This
         // is a TRANSIENT disconnect — it does NOT set the user stay-off flag, so ON_START silently
@@ -235,7 +249,7 @@ fun PulseLoopApp() {
         val lifecycleOwner = LocalLifecycleOwner.current
         val bgDisconnectScope = rememberCoroutineScope()
         DisposableEffect(lifecycleOwner) {
-            var isFirstStart = true
+            var isFirstStart = isFirstComposition
             var bgDisconnectJob: Job? = null
             val observer = LifecycleEventObserver { _, event ->
                 when (event) {
@@ -298,11 +312,11 @@ fun PulseLoopApp() {
         }
 
         val tabs = listOf(
-            Tab("today", "Today", Icons.Filled.Adjust, Icons.Outlined.Adjust),
-            Tab("vitals", "Vitals", Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
-            Tab("activity", "Activity", Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart),
-            Tab("sleep", "Sleep", Icons.Filled.Bedtime, Icons.Outlined.Bedtime),
-            Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
+            Tab("today", L10n.get(R.string.period_today), Icons.Filled.Adjust, Icons.Outlined.Adjust),
+            Tab("vitals", L10n.get(R.string.vitals_title), Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
+            Tab("activity", L10n.get(R.string.tab_activity), Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart),
+            Tab("sleep", L10n.get(R.string.metric_sleep), Icons.Filled.Bedtime, Icons.Outlined.Bedtime),
+            Tab("coach", L10n.get(R.string.tab_coach), Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
 
         // ── Self-update: release-only. Checked on every return to foreground (ON_START also
@@ -394,10 +408,24 @@ fun PulseLoopApp() {
                             // frosted glass bar the other tabs use so the chat scrolls under it
                             // (owner choice, issue #22).
                             var showCoachUsage by remember { mutableStateOf(false) }
+                            var showCoachHistory by remember { mutableStateOf(false) }
                             CoachHeader(
                                 onNewChat = { coachVM.newConversation() },
                                 onOpenUsage = { showCoachUsage = true },
+                                onOpenHistory = { showCoachHistory = true },
                             )
+                            if (showCoachHistory) {
+                                val history by coachVM.history.collectAsState(initial = emptyList())
+                                val coachState by coachVM.state.collectAsState()
+                                com.pulseloop.ui.screens.CoachHistorySheet(
+                                    conversations = history,
+                                    currentId = coachState.conversationId,
+                                    onOpen = { id -> coachVM.openConversation(id); showCoachHistory = false },
+                                    onDelete = { id -> coachVM.deleteConversation(id) },
+                                    onDeleteAll = { coachVM.deleteAllConversations(); showCoachHistory = false },
+                                    onDismiss = { showCoachHistory = false },
+                                )
+                            }
                             if (showCoachUsage) {
                                 var usageData by remember {
                                     mutableStateOf<Pair<com.pulseloop.data.entity.CoachConversationEntity, List<com.pulseloop.data.entity.CoachMessageEntity>>?>(null)
@@ -433,6 +461,7 @@ fun PulseLoopApp() {
                                     else storedDevice?.state ?: ble.connectionState,
                                 batteryPercent = ble.batteryPercent ?: storedDevice?.batteryPercent,
                                 onOpenSettings = { navController.navigate("settings") },
+                                bluetoothOff = ble.bluetoothOff,
                             )
                             // Thin sync-progress accent under the greeting while history streams in.
                             val syncPct = coordinator.syncProgress.collectAsState().value
@@ -615,6 +644,9 @@ fun PulseLoopApp() {
                 paddedComposable("settings/health-connect") {
                     HealthConnectSettingsScreen(onBack = { navController.popBackStack() })
                 }
+                paddedComposable("settings/mqtt") {
+                    com.pulseloop.ui.screens.MqttSettingsScreen(onBack = { navController.popBackStack() })
+                }
                 paddedComposable("settings/nutrition") {
                     NutritionSettingsScreen(
                         onBack = { navController.popBackStack() },
@@ -630,7 +662,16 @@ fun PulseLoopApp() {
                         onBack = { navController.popBackStack() },
                     )
                 }
-                paddedComposable("debug") { DebugScreen(onBack = { navController.popBackStack() }) }
+                paddedComposable("debug") {
+                    // A real ViewModel, not `remember`: its Room flows live in viewModelScope and must
+                    // be cancelled when the screen leaves the back stack.
+                    val debugVM: DiagnosticsViewModel = viewModel(factory = object : ViewModelProvider.Factory {
+                        @Suppress("UNCHECKED_CAST")
+                        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                            DiagnosticsViewModel(DiagnosticsRepository(db), bleClient, coordinator) as T
+                    })
+                    DebugScreen(debugVM, onBack = { navController.popBackStack() })
+                }
                 paddedComposable("vitals/{metric}") { backStackEntry ->
                     val metric = backStackEntry.arguments?.getString("metric") ?: return@paddedComposable
                     VitalDetailScreen(
@@ -668,7 +709,7 @@ fun PulseLoopApp() {
                         }
                     }
                     RecordScreen(
-                        activityName = workoutState.activeSession?.type ?: "Workout",
+                        activityName = workoutState.activeSession?.type ?: L10n.get(R.string.workout_generic),
                         elapsedSeconds = workoutState.elapsedSeconds,
                         distanceMeters = workoutState.distanceMeters,
                         heartRate = workoutState.latestHeartRate,

@@ -1,5 +1,9 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,15 +18,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,11 +54,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
+import com.pulseloop.ring.SleepStage
+import androidx.compose.ui.graphics.drawscope.clipRect
 import com.pulseloop.service.SleepBar
 import com.pulseloop.service.SleepFormat
 import com.pulseloop.service.SleepInsights
 import com.pulseloop.service.SleepQualityLabel
 import com.pulseloop.service.SleepRangeKey
+import com.pulseloop.service.spanMinutes
 import com.pulseloop.ui.components.CoachMessageCard
 import com.pulseloop.ui.theme.PulseColors
 import com.pulseloop.ui.viewmodels.SleepViewModel
@@ -106,15 +121,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
             val noData = SleepInsights.noDataState(SleepRangeKey.DAY)
             item { SleepHeroCard(label = noData.label, value = noData.value, support = noData.support, score = null, scoreLabel = null, noData = true) }
             item {
-                VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = false) {
+                VisualizationCard(eyebrow = stringResource(R.string.sleep_stages), title = stringResource(R.string.sleep_architecture), legend = false) {
                     Column(
                         Modifier.fillMaxWidth().height(180.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text("No sleep recorded", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary)
+                        Text(stringResource(R.string.sleep_none_recorded), fontSize = 14.sp, fontWeight = FontWeight.Medium, color = PulseColors.textPrimary)
                         Text(
-                            "Wear your ring overnight to see your hypnogram here.",
+                            stringResource(R.string.sleep_none_recorded_hint),
                             fontSize = 12.sp, color = PulseColors.textMuted,
                         )
                     }
@@ -123,16 +138,16 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
             item { SleepStageSummaryCards(deep = "—", light = "—", awake = "—") }
         }
         // Single session: render exactly as before, no carousel chrome.
-        sessions.size == 1 -> sessionPageItems(sessions[0], state.dayBlocks[sessions[0].id] ?: emptyList())
+        sessions.size == 1 -> sessionPageItems(sessions[0], state.dayBlocks[sessions[0].id] ?: emptyList(), viewModel)
         // Multiple sessions (night + naps): horizontal paged carousel with dot indicators.
-        else -> item { SleepCarousel(sessions, state.dayBlocks) }
+        else -> item { SleepCarousel(sessions, state.dayBlocks, viewModel) }
     }
 
     item {
         val summary = state.daySummary
         val fallback = state.coach
         CoachMessageCard(
-            headline = summary?.title ?: fallback?.headline ?: "Sleep insights",
+            headline = summary?.title ?: fallback?.headline ?: stringResource(R.string.sleep_insights),
             body = summary?.body ?: fallback?.body ?: "",
             chips = summary?.let { parseChipsJson(it.chipsJSON) } ?: fallback?.chips ?: emptyList(),
             onTap = { navController?.navigate("coach") },
@@ -145,19 +160,28 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     session: SleepSessionEntity,
     blocks: List<SleepStageBlockEntity>,
+    viewModel: SleepViewModel? = null,
 ) {
     item { SessionHero(session, blocks) }
     item {
-        VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
-            SleepHypnogram(blocks = blocks, totalMin = session.totalMinutes, startTs = session.startAt)
+        VisualizationCard(eyebrow = stringResource(R.string.sleep_stages), title = stringResource(R.string.sleep_architecture), legend = true) {
+            SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = session.spanMinutes, startTs = session.startAt)
         }
     }
+    // The individual ring records behind the merged night (issue #68). Rendered whenever
+    // runs is not empty so that single-record nights can also be edited or extended over missed
+    // sleep (issues #106, #103). The guard is on the `item` rather than inside it: an item that
+    // emits nothing still takes its share of the list's 16 dp spacing.
+    val runs = com.pulseloop.service.sleepRecordRuns(blocks)
+    if (runs.isNotEmpty()) item { SleepRecordsCard(session, runs, viewModel) }
     item {
         val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
         SleepStageSummaryCards(
             deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
             light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
-            awake = SleepFormat.duration(byStage["AWAKE"] ?: 0),
+            // Awake counts the between-record gaps too (issue #81) — the same minutes this page's
+            // RECORDS card labels "Awake Xm between".
+            awake = SleepFormat.duration(com.pulseloop.service.awakeMinutes(blocks)),
         )
     }
 }
@@ -167,9 +191,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
 private fun SessionHero(session: SleepSessionEntity, blocks: List<SleepStageBlockEntity>) {
     val score = remember(session.id, blocks) { com.pulseloop.service.SleepScore.calculate(session, blocks) }
     SleepHeroCard(
-        label = "Last Sleep",
+        label = stringResource(R.string.sleep_last),
         value = SleepFormat.duration(session.totalMinutes),
-        support = "${clockTime(session.startAt)} to ${clockTime(session.endAt)}",
+        support = stringResource(R.string.sleep_from_to, clockTime(session.startAt), clockTime(session.endAt)),
         score = score.score,
         scoreLabel = qualityText(score.label),
     )
@@ -180,6 +204,7 @@ private fun SessionHero(session: SleepSessionEntity, blocks: List<SleepStageBloc
 private fun SleepCarousel(
     sessions: List<SleepSessionEntity>,
     blocksBySession: Map<String, List<SleepStageBlockEntity>>,
+    viewModel: SleepViewModel? = null,
 ) {
     // Reset to the first page whenever the day's session set changes (a different day / fewer
     // pages): keying the composable recreates the pager state.
@@ -197,19 +222,24 @@ private fun SleepCarousel(
             val blocks = blocksBySession[s.id] ?: emptyList()
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text(
-                    "${page + 1} of ${sessions.size} · ${clockTime(s.startAt)}–${clockTime(s.endAt)}".uppercase(),
+                    stringResource(R.string.sleep_carousel_page, page + 1, sessions.size, clockTime(s.startAt), clockTime(s.endAt)).uppercase(),
                     fontSize = 11.sp, fontWeight = FontWeight.Medium,
                     letterSpacing = 0.8.sp, color = PulseColors.textSecondary,
                 )
                 SessionHero(s, blocks)
-                VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
-                    SleepHypnogram(blocks = blocks, totalMin = s.totalMinutes, startTs = s.startAt)
+                VisualizationCard(eyebrow = stringResource(R.string.sleep_stages), title = stringResource(R.string.sleep_architecture), legend = true) {
+                    SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = s.spanMinutes, startTs = s.startAt)
                 }
+                // Unlike the single-session page, shown even for a one-record session: on a
+                // multi-session day a phantom (the sofa evening the merge did not join to the
+                // night) is its own page, and this card is the only place to delete it (#78).
+                val runs = com.pulseloop.service.sleepRecordRuns(blocks)
+                if (runs.isNotEmpty()) SleepRecordsCard(s, runs, viewModel)
                 val byStage = blocks.groupBy { it.stageRaw }.mapValues { (_, b) -> b.sumOf { it.durationMinutes } }
                 SleepStageSummaryCards(
                     deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
                     light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
-                    awake = SleepFormat.duration(byStage["AWAKE"] ?: 0),
+                    awake = SleepFormat.duration(com.pulseloop.service.awakeMinutes(blocks)),
                 )
             }
         }
@@ -246,12 +276,12 @@ private fun androidx.compose.foundation.lazy.LazyListScope.aggregateItems(
     val noData = SleepInsights.noDataState(state.range)
     item {
         SleepHeroCard(
-            label = SleepInsights.rangeHeroLabel[state.range] ?: "Sleep",
+            label = SleepInsights.rangeHeroLabel[state.range] ?: stringResource(R.string.metric_sleep),
             value = if (enough) SleepFormat.duration(state.avgMinutes ?: 0) else noData.value,
             support = if (state.range == SleepRangeKey.YEAR)
-                "Tracked ${valid.size} ${if (valid.size == 1) "night" else "nights"} this year"
+                pluralStringResource(R.plurals.sleep_tracked_year, valid.size, valid.size)
             else
-                "${valid.size} of ${state.expectedNights} nights tracked",
+                stringResource(R.string.sleep_tracked_of, valid.size, state.expectedNights),
             score = if (enough) state.avgScore else null,
             scoreLabel = if (enough) state.avgScore?.let { qualityText(com.pulseloop.service.SleepScore.qualityLabel(it)) } else null,
             noData = !enough,
@@ -259,8 +289,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.aggregateItems(
     }
     item {
         VisualizationCard(
-            eyebrow = "Duration",
-            title = if (state.range == SleepRangeKey.YEAR) "Monthly average" else "Nightly sleep",
+            eyebrow = stringResource(R.string.sleep_duration),
+            title = if (state.range == SleepRangeKey.YEAR) stringResource(R.string.sleep_monthly_average) else stringResource(R.string.sleep_nightly),
             legend = false,
         ) {
             SleepDurationHistogram(
@@ -272,7 +302,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.aggregateItems(
     }
     item {
         SleepStageSummaryCards(
-            prefix = "Avg ",
+            average = true,
             deep = state.stageAvg?.let { SleepFormat.duration(it.first) } ?: "—",
             light = state.stageAvg?.let { SleepFormat.duration(it.second) } ?: "—",
             awake = state.stageAvg?.let { SleepFormat.duration(it.third) } ?: "—",
@@ -282,7 +312,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.aggregateItems(
         val summary = state.rangeSummary
         val fallback = state.aggregateCoach
         CoachMessageCard(
-            headline = summary?.title ?: fallback?.headline ?: "Sleep insights",
+            headline = summary?.title ?: fallback?.headline ?: stringResource(R.string.sleep_insights),
             body = summary?.body ?: fallback?.body ?: "",
             chips = summary?.let { parseChipsJson(it.chipsJSON) } ?: fallback?.chips ?: emptyList(),
             onTap = { navController?.navigate("coach") },
@@ -296,8 +326,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.aggregateItems(
 @Composable
 private fun SleepRangeSelector(selection: SleepRangeKey, onSelect: (SleepRangeKey) -> Unit) {
     val options = listOf(
-        SleepRangeKey.DAY to "Day", SleepRangeKey.WEEK to "Week",
-        SleepRangeKey.MONTH to "Month", SleepRangeKey.YEAR to "Year",
+        SleepRangeKey.DAY to stringResource(R.string.range_day), SleepRangeKey.WEEK to stringResource(R.string.period_week),
+        SleepRangeKey.MONTH to stringResource(R.string.period_month), SleepRangeKey.YEAR to stringResource(R.string.range_year),
     )
     Row(
         Modifier
@@ -411,10 +441,10 @@ private fun VisualizationCard(
             }
             if (legend) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    LegendItem("Deep", PulseColors.stageDeep)
-                    LegendItem("Light", PulseColors.stageLight)
-                    LegendItem("REM", PulseColors.stageRem)
-                    LegendItem("Awake", PulseColors.stageAwake)
+                    LegendItem(stringResource(R.string.stage_deep), PulseColors.stageDeep)
+                LegendItem(stringResource(R.string.stage_light), PulseColors.stageLight)
+                LegendItem(stringResource(R.string.stage_rem), PulseColors.stageRem)
+                LegendItem(stringResource(R.string.stage_awake), PulseColors.stageAwake)
                 }
             }
         }
@@ -441,7 +471,7 @@ private fun LegendItem(label: String, color: Color) {
 @Composable
 private fun SleepHypnogram(
     blocks: List<SleepStageBlockEntity>,
-    totalMin: Int,
+    spanMin: Int,
     startTs: Long,
     height: androidx.compose.ui.unit.Dp = 210.dp,
 ) {
@@ -457,7 +487,15 @@ private fun SleepHypnogram(
     val sorted = remember(blocks) {
         blocks.filter { it.durationMinutes > 0 && it.stageRaw != "UNKNOWN" }.sortedBy { it.startMinute }
     }
-    val safeTotal = if (totalMin > 0) totalMin else 1
+    // Minutes the wearer added over time the ring missed (issue #106) have no lane — no stage was
+    // measured — so they are drawn as a hatched band across the asleep lanes instead of a step, and
+    // the step line simply doesn't connect into or out of them.
+    fun isAdded(stage: String) = stage == SleepStage.ADDED.name
+    // The x axis is wall-clock time, so it is scaled by the session's SPAN, never by its duration.
+    // Since issue #63 those are different numbers — `totalMinutes` is time asleep and excludes the
+    // awake stretches and the gap between a split night's two records, so scaling by it would
+    // compress the plot and mislabel every tick.
+    val safeTotal = if (spanMin > 0) spanMin else 1
     val ticks = listOf(0, safeTotal / 3, safeTotal * 2 / 3, safeTotal).map { offset ->
         clockTime(startTs + offset * 60_000L)
     }
@@ -500,7 +538,14 @@ private fun SleepHypnogram(
     }
 
     fun readoutText(block: SleepStageBlockEntity): String {
-        val stage = block.stageRaw.replaceFirstChar { it.uppercase() }
+        val stage = when (block.stageRaw) {
+            SleepStage.ADDED.name -> L10n.get(R.string.stage_added)
+            "DEEP" -> L10n.get(R.string.stage_deep)
+            "LIGHT" -> L10n.get(R.string.stage_light)
+            "REM" -> L10n.get(R.string.stage_rem)
+            "AWAKE" -> L10n.get(R.string.stage_awake)
+            else -> block.stageRaw.lowercase().replaceFirstChar { it.uppercase() }
+        }
         val startTime = clockTime(startTs + block.startMinute * 60_000L)
         val endTime = clockTime(startTs + (block.startMinute + block.durationMinutes) * 60_000L)
         return "$stage · $startTime – $endTime"
@@ -569,10 +614,38 @@ private fun SleepHypnogram(
                 Canvas(Modifier.fillMaxSize()) {
                     if (sorted.isEmpty()) return@Canvas
 
+                    // Added-by-you bands first, under everything else (issue #106): muted fill and
+                    // diagonal hatching from the REM lane to the DEEP lane.
+                    sorted.filter { isAdded(it.stageRaw) }.forEach { block ->
+                        val startX = xForMinute(block.startMinute, size.width)
+                        val endX = xForMinute(block.startMinute + block.durationMinutes, size.width)
+                            .coerceAtLeast(startX + 1f)
+                        val top = size.height * (laneFrac["REM"] ?: 0.38f)
+                        val bottom = size.height * (laneFrac["DEEP"] ?: 0.85f)
+                        drawRect(
+                            color = ADDED_BAND_COLOR.copy(alpha = 0.14f),
+                            topLeft = Offset(startX, top),
+                            size = androidx.compose.ui.geometry.Size(endX - startX, bottom - top),
+                        )
+                        clipRect(left = startX, top = top, right = endX, bottom = bottom) {
+                            val step = 7.dp.toPx()
+                            var x = startX - (bottom - top)
+                            while (x < endX) {
+                                drawLine(
+                                    color = ADDED_BAND_COLOR.copy(alpha = 0.45f),
+                                    start = Offset(x, bottom), end = Offset(x + (bottom - top), top),
+                                    strokeWidth = 1.dp.toPx(),
+                                )
+                                x += step
+                            }
+                        }
+                    }
+
                     // Dashed vertical connectors between consecutive blocks.
                     for (i in 1 until sorted.size) {
                         val prev = sorted[i - 1]
                         val cur = sorted[i]
+                        if (isAdded(prev.stageRaw) || isAdded(cur.stageRaw)) continue
                         val cx = xForMinute(cur.startMinute, size.width)
                         drawLine(
                             color = Color(0xFFD2CDFF).copy(alpha = 0.46f),
@@ -584,7 +657,7 @@ private fun SleepHypnogram(
                         )
                     }
                     // Horizontal segment per block: soft halo underlay + solid line.
-                    sorted.forEach { block ->
+                    sorted.filterNot { isAdded(it.stageRaw) }.forEach { block ->
                         val y = laneY(block.stageRaw, size.height)
                         val startX = xForMinute(block.startMinute, size.width)
                         val endX = xForMinute(block.startMinute + block.durationMinutes, size.width)
@@ -681,16 +754,33 @@ private fun SleepHypnogram(
         ) {
             ticks.forEach { Text(it, fontSize = 10.sp, color = PulseColors.textMuted) }
         }
+        if (sorted.any { isAdded(it.stageRaw) }) {
+            Row(
+                Modifier.padding(start = plotInsets.x),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Box(Modifier.size(width = 10.dp, height = 6.dp).background(ADDED_BAND_COLOR.copy(alpha = 0.45f)))
+                Text(
+                    stringResource(R.string.sleep_added_legend),
+                    fontSize = 10.sp, color = PulseColors.textMuted,
+                )
+            }
+        }
     }
 }
 
+/** The hatched band for minutes the wearer added over time the ring missed (issue #106): a
+ *  neutral grey-violet, so it never reads as one of the four measured stage colours. */
+private val ADDED_BAND_COLOR = Color(0xFF9A97B5)
+
 /** Three side-by-side stage duration cards (SleepStageSummaryCardsView in Swift). */
 @Composable
-private fun SleepStageSummaryCards(prefix: String = "", deep: String, light: String, awake: String) {
+private fun SleepStageSummaryCards(average: Boolean = false, deep: String, light: String, awake: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        StageStat("${prefix}Deep", deep, PulseColors.stageDeep, Modifier.weight(1f))
-        StageStat("${prefix}Light", light, PulseColors.stageLight, Modifier.weight(1f))
-        StageStat("${prefix}Awake", awake, PulseColors.stageAwake, Modifier.weight(1f))
+        StageStat(if (average) stringResource(R.string.stage_avg_deep) else stringResource(R.string.stage_deep), deep, PulseColors.stageDeep, Modifier.weight(1f))
+        StageStat(if (average) stringResource(R.string.stage_avg_light) else stringResource(R.string.stage_light), light, PulseColors.stageLight, Modifier.weight(1f))
+        StageStat(if (average) stringResource(R.string.stage_avg_awake) else stringResource(R.string.stage_awake), awake, PulseColors.stageAwake, Modifier.weight(1f))
     }
 }
 
@@ -735,7 +825,7 @@ private fun SleepDurationHistogram(
 ) {
     if (bars.isEmpty()) {
         Box(Modifier.fillMaxWidth().height(height), contentAlignment = Alignment.Center) {
-            Text("No nights tracked in this range yet.", fontSize = 12.sp, color = PulseColors.textMuted)
+            Text(stringResource(R.string.sleep_no_nights_range), fontSize = 12.sp, color = PulseColors.textMuted)
         }
         return
     }
@@ -794,6 +884,7 @@ private fun SleepDurationHistogram(
 @Composable
 private fun SleepDayNavHeader(state: SleepViewModel.SleepState, viewModel: SleepViewModel?) {
     var showPicker by remember { mutableStateOf(false) }
+    val shownDayMillis = resolvedSleepDayMillis(state.shownDayMillis)
     val canOlder = state.dayOffset < state.maxDayOffset
     val canNewer = state.dayOffset > 0
 
@@ -802,7 +893,7 @@ private fun SleepDayNavHeader(state: SleepViewModel.SleepState, viewModel: Sleep
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        NavChevron(Icons.Filled.ChevronLeft, "Previous day", canOlder) { viewModel?.stepDay(older = true) }
+        NavChevron(Icons.Filled.ChevronLeft, stringResource(R.string.action_previous_day), canOlder) { viewModel?.stepDay(older = true) }
         Column(
             Modifier
                 .weight(1f)
@@ -812,28 +903,35 @@ private fun SleepDayNavHeader(state: SleepViewModel.SleepState, viewModel: Sleep
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                dayLabel(state.shownDayMillis),
+                dayLabel(shownDayMillis),
                 fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary,
             )
-            val sub = daySubLabel(state.shownDayMillis)
+            val sub = daySubLabel(shownDayMillis)
             Text(
                 sub.ifEmpty { " " },
                 fontSize = 11.sp, fontWeight = FontWeight.Medium,
                 letterSpacing = 0.5.sp, color = PulseColors.textSecondary,
             )
         }
-        NavChevron(Icons.Filled.ChevronRight, "Next day", canNewer) { viewModel?.stepDay(older = false) }
+        NavChevron(Icons.Filled.ChevronRight, stringResource(R.string.action_next_day), canNewer) { viewModel?.stepDay(older = false) }
     }
 
     if (showPicker) {
         SleepDayPickerDialog(
-            shownDayMillis = state.shownDayMillis,
+            shownDayMillis = shownDayMillis,
             maxDayOffset = state.maxDayOffset,
             onDismiss = { showPicker = false },
             onPick = { viewModel?.jumpToDay(it); showPicker = false },
         )
     }
 }
+
+/** Missing day keys must never reach the header or date picker as Unix-epoch dates. */
+internal fun resolvedSleepDayMillis(
+    dayMillis: Long,
+    nowMs: Long = System.currentTimeMillis(),
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): Long = if (dayMillis > 0L) dayMillis else com.pulseloop.util.TimeUtil.referenceNightLocal(nowMs, zone)
 
 @Composable
 private fun NavChevron(
@@ -884,9 +982,9 @@ private fun SleepDayPickerDialog(
         confirmButton = {
             TextButton(onClick = {
                 state.selectedDateMillis?.let { onPick(utcMillisToLocalDayKey(it)) } ?: onDismiss()
-            }) { Text("Done") }
+            }) { Text(stringResource(R.string.action_done)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     ) {
         DatePicker(state = state, title = null)
     }
@@ -910,11 +1008,11 @@ private fun dayLabel(dayMillis: Long): String {
     val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
     val date = java.time.Instant.ofEpochMilli(dayMillis).atZone(java.time.ZoneId.systemDefault())
     return when {
-        daysAgo <= 0 -> "Today"
-        daysAgo == 1 -> "Yesterday"
-        daysAgo < 7 -> date.format(java.time.format.DateTimeFormatter.ofPattern("EEEE"))
-        date.year == java.time.Year.now().value -> date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d"))
-        else -> date.format(java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy"))
+        daysAgo <= 0 -> L10n.get(R.string.period_today)
+        daysAgo == 1 -> L10n.get(R.string.day_yesterday)
+        daysAgo < 7 -> date.format(java.time.format.DateTimeFormatter.ofPattern("EEEE", java.util.Locale.getDefault())).replaceFirstChar { it.titlecase() }
+        date.year == java.time.Year.now().value -> date.format(com.pulseloop.util.LocaleFormats.formatter("EEEMMMd", "EEE, MMM d"))
+        else -> date.format(com.pulseloop.util.LocaleFormats.formatter("yMMMd", "MMM d, yyyy"))
     }
 }
 
@@ -924,7 +1022,7 @@ private fun daySubLabel(dayMillis: Long): String {
     val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
     if (daysAgo >= 7) return ""
     val date = java.time.Instant.ofEpochMilli(dayMillis).atZone(java.time.ZoneId.systemDefault())
-    return date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d")).uppercase(java.util.Locale.ROOT)
+    return date.format(com.pulseloop.util.LocaleFormats.formatter("EEEMMMd", "EEE, MMM d")).uppercase(java.util.Locale.getDefault())
 }
 
 // ─────────────────────────── Helpers ───────────────────────────
@@ -932,10 +1030,10 @@ private fun daySubLabel(dayMillis: Long): String {
 private fun clockTime(ts: Long): String = SleepFormat.clockTime(ts)
 
 private fun qualityText(label: SleepQualityLabel): String = when (label) {
-    SleepQualityLabel.EXCELLENT -> "Excellent"
-    SleepQualityLabel.GOOD -> "Good"
-    SleepQualityLabel.FAIR -> "Fair"
-    SleepQualityLabel.NEEDS_WORK -> "Needs work"
+    SleepQualityLabel.EXCELLENT -> L10n.get(R.string.quality_excellent)
+    SleepQualityLabel.GOOD -> L10n.get(R.string.quality_good)
+    SleepQualityLabel.FAIR -> L10n.get(R.string.quality_fair)
+    SleepQualityLabel.NEEDS_WORK -> L10n.get(R.string.quality_needs_work)
 }
 
 internal fun parseChipsJson(json: String?): List<String> {
@@ -956,3 +1054,325 @@ private const val LABEL_GUTTER_DP = 32f
 private const val LABEL_BASELINE_NUDGE_DP = 7f
 /** Clearance between the scrubbed lane and the readout pill. */
 private const val PILL_OFFSET_ABOVE_LANE_DP = 30f
+
+/**
+ * The ring's own sleep records behind a merged night (issue #68).
+ *
+ * A ring closes a session when the wearer gets up and opens a new one when they settle, so one
+ * night can arrive as two or three records minutes apart. Merging them is right — that is the night,
+ * and the headline stays the merged figure — but the records are real information the merge hides,
+ * and the vendor app keeps each as its own row. Shown underneath rather than instead.
+ */
+@Composable
+private fun SleepRecordsCard(
+    session: SleepSessionEntity,
+    runs: List<com.pulseloop.service.SleepRecordRun>,
+    viewModel: SleepViewModel?,
+) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Two-step delete (the vitals/activity pattern): a row's trash icon arms the confirm dialog.
+    var pendingRun by remember { mutableStateOf<com.pulseloop.service.SleepRecordRun?>(null) }
+    var editingRun by remember { mutableStateOf<com.pulseloop.service.SleepRecordRun?>(null) }
+    VisualizationCard(
+        eyebrow = stringResource(R.string.sleep_records),
+        // One run only happens on a carousel page, which may be a nap rather than a night.
+        title = if (runs.size == 1) stringResource(R.string.sleep_records_one)
+            else pluralStringResource(R.plurals.sleep_records_parts, runs.size, runs.size),
+        legend = false,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            runs.forEachIndexed { index, run ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${index + 1}",
+                        fontSize = 11.sp,
+                        color = PulseColors.textMuted,
+                        modifier = Modifier.width(18.dp),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "${SleepFormat.clockTime(run.startAt)} – ${SleepFormat.clockTime(run.endAt)}",
+                            fontSize = 14.sp,
+                            color = PulseColors.textPrimary,
+                        )
+                        Text(
+                            stringResource(R.string.sleep_asleep_duration, SleepFormat.duration(run.asleepMinutes)),
+                            fontSize = 12.sp,
+                            color = PulseColors.textMuted,
+                        )
+                        // Minutes the wearer added over time the ring missed (issue #106).
+                        if (run.addedMinutes > 0) {
+                            Text(
+                                stringResource(R.string.sleep_includes_added, SleepFormat.duration(run.addedMinutes)),
+                                fontSize = 12.sp,
+                                color = PulseColors.textMuted,
+                            )
+                        }
+                    }
+                    // Edit start/end boundaries (issue #82).
+                    IconButton(onClick = { editingRun = run }) {
+                        Icon(
+                            Icons.Filled.Edit,
+                            contentDescription = stringResource(R.string.sleep_edit_record_times),
+                            tint = PulseColors.textMuted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    // The escape hatch (issue #78): the ring opened a record on a still wrist —
+                    // say, the evening before the wearer got into bed — and the night runs an
+                    // hour high. The wearer knows which run is wrong; the sensor cannot.
+                    IconButton(onClick = { pendingRun = run }) {
+                        Icon(
+                            Icons.Filled.DeleteOutline,
+                            contentDescription = stringResource(R.string.sleep_delete_record),
+                            tint = PulseColors.textMuted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+                // Only a gap the Awake card also counts (issue #81): the one-minute seam between
+                // two records is not a waking, so it gets no "Awake" line here either.
+                val gapMinutes = if (index < runs.lastIndex) {
+                    com.pulseloop.service.betweenRecordAwakeMinutes(run, runs[index + 1])
+                } else 0
+                if (gapMinutes > 0) {
+                    Text(
+                        stringResource(R.string.sleep_awake_between, SleepFormat.duration(gapMinutes)),
+                        fontSize = 12.sp,
+                        color = PulseColors.textMuted,
+                        modifier = Modifier.padding(start = 18.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    editingRun?.let { run ->
+        val index = runs.indexOf(run)
+        SleepRecordEditDialog(
+            run = run,
+            limits = remember(run, runs, session.date) {
+                com.pulseloop.service.recordEditLimits(
+                    run = run,
+                    previous = runs.getOrNull(index - 1),
+                    next = runs.getOrNull(index + 1),
+                    wakingDay = session.date,
+                )
+            },
+            onDismiss = { editingRun = null },
+            onSave = { newStart, newEnd ->
+                editingRun = null
+                scope.launch {
+                    val updated = viewModel?.editSleepRecord(session.id, run.recordStartAt, newStart, newEnd) ?: false
+                    if (!updated) {
+                        android.widget.Toast.makeText(
+                            context, context.getString(R.string.sleep_update_failed), android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+        )
+    }
+
+    pendingRun?.let { run ->
+        AlertDialog(
+            onDismissRequest = { pendingRun = null },
+            title = { Text(stringResource(R.string.sleep_delete_record_title)) },
+            text = {
+                Text(
+                    stringResource(R.string.sleep_delete_record_body, SleepFormat.clockTime(run.startAt), SleepFormat.clockTime(run.endAt)),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRun = null
+                    scope.launch {
+                        val removed = viewModel?.deleteSleepRecord(session.id, run.recordStartAt) ?: false
+                        if (!removed) {
+                            android.widget.Toast.makeText(
+                                context, context.getString(R.string.sleep_delete_failed), android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    }
+                }) { Text(stringResource(R.string.action_delete), color = PulseColors.danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRun = null }) { Text(stringResource(R.string.action_keep)) }
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SleepRecordEditDialog(
+    run: com.pulseloop.service.SleepRecordRun,
+    limits: com.pulseloop.service.RecordEditLimits,
+    onDismiss: () -> Unit,
+    onSave: (newStartAt: Long, newEndAt: Long) -> Unit,
+) {
+    val zone = remember { java.time.ZoneId.systemDefault() }
+    var currentStart by remember { mutableStateOf(run.startAt) }
+    var currentEnd by remember { mutableStateOf(run.endAt) }
+    var pickingTime by remember { mutableStateOf<String?>(null) } // "start" or "end"
+    // The limit the last pick ran past, named rather than silently snapped back to (issue #106).
+    var limitMessage by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.sleep_edit_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.sleep_edit_desc),
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = PulseColors.textMuted,
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { pickingTime = "start" },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.sleep_edit_start, SleepFormat.clockTime(currentStart)))
+                    }
+                    OutlinedButton(
+                        onClick = { pickingTime = "end" },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.sleep_edit_end, SleepFormat.clockTime(currentEnd)))
+                    }
+                }
+                limitMessage?.let {
+                    Text(it, color = PulseColors.danger, fontSize = 12.sp)
+                }
+                if (currentStart >= currentEnd) {
+                    Text(
+                        stringResource(R.string.sleep_edit_order_error),
+                        color = PulseColors.danger,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(currentStart, currentEnd) },
+                enabled = currentStart < currentEnd && (currentStart != run.startAt || currentEnd != run.endAt),
+            ) {
+                Text(stringResource(R.string.action_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
+
+    pickingTime?.let { which ->
+        val targetTs = if (which == "start") currentStart else currentEnd
+        val zdt = java.time.Instant.ofEpochMilli(targetTs).atZone(zone)
+        val timeState = rememberTimePickerState(
+            initialHour = zdt.hour,
+            initialMinute = zdt.minute,
+            is24Hour = android.text.format.DateFormat.is24HourFormat(androidx.compose.ui.platform.LocalContext.current),
+        )
+
+        AlertDialog(
+            onDismissRequest = { pickingTime = null },
+            title = { Text(if (which == "start") stringResource(R.string.sleep_adjust_start) else stringResource(R.string.sleep_adjust_end)) },
+            text = { TimePicker(state = timeState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    // Resolve the date against the whole span the record may cover, so 11:30 PM
+                    // picked for a record starting 12:51 AM lands the evening before.
+                    val picked = resolveAdjustedTime(
+                        targetTs, limits.earliestStart, limits.latestEnd, timeState.hour, timeState.minute, zone,
+                    )
+                    val clamped = if (which == "start") {
+                        com.pulseloop.service.clampStartPick(picked, limits)
+                    } else {
+                        com.pulseloop.service.clampEndPick(picked, limits)
+                    }
+                    limitMessage = clamped.limit?.let { editLimitMessage(it, which == "start", clamped.at, limits) }
+                    if (which == "start") {
+                        currentStart = clamped.at
+                    } else {
+                        currentEnd = clamped.at
+                    }
+                    pickingTime = null
+                }) { Text(stringResource(R.string.action_done)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pickingTime = null }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
+    }
+}
+
+/**
+ * The dialog's line for a pick that ran past [limit], naming the limit (issue #106). [at] is where
+ * the pick was held — the previous record's end, the earliest start the cap allows, and so on.
+ */
+internal fun editLimitMessage(
+    limit: com.pulseloop.service.RecordEditLimit,
+    isStart: Boolean,
+    at: Long,
+    limits: com.pulseloop.service.RecordEditLimits,
+): String {
+    val time = SleepFormat.clockTime(at)
+    return when (limit) {
+        com.pulseloop.service.RecordEditLimit.PREVIOUS_RECORD -> L10n.get(R.string.edit_limit_previous, time)
+        com.pulseloop.service.RecordEditLimit.NEXT_RECORD -> L10n.get(R.string.edit_limit_next, time)
+        com.pulseloop.service.RecordEditLimit.OUTWARD_CAP -> {
+            val hours = com.pulseloop.service.MAX_OUTWARD_EXTENSION_MINUTES / 60
+            if (isStart) L10n.plural(R.plurals.edit_limit_outward_start, hours, hours, time)
+            else L10n.plural(R.plurals.edit_limit_outward_end, hours, hours, time)
+        }
+        com.pulseloop.service.RecordEditLimit.NIGHT_BOUNDARY ->
+            if (isStart) L10n.get(R.string.edit_limit_night_start, time) else L10n.get(R.string.edit_limit_night_end, time)
+        com.pulseloop.service.RecordEditLimit.RING_MINUTES ->
+            L10n.get(R.string.edit_limit_ring_minutes, SleepFormat.clockTime(limits.measuredStart), SleepFormat.clockTime(limits.measuredEnd))
+    }
+}
+
+/**
+ * Resolves the epoch millis for an adjusted time within/near a sleep record [recordStart]..[recordEnd].
+ * Evaluates candidate calendar dates and selects the one that places the time within or closest to
+ * [recordStart]..[recordEnd], breaking ties with proximity to [targetTs].
+ */
+internal fun resolveAdjustedTime(
+    targetTs: Long,
+    recordStart: Long,
+    recordEnd: Long,
+    hour: Int,
+    minute: Int,
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): Long {
+    val startZdt = java.time.Instant.ofEpochMilli(recordStart).atZone(zone)
+    val endZdt = java.time.Instant.ofEpochMilli(recordEnd).atZone(zone)
+
+    val startDate = startZdt.toLocalDate()
+    val endDate = endZdt.toLocalDate()
+    val candidates = listOf(
+        startDate.minusDays(1),
+        startDate,
+        endDate,
+        endDate.plusDays(1),
+    ).distinct().map { date ->
+        date.atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
+    }
+
+    fun distanceToRecord(c: Long): Long = when {
+        c < recordStart -> recordStart - c
+        c > recordEnd -> c - recordEnd
+        else -> 0L
+    }
+
+    return candidates.minWith(
+        compareBy<Long> { distanceToRecord(it) }
+            .thenBy { kotlin.math.abs(it - targetTs) }
+    )
+}

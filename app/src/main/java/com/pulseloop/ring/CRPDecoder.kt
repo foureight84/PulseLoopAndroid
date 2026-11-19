@@ -62,6 +62,23 @@ object CRPDecoder {
     private const val SESSION_GAP_MINUTES = 60
     /** CRPHistoryDay caps at 14 days ago; a larger dayIndex is a corrupt reply. */
     private const val MAX_HISTORY_DAY = 14
+    /** Hour the ring's sleep day turns over to the coming night (vendor `f4/e.h`: `20 <= HOUR_OF_DAY`).
+     *  Not [com.pulseloop.util.TimeUtil.wakingDayLocal]'s 19:00, which is iOS's persistence key. */
+    private const val SLEEP_DAY_ROLLOVER_HOUR = 20
+
+    /** How close to [SLEEP_DAY_ROLLOVER_HOUR] a sleep query is too close (see [nearSleepDayRollover]). */
+    private const val ROLLOVER_GUARD_MINUTES = 5
+
+    /**
+     * Whether [now] is within [ROLLOVER_GUARD_MINUTES] of the 20:00 sleep-day turnover. A reply asked
+     * for just before it and decoded just after (or a ring clock a minute off the phone's) would be
+     * dated against the wrong day; [CRPSyncEngine] skips sleep queries in this window.
+     */
+    fun nearSleepDayRollover(now: Instant, zone: ZoneId = ZoneId.systemDefault()): Boolean {
+        val local = now.atZone(zone)
+        val minute = local.hour * 60 + local.minute
+        return kotlin.math.abs(minute - SLEEP_DAY_ROLLOVER_HOUR * 60) < ROLLOVER_GUARD_MINUTES
+    }
     /** NUL — the padding byte some firmwares pad the firmware string with; trimmed, but a control
      *  byte still present after trimming rejects the payload. */
     private const val NUL = '\u0000'
@@ -159,28 +176,30 @@ object CRPDecoder {
      */
     private fun decodeVitalResult(cmd: Int, payload: ByteArray, now: Instant): List<RingDecodedEvent> {
         fun ack() = listOf(RingDecodedEvent.CommandAck(commandId = ((CRPCommands.GROUP_DEVICE shl 4) or (cmd and 0x0F)).toUByte()))
-        if (payload.isEmpty()) return ack()
-        val value = payload[0].toInt() and 0xFF
+        // An out-of-band value still names the frame, so the raw-packet log masks it on export
+        // rather than logging an undecoded health frame as `unknown`, which is exported whole.
+        fun rejected(kind: MeasurementKind) = listOf(RingDecodedEvent.RejectedVitalResult(kind))
+        val value = if (payload.isEmpty()) 0 else payload[0].toInt() and 0xFF
 
         return when (cmd) {
             CRPCommands.CMD_RESULT_HR ->
                 if (value in 40..200) listOf(RingDecodedEvent.HeartRateSample(bpm = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.HEART_RATE)
             CRPCommands.CMD_RESULT_HRV ->
                 if (value in 20..200) listOf(RingDecodedEvent.HrvSample(value = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.HRV)
             CRPCommands.CMD_RESULT_SPO2 ->
                 if (value in 70..100) listOf(RingDecodedEvent.Spo2Result(value = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.SPO2)
             CRPCommands.CMD_RESULT_STRESS ->
                 if (value in 0..100) listOf(RingDecodedEvent.StressSample(value = value, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.STRESS)
             CRPCommands.CMD_RESULT_TEMP -> {
                 // Vendor `e1/m.a(payload[1], payload[0])`: twoBytes2int/10, valid 28.0..50.0 °C.
-                if (payload.size < 2) return emptyList()
+                if (payload.size < 2) return rejected(MeasurementKind.TEMPERATURE)
                 val celsius = (((payload[1].toInt() and 0xFF) shl 8) or (payload[0].toInt() and 0xFF)) / 10.0
                 if (celsius in 28.0..50.0) listOf(RingDecodedEvent.TemperatureSample(celsius = celsius, _timestamp = now))
-                else emptyList()
+                else rejected(MeasurementKind.TEMPERATURE)
             }
             else -> ack() // enable/disable acknowledgments and other group-1 replies
         }
@@ -270,10 +289,11 @@ object CRPDecoder {
 
     /**
      * Decode a CRP all-day "timing" vital-history reply (group 2). Returns null for a non-timing
-     * group-2 cmd (e.g. temp cmd 48) so the caller falls back to an ack. Layout, confirmed against
-     * zaggash's R11 rc2 capture and the vendor parsers `e1/{f,g,d,l}.java`:
+     * group-2 cmd so the caller falls back to an ack. Layout, confirmed against zaggash's R11 rc2
+     * capture and the vendor parsers `e1/{f,g,d,l,m}.java`:
      *   `[day][frameIndex][slot samples…]` — one 5-minute slot per sample, `0` = no reading.
-     * HR/SpO2/stress use one byte per slot; HRV uses a little-endian 2-byte value per slot. Each
+     * HR/SpO2/stress use one byte per slot; HRV and temperature use a little-endian 2-byte value
+     * per slot (temperature in tenths of a degree Celsius — `e1/m.a`). Each
      * slot's absolute time is `localMidnight(today − day) + (frameIndex*slotsPerFrame + slot)*5min`,
      * matching the vendor's `w0.b.a()/5` slot indexing. Emits a [RingDecodedEvent.HistoryMeasurement]
      * per valid slot (invalid/zero slots dropped, per the vendor's per-vital clamp) plus a trailing
@@ -286,11 +306,25 @@ object CRPDecoder {
         val kind: MeasurementKind
         val twoByte: Boolean
         val valid: (Int) -> Boolean
+        // Raw slot value → the unit the app stores. Only temperature is scaled; the rest are
+        // already in their own units.
+        var scale = 1.0
         when (cmd) {
             CRPCommands.CMD_QUERY_TIMING_HR -> { kind = MeasurementKind.HEART_RATE; twoByte = false; valid = { it in 40..200 } }
             CRPCommands.CMD_QUERY_TIMING_SPO2 -> { kind = MeasurementKind.SPO2; twoByte = false; valid = { it in 1..100 } }
             CRPCommands.CMD_QUERY_TIMING_HRV -> { kind = MeasurementKind.HRV; twoByte = true; valid = { it in 1..300 } }
             CRPCommands.CMD_QUERY_TIMING_STRESS -> { kind = MeasurementKind.STRESS; twoByte = false; valid = { it in 1..100 } }
+            // Temperature history (issue #58). Same `[day][frameIndex][slots…]` shape as the
+            // others, little-endian 2-byte tenths of a degree, clamped by the vendor to 28.0–50.0 °C
+            // with anything outside meaning "no reading" (`e1/m.a`). The layout was unconfirmed for
+            // months because every R11 capture came back empty; the R100 capture attached to #58 is
+            // the first non-empty one (`fdda 10 98 02 16 …` with slots reading 36.3/35.8/36.2 °C),
+            // and it matches the vendor parser byte for byte. Until it landed these frames fell
+            // through to a bare ack, so the samples were dropped *and* no next-frame pull was ever
+            // triggered — the ring was asked for frame 0 forever and never for the rest of the day.
+            CRPCommands.CMD_QUERY_HISTORY_TEMP -> {
+                kind = MeasurementKind.TEMPERATURE; twoByte = true; valid = { it in 280..500 }; scale = 0.1
+            }
             else -> return null
         }
         // [day][frameIndex] header; anything shorter is malformed.
@@ -317,7 +351,7 @@ object CRPDecoder {
             if (valid(value)) {
                 val globalSlot = frameIndex * slotsPerFrame + slot
                 val ts = midnight.plusSeconds(globalSlot.toLong() * TIMING_SLOT_MINUTES * 60)
-                events.add(RingDecodedEvent.HistoryMeasurement(kind, value.toDouble(), ts))
+                events.add(RingDecodedEvent.HistoryMeasurement(kind, value * scale, ts))
             }
             i += step
             slot++
@@ -348,13 +382,16 @@ object CRPDecoder {
      *    (an in-progress sleep). We don't — a completed night always ends on an awake record (which
      *    contributes no sleep), so the only case affected is a sync taken mid-sleep, where we'd
      *    rather show the night up to the last recorded transition than invent minutes up to "now".
-     *  - Session-start anchoring is ours, not the vendor's (its parser keeps minute-of-day only and
-     *    lets the UI place the date from `dayIndex`). We anchor the FIRST record on the wake day
-     *    (`today - dayIndex`) with the same evening-rollover rule as Colmi — a first record later in
-     *    the clock than the last means the night began before midnight — then place every later bout
-     *    by its elapsed offset from that anchor, which carries naps onto the correct day for free.
-     *    NOTE: this assumes `dayIndex` is the WAKE day — verified against a post-midnight capture; an
-     *    evening-start night is not yet capture-confirmed.
+     *  - Session-start anchoring is ours, not the vendor's (its parser keeps minute-of-day only).
+     *    The wake day follows the vendor's dating: `t3/n.onHistorySleepChange` stamps a reply with
+     *    the sync time, `f4/e.e` moves that to tomorrow from [SLEEP_DAY_ROLLOVER_HOUR] on, and
+     *    `j4/h.b` subtracts `dayIndex`. So after 20:00 day 0 is the night about to begin and last
+     *    night is day 1 — counting back from the phone's date alone filed last night a day early.
+     *    The FIRST record is anchored on that wake day, rolled back to the evening before when the
+     *    night crosses midnight (a first record later in the clock than the last, as for Colmi) or
+     *    when it starts at or after the rollover hour, since such sleep belongs to the next day's
+     *    night. Every later bout is placed by its elapsed offset from that anchor, which carries
+     *    naps onto the correct day for free.
      */
     private fun decodeSleep(payload: ByteArray, now: Instant, zone: ZoneId): List<RingDecodedEvent> {
         // [dayIndex] + N*[state,hour,minute]; the vendor rejects any other shape outright.
@@ -396,8 +433,12 @@ object CRPDecoder {
         if (transitions.size < 2) return emptyList()
 
         // Anchor the first record; every bout is then just an offset from it.
-        val startOffset = if (firstMinuteOfDay > lastMinuteOfDay) firstMinuteOfDay - 1440 else firstMinuteOfDay
-        val wakeDay = now.atZone(zone).toLocalDate().minusDays(dayIndex.toLong())
+        val rolloverMinute = SLEEP_DAY_ROLLOVER_HOUR * 60
+        val startsTheEveningBefore = firstMinuteOfDay > lastMinuteOfDay || firstMinuteOfDay >= rolloverMinute
+        val startOffset = if (startsTheEveningBefore) firstMinuteOfDay - 1440 else firstMinuteOfDay
+        val localNow = now.atZone(zone)
+        val ringToday = if (localNow.hour >= SLEEP_DAY_ROLLOVER_HOUR) localNow.toLocalDate().plusDays(1) else localNow.toLocalDate()
+        val wakeDay = ringToday.minusDays(dayIndex.toLong())
         val anchor = wakeDay.atStartOfDay(zone).plusMinutes(startOffset.toLong()).toInstant()
 
         // Pass 2: each transition's state runs until the next; split bouts on a long awake gap.

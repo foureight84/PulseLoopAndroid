@@ -32,11 +32,24 @@ class RingSyncWorker(
         private const val SYNC_TIMEOUT_SECONDS = 45L
         private const val TAG = "RingSyncWorker"
 
-        /** Schedule periodic background ring sync. Call from MainActivity. */
-        fun schedule(context: Context) {
+        @Volatile
+        var isSyncing: Boolean = false
+            internal set
+
+        /** Schedule periodic background ring sync. Call from MainActivity or settings. */
+        fun schedule(
+            context: Context,
+            intervalMinutes: Int? = null,
+            policy: ExistingPeriodicWorkPolicy = ExistingPeriodicWorkPolicy.KEEP,
+        ) {
+            val interval = (intervalMinutes
+                ?: com.pulseloop.mqtt.MqttPrefsStore.get(context).current.effectiveSyncIntervalMinutes)
+                .coerceIn(15, 720)
+                .toLong()
+            val flex = (interval / 2L).coerceAtLeast(5L)
             val request = PeriodicWorkRequestBuilder<RingSyncWorker>(
-                30, TimeUnit.MINUTES,  // repeat interval
-                15, TimeUnit.MINUTES,  // flex interval
+                interval, TimeUnit.MINUTES,  // repeat interval
+                flex, TimeUnit.MINUTES,  // flex interval
             )
                 .setConstraints(
                     Constraints.Builder()
@@ -52,7 +65,7 @@ class RingSyncWorker(
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                policy,
                 request,
             )
         }
@@ -63,10 +76,18 @@ class RingSyncWorker(
     }
 
     override suspend fun doWork(): Result {
+        // The scheduled spot SpO₂ chain (issue #103) dies if one of its runs is cancelled; this
+        // periodic job is what reliably comes back, so it revives it.
+        ScheduledSpo2Worker.ensureScheduled(applicationContext)
+
         // The foreground app owns the live GATT. An overdue periodic job can start at the same
         // moment as MainActivity after process launch; opening a second client interleaves both
         // command queues and lets this worker's cleanup disconnect the UI-owned session.
         if (isAppForeground()) return Result.success()
+
+        // If scheduled spot SpO2 is in flight, yield this periodic sync window — the SpO2 worker
+        // runs startup sync anyway so history is still pulled without fighting over GATT (issue #103).
+        if (ScheduledSpo2Worker.isMeasuring) return Result.success()
 
         val keyStore = ApiKeyStore(applicationContext)
         val db = PulseLoopDatabase.getInstance(applicationContext)
@@ -85,6 +106,7 @@ class RingSyncWorker(
         val measurementSettings = loadPersistedMeasurementSettings(db)
         val profileValues = loadPersistedUserProfile(db, keyStore)
 
+        isSyncing = true
         return try {
             withTimeout(SYNC_TIMEOUT_SECONDS * 1000L) {
                 // Connect to last-known ring
@@ -124,12 +146,14 @@ class RingSyncWorker(
                 // data — run the (debounced) export pass. The foreground path triggers the same
                 // worker via the SyncProgress("done") event, so both sync owners cover it.
                 HealthConnectExportWorker.enqueue(applicationContext)
+                com.pulseloop.mqtt.MqttExportWorker.enqueue(applicationContext)
 
                 Result.success()
             }
         } catch (e: Exception) {
             Result.retry()
         } finally {
+            isSyncing = false
             // This client is worker-owned. Cancel its watchdog as well as closing GATT so it
             // cannot reconnect after doWork() has returned.
             val releasedConnection = bleClient.destroy()

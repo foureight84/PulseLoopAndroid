@@ -1,5 +1,7 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -203,19 +205,19 @@ private fun timeAxisTicks(visStart: Long, visEnd: Long, zone: ZoneId): Pair<List
     val stepsMin = longArrayOf(15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10080)
     val stepMin = stepsMin.firstOrNull { rangeMs / (it * 60_000L) <= 5 } ?: stepsMin.last()
     val stepMs = stepMin * 60_000L
-    val pattern = when {
-        stepMin >= 1440 -> "MMM d"
-        stepMin < 60 -> "h:mm a"
-        else -> "h a"
+    val fmt = when {
+        stepMin >= 1440 -> com.pulseloop.util.LocaleFormats.formatter("MMMd", "MMM d")
+        stepMin < 60 -> com.pulseloop.util.LocaleFormats.formatter("jmm", "h:mm a")
+        else -> com.pulseloop.util.LocaleFormats.formatter("j", "h a")
     }
-    val fmt = DateTimeFormatter.ofPattern(pattern, Locale.getDefault())
     // Align ticks to local midnight so labels land on clean boundaries.
     val dayStart = Instant.ofEpochMilli(visStart).atZone(zone)
         .truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()
     val ticks = mutableListOf<Long>()
     var t = dayStart
     while (t < visStart) t += stepMs
-    while (t <= visEnd) { ticks.add(t); t += stepMs }
+    // End-exclusive: a calendar day's domain ends on the next midnight, which would label "12 AM" twice.
+    while (t < visEnd) { ticks.add(t); t += stepMs }
     val formatter: (Long) -> String = { ms -> Instant.ofEpochMilli(ms).atZone(zone).format(fmt) }
     return ticks to formatter
 }
@@ -234,6 +236,8 @@ private fun timeAxisTicks(visStart: Long, visEnd: Long, zone: ZoneId): Pair<List
  *
  * @param timestamps optional epoch-ms per point (parallel to [points]); when present the
  *   scrub tooltip shows a precise time via [tooltipTimeFormatter].
+ * @param timeDomain optional `[start, end)` epoch-ms the time axis spans, e.g. a calendar day.
+ *   Without it the axis runs from the first reading to the last (issue #102).
  * @param valueFormatter formats Y-axis + tooltip values (default: integer / 1-dp).
  */
 @Composable
@@ -251,6 +255,7 @@ fun TrendChart(
     valueFormatter: (Double) -> String = ::formatTick,
     tooltipTimeFormatter: ((Long) -> String)? = null,
     interactive: Boolean = true,
+    timeDomain: Pair<Long, Long>? = null,
 ) {
     if (points.isEmpty()) return
 
@@ -268,8 +273,9 @@ fun TrendChart(
     val useTime = timestamps.size == n && n >= 1
     val tMin = if (useTime) timestamps.min() else 0L
     val tMax = if (useTime) timestamps.max() else 0L
-    val tFullStart = if (useTime && tMax > tMin) tMin else tMin - 1_800_000L
-    val tFullEnd = if (useTime && tMax > tMin) tMax else tMax + 1_800_000L
+    val domain = timeDomain?.takeIf { useTime && it.second > it.first }
+    val tFullStart = domain?.first ?: if (useTime && tMax > tMin) tMin else tMin - 1_800_000L
+    val tFullEnd = domain?.second ?: if (useTime && tMax > tMin) tMax else tMax + 1_800_000L
     val fullRangeMs = (tFullEnd - tFullStart).coerceAtLeast(1L)
     val zone = ZoneId.systemDefault()
 
@@ -428,7 +434,8 @@ fun TrendChart(
             // The primary line is drawn zone-split and gap-broken (iOS #35): each sample pair
             // splits at zone boundaries so a piece never spans two zones, and runs separated
             // by more than the range-tuned max gap break instead of bridging.
-            val maxGapMs = if (useTime) ZoneLineSplitter.maxGapMs(fullRangeMs) else Long.MAX_VALUE
+            val sampleInterval = ZoneLineSplitter.sampleIntervalMs(timestamps)
+            val maxGapMs = if (useTime) ZoneLineSplitter.maxGapMs(fullRangeMs, sampleInterval) else Long.MAX_VALUE
             val primaryOffsets = points.mapIndexed { i, v -> Offset(xForIndex(i), yForValue(v)) }
             val secondaryOffsets = secondary.mapIndexed { i, v -> Offset(xForSecondary(i), yForValue(v)) }
             clipRect(plotLeft, plotTop, plotRight, plotBottom) {
@@ -552,7 +559,7 @@ fun TrendChart(
                     IconButton(onClick = { zoom = 1f; windowStart = 0f }) {
                         Icon(
                             Icons.Filled.Refresh,
-                            contentDescription = "Reset zoom",
+                            contentDescription = stringResource(R.string.chart_reset_zoom),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

@@ -103,7 +103,8 @@ class OpenRouterClientTest {
         val body = client.buildRequestBody(request(
             listOf(msg("user", "hi")), tools = listOf(webSearchTool, functionTool),
         ))
-        assertEquals("anthropic/claude-sonnet-4.6:online", body["model"]!!.jsonPrimitive.content)
+        // The client sends its own configured model (the default preset here), not the body's.
+        assertEquals("${com.pulseloop.coach.config.OpenRouterModel.DEFAULT.slug}:online", body["model"]!!.jsonPrimitive.content)
         // The hosted web_search spec itself is dropped from the tool list.
         assertEquals(1, body["tools"]!!.jsonArray.size)
     }
@@ -111,7 +112,7 @@ class OpenRouterClientTest {
     @Test
     fun testNoOnlineSuffixWithoutWebSearch() {
         val body = OpenRouterClient("key").buildRequestBody(request(listOf(msg("user", "hi"))))
-        assertEquals("anthropic/claude-sonnet-4.6", body["model"]!!.jsonPrimitive.content)
+        assertEquals(com.pulseloop.coach.config.OpenRouterModel.DEFAULT.slug, body["model"]!!.jsonPrimitive.content)
     }
 
     @Test

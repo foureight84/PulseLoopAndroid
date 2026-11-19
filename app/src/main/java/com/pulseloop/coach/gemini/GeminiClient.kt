@@ -10,6 +10,7 @@ import com.pulseloop.coach.openai.ResponsesError
 import com.pulseloop.coach.openai.ResponsesHttp
 import com.pulseloop.coach.openai.ResponsesToolSpecs
 import com.pulseloop.coach.openai.TextContent
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.*
 import java.util.UUID
 
@@ -30,6 +31,8 @@ class GeminiClient(
     private val apiKey: String,
     model: String = GeminiModel.DEFAULT.slug,
     private val baseURL: String = "https://generativelanguage.googleapis.com/v1beta/models",
+    // Network seam: a test can answer or fail requests without an HTTP stack.
+    private val transport: suspend (String, ByteArray) -> String = { u, b -> ResponsesHttp.post(u, b) },
 ) : ResponsesClient {
     // The model the orchestrator selected, taken from each request body's `model`
     // field (see `send`); the constructor value is only a fallback if that's absent.
@@ -53,6 +56,10 @@ class GeminiClient(
     // Sources cited by a google_search turn, queued to prepend to the next user
     // message so the schema turn can fill the response `sources` array.
     private var pendingSourcesNote: String? = null
+    // Inputs of the last built body, so a refused grounding turn can be rebuilt
+    // as the plain schema turn it would otherwise have been (issue #123).
+    private var lastTextFormat: JsonObject? = null
+    private var lastThinkingLevel: String? = null
 
     override suspend fun send(requestBody: ByteArray): OpenAIResponse {
         if (apiKey.isBlank()) throw ResponsesError.MissingAPIKey
@@ -64,9 +71,23 @@ class GeminiClient(
         }
 
         val geminiBody = buildRequestBody(req)
-        val bodyBytes = json.encodeToString(JsonObject.serializer(), geminiBody).toByteArray()
-
-        val body = ResponsesHttp.post("$baseURL/$model:generateContent?key=$apiKey", bodyBytes)
+        val body = try {
+            post(geminiBody)
+        } catch (e: ResponsesError.Http) {
+            if (e.status != 429 || !isGroundingBody(geminiBody)) throw e
+            // A free-tier key can be refused `google_search` grounding outright (429
+            // RESOURCE_EXHAUSTED) while every other call on the same key succeeds (issue
+            // #123). Re-send this turn once without it — as the schema turn it would
+            // otherwise have been — so the answer still arrives. The rebuilt body carries
+            // no google_search, so this cannot loop; a 429 on it is a real quota refusal
+            // and surfaces as before.
+            val ungrounded = post(ungroundedRetryBody())
+            // Only now is it proven that grounding, not the key, was refused: stop asking
+            // for it on this key for the rest of the process so later questions don't pay
+            // the extra round trip. An app restart (e.g. after upgrading the plan) re-tries.
+            groundingRefusedKeys.add(apiKey)
+            ungrounded
+        }
 
         val root = try {
             json.parseToJsonElement(body).jsonObject
@@ -74,6 +95,84 @@ class GeminiClient(
             throw ResponsesError.Decoding("GeminiClient: response was not a JSON object")
         }
         return ingestResponse(root)
+    }
+
+    /**
+     * POST with a bounded retry on Gemini's **503 "high demand"** (issue #77). The
+     * `-latest` model aliases route to whatever pool is congested that hour, so a coach
+     * turn could fail on first contact for days while Google's own dashboard showed the
+     * account nowhere near quota. A 503 means the request was never served — nothing was
+     * generated and nothing billed — so a retry cannot double-charge, unlike a read
+     * timeout, which [ResponsesHttp] deliberately never retries for exactly that reason.
+     *
+     * A **429 is not retried**: it means the key's quota bucket said no, and on the free
+     * tier that bucket refills daily, not in seconds. [ResponsesHttp] raises it as-is and
+     * the turn fails with the provider's own message.
+     *
+     * [post] is a seam so a test can fail attempts without a network stack.
+     */
+    internal suspend fun postWithOverloadRetry(
+        url: String,
+        bodyBytes: ByteArray,
+        backoffMs: Long = OVERLOAD_BACKOFF_MS,
+        post: suspend (String, ByteArray) -> String = transport,
+    ): String {
+        for (attempt in 0..MAX_OVERLOAD_RETRIES) {
+            try {
+                return post(url, bodyBytes)
+            } catch (e: ResponsesError.Http) {
+                if (e.status != 503 || attempt == MAX_OVERLOAD_RETRIES) throw e
+                delay(backoffMs shl attempt)   // 2 s, then 4 s
+            }
+        }
+        throw IllegalStateException("overload retry loop never returned")
+    }
+
+    private suspend fun post(geminiBody: JsonObject): String {
+        val bodyBytes = json.encodeToString(JsonObject.serializer(), geminiBody).toByteArray()
+        return postWithOverloadRetry("$baseURL/$model:generateContent?key=$apiKey", bodyBytes)
+    }
+
+    private fun isGroundingBody(body: JsonObject): Boolean =
+        (body["tools"] as? JsonArray)?.any { (it as? JsonObject)?.containsKey("google_search") == true } == true
+
+    /** The refused grounding turn rebuilt without `google_search` (issue #123): same
+     *  conversation, the response schema applied, and a note so the answer says web
+     *  search was skipped. `webSearchGrounded` is already set, so it never re-grounds. */
+    private fun ungroundedRetryBody(): JsonObject {
+        noteWebSearchSkipped()
+        return buildGeminiBody(emptyList(), lastTextFormat, lastThinkingLevel)
+    }
+
+    /** Tells the model, on the current user turn, that web search didn't run — so it
+     *  leaves `sources` empty and says so in `data_quality_note`, which the chat shows
+     *  under the answer. Prompt-level on purpose: no UI plumbing (issue #123). */
+    private fun noteWebSearchSkipped() {
+        val note = JsonObject(mapOf("text" to JsonPrimitive(WEB_SEARCH_SKIPPED_NOTE)))
+        val last = contents.lastOrNull()
+        if (last != null && (last["role"] as? JsonPrimitive)?.contentOrNull == "user") {
+            val parts = (last["parts"] as? JsonArray).orEmpty() + note
+            contents[contents.lastIndex] = JsonObject(last + ("parts" to JsonArray(parts)))
+        } else {
+            contents.add(JsonObject(mapOf(
+                "role" to JsonPrimitive("user"),
+                "parts" to JsonArray(listOf(note)),
+            )))
+        }
+    }
+
+    private companion object {
+        const val MAX_OVERLOAD_RETRIES = 2
+        const val OVERLOAD_BACKOFF_MS = 2_000L
+
+        const val WEB_SEARCH_SKIPPED_NOTE = "Web search was not available for this answer " +
+            "(Google refused Search grounding for this API key; free-tier keys often can't use it). " +
+            "Answer from the health data alone, leave `sources` empty, and say briefly in " +
+            "`data_quality_note` that web search was skipped."
+
+        // Keys whose grounding turn was refused with a 429 while the same turn succeeded
+        // without it (issue #123). Process-wide because each agent turn gets a fresh client.
+        val groundingRefusedKeys: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     }
 
     // ── Request assembly (internal for unit tests) ───────────────────────
@@ -89,6 +188,10 @@ class GeminiClient(
         val tools = (req["tools"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
         val textFormat = ((req["text"] as? JsonObject)?.get("format")) as? JsonObject
         val previousResponseId = (req["previous_response_id"] as? JsonPrimitive)?.contentOrNull
+        // The app's `reasoning.effort` (iOS #140). `CoachClientResolver.resolvedReasoningEffort`
+        // never passes one to a 2.x model, which rejects `thinkingLevel`.
+        val thinkingLevel = ((req["reasoning"] as? JsonObject)?.get("effort") as? JsonPrimitive)
+            ?.contentOrNull?.takeIf { it.isNotBlank() }?.uppercase()
 
         if (previousResponseId == null) {
             setupConversation(input)
@@ -96,7 +199,9 @@ class GeminiClient(
             appendContinuation(previousResponseId, input)
         }
 
-        return buildGeminiBody(convertTools(tools), textFormat)
+        lastTextFormat = textFormat
+        lastThinkingLevel = thinkingLevel
+        return buildGeminiBody(convertTools(tools), textFormat, thinkingLevel)
     }
 
     // ── Conversation setup ───────────────────────────────────────────────
@@ -296,7 +401,7 @@ class GeminiClient(
 
     // ── Build Gemini request body ────────────────────────────────────────
 
-    private fun buildGeminiBody(tools: List<JsonObject>, textFormat: JsonObject?): JsonObject {
+    private fun buildGeminiBody(tools: List<JsonObject>, textFormat: JsonObject?, thinkingLevel: String?): JsonObject {
         val body = mutableMapOf<String, JsonElement>("contents" to JsonArray(contents))
 
         if (systemText.isNotEmpty()) {
@@ -321,12 +426,21 @@ class GeminiClient(
         // and skip the schema. The grounded prose + cited sources land in history;
         // the orchestrator's subsequent tool-less repair turn then enforces the
         // coach_response schema (and can fill the `sources` array from them).
-        val groundingTurn = tools.isEmpty() && webSearchRequested && !webSearchGrounded
+        //
+        // A key already known to be refused grounding (issue #123) skips it here and gets
+        // the plain schema turn with a "web search skipped" note instead.
+        var groundingTurn = tools.isEmpty() && webSearchRequested && !webSearchGrounded
         if (groundingTurn) {
-            body["tools"] = JsonArray(listOf(JsonObject(mapOf(
-                "google_search" to JsonObject(emptyMap()),
-            ))))
             webSearchGrounded = true
+            if (apiKey in groundingRefusedKeys) {
+                groundingTurn = false
+                noteWebSearchSkipped()
+                body["contents"] = JsonArray(contents)
+            } else {
+                body["tools"] = JsonArray(listOf(JsonObject(mapOf(
+                    "google_search" to JsonObject(emptyMap()),
+                ))))
+            }
         }
 
         // Gemini rejects function declarations combined with a JSON response
@@ -342,6 +456,10 @@ class GeminiClient(
                     genConfig["responseSchema"] = cleanSchema(it)
                 }
             }
+        }
+        // Gemini 3+ thinking depth, only when the user picked a level.
+        thinkingLevel?.let {
+            genConfig["thinkingConfig"] = JsonObject(mapOf("thinkingLevel" to JsonPrimitive(it)))
         }
         if (genConfig.isNotEmpty()) body["generationConfig"] = JsonObject(genConfig)
 

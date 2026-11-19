@@ -43,7 +43,7 @@ class PairingMatchingTest {
         val names = listOf(
             "R02_A1B2", "R03_1234", "R06_FFFF", "COLMI R07_9", "R08_1234", "R09_00AA",
             "COLMI R10_xyz", "COLMI R12_x", "R05_1A2B", "R10_DEAD", "R11_BEEF",
-            "R11C_BEEF", "H59_anything",
+            "R11C_BEEF", "H59_anything", "COLMI Ring 2 Pro",
         )
         for (name in names) {
             assertTrue("expected Colmi match for $name", colmiMatches(name))
@@ -54,6 +54,19 @@ class PairingMatchingTest {
     fun `non-colmi names do not match`() {
         for (name in listOf("SMART_RING", "R10M FCF4", "Mi Band 5", "Galaxy Watch", "R0X_NOPE", "Random")) {
             assertFalse("did not expect Colmi match for $name", colmiMatches(name))
+        }
+    }
+
+    @Test
+    fun `only the hardware-validated Ring 2 Pro adds on-demand HRV stress and temperature`() {
+        val streamed = setOf(
+            WearableCapability.MANUAL_HRV,
+            WearableCapability.MANUAL_STRESS,
+            WearableCapability.MANUAL_TEMPERATURE,
+        )
+        assertEquals(streamed, WearableModel.COLMI_RING_2_PRO.extraCapabilities)
+        for (model in WearableModel.CATALOG - WearableModel.COLMI_RING_2_PRO) {
+            assertTrue("${model.id} has unvalidated extras", model.extraCapabilities.isEmpty())
         }
     }
 
@@ -163,12 +176,17 @@ class PairingMatchingTest {
             "COLMI R10_xyz" to "colmi-r10",
             "R11C_BEEF" to "colmi-r11",
             "COLMI R12_x" to "colmi-r12",
+            "COLMI Ring 2 Pro" to "colmi-ring-2-pro",
             "R05_1A2B" to "yawell-r05",
             "R10_DEAD" to "yawell-r10",
             "R11_BEEF" to "yawell-r11",
             "H59_anything" to "h59",
             "R10M FCF4" to "r10m",
             "R10M_FCF4" to "r10m",
+            // Issue #58's CRP ring. Both suffix forms, because the only capture we have is a
+            // redacted report and it strips a `_<hex>` serial.
+            "R100" to "r100",
+            "R100_1A2B" to "r100",
         )
         for ((name, modelID) in expected) {
             assertEquals(name, modelID, WearableModel.modelForAdvertisedName(name)?.id)
@@ -362,5 +380,25 @@ class PairingMatchingTest {
     fun `default capability set is Jring base`() {
         val defaultCaps = WearableCapability.fromCsv("")
         assertTrue(defaultCaps.isEmpty())
+    }
+
+    /** The R100 card must not shadow, or be shadowed by, the neighbours its name sits between:
+     *  the Colmi R10 (`R10_xxxx`) and the space-suffixed SmartHealth convention (issue #58). */
+    @Test
+    fun `the R100 pattern cannot collide with the R10 or the SmartHealth convention`() {
+        assertEquals("yawell-r10", WearableModel.modelForAdvertisedName("R10_DEAD")?.id)
+        assertEquals("colmi-r10", WearableModel.modelForAdvertisedName("COLMI R10_xyz")?.id)
+        assertEquals("r100", WearableModel.modelForAdvertisedName("R100_DEAD")?.id)
+        // A space-separated 4-hex suffix is the SmartHealth convention, not an R100 serial — and
+        // the R100 card precedes the SmartHealth one, so a loose pattern here would take a
+        // SmartHealth ring onto the CRP driver, which connects and then never syncs.
+        assertEquals(
+            "colmi-smarthealth",
+            WearableModel.modelForAdvertisedName("R100 1A2B")?.id,
+        )
+        // A SmartHealth-convention name (space + four hex) still lands on the broad card.
+        assertEquals("colmi-smarthealth", WearableModel.modelForAdvertisedName("Ale-Hop2211 E1C7")?.id)
+        // And the R100 routes to the CRP driver family, not to Colmi's.
+        assertEquals(RingDeviceType.CRP, WearableModel.modelForAdvertisedName("R100")?.family)
     }
 }

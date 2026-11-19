@@ -1,16 +1,44 @@
 package com.pulseloop.coach.config
 
 /**
+ * Ported from [ReasoningEffort] in CoachSettings.swift (iOS #140).
+ * A `reasoning.effort` level. Which levels a model accepts varies — GPT-6 Sol/Astra reject `none`,
+ * DeepSeek has no `medium`, Gemini stops at `high` — and an unsupported level is an HTTP 400 on
+ * OpenAI, so each preset lists its own. On Gemini the level is sent as
+ * `thinkingConfig.thinkingLevel`.
+ */
+enum class ReasoningEffort(val rawValue: String, val label: String) {
+    NONE("none", "None"),
+    MINIMAL("minimal", "Minimal"),
+    LOW("low", "Low"),
+    MEDIUM("medium", "Medium"),
+    HIGH("high", "High"),
+    XHIGH("xhigh", "Extra high"),
+    MAX("max", "Max");
+
+    companion object {
+        /** Levels every reasoning-capable model accepts — offered for a model we know nothing about. */
+        val COMMON = listOf(LOW, MEDIUM, HIGH)
+        /** GPT-6 Sol/Astra and Claude 5.5. */
+        val LOW_TO_MAX = listOf(LOW, MEDIUM, HIGH, XHIGH, MAX)
+
+        fun fromRaw(raw: String?): ReasoningEffort? = entries.firstOrNull { it.rawValue == raw }
+    }
+}
+
+/**
  * Ported from [GeminiModel] in CoachSettings.swift.
  * Preset Gemini model choices surfaced in Settings.
  */
-enum class GeminiModel(val slug: String, val blurb: String) {
+enum class GeminiModel(val slug: String, val blurb: String, val reasoningEfforts: List<ReasoningEffort>) {
     // Rolling `-latest` aliases (docs: ai.google.dev/gemini-api/docs/models) point at the most
     // recent release for each variation and are updated with a two-week notice — so the presets
     // never go stale again (issue #22). Current generation behind them: 3.5 Flash / 3.1 Flash-Lite.
-    FLASH_LATEST("gemini-flash-latest", "Fast & capable (default)"),
-    FLASH_LITE_LATEST("gemini-flash-lite-latest", "Fastest & lowest cost"),
-    PRO_LATEST("gemini-pro-latest", "Best reasoning");
+    // Since iOS #140 the targets are 3.8 Flash, 3.5 Flash-Lite and 4 Argon; only Flash-Lite
+    // accepts `minimal` as a `thinkingLevel`.
+    FLASH_LATEST("gemini-flash-latest", "Fast & capable (default)", ReasoningEffort.COMMON),
+    FLASH_LITE_LATEST("gemini-flash-lite-latest", "Fastest & lowest cost", listOf(ReasoningEffort.MINIMAL) + ReasoningEffort.COMMON),
+    PRO_LATEST("gemini-pro-latest", "Best reasoning", ReasoningEffort.COMMON);
 
     val label: String get() = slug
 
@@ -40,14 +68,16 @@ enum class GeminiModel(val slug: String, val blurb: String) {
  * exposes a "Custom…" text field where the user can type any current slug from
  * openrouter.ai/models. These are just the curated picks.
  */
-enum class OpenRouterModel(val slug: String, val blurb: String) {
-    CLAUDE_SONNET("anthropic/claude-sonnet-4.6", "Balanced, great for coaching (default)"),
-    CLAUDE_OPUS("anthropic/claude-opus-4.7", "Most capable Claude"),
-    GPT_55("openai/gpt-5.5", "OpenAI flagship"),
-    GPT_54_MINI("openai/gpt-5.4-mini", "Lower cost & latency"),
-    GEMINI_FLASH("google/gemini-2.5-flash", "Fast & capable"),
-    GEMINI_PRO("google/gemini-2.5-pro", "Deep reasoning"),
-    DEEPSEEK_V4("deepseek/deepseek-v4-flash", "Strong open reasoning, low cost");
+enum class OpenRouterModel(val slug: String, val blurb: String, val reasoningEfforts: List<ReasoningEffort>) {
+    // Levels are each model's `reasoning.supported_efforts` in OpenRouter's /api/v1/models.
+    CLAUDE_SONNET("anthropic/claude-sonnet-5.5", "Balanced, great for coaching (default)", ReasoningEffort.LOW_TO_MAX),
+    CLAUDE_OPUS("anthropic/claude-opus-5.5", "Most capable Claude", ReasoningEffort.LOW_TO_MAX),
+    CLAUDE_HAIKU("anthropic/claude-haiku-5.5", "Fastest, lowest-cost Claude", ReasoningEffort.LOW_TO_MAX),
+    GPT_SOL("openai/gpt-6.1-sol", "OpenAI balanced flagship", ReasoningEffort.LOW_TO_MAX),
+    GPT_LUNA("openai/gpt-6-luna", "Lower cost & latency", listOf(ReasoningEffort.NONE) + ReasoningEffort.LOW_TO_MAX),
+    GEMINI_PRO("google/gemini-4-argon", "Deep reasoning", ReasoningEffort.COMMON),
+    GEMINI_FLASH("google/gemini-3.8-flash", "Fast & capable", ReasoningEffort.COMMON),
+    DEEPSEEK("deepseek/deepseek-v4.1-flash", "Strong open reasoning, low cost", listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.MAX));
 
     val label: String get() = slug
 
@@ -62,13 +92,13 @@ enum class OpenRouterModel(val slug: String, val blurb: String) {
  * Ported from [MiniMaxModel] in CoachSettings.swift (iOS #54).
  * Preset MiniMax model slugs surfaced in Settings. MiniMax's OpenAI-compatible
  * endpoint takes the model name verbatim; these are the curated picks.
+ *
+ * The M2.5 and M2.7 families are omitted (iOS #140): MiniMax closes them to new users on Oct 19 2026
+ * and retires them on Nov 18 2026. A stored M2.5/M2.7 choice keeps working until then, and the
+ * live model list flags it once MiniMax stops listing it.
  */
 enum class MiniMaxModel(val slug: String, val blurb: String) {
     M3("MiniMax-M3", "Latest — agentic reasoning, tool use, 1M context (default)"),
-    M27("MiniMax-M2.7", "Recursive self-improvement (~60 tps)"),
-    M27_HIGHSPEED("MiniMax-M2.7-highspeed", "M2.7 — same performance, faster (~100 tps)"),
-    M25("MiniMax-M2.5", "Peak performance & value (~60 tps)"),
-    M25_HIGHSPEED("MiniMax-M2.5-highspeed", "M2.5 — same performance, faster (~100 tps)"),
     M21("MiniMax-M2.1", "Strong multi-language programming (~60 tps)"),
     M21_HIGHSPEED("MiniMax-M2.1-highspeed", "M2.1 — faster (~100 tps)"),
     M2("MiniMax-M2", "Agentic capabilities, advanced reasoning");
@@ -88,14 +118,23 @@ enum class MiniMaxModel(val slug: String, val blurb: String) {
  * string (so a new model can be typed/served without a code change); these are
  * just the curated picks surfaced in Settings.
  */
-enum class OpenAIModel(val slug: String, val blurb: String) {
-    GPT_54_MINI("gpt-5.4-mini", "Lower cost & latency"),
-    GPT_54("gpt-5.4", "Balanced (default)"),
-    GPT_55("gpt-5.5", "Best reasoning");
+enum class OpenAIModel(val slug: String, val blurb: String, val reasoningEfforts: List<ReasoningEffort>) {
+    // Sol and Astra reject `none` (HTTP 400).
+    LUNA("gpt-6-luna", "Lower cost & latency", listOf(ReasoningEffort.NONE) + ReasoningEffort.LOW_TO_MAX),
+    SOL("gpt-6.1-sol", "Balanced (default)", ReasoningEffort.LOW_TO_MAX),
+    ASTRA("gpt-6-astra", "Best reasoning", ReasoningEffort.LOW_TO_MAX);
 
     val label: String get() = slug
 
     companion object {
-        val DEFAULT = GPT_54
+        val DEFAULT = SOL
+
+        /** Slugs the Settings picker used to offer and no longer does (issue #77). A stored
+         *  selection of one would keep failing with no visible way out, so it reads as [DEFAULT]. */
+        val RETIRED_SLUGS = setOf("gpt-4o", "gpt-4o-mini", "o4-mini")
+
+        /** [slug], or [DEFAULT]'s slug when it is blank or retired. */
+        fun normalize(slug: String): String =
+            if (slug.isBlank() || slug in RETIRED_SLUGS) DEFAULT.slug else slug
     }
 }

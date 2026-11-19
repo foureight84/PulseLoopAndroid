@@ -1,6 +1,7 @@
 package com.pulseloop.coach.gemini
 
 import com.pulseloop.coach.openai.FunctionCallOutput
+import com.pulseloop.coach.openai.ResponsesError
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -21,8 +22,10 @@ class GeminiClientTest {
         tools: List<JsonObject> = emptyList(),
         textFormat: JsonObject? = null,
         previousResponseId: String? = null,
+        effort: String? = null,
     ) = JsonObject(buildMap {
         put("model", JsonPrimitive("gemini-2.5-flash"))
+        effort?.let { put("reasoning", JsonObject(mapOf("effort" to JsonPrimitive(it)))) }
         put("input", JsonArray(input))
         put("tools", JsonArray(tools))
         textFormat?.let { put("text", JsonObject(mapOf("format" to it))) }
@@ -46,6 +49,21 @@ class GeminiClientTest {
             )),
         )))),
     ))
+
+    // ── Thinking level (iOS #140) ───────────────────────────────────────
+
+    @Test
+    fun testReasoningEffortIsSentAsThinkingLevel() {
+        val body = GeminiClient("key").buildRequestBody(request(listOf(msg("user", "hi")), effort = "high"))
+        val level = body["generationConfig"]!!.jsonObject["thinkingConfig"]!!.jsonObject["thinkingLevel"]!!.jsonPrimitive.content
+        assertEquals("HIGH", level)
+    }
+
+    @Test
+    fun testNoEffortSendsNoThinkingConfig() {
+        val body = GeminiClient("key").buildRequestBody(request(listOf(msg("user", "hi"))))
+        assertNull(body["generationConfig"]?.jsonObject?.get("thinkingConfig"))
+    }
 
     // ── First-turn conversion ───────────────────────────────────────────
 
@@ -333,5 +351,191 @@ class GeminiClientTest {
         val note = userParts[0].jsonObject["text"]!!.jsonPrimitive.content
         assertTrue(note.startsWith("Web search sources"))
         assertTrue(note.contains("https://example.com"))
+    }
+
+    // ── Overload retry (issue #77) ─────────────────────────────────────
+
+    @Test
+    fun `a 503 is retried and the turn survives`() = kotlinx.coroutines.runBlocking {
+        // gemini-flash-latest routes to whatever pool is congested; "high demand" 503s killed
+        // every coach turn for days on end. A 503 means the request was never served, so
+        // retrying cannot double-bill — unlike a read timeout, which stays never-retried.
+        val client = GeminiClient("key")
+        var attempts = 0
+        val result = client.postWithOverloadRetry(
+            "https://example.test/generateContent", ByteArray(0), backoffMs = 1,
+        ) { _, _ ->
+            if (attempts++ < 2) throw ResponsesError.Http(503, "This model is currently experiencing high demand.")
+            "ok"
+        }
+        assertEquals("ok", result)
+        assertEquals(3, attempts)
+    }
+
+    @Test
+    fun `the last 503 still surfaces`() = kotlinx.coroutines.runBlocking {
+        val client = GeminiClient("key")
+        var attempts = 0
+        try {
+            client.postWithOverloadRetry(
+                "https://example.test/generateContent", ByteArray(0), backoffMs = 1,
+            ) { _, _ ->
+                attempts++
+                throw ResponsesError.Http(503, "still overloaded")
+            }
+            fail("a persistently overloaded model must surface, not hang")
+        } catch (e: ResponsesError.Http) {
+            assertEquals(503, e.status)
+        }
+        assertEquals(3, attempts)
+    }
+
+    @Test
+    fun `a 429 is never retried`() = kotlinx.coroutines.runBlocking {
+        // Quota buckets refill daily, not in seconds — retrying only burns the turn's wall time.
+        val client = GeminiClient("key")
+        var attempts = 0
+        try {
+            client.postWithOverloadRetry(
+                "https://example.test/generateContent", ByteArray(0), backoffMs = 1,
+            ) { _, _ ->
+                attempts++
+                throw ResponsesError.Http(429, "You exceeded your current quota.")
+            }
+            fail("429 must surface immediately")
+        } catch (e: ResponsesError.Http) {
+            assertEquals(429, e.status)
+        }
+        assertEquals(1, attempts)
+    }
+
+    // ── Refused grounding turn (issue #123) ────────────────────────────
+
+    private val schemaFormat = JsonObject(mapOf(
+        "type" to JsonPrimitive("json_schema"),
+        "schema" to JsonObject(mapOf("type" to JsonPrimitive("object"))),
+    ))
+
+    private fun bytes(req: JsonObject) = req.toString().toByteArray()
+
+    private fun isGrounding(body: JsonObject) =
+        body["tools"]?.jsonArray?.any { it.jsonObject.containsKey("google_search") } == true
+
+    /** Tool turn (web search requested) answered with prose; returns its response id. */
+    private suspend fun toolTurn(client: GeminiClient): String = client.send(bytes(request(
+        listOf(msg("user", "hi")),
+        tools = listOf(webSearchTool, functionTool("t", JsonObject(mapOf("type" to JsonPrimitive("object"))))),
+        textFormat = schemaFormat,
+    ))).id
+
+    private suspend fun repairTurn(client: GeminiClient, previousId: String) = client.send(bytes(request(
+        listOf(msg("user", "format it")), textFormat = schemaFormat, previousResponseId = previousId,
+    )))
+
+    private fun lastUserText(body: JsonObject) = body["contents"]!!.jsonArray.last().jsonObject["parts"]!!
+        .jsonArray.joinToString(" ") { it.jsonObject["text"]?.jsonPrimitive?.content ?: "" }
+
+    @Test
+    fun `a 429 on the grounding turn is retried once without google_search`() = kotlinx.coroutines.runBlocking {
+        // Free-tier keys get 429 RESOURCE_EXHAUSTED for google_search alone while plain, function
+        // and schema calls succeed — every coach question failed with Web Search on.
+        val sent = mutableListOf<JsonObject>()
+        val client = GeminiClient("key-123-retry", transport = { _, b ->
+            val body = Json.parseToJsonElement(String(b)).jsonObject
+            sent.add(body)
+            if (isGrounding(body)) throw ResponsesError.Http(429, "You exceeded your current quota")
+            textResponse(if (sent.size == 1) "prose" else """{"title":"ok"}""").toString()
+        })
+
+        val answer = repairTurn(client, toolTurn(client))
+
+        assertEquals("""{"title":"ok"}""", answer.outputText)
+        assertEquals(3, sent.size)
+        assertTrue(isGrounding(sent[1]))
+        val retry = sent[2]
+        assertFalse(isGrounding(retry))
+        assertNull(retry["tools"])
+        // The retry is the schema turn it would otherwise have been, and says search was skipped.
+        assertNotNull(retry["generationConfig"]!!.jsonObject["responseSchema"])
+        assertTrue(lastUserText(retry).contains("Web search was not available"))
+    }
+
+    @Test
+    fun `a refused key skips grounding on later turns without the extra round trip`() = kotlinx.coroutines.runBlocking {
+        val key = "key-123-remembered"
+        var refusals = 0
+        val transport: suspend (String, ByteArray) -> String = { _, b ->
+            val body = Json.parseToJsonElement(String(b)).jsonObject
+            if (isGrounding(body)) { refusals++; throw ResponsesError.Http(429, "quota") }
+            textResponse("prose").toString()
+        }
+        val first = GeminiClient(key, transport = transport)
+        repairTurn(first, toolTurn(first))
+        assertEquals(1, refusals)
+
+        // Next agent turn: a fresh client (as the orchestrator builds one per turn).
+        val sent = mutableListOf<JsonObject>()
+        val second = GeminiClient(key, transport = { u, b ->
+            sent.add(Json.parseToJsonElement(String(b)).jsonObject)
+            transport(u, b)
+        })
+        repairTurn(second, toolTurn(second))
+        assertEquals(1, refusals)
+        assertEquals(2, sent.size)
+        assertFalse(isGrounding(sent[1]))
+        assertNotNull(sent[1]["generationConfig"]!!.jsonObject["responseSchema"])
+        assertTrue(lastUserText(sent[1]).contains("Web search was not available"))
+
+        // A different key is unaffected.
+        val other = GeminiClient("key-123-other", transport = { _, b ->
+            sent.add(Json.parseToJsonElement(String(b)).jsonObject)
+            textResponse("prose").toString()
+        })
+        repairTurn(other, toolTurn(other))
+        assertTrue(isGrounding(sent.last()))
+    }
+
+    @Test
+    fun `a 429 on a non-grounding turn still surfaces`() = kotlinx.coroutines.runBlocking {
+        var attempts = 0
+        val client = GeminiClient("key-123-plain", transport = { _, _ ->
+            attempts++
+            throw ResponsesError.Http(429, "You exceeded your current quota")
+        })
+        try {
+            toolTurn(client)
+            fail("a quota refusal on a normal turn must surface")
+        } catch (e: ResponsesError.Http) {
+            assertEquals(429, e.status)
+        }
+        assertEquals(1, attempts)
+    }
+
+    @Test
+    fun `a 429 on the ungrounded retry surfaces and is not remembered`() = kotlinx.coroutines.runBlocking {
+        // The key itself is out of quota: the retry fails too, and grounding is not blamed.
+        val key = "key-123-exhausted"
+        var calls = 0
+        val client = GeminiClient(key, transport = { _, _ ->
+            if (calls++ == 0) textResponse("prose").toString()
+            else throw ResponsesError.Http(429, "You exceeded your current quota")
+        })
+        val id = toolTurn(client)
+        try {
+            repairTurn(client, id)
+            fail("a 429 on the retry must surface, not loop")
+        } catch (e: ResponsesError.Http) {
+            assertEquals(429, e.status)
+        }
+        assertEquals(3, calls)   // tool turn, grounding turn, one retry
+
+        // Not marked as grounding-refused: a later turn on the same key still grounds.
+        val sent = mutableListOf<JsonObject>()
+        val next = GeminiClient(key, transport = { _, b ->
+            sent.add(Json.parseToJsonElement(String(b)).jsonObject)
+            textResponse("prose").toString()
+        })
+        repairTurn(next, toolTurn(next))
+        assertTrue(isGrounding(sent.last()))
     }
 }

@@ -2,9 +2,6 @@ package com.pulseloop.ring
 
 import org.junit.Assert.*
 import org.junit.Test
-import java.time.Instant
-import java.time.LocalDateTime
-import java.time.ZoneId
 
 class YCBTHealthRecordsTest {
 
@@ -107,44 +104,8 @@ class YCBTHealthRecordsTest {
     }
 
     @Test
-    fun `valid header preserves a six hour session and fills unclassified time as unknown`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val end = start.plusSeconds(6 * 60 * 60L)
-        val session = sleepSession(
-            sessionStart = start,
-            sessionEnd = end,
-            segments = listOf(
-                Triple(0xf2, start.plusSeconds(30 * 60L), 60 * 60),
-                Triple(0xf1, start.plusSeconds(4 * 60 * 60L), 56 * 60),
-            ),
-        )
-
-        val event = YCBTHealthRecords.sleep(session).single() as RingDecodedEvent.SleepTimeline
-
-        assertEquals(start, event.sessionStart)
-        assertEquals(end, event.sessionEnd)
-        assertEquals(6 * 60L, event.segments.sumOf { java.time.Duration.between(it.start, it.end).toMinutes() })
-        assertEquals(
-            listOf(
-                SleepStage.UNKNOWN,
-                SleepStage.LIGHT,
-                SleepStage.UNKNOWN,
-                SleepStage.DEEP,
-                SleepStage.UNKNOWN,
-            ),
-            event.segments.map { it.stage },
-        )
-        assertEquals(start.plusSeconds(30 * 60L), event.segments[1].start)
-        assertEquals(start.plusSeconds(4 * 60 * 60L), event.segments[3].start)
-        assertEquals(116L, event.segments.filter { it.stage != SleepStage.UNKNOWN }
-            .sumOf { java.time.Duration.between(it.start, it.end).toMinutes() })
-    }
-
-    @Test
     fun `sleep decodes a full night matching the app`() {
         val event = YCBTHealthRecords.sleep(capturedNight).first() as RingDecodedEvent.SleepTimeline
-        assertEquals(YCBTBytes.date(YCBTBytes.u32(capturedNight, 4)), event.sessionStart)
-        assertEquals(YCBTBytes.date(YCBTBytes.u32(capturedNight, 8)), event.sessionEnd)
         val deep = event.stages.count { it == SleepStage.DEEP }
         val light = event.stages.count { it == SleepStage.LIGHT }
         val rem = event.stages.count { it == SleepStage.REM }
@@ -156,240 +117,40 @@ class YCBTHealthRecordsTest {
     }
 
     @Test
-    fun `explicit awake segment is preserved inside header bounds`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val end = start.plusSeconds(90 * 60L)
-        val event = YCBTHealthRecords.sleep(sleepSession(
-            sessionStart = start,
-            sessionEnd = end,
-            segments = listOf(
-                Triple(0xf2, start, 30 * 60),
-                Triple(0xf4, start.plusSeconds(30 * 60L), 15 * 60),
-                Triple(0xf1, start.plusSeconds(45 * 60L), 45 * 60),
-            ),
-        )).single() as RingDecodedEvent.SleepTimeline
-
-        assertEquals(15, event.stages.count { it == SleepStage.AWAKE })
-        assertEquals(listOf(SleepStage.LIGHT, SleepStage.AWAKE, SleepStage.DEEP), event.segments.map { it.stage })
-    }
-
-    @Test
-    fun `header normalization sorts clips deduplicates and resolves overlaps`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val end = start.plusSeconds(3 * 60 * 60L)
-        val event = YCBTHealthRecords.sleep(sleepSession(
-            sessionStart = start,
-            sessionEnd = end,
-            segments = listOf(
-                Triple(0xf2, start.plusSeconds(60 * 60L), 2 * 60 * 60),
-                Triple(0xf4, start.plusSeconds(30 * 60L), 60 * 60),
-                Triple(0xf1, start.minusSeconds(30 * 60L), 60 * 60),
-                Triple(0xf4, start.plusSeconds(30 * 60L), 30 * 60),
-            ),
-        )).single() as RingDecodedEvent.SleepTimeline
-
-        assertEquals(listOf(SleepStage.DEEP, SleepStage.AWAKE, SleepStage.LIGHT), event.segments.map { it.stage })
-        assertEquals(listOf(start, start.plusSeconds(30 * 60L), start.plusSeconds(90 * 60L)), event.segments.map { it.start })
-        assertEquals(listOf(start.plusSeconds(30 * 60L), start.plusSeconds(90 * 60L), end), event.segments.map { it.end })
-    }
-
-    @Test
-    fun `malformed header falls back to compact segment durations`() {
-        val first = Instant.parse("2026-07-06T22:30:00Z")
-        val event = YCBTHealthRecords.sleep(sleepSession(
-            sessionStart = first.plusSeconds(60 * 60L),
-            sessionEnd = first,
-            segments = listOf(
-                Triple(0xf2, first, 30 * 60),
-                Triple(0xf1, first.plusSeconds(3 * 60 * 60L), 45 * 60),
-            ),
-        )).single() as RingDecodedEvent.SleepTimeline
-
-        assertEquals(first, event.sessionStart)
-        assertEquals(first.plusSeconds(75 * 60L), event.sessionEnd)
-        assertEquals(75, event.stages.size)
-        assertEquals(listOf(SleepStage.LIGHT, SleepStage.DEEP), event.segments.map { it.stage })
-    }
-
-    @Test
-    fun `header longer than one day falls back instead of expanding the session`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val event = YCBTHealthRecords.sleep(sleepSession(
-            sessionStart = start,
-            sessionEnd = start.plusSeconds(24 * 60 * 60L + 59),
-            segments = listOf(Triple(0xf2, start, 30 * 60)),
-        )).single() as RingDecodedEvent.SleepTimeline
-
-        assertEquals(start.plusSeconds(30 * 60L), event.sessionEnd)
-    }
-
-    @Test
-    fun `valid header with zero declared segments becomes unknown sleep`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val end = start.plusSeconds(60 * 60L)
-
-        val event = YCBTHealthRecords.sleep(sleepSession(start, end, emptyList()))
-            .single() as RingDecodedEvent.SleepTimeline
-
-        assertEquals(listOf(SleepStage.UNKNOWN), event.segments.map { it.stage })
-        assertEquals(start, event.segments.single().start)
-        assertEquals(end, event.segments.single().end)
-        assertTrue(event.completeSession)
-    }
-
-    @Test
-    fun `valid header whose declared segments produce no intersection is rejected`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val session = sleepSession(
-            sessionStart = start,
-            sessionEnd = start.plusSeconds(60 * 60L),
-            segments = listOf(Triple(0xf0, start, 60 * 60)),
-        )
-
-        assertTrue(YCBTHealthRecords.sleep(session).isEmpty())
-    }
-
-    @Test
-    fun `valid header whose decodable segments are all outside it is rejected`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val session = sleepSession(
-            sessionStart = start,
-            sessionEnd = start.plusSeconds(60 * 60L),
-            segments = listOf(Triple(0xf2, start.plusSeconds(2 * 60 * 60L), 30 * 60)),
-        )
-
-        assertTrue(YCBTHealthRecords.sleep(session).isEmpty())
-    }
-
-    @Test
     fun `multiple sessions in one buffer`() {
         val timelines = YCBTHealthRecords.sleep(capturedNight + capturedNight).filterIsInstance<RingDecodedEvent.SleepTimeline>()
         assertEquals(2, timelines.size)
     }
 
+    /**
+     * Issue #63: the night the ring split in two — the second record must decode as its own
+     * session with its own start, not be folded into or lost behind the first.
+     */
     @Test
-    fun `complete overnight fragments stitch across unknown gaps`() {
-        val start = localInstant("2026-08-24T02:07:46")
-        val end = localInstant("2026-08-24T08:30:17")
-
-        val timeline = YCBTHealthRecords.sleep(provenOvernightFragments())
-            .single() as RingDecodedEvent.SleepTimeline
-
-        assertEquals(start, timeline.sessionStart)
-        assertEquals(end, timeline.sessionEnd)
-        assertTrue(timeline.completeSession)
-        assertEquals(382, java.time.Duration.between(timeline.sessionStart, timeline.sessionEnd).toMinutes())
-        assertEquals(13_677L, timeline.segments.filter { it.stage != SleepStage.UNKNOWN }
-            .sumOf { java.time.Duration.between(it.start, it.end).seconds })
-        assertEquals(600L, timeline.segments.filter { it.stage == SleepStage.AWAKE }
-            .sumOf { java.time.Duration.between(it.start, it.end).seconds })
-        assertTrue(timeline.segments.zipWithNext().all { (left, right) -> left.end == right.start })
-        assertEquals(start, timeline.segments.first().start)
-        assertEquals(end, timeline.segments.last().end)
-        assertUnknownCoverage(
-            timeline,
-            localInstant("2026-08-24T03:08:32"),
-            localInstant("2026-08-24T05:01:08"),
-        )
-        assertUnknownCoverage(
-            timeline,
-            localInstant("2026-08-24T05:51:46"),
-            localInstant("2026-08-24T06:33:32"),
-        )
-    }
-
-    @Test
-    fun `daytime nap remains separate from stitched overnight fragments`() {
-        val napStart = localInstant("2026-08-24T14:00:00")
-        val nap = completeSleepRecord(napStart, napStart.plusSeconds(30 * 60L), 0xf1)
-
-        val timelines = YCBTHealthRecords.sleep(nap + provenOvernightFragments())
-            .filterIsInstance<RingDecodedEvent.SleepTimeline>()
+    fun `two adjacent sessions decode as two timelines with their own starts`() {
+        val firstStart = 0x31def01c
+        val secondStart = firstStart + (3 * 60 + 9) * 60          // 03:21, three minutes after 03:18
+        val first = sleepSession(listOf(0xf2 to 124 * 60, 0xf1 to 62 * 60), baseStart = firstStart)
+        val second = sleepSession(listOf(0xf2 to 119 * 60, 0xf1 to 124 * 60), baseStart = secondStart)
+        val timelines = YCBTHealthRecords.sleep(first + second).filterIsInstance<RingDecodedEvent.SleepTimeline>()
 
         assertEquals(2, timelines.size)
-        assertEquals(
-            listOf(localInstant("2026-08-24T02:07:46"), napStart),
-            timelines.map { it.sessionStart },
-        )
+        assertEquals(186, timelines[0].stages.size)
+        assertEquals(243, timelines[1].stages.size)
+        assertEquals(YCBTBytes.date(firstStart), timelines[0]._timestamp)
+        assertEquals(YCBTBytes.date(secondStart), timelines[1]._timestamp)
     }
 
+    /** A record whose declared length lies must not take the following session down with it:
+     *  the parser resynchronises on the next `af fa`. */
     @Test
-    fun `overnight fragments more than three hours apart remain separate`() {
-        val firstStart = localInstant("2026-08-24T01:00:00")
-        val firstEnd = localInstant("2026-08-24T02:00:00")
-        val secondStart = firstEnd.plusSeconds(3 * 60 * 60L + 1)
-        val secondEnd = secondStart.plusSeconds(60 * 60L)
+    fun `a record with a wrong declared length does not swallow the next session`() {
+        val bad = sleepSession(listOf(0xf2 to 60 * 60)).also { it[2] = 12 }   // claims 12 bytes: no segments
+        val good = sleepSession(listOf(0xf1 to 30 * 60))
+        val timelines = YCBTHealthRecords.sleep(bad + good).filterIsInstance<RingDecodedEvent.SleepTimeline>()
 
-        val timelines = YCBTHealthRecords.sleep(
-            completeSleepRecord(firstStart, firstEnd) + completeSleepRecord(secondStart, secondEnd),
-        ).filterIsInstance<RingDecodedEvent.SleepTimeline>()
-
-        assertEquals(listOf(firstStart, secondStart), timelines.map { it.sessionStart })
-    }
-
-    @Test
-    fun `overnight fragments on different waking days remain separate`() {
-        val firstStart = localInstant("2026-08-24T01:00:00")
-        val firstEnd = localInstant("2026-08-24T02:00:00")
-        val secondStart = localInstant("2026-08-24T22:00:00")
-        val secondEnd = localInstant("2026-08-24T23:00:00")
-
-        val timelines = YCBTHealthRecords.sleep(
-            completeSleepRecord(firstStart, firstEnd) + completeSleepRecord(secondStart, secondEnd),
-        ).filterIsInstance<RingDecodedEvent.SleepTimeline>()
-
-        assertEquals(listOf(firstStart, secondStart), timelines.map { it.sessionStart })
-    }
-
-    @Test
-    fun `partial overnight record never stitches to a complete record`() {
-        val firstStart = localInstant("2026-08-24T01:00:00")
-        val firstEnd = localInstant("2026-08-24T02:00:00")
-        val secondStart = localInstant("2026-08-24T03:00:00")
-        val secondEnd = localInstant("2026-08-24T04:00:00")
-        val partial = completeSleepRecord(firstStart, firstEnd).also { putU16(it, 2, it.size + 8) }
-
-        val timelines = YCBTHealthRecords.sleep(partial + completeSleepRecord(secondStart, secondEnd))
-            .filterIsInstance<RingDecodedEvent.SleepTimeline>()
-
-        assertEquals(2, timelines.size)
-        assertFalse(timelines.first().completeSession)
-        assertTrue(timelines.last().completeSession)
-    }
-
-    @Test
-    fun `duplicate and overlapping complete records remain separate deterministically`() {
-        val start = localInstant("2026-08-24T02:00:00")
-        val duplicate = completeSleepRecord(start, start.plusSeconds(60 * 60L))
-        val overlapStart = start.plusSeconds(30 * 60L)
-        val overlap = completeSleepRecord(overlapStart, overlapStart.plusSeconds(60 * 60L), 0xf1)
-        val buffer = overlap + duplicate + duplicate
-
-        val first = YCBTHealthRecords.sleep(buffer).filterIsInstance<RingDecodedEvent.SleepTimeline>()
-        val replay = YCBTHealthRecords.sleep(buffer).filterIsInstance<RingDecodedEvent.SleepTimeline>()
-
-        assertEquals(3, first.size)
-        assertEquals(listOf(start, start, overlapStart), first.map { it.sessionStart })
-        assertEquals(first, replay)
-    }
-
-    @Test
-    fun `overnight cluster cannot exceed sixteen hours`() {
-        val starts = listOf(
-            "2026-08-23T19:00:00", "2026-08-23T22:00:00", "2026-08-24T01:00:00",
-            "2026-08-24T04:00:00", "2026-08-24T07:00:00", "2026-08-24T10:00:00",
-        ).map(::localInstant)
-        val records = starts.mapIndexed { index, start ->
-            val duration = if (index == starts.lastIndex) 61 * 60L else 60 * 60L
-            completeSleepRecord(start, start.plusSeconds(duration))
-        }.reduce(ByteArray::plus)
-
-        val timelines = YCBTHealthRecords.sleep(records).filterIsInstance<RingDecodedEvent.SleepTimeline>()
-
-        assertEquals(2, timelines.size)
-        assertTrue(timelines.all {
-            java.time.Duration.between(it.sessionStart, it.sessionEnd) <= java.time.Duration.ofHours(16)
-        })
+        assertEquals(1, timelines.size)
+        assertEquals(30, timelines.single().stages.size)
     }
 
     @Test
@@ -443,59 +204,72 @@ class YCBTHealthRecordsTest {
     }
 
     @Test
+    fun `header longer than one day falls back instead of expanding the session`() {
+        val start = 0x31def01c
+        val record = sleepRecordAt(
+            start,
+            start + 24 * 60 * 60 + 59,
+            listOf(Triple(0xf2, start, 30 * 60)),
+        )
+        val event = YCBTHealthRecords.sleep(record).single() as RingDecodedEvent.SleepTimeline
+
+        assertFalse(event.completeSession)
+        assertEquals(30, event.stages.size)
+    }
+
+    @Test
     fun `valid full night header on a truncated record does not invent or replace its missing tail`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        val fullEnd = start.plusSeconds(8 * 60 * 60L)
-        val complete = sleepSession(
-            sessionStart = start,
-            sessionEnd = fullEnd,
-            segments = listOf(
-                Triple(0xf2, start.plusSeconds(30 * 60L), 60 * 60),
-                Triple(0xf1, start.plusSeconds(90 * 60L), 6 * 60 * 60),
+        val start = 0x31def01c
+        val complete = sleepRecordAt(
+            start,
+            start + 8 * 60 * 60,
+            listOf(
+                Triple(0xf2, start + 30 * 60, 60 * 60),
+                Triple(0xf1, start + 90 * 60, 6 * 60 * 60),
             ),
         )
-
         val event = YCBTHealthRecords.sleep(complete.copyOf(complete.size - 8))
             .single() as RingDecodedEvent.SleepTimeline
 
         assertFalse(event.completeSession)
-        assertEquals(start.plusSeconds(30 * 60L), event.sessionStart)
-        assertEquals(start.plusSeconds(90 * 60L), event.sessionEnd)
-        assertEquals(listOf(SleepStage.LIGHT), event.segments.map { it.stage })
-        assertFalse(event.segments.any { it.stage == SleepStage.UNKNOWN })
-        assertTrue(event.sessionEnd < fullEnd)
+        assertEquals(YCBTBytes.date(start + 30 * 60), event._timestamp)
+        assertEquals(60, event.stages.size)
+        assertTrue(event.stages.all { it == SleepStage.LIGHT })
     }
 
     @Test
     fun `record with a partial segment width is not authoritative`() {
-        val start = Instant.parse("2026-07-06T22:30:00Z")
-        var session = sleepSession(
-            sessionStart = start,
-            sessionEnd = start.plusSeconds(60 * 60L),
-            segments = listOf(Triple(0xf2, start, 60 * 60)),
+        val start = 0x31def01c
+        val session = sleepRecordAt(
+            start,
+            start + 60 * 60,
+            listOf(Triple(0xf2, start, 60 * 60)),
         ) + byteArrayOf(0)
-        putU16(session, 2, session.size)
+        session[2] = (session.size and 0xFF).toByte()
+        session[3] = ((session.size ushr 8) and 0xFF).toByte()
 
         val event = YCBTHealthRecords.sleep(session).single() as RingDecodedEvent.SleepTimeline
 
         assertFalse(event.completeSession)
-        assertEquals(start.plusSeconds(60 * 60L), event.sessionEnd)
+        assertEquals(60, event.stages.size)
     }
 
     @Test
     fun `partial-width record advances by its declared length before the next record`() {
-        val firstStart = Instant.parse("2026-07-06T20:00:00Z")
-        var malformed = sleepSession(
-            sessionStart = firstStart,
-            sessionEnd = firstStart.plusSeconds(60 * 60L),
-            segments = listOf(Triple(0xf2, firstStart, 60 * 60)),
-        ) + byteArrayOf(0)
-        putU16(malformed, 2, malformed.size)
-        val secondStart = Instant.parse("2026-07-06T22:30:00Z")
-        val valid = sleepSession(
-            sessionStart = secondStart,
-            sessionEnd = secondStart.plusSeconds(2 * 60 * 60L),
-            segments = listOf(Triple(0xf1, secondStart, 2 * 60 * 60)),
+        val firstStart = 0x31def01c
+        val malformed = (sleepRecordAt(
+            firstStart,
+            firstStart + 60 * 60,
+            listOf(Triple(0xf2, firstStart, 60 * 60)),
+        ) + byteArrayOf(0)).also {
+            it[2] = (it.size and 0xFF).toByte()
+            it[3] = ((it.size ushr 8) and 0xFF).toByte()
+        }
+        val secondStart = firstStart + 150 * 60
+        val valid = sleepRecordAt(
+            secondStart,
+            secondStart + 120 * 60,
+            listOf(Triple(0xf1, secondStart, 120 * 60)),
         )
 
         val events = YCBTHealthRecords.sleep(malformed + valid)
@@ -503,23 +277,28 @@ class YCBTHealthRecordsTest {
 
         assertEquals(2, events.size)
         assertFalse(events[0].completeSession)
-        assertEquals(secondStart, events[1].sessionStart)
+        assertEquals(YCBTBytes.date(secondStart), events[1]._timestamp)
         assertTrue(events[1].completeSession)
+        assertEquals(120, events[1].stages.size)
     }
 
     @Test
     fun `truncated record stops at the following record preamble instead of borrowing it`() {
-        val firstStart = Instant.parse("2026-07-06T20:00:00Z")
-        val truncated = sleepSession(
-            sessionStart = firstStart,
-            sessionEnd = firstStart.plusSeconds(2 * 60 * 60L),
-            segments = listOf(Triple(0xf2, firstStart, 60 * 60)),
-        ).also { putU16(it, 2, it.size + 8) }
-        val secondStart = Instant.parse("2026-07-06T23:00:00Z")
-        val valid = sleepSession(
-            sessionStart = secondStart,
-            sessionEnd = secondStart.plusSeconds(90 * 60L),
-            segments = listOf(Triple(0xf1, secondStart, 90 * 60)),
+        val firstStart = 0x31def01c
+        val truncated = sleepRecordAt(
+            firstStart,
+            firstStart + 120 * 60,
+            listOf(Triple(0xf2, firstStart, 60 * 60)),
+        ).also {
+            val claimed = it.size + 8
+            it[2] = (claimed and 0xFF).toByte()
+            it[3] = ((claimed ushr 8) and 0xFF).toByte()
+        }
+        val secondStart = firstStart + 180 * 60
+        val valid = sleepRecordAt(
+            secondStart,
+            secondStart + 90 * 60,
+            listOf(Triple(0xf1, secondStart, 90 * 60)),
         )
 
         val events = YCBTHealthRecords.sleep(truncated + valid)
@@ -527,9 +306,10 @@ class YCBTHealthRecordsTest {
 
         assertEquals(2, events.size)
         assertFalse(events[0].completeSession)
-        assertEquals(firstStart.plusSeconds(60 * 60L), events[0].sessionEnd)
-        assertEquals(secondStart, events[1].sessionStart)
+        assertEquals(60, events[0].stages.size)
+        assertEquals(YCBTBytes.date(secondStart), events[1]._timestamp)
         assertTrue(events[1].completeSession)
+        assertEquals(90, events[1].stages.size)
     }
 
     @Test
@@ -630,7 +410,126 @@ class YCBTHealthRecordsTest {
         assertFalse(YCBTHealthRecords.decode(capturedHeartRecords, YCBTHistoryType.HEART).isEmpty())
     }
 
-    private fun sleepSession(segments: List<Pair<Int, Int>>): ByteArray {
+    /**
+     * Issue #63: the stored run has to end where the ring says the session ended. Concatenating
+     * each segment's rounded minutes drifts — 470 against this record's declared 474 — and
+     * `completeSessionSurvivors` grows its retirement run across blocks that abut end-to-start,
+     * so a minute of drift in the other direction retires a whole neighbouring session.
+     */
+    @Test
+    fun `a session spans exactly the header's declared start and end`() {
+        val event = YCBTHealthRecords.sleep(capturedNight).first() as RingDecodedEvent.SleepTimeline
+        val headerStart = 0x31dee99f
+        val headerEnd = 0x31df58bd
+        assertEquals(YCBTBytes.date(headerStart), event._timestamp)
+        assertEquals((headerEnd - headerStart) / 60, event.stages.size)
+    }
+
+    /**
+     * Issue #63: the night that broke on rc6 — two records a minute apart. The first record's
+     * segments round one minute long, which under concatenation put its end exactly on the
+     * second's start; the merge rule then read the two as one contiguous run and retired the
+     * first. Placed against the header, the minute of gap survives.
+     */
+    @Test
+    fun `a record whose segments round long still ends at its declared end`() {
+        val firstStart = 0x31def01c
+        val firstEnd = firstStart + 322 * 60
+        val secondStart = firstEnd + 60
+        // Sub-minute segments: concatenation floors each at a minute and overshoots the record.
+        val first = sleepRecord(
+            firstStart,
+            firstEnd,
+            listOf(0xf2 to 320 * 60) + List(4) { 0xf1 to 20 },
+        )
+        val second = sleepRecord(secondStart, secondStart + 151 * 60, listOf(0xf2 to 151 * 60))
+        val timelines = YCBTHealthRecords.sleep(first + second)
+            .filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(2, timelines.size)
+        assertEquals(322, timelines[0].stages.size)
+        val firstEndInstant = timelines[0]._timestamp.plusSeconds(322 * 60L)
+        assertTrue(firstEndInstant.isBefore(timelines[1]._timestamp))
+        assertEquals(60L, timelines[1]._timestamp.epochSecond - firstEndInstant.epochSecond)
+    }
+
+    /** A record the ring bounds itself reports wake for the minutes no segment claims. */
+    @Test
+    fun `minutes no segment claims read as awake`() {
+        val start = 0x31def01c
+        val record = sleepRecord(start, start + 60 * 60, listOf(0xf2 to 30 * 60))
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(60, event.stages.size)
+        assertEquals(30, event.stages.count { it == SleepStage.LIGHT })
+        assertEquals(30, event.stages.count { it == SleepStage.AWAKE })
+        assertTrue(event.stages.take(30).all { it == SleepStage.LIGHT })
+    }
+
+    /**
+     * Issue #63: the ring emits zero-length segments, and one that shares a start time with a
+     * real segment used to take its place in the de-duplication — the real segment was dropped
+     * and the minutes it claimed read as wake instead. All four duplicate starts in the
+     * reporter's thirteen-record night dump are this shape: a zero-length LIGHT immediately
+     * ahead of a real 76–105 s segment.
+     */
+    @Test
+    fun `a zero-length segment does not shadow a real segment sharing its start`() {
+        val start = 0x31def01c
+        val record = sleepRecord(start, start + 10 * 60, listOf(
+            0xf2 to 5 * 60,     // LIGHT, 00:00–05:00
+            0xf1 to 0,          // zero-length DEEP at 05:00 — claims no minute
+            0xf3 to 5 * 60,     // REM, 05:00–10:00, sharing the zero-length segment's start
+        ))
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+
+        assertEquals(5, event.stages.count { it == SleepStage.LIGHT })
+        assertEquals(5, event.stages.count { it == SleepStage.REM })
+        assertFalse(event.stages.contains(SleepStage.AWAKE))
+    }
+
+    /** A record whose header carries no bounds keeps the segment-concatenation reading. */
+    @Test
+    fun `a record with no header bounds falls back to concatenated segments`() {
+        val event = YCBTHealthRecords.sleep(sleepSession(listOf(0xf2 to 30 * 60, 0xf1 to 30 * 60)))
+            .first() as RingDecodedEvent.SleepTimeline
+        assertEquals(60, event.stages.size)
+    }
+
+    /** `af fa` record with the vendor header's `startTime` (+4) and `endTime` (+8) filled in. */
+    private fun sleepRecord(
+        startSeconds: Int,
+        endSeconds: Int,
+        segments: List<Pair<Int, Int>>,
+    ): ByteArray {
+        val recordLength = 20 + segments.size * 8
+        val out = mutableListOf<Byte>()
+        fun u16(value: Int) {
+            out.add((value and 0xFF).toByte())
+            out.add(((value shr 8) and 0xFF).toByte())
+        }
+        fun u32(value: Int) {
+            u16(value and 0xFFFF)
+            u16((value shr 16) and 0xFFFF)
+        }
+        out.add(0xaf.toByte())
+        out.add(0xfa.toByte())
+        u16(recordLength)
+        u32(startSeconds)
+        u32(endSeconds)
+        repeat(8) { out.add(0) }
+        var at = startSeconds
+        for ((tag, seconds) in segments) {
+            out.add(tag.toByte())
+            u32(at)
+            out.add((seconds and 0xFF).toByte())
+            out.add(((seconds shr 8) and 0xFF).toByte())
+            out.add(((seconds shr 16) and 0xFF).toByte())
+            at += seconds
+        }
+        return out.toByteArray()
+    }
+
+    private fun sleepSession(segments: List<Pair<Int, Int>>, baseStart: Int = 0x31def01c): ByteArray {
         val recordLength = 20 + segments.size * 8
         val out = mutableListOf<Byte>()
         out.add(0xaf.toByte())
@@ -639,7 +538,7 @@ class YCBTHealthRecordsTest {
         out.add((recordLength shr 8).toByte())
         repeat(16) { out.add(0) }
         for ((index, segment) in segments.withIndex()) {
-            val start = 0x31def01c + index * 3600
+            val start = baseStart + index * 3600
             out.add(segment.first.toByte())
             out.add((start and 0xFF).toByte())
             out.add(((start shr 8) and 0xFF).toByte())
@@ -652,89 +551,94 @@ class YCBTHealthRecordsTest {
         return out.toByteArray()
     }
 
-    private fun sleepSession(
-        sessionStart: Instant,
-        sessionEnd: Instant,
-        segments: List<Triple<Int, Instant, Int>>,
-    ): ByteArray {
-        val recordLength = 20 + segments.size * 8
-        val out = ByteArray(recordLength)
-        out[0] = 0xaf.toByte()
-        out[1] = 0xfa.toByte()
-        putU16(out, 2, recordLength)
-        putU32(out, 4, YCBTBytes.ringSeconds(sessionStart))
-        putU32(out, 8, YCBTBytes.ringSeconds(sessionEnd))
-        segments.forEachIndexed { index, (tag, start, durationSeconds) ->
-            val offset = 20 + index * 8
-            out[offset] = tag.toByte()
-            putU32(out, offset + 1, YCBTBytes.ringSeconds(start))
-            out[offset + 5] = (durationSeconds and 0xff).toByte()
-            out[offset + 6] = ((durationSeconds ushr 8) and 0xff).toByte()
-            out[offset + 7] = ((durationSeconds ushr 16) and 0xff).toByte()
-        }
-        return out
+    // ── Issue #111: a one-second seam is not a waking ─────────────────────
+
+    /**
+     * The reporter's Oct 8–9 night: LIGHT from 04:52:06 for 748 s ends at 05:04:34 and REM starts at
+     * 05:04:35. Against the record's start that is minute 315.48 (rounds to 315) and 315.5 (rounds to
+     * 316), so minute 315 used to keep the AWAKE filler.
+     */
+    @Test
+    fun `a one-second seam between segments leaves no awake minute`() {
+        val start = 0x31def01c
+        val lightStart = start + 303 * 60 + 1
+        val remStart = lightStart + 748 + 1                 // LIGHT ends at 315.48 min, REM opens at 315.5
+        val end = remStart + 30 * 60
+        val record = sleepRecordAt(
+            start, end,
+            listOf(Triple(0xf1, start, 303 * 60 + 1), Triple(0xf2, lightStart, 748), Triple(0xf3, remStart, 30 * 60)),
+        )
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(0, event.stages.count { it == SleepStage.AWAKE })
     }
 
-    private fun provenOvernightFragments(): ByteArray {
-        val a = localInstant("2026-08-24T02:07:46")
-        val b = localInstant("2026-08-24T05:01:08")
-        val c = localInstant("2026-08-24T06:33:32")
-        return sleepSession(
-            a,
-            localInstant("2026-08-24T03:08:32"),
-            timestampedSegments(a, listOf(0xf2 to 900, 0xf4 to 600, 0xf1 to 1_200, 0xf3 to 942)),
-        ) + sleepSession(
-            b,
-            localInstant("2026-08-24T05:51:46"),
-            timestampedSegments(b, listOf(0xf2 to 600, 0xf1 to 900, 0xf3 to 600, 0xf2 to 936)),
-        ) + sleepSession(
-            c,
-            localInstant("2026-08-24T08:30:17"),
-            timestampedSegments(
-                c,
-                listOf(
-                    0xf2 to 780, 0xf1 to 780, 0xf3 to 780,
-                    0xf2 to 780, 0xf1 to 780, 0xf3 to 780,
-                    0xf2 to 780, 0xf1 to 780, 0xf3 to 759,
-                ),
+    /** The comment on #111: the last stage ends at 06:58:33 and the record at 06:58:34. */
+    @Test
+    fun `a one-second seam before the record's end leaves no awake minute`() {
+        val start = 0x31def01c + 20
+        val end = start + 120 * 60 + 31
+        val record = sleepRecordAt(start, end, listOf(Triple(0xf2, start, 120 * 60 + 30)))
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(0, event.stages.count { it == SleepStage.AWAKE })
+    }
+
+    /** A hole the ring really left — a minute or more — still reads as wake. */
+    @Test
+    fun `a gap of a minute or more between segments stays awake`() {
+        val start = 0x31def01c
+        val record = sleepRecordAt(
+            start, start + 63 * 60,
+            listOf(Triple(0xf2, start, 30 * 60), Triple(0xf1, start + 33 * 60, 30 * 60)),
+        )
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(63, event.stages.size)
+        assertEquals(3, event.stages.count { it == SleepStage.AWAKE })
+    }
+
+    /** A segment nested inside another must not hide the seam to the one that follows. */
+    @Test
+    fun `a nested segment does not reopen the seam after its container`() {
+        val start = 0x31def01c
+        val record = sleepRecordAt(
+            start, start + 20 * 60,
+            listOf(
+                Triple(0xf2, start, 11 * 60 + 29),                  // ends at 11.48 min
+                Triple(0xf1, start + 100, 100),                     // nested inside the first
+                Triple(0xf3, start + 11 * 60 + 30, 8 * 60 + 30),    // starts at 11.5 min
             ),
         )
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(0, event.stages.count { it == SleepStage.AWAKE })
     }
 
-    private fun completeSleepRecord(start: Instant, end: Instant, tag: Int = 0xf2): ByteArray =
-        sleepSession(start, end, listOf(Triple(tag, start, java.time.Duration.between(start, end).seconds.toInt())))
-
-    private fun timestampedSegments(
-        start: Instant,
-        stages: List<Pair<Int, Int>>,
-    ): List<Triple<Int, Instant, Int>> {
-        var cursor = start
-        return stages.map { (tag, duration) ->
-            Triple(tag, cursor, duration).also { cursor = cursor.plusSeconds(duration.toLong()) }
+    /** Like [sleepRecord], but each segment carries its own start: `(tag, startSeconds, seconds)`. */
+    private fun sleepRecordAt(
+        startSeconds: Int,
+        endSeconds: Int,
+        segments: List<Triple<Int, Int, Int>>,
+    ): ByteArray {
+        val out = mutableListOf<Byte>()
+        fun u16(value: Int) {
+            out.add((value and 0xFF).toByte())
+            out.add(((value shr 8) and 0xFF).toByte())
         }
-    }
-
-    private fun localInstant(value: String): Instant =
-        LocalDateTime.parse(value).atZone(ZoneId.systemDefault()).toInstant()
-
-    private fun assertUnknownCoverage(
-        timeline: RingDecodedEvent.SleepTimeline,
-        start: Instant,
-        end: Instant,
-    ) {
-        val covering = timeline.segments.filter { it.start < end && it.end > start }
-        assertTrue(covering.all { it.stage == SleepStage.UNKNOWN })
-        assertTrue(covering.first().start <= start)
-        assertTrue(covering.last().end >= end)
-        assertTrue(covering.zipWithNext().all { (left, right) -> left.end == right.start })
-    }
-
-    private fun putU16(out: ByteArray, offset: Int, value: Int) {
-        out[offset] = (value and 0xff).toByte()
-        out[offset + 1] = ((value ushr 8) and 0xff).toByte()
-    }
-
-    private fun putU32(out: ByteArray, offset: Int, value: Int) {
-        repeat(4) { out[offset + it] = ((value ushr (it * 8)) and 0xff).toByte() }
+        fun u32(value: Int) {
+            u16(value and 0xFFFF)
+            u16((value shr 16) and 0xFFFF)
+        }
+        out.add(0xaf.toByte())
+        out.add(0xfa.toByte())
+        u16(20 + segments.size * 8)
+        u32(startSeconds)
+        u32(endSeconds)
+        repeat(8) { out.add(0) }
+        for ((tag, at, seconds) in segments) {
+            out.add(tag.toByte())
+            u32(at)
+            out.add((seconds and 0xFF).toByte())
+            out.add(((seconds shr 8) and 0xFF).toByte())
+            out.add(((seconds shr 16) and 0xFF).toByte())
+        }
+        return out.toByteArray()
     }
 }

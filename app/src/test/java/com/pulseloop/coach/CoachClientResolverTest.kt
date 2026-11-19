@@ -180,10 +180,18 @@ class CoachClientResolverTest {
     @Test
     fun testCoachSettingsKeepNullEqualsOmitContract() {
         // null store/effort must stay null so no `reasoning` field is sent.
-        assertNull(CoachClientResolver.coachSettings(null).reasoningEffort)
-        assertNull(CoachClientResolver.coachSettings(CoachProviderSettings()).reasoningEffort)
+        assertNull(CoachClientResolver.coachSettings(null, "gpt-6.1-sol").reasoningEffort)
+        assertNull(CoachClientResolver.coachSettings(CoachProviderSettings(), "gpt-6.1-sol").reasoningEffort)
         assertEquals("high", CoachClientResolver.coachSettings(
-            CoachProviderSettings(reasoningEffort = "high")).reasoningEffort)
+            CoachProviderSettings(reasoningEffort = "high"), "gpt-6.1-sol").reasoningEffort)
+    }
+
+    /** iOS #140: `none` left over after switching from Luna to Sol is an HTTP 400 on every turn. */
+    @Test
+    fun testCoachSettingsDropAnEffortTheModelRejects() {
+        val s = CoachProviderSettings(reasoningEffort = "none")
+        assertEquals("none", CoachClientResolver.coachSettings(s, "gpt-6-luna").reasoningEffort)
+        assertNull(CoachClientResolver.coachSettings(s, "gpt-6.1-sol").reasoningEffort)
     }
 
     @Test

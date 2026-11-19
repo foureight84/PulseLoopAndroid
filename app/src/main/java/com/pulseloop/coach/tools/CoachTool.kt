@@ -8,12 +8,16 @@ import kotlinx.serialization.json.JsonObject
  */
 data class CoachToolDef(
     val name: String,
-    val publicLabel: String,
+    /** The progress line shown while the tool runs ("Looking at your sleep"). */
+    @androidx.annotation.StringRes val publicLabelRes: Int,
     val description: String,
     val parameters: JsonObject,
     val strict: Boolean = true,
     val run: (String, ToolExecutionContext) -> ToolResult,
-)
+) {
+    /** Resolved per call, so it follows a language change without rebuilding the registry. */
+    val publicLabel: String get() = com.pulseloop.util.L10n.get(publicLabelRes)
+}
 
 data class ToolResult(
     val jsonString: String,
@@ -42,6 +46,19 @@ data class ToolExecutionContext(
      * compile unchanged (iOS's ToolExecutionContext has the same optional foodClient).
      */
     val foodClient: com.pulseloop.nutrition.FoodDatabaseClient? = null,
+    /**
+     * The resolved step-source preference (review item 5, PR #98). Path B keeps phone and
+     * ring steps in separate columns; the retrieval tools must quote the same figure the
+     * Today tile shows. Populated per turn from
+     * [com.pulseloop.AppServices.stepSourcePrefs] at the tool context factory, so a toggle
+     * made mid-session is reflected on the next call.
+     *
+     * Defaults to false (ring steps) so existing test harnesses compile unchanged. Any
+     * production call site that reads `.steps` from an `activity_daily` row and is
+     * user-visible must pass this through `com.pulseloop.data.DisplaySteps` — see
+     * [com.pulseloop.data.DisplaySteps] for the pick rule.
+     */
+    val preferPhone: Boolean = false,
 )
 
 data class CoachFeatureFlags(
@@ -49,7 +66,7 @@ data class CoachFeatureFlags(
     val webSearchEnabled: Boolean = false,
     val writeToolsEnabled: Boolean = false,
     val liveMeasurementsEnabled: Boolean = false,
-    val model: String = "gpt-5.4",
+    val model: String = com.pulseloop.coach.config.OpenAIModel.DEFAULT.slug,
     val maxRounds: Int = 15,
     val maxToolCalls: Int = 30,
     val settings: CoachSettings = CoachSettings(),

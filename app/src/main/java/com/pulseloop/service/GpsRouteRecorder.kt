@@ -43,7 +43,10 @@ class GpsRouteRecorder(private val context: Context, private val db: PulseLoopDa
     // Filtering thresholds shared by all activity types; per-type speed/movement thresholds
     // come from `ActivityTrackingProfile`.
     private val maxHorizontalAccuracy = 30.0f  // metres; reject poorer/invalid fixes
-    private val maxFixAgeMs = 5_000L           // milliseconds; reject stale cached fixes
+    // milliseconds; reject stale cached fixes. Must exceed the request's maxUpdateDelay (5 s) plus
+    // its interval: with the screen off the provider batches fixes, and a 5 s limit dropped whole
+    // batches as "stale" mid-run (#139).
+    private val maxFixAgeMs = 15_000L
     private val maxCourseDelta = 25.0          // degrees; turn detection keeps cornering detail
 
     private val locationCallback = object : LocationCallback() {

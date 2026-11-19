@@ -56,8 +56,17 @@ class LuckRingDriver(private val writer: RingCommandWriter?) : WearableDriver {
             historySync.noteReceived(frame.dataType)
         }
 
-        return decoder.decode(frame)
+        return decoder.decode(frame).filterNot(::isHrv)
     }
+
+    /**
+     * The ring's HRV byte isn't kept (issue #112, see [LuckRingCoordinator.capabilities]). The
+     * history pass no longer asks for it, but the ring can still push a live HRV frame on its own.
+     * That frame is still ACKed above and still shows in the raw-packet feed.
+     */
+    private fun isHrv(event: RingDecodedEvent): Boolean =
+        event is RingDecodedEvent.HrvSample ||
+            (event is RingDecodedEvent.HistoryMeasurement && event.kind_field == MeasurementKind.HRV)
 
     override fun makeSyncEngine(): RingSyncEngine = LuckRingSyncEngine(writer, historySync)
 }

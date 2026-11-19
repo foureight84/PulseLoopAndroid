@@ -1,5 +1,7 @@
 package com.pulseloop.coach.orchestration
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.attachments.CoachImagePayload
 import com.pulseloop.coach.context.CoachContextPacket
 import com.pulseloop.coach.context.CoachPromptBuilder
@@ -113,7 +115,7 @@ class CoachOrchestrator(
         // Initial input: system + developer + recent turns + the new user message.
         // Images only ever ride on user turns (system/developer/assistant stay text).
         val input = mutableListOf<JsonObject>()
-        input.add(OpenAIRequestBuilder.message("system", CoachPromptBuilder.systemPrompt))
+        input.add(OpenAIRequestBuilder.message("system", CoachPromptBuilder.systemPrompt + com.pulseloop.coach.context.CoachLanguage.directive()))
         input.add(OpenAIRequestBuilder.message("developer", CoachPromptBuilder.developerMessage(packet)))
         for (m in recentMessages) {
             val isUser = m.role == "user"
@@ -170,7 +172,20 @@ class CoachOrchestrator(
             }
 
             rounds++
-            response = send(client, flags, outputs, toolSpecs, textFormat, response.id)
+            response = try {
+                send(client, flags, outputs, toolSpecs, textFormat, response.id)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The tools already ran (and may have written data). Keep their trace and any
+                // pending actions when the follow-up request times out or loses its connection;
+                // otherwise the error bubble hides the only evidence of what ran (iOS 6d006ec).
+                return@withContext TurnResult(
+                    assistant = CoachFallbacks.fallback(), trace = trace,
+                    pendingActions = toolContext.pendingActions.toList(),
+                    usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
+                    error = CoachTurnError.from(e))
+            }
             addUsage(response.usage)
         }
 
@@ -184,8 +199,19 @@ class CoachOrchestrator(
             // error bubble, but keep the trace from the tools that did run.
             TurnResult(
                 assistant = CoachFallbacks.parseError(), trace = trace,
+                pendingActions = toolContext.pendingActions.toList(),
                 usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
-                error = CoachTurnError(code = "Bad response", reason = e.reason))
+                error = CoachTurnError(code = L10n.get(R.string.cte_bad_response), reason = e.reason))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // A schema-repair request can fail after tools already ran: keep them attached to
+            // the error, as a parse exhaustion does (iOS 6d006ec).
+            TurnResult(
+                assistant = CoachFallbacks.fallback(), trace = trace,
+                pendingActions = toolContext.pendingActions.toList(),
+                usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
+                error = CoachTurnError.from(e))
         }
     }
 
@@ -204,8 +230,8 @@ class CoachOrchestrator(
             if (attempts > maxFinalAttempts) {
                 val snippet = current.outputText.trim().take(200)
                 throw ParseExhausted(
-                    "The model didn't return a valid structured answer after $maxFinalAttempts attempts." +
-                        if (snippet.isEmpty()) "" else " It replied: “$snippet…”")
+                    L10n.plural(R.plurals.cte_invalid_structured, maxFinalAttempts, maxFinalAttempts) +
+                        if (snippet.isEmpty()) "" else " " + L10n.get(R.string.cte_it_replied, snippet))
             }
             val repair = OpenAIRequestBuilder.message("user", "Your previous output did not match the required coach_response JSON schema. Return only valid JSON for that schema now.")
             current = send(client, flags, listOf(repair), emptyList(), coachResponseTextFormat, current.id)
@@ -294,7 +320,11 @@ object CoachResponseSchema {
                 "items" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
             "chart" to JsonObject(mapOf(
-                "type" to JsonPrimitive("object"),
+                // Nullable: most answers carry no chart. Under `strict: true` OpenAI requires
+                // every property to be listed in `required`, with optionality expressed as a
+                // null union — not by omitting the key (issue #77: the 400 was the missing
+                // `additionalProperties`, and an incomplete `required` was the next one).
+                "type" to JsonArray(listOf(JsonPrimitive("object"), JsonPrimitive("null"))),
                 "properties" to JsonObject(mapOf(
                     "chart_type" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     "title" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
@@ -313,13 +343,21 @@ object CoachResponseSchema {
                         )),
                     )),
                 )),
+                "required" to JsonArray(listOf(
+                    "chart_type", "title", "x_label", "y_label", "points",
+                ).map { JsonPrimitive(it) }),
+                "additionalProperties" to JsonPrimitive(false),
             )),
             "confidence" to JsonObject(mapOf(
                 "type" to JsonPrimitive("string"),
                 "enum" to JsonArray(listOf("low", "medium", "high").map { JsonPrimitive(it) }),
             )),
-            "safety_note" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-            "data_quality_note" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+            "safety_note" to JsonObject(mapOf(
+                "type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))),
+            )),
+            "data_quality_note" to JsonObject(mapOf(
+                "type" to JsonArray(listOf(JsonPrimitive("string"), JsonPrimitive("null"))),
+            )),
             "sources" to JsonObject(mapOf(
                 "type" to JsonPrimitive("array"),
                 "items" to JsonObject(mapOf(
@@ -329,7 +367,9 @@ object CoachResponseSchema {
                         "url" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                         "publisher" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     )),
-                    "required" to JsonArray(listOf(JsonPrimitive("title"), JsonPrimitive("url"))),
+                    "required" to JsonArray(listOf(
+                        JsonPrimitive("title"), JsonPrimitive("url"), JsonPrimitive("publisher"),
+                    )),
                     "additionalProperties" to JsonPrimitive(false),
                 )),
             )),
@@ -342,8 +382,13 @@ object CoachResponseSchema {
                 "items" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
             )),
         )),
+        // OpenAI strict structured outputs (issue #77): `required` must list **every**
+        // property — optionality is a null union, not a missing key — and every object
+        // needs `additionalProperties: false`. CoachResponseParser still only demands the
+        // four load-bearing keys, so a compliant reply decodes with the rest defaulted.
         "required" to JsonArray(listOf(
-            "response_type", "title", "summary", "confidence"
+            "response_type", "title", "summary", "bullets", "chart", "safety_note",
+            "data_quality_note", "sources", "follow_up_chips", "actions_taken", "confidence",
         ).map { JsonPrimitive(it) }),
         "additionalProperties" to JsonPrimitive(false),
     ))

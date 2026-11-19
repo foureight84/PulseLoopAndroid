@@ -33,8 +33,6 @@ class YCBTHistoryTransfer(
     private var retriedCurrentType = false
     private var unsupported: MutableSet<Int> = mutableSetOf()
     private var bufferCap = DEFAULT_BUFFER_CAP
-    private var expectedPackets: Int? = null
-    private var expectedBytes: Int? = null
     private var watchdogJob: Job? = null
     private var typeDeadline: Long? = null
 
@@ -80,8 +78,6 @@ class YCBTHistoryTransfer(
     private fun advance(): List<RingDecodedEvent> {
         cancelWatchdog()
         buffer = ByteArray(0)
-        expectedPackets = null
-        expectedBytes = null
         bufferCap = DEFAULT_BUFFER_CAP
         retriedCurrentType = false
         if (queue.isEmpty()) {
@@ -127,9 +123,9 @@ class YCBTHistoryTransfer(
 
     private fun handleHeader(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
         if (payload.size < YCBTHealth.HEADER_PAYLOAD_LENGTH) return advance()
-        expectedPackets = YCBTBytes.u16(payload, 2)
+        // The header's totals are an estimate used only to size the buffer; the terminal block is
+        // the authority on what actually arrived (issue #69).
         val totalBytes = YCBTBytes.u32(payload, 6)
-        expectedBytes = totalBytes
         buffer = ByteArray(0)
         bufferCap = totalBytes.coerceIn(0, MAX_BUFFER_CAP)
         state = State.RECEIVING
@@ -146,11 +142,21 @@ class YCBTHistoryTransfer(
     private fun handleTerminal(type: YCBTHistoryType, payload: ByteArray): List<RingDecodedEvent> {
         if (state == State.REQUEST_SENT && buffer.isEmpty()) return emptyList()
         if (payload.size < YCBTHealth.TERMINAL_PAYLOAD_LENGTH) return advance()
-        val packets = YCBTBytes.u16(payload, 0)
         val bytes = YCBTBytes.u16(payload, 2)
-        val terminalMatchesHeader = packets == expectedPackets && bytes == expectedBytes
+        // The terminal block's own byte count against what we assembled, and then the CRC. The
+        // packet count is deliberately NOT checked against the header's (issue #69).
+        //
+        // The vendor doesn't check it either: at `Sync_Block_Verify` (128) `DataUnpack` reads the
+        // two count bytes into locals it never compares, sizes its buffer from the *terminal's*
+        // length, and accepts on `crc16_compute(...) == crc` alone. Requiring the header's estimate
+        // to match cost a reporter every composite `05 18` record on their ring — the header
+        // declared 5 packets for 840 bytes while the ring then sent 6, because it packs whole
+        // 20-byte records per frame (7 × 20 = 140) rather than filling each one. Bytes and CRC were
+        // both correct every time; we rejected 42 records over an estimate the ring itself
+        // contradicts one frame later. It only bit above one packet, which is why the same record
+        // imported while the day was young and stopped once it grew.
         val terminalMatchesBuffer = bytes == buffer.size
-        if (!terminalMatchesHeader || !terminalMatchesBuffer) {
+        if (!terminalMatchesBuffer) {
             writer?.enqueue(YCBTHealthCommand.historyBlockAck(status = YCBTHealth.ACK_CRC_FAILURE))
             return retryOrSkip(type)
         }
