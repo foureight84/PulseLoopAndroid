@@ -1,5 +1,8 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
@@ -96,6 +99,9 @@ fun TodayScreen(
         MetricKind.entries.associateWith { VitalsCardFactory.card(it, inputs, vitals.profile) }
     }
     val hero = remember(state, sleep) { deriveHero(state, sleep) }
+    remember { com.pulseloop.service.RingClockStallStore.load(context) }
+    val clockStallAt by com.pulseloop.service.RingClockStallStore.suspectedAt.collectAsState()
+    var restartStep by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(RingRestartStep.NONE) }
 
     // Per-metric visibility + user order (iOS #64), read reactively so a hide/show/reorder
     // recomposes immediately (this is also the iOS #70 reactivity).
@@ -152,6 +158,14 @@ fun TodayScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // #142: a ring whose clock stopped looks exactly like an unworn ring; say so first.
+            if (clockStallAt != null) item {
+                RingClockStallCard(
+                    canRestart = coordinator?.let { !it.isConnected || it.canPowerOff } ?: true,
+                    onRestart = { restartStep = RingRestartStep.CONFIRM },
+                )
+            }
+
             // Top insight card. When the coach is on it owns this slot (tap → chat);
             // otherwise the deterministic hero fills it. Only ever one card here, so the coach
             // summary and the hero can't render the same content twice on one screen (iOS #42).
@@ -165,8 +179,8 @@ fun TodayScreen(
                         onTap = { navController?.navigate("coach") },
                     )
                     coachEnabled -> CoachMessageCard(
-                        headline = "Want a recap?",
-                        body = "Want a summary from the latest ring context? Tap to open the coach.",
+                        headline = stringResource(R.string.today_recap_title),
+                        body = stringResource(R.string.today_recap_body),
                         chips = emptyList(),
                         onTap = { navController?.navigate("coach") },
                     )
@@ -213,6 +227,7 @@ fun TodayScreen(
             state = pullRefreshState,
             modifier = Modifier.align(Alignment.TopCenter),
         )
+        RingRestartDialog(restartStep, { restartStep = it }, coordinator)
     }
 }
 
@@ -233,9 +248,9 @@ private fun ActivityTileFor(
             ActivityRing(state.calories, state.caloriesGoal.toDouble(), PulseColors.calories),
         ),
         values = buildList {
-            state.steps?.let { add(ActivityTileValue("STEPS", Formats.count(it), PulseColors.steps)) }
+            state.steps?.let { add(ActivityTileValue(stringResource(R.string.tile_steps), Formats.count(it), PulseColors.steps)) }
             distText?.let { add(ActivityTileValue(UnitConverter.distanceUnit(units), it, PulseColors.distance)) }
-            state.calories?.let { add(ActivityTileValue("CAL", Formats.count(it.toInt()), PulseColors.calories)) }
+            state.calories?.let { add(ActivityTileValue(stringResource(R.string.tile_cal), Formats.count(it.toInt()), PulseColors.calories)) }
         },
         modifier = modifier,
         onTap = onTap,
@@ -278,7 +293,7 @@ private fun ChartTile(card: VitalCardState, values: List<Double>, modifier: Modi
         // Issue #103: hourly SpO₂ computed from heart rate is labelled on every surface it reaches.
         if (card.isEstimated) {
             Text(
-                "Estimated from heart rate", fontSize = 11.sp, color = ZonePalette.ZoneAmber,
+                stringResource(R.string.today_estimated_from_hr), fontSize = 11.sp, color = ZonePalette.ZoneAmber,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
@@ -345,13 +360,13 @@ private fun BloodPressureTile(
         val dia = vitals.bpDiastolic?.toDouble()
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             if (sys == null || dia == null) {
-                Text("No reading", fontSize = 12.sp, color = PulseColors.textMuted)
+                Text(stringResource(R.string.today_no_reading), fontSize = 12.sp, color = PulseColors.textMuted)
             } else {
                 val sysZones = VitalsThresholdEngine.zones(MetricKind.BLOOD_PRESSURE, vitals.profile)
                 val diaZones = VitalsThresholdEngine.diastolicReferenceZones()
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    BpRingColumn("SYS", sys, 80.0..190.0, sysZones, PulseColors.bloodPressure, Modifier.weight(1f))
-                    BpRingColumn("DIA", dia, 50.0..130.0, diaZones, PulseColors.bloodPressure.copy(alpha = 0.7f), Modifier.weight(1f))
+                    BpRingColumn(stringResource(R.string.bp_sys_short), sys, 80.0..190.0, sysZones, PulseColors.bloodPressure, Modifier.weight(1f))
+                    BpRingColumn(stringResource(R.string.bp_dia_short), dia, 50.0..130.0, diaZones, PulseColors.bloodPressure.copy(alpha = 0.7f), Modifier.weight(1f))
                 }
             }
         }
@@ -395,12 +410,12 @@ private data class Hero(val title: String, val summary: String, val chips: List<
 /** Ported from TodayInsights.deriveHero (TodayView.swift), minus the iOS calibration branch. */
 private fun deriveHero(state: TodayViewModel.TodayState, sleep: SleepViewModel.SleepState): Hero {
     val steps = state.steps ?: return Hero(
-        title = "Waiting for first sync",
-        summary = "Sync your ring to start collecting movement, heart rate, blood oxygen, and recovery context.",
+        title = L10n.get(R.string.hero_waiting_title),
+        summary = L10n.get(R.string.hero_waiting_summary),
         chips = listOf(
-            ToneChip("Baseline pending", ChipTone.WARN),
-            ToneChip(if (state.heartRate == null) "HR pending" else "HR collected", ChipTone.NEUTRAL),
-            ToneChip("Sleep pending", ChipTone.WARN),
+            ToneChip(L10n.get(R.string.chip_baseline_pending), ChipTone.WARN),
+            ToneChip(if (state.heartRate == null) L10n.get(R.string.chip_hr_pending) else L10n.get(R.string.chip_hr_collected), ChipTone.NEUTRAL),
+            ToneChip(L10n.get(R.string.chip_sleep_pending), ChipTone.WARN),
         ),
     )
 
@@ -411,19 +426,17 @@ private fun deriveHero(state: TodayViewModel.TodayState, sleep: SleepViewModel.S
     val stepsDelta = if (base == 0.0) 0 else (((steps - base) / base) * 100).toInt()
 
     val title = when {
-        stepsDelta >= 20 -> "Building momentum"
-        stepsDelta <= -20 -> "Take it easy"
-        else -> "Steady build"
+        stepsDelta >= 20 -> L10n.get(R.string.hero_momentum)
+        stepsDelta <= -20 -> L10n.get(R.string.hero_take_it_easy)
+        else -> L10n.get(R.string.hero_steady)
     }
 
-    val hrStr = state.heartRate?.let { "$it bpm" } ?: "—"
+    val hrStr = state.heartRate?.let { L10n.get(R.string.value_bpm, it) } ?: "—"
     val night = sleep.lastNight
     val summary = if (night == null) {
-        "You're at %,d steps. Sync after waking to add recovery context.".format(steps)
+        L10n.plural(R.plurals.hero_steps_only, steps, steps)
     } else {
-        "You're at %,d steps, %dh %02dm of sleep, and your latest reading is %s.".format(
-            steps, night.totalMinutes / 60, night.totalMinutes % 60, hrStr,
-        )
+        L10n.plural(R.plurals.hero_steps_sleep, steps, steps, night.totalMinutes / 60, night.totalMinutes % 60, hrStr)
     }
 
     val stepsTone = if (stepsDelta > 5) ChipTone.UP else if (stepsDelta < -5) ChipTone.DOWN else ChipTone.NEUTRAL
@@ -437,11 +450,11 @@ private fun deriveHero(state: TodayViewModel.TodayState, sleep: SleepViewModel.S
         summary = summary,
         chips = listOf(
             ToneChip(
-                if (series.size > 1) "Steps ${if (stepsDelta >= 0) "+" else ""}$stepsDelta%" else "Steps collected",
+                if (series.size > 1) L10n.get(R.string.chip_steps_delta, (if (stepsDelta >= 0) "+" else "") + stepsDelta) else L10n.get(R.string.chip_steps_collected),
                 stepsTone,
             ),
-            ToneChip(if (state.heartRate == null) "HR pending" else "HR collected", hrTone),
-            ToneChip(if (night != null) "Sleep synced" else "Sleep pending", if (night != null) ChipTone.NEUTRAL else ChipTone.WARN),
+            ToneChip(if (state.heartRate == null) L10n.get(R.string.chip_hr_pending) else L10n.get(R.string.chip_hr_collected), hrTone),
+            ToneChip(if (night != null) L10n.get(R.string.chip_sleep_synced) else L10n.get(R.string.chip_sleep_pending), if (night != null) ChipTone.NEUTRAL else ChipTone.WARN),
         ),
     )
 }

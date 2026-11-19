@@ -1,5 +1,8 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -149,8 +152,8 @@ fun WorkoutSummaryScreen(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete workout?") },
-            text = { Text("This removes the session and its recorded route. This can't be undone.") },
+            title = { Text(stringResource(R.string.workout_delete_title)) },
+            text = { Text(stringResource(R.string.workout_delete_body)) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
@@ -162,9 +165,9 @@ fun WorkoutSummaryScreen(
                         com.pulseloop.health.HealthConnectWorkoutDeletion.removeSessionRecords(context, s.id)
                         onBack()
                     }
-                }) { Text("Delete", color = PulseColors.danger) }
+                }) { Text(stringResource(R.string.action_delete), color = PulseColors.danger) }
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 
@@ -205,11 +208,11 @@ private fun EditWorkoutSheet(
 
     val pauseMs = (session.totalPauseSeconds * 1000).toLong()
     val validationMessage = when {
-        endedAt > System.currentTimeMillis() -> "End time can't be in the future."
+        endedAt > System.currentTimeMillis() -> stringResource(R.string.workout_end_future)
         endedAt - startedAt <= pauseMs ->
             if (session.totalPauseSeconds > 0)
-                "The window must be longer than the ${maxOf(1, (session.totalPauseSeconds / 60).toInt())} min of pauses in this workout."
-            else "End must be after the start."
+                stringResource(R.string.workout_window_pauses, maxOf(1, (session.totalPauseSeconds / 60).toInt()))
+            else stringResource(R.string.workout_end_after_start)
         else -> null
     }
 
@@ -218,9 +221,9 @@ private fun EditWorkoutSheet(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Edit workout", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = PulseColors.textPrimary)
+            Text(stringResource(R.string.workout_edit), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = PulseColors.textPrimary)
 
-            EditFieldRow("Activity") {
+            EditFieldRow(stringResource(R.string.workout_field_activity)) {
                 Box {
                     OutlinedButton(onClick = { typeExpanded = true }) {
                         Icon(ActivityMeta.icon(type), null, tint = PulseColors.accent, modifier = Modifier.size(16.dp))
@@ -239,16 +242,16 @@ private fun EditWorkoutSheet(
                 }
             }
 
-            EditFieldRow("Starts") {
+            EditFieldRow(stringResource(R.string.workout_field_starts)) {
                 DateTimeButton(startedAt) { startedAt = it }
             }
-            EditFieldRow("Ends") {
+            EditFieldRow(stringResource(R.string.workout_field_ends)) {
                 DateTimeButton(endedAt) { endedAt = it }
             }
 
             Text(
                 validationMessage
-                    ?: "Distance, calories, and heart-rate stats are recalculated for the new window.",
+                    ?: stringResource(R.string.workout_recalc_note),
                 fontSize = 12.sp,
                 color = if (validationMessage != null) PulseColors.warning else PulseColors.textMuted,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -264,11 +267,11 @@ private fun EditWorkoutSheet(
             ) {
                 Icon(Icons.Filled.Check, null)
                 Spacer(Modifier.width(8.dp))
-                Text("Save changes", fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.action_save_changes), fontWeight = FontWeight.SemiBold)
             }
 
             TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                Text("Cancel", color = PulseColors.textPrimary, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.action_cancel), color = PulseColors.textPrimary, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -328,9 +331,9 @@ internal fun DateTimeButton(valueMillis: Long, onChange: (Long) -> Unit) {
                     }
                     showDate = false
                     showTime = true
-                }) { Text("Next") }
+                }) { Text(stringResource(R.string.action_next)) }
             },
-            dismissButton = { TextButton(onClick = { showDate = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { showDate = false }) { Text(stringResource(R.string.action_cancel)) } },
         ) { DatePicker(state = state, title = null) }
     }
 
@@ -344,7 +347,7 @@ internal fun DateTimeButton(valueMillis: Long, onChange: (Long) -> Unit) {
         )
         AlertDialog(
             onDismissRequest = { showTime = false },
-            title = { Text("Time") },
+            title = { Text(stringResource(R.string.workout_time)) },
             text = { TimePicker(state = timeState) },
             confirmButton = {
                 TextButton(onClick = {
@@ -356,15 +359,15 @@ internal fun DateTimeButton(valueMillis: Long, onChange: (Long) -> Unit) {
                     }.timeInMillis
                     onChange(result)
                     showTime = false
-                }) { Text("Done") }
+                }) { Text(stringResource(R.string.action_done)) }
             },
-            dismissButton = { TextButton(onClick = { showTime = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { showTime = false }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 }
 
 internal fun formatDateTime(millis: Long): String =
-    SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(millis))
+    com.pulseloop.util.LocaleFormats.simpleDateFormat("MMMdjmm", "MMM d, h:mm a").format(Date(millis))
 
 /** The calendar date of a local-epoch millis value, expressed at UTC midnight (what DatePicker wants). */
 internal fun localMillisToUtcMidnight(localMillis: Long): Long {
@@ -403,13 +406,13 @@ private fun dateRange(s: ActivitySessionEntity): String {
         it.get(Calendar.YEAR) == startCal.get(Calendar.YEAR) && it.get(Calendar.DAY_OF_YEAR) == startCal.get(Calendar.DAY_OF_YEAR)
     }
     val day = when {
-        sameDay -> "Today"
-        yesterday -> "Yesterday"
-        else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(s.startedAt))
+        sameDay -> L10n.get(R.string.period_today)
+        yesterday -> L10n.get(R.string.day_yesterday)
+        else -> com.pulseloop.util.LocaleFormats.simpleDateFormat("MMMd", "MMM d").format(Date(s.startedAt))
     }
     val ended = s.endedAt ?: return day
-    val start = SimpleDateFormat("h:mm", Locale.getDefault()).format(Date(s.startedAt))
-    val end = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(ended))
+    val start = com.pulseloop.util.LocaleFormats.simpleDateFormat("jmm", "h:mm").format(Date(s.startedAt))
+    val end = com.pulseloop.util.LocaleFormats.simpleDateFormat("jmm", "h:mm a").format(Date(ended))
     return "$day · $start – $end"
 }
 
@@ -425,23 +428,23 @@ private fun SummaryHeroBand(s: ActivitySessionEntity, durationSec: Int?, units: 
         val dist = s.distanceMeters?.let { "%.2f".format(UnitConverter.distance(it, units)) }
         val third = when {
             metricSet.showsPace ->
-                M(ActivityMeta.pace(s.distanceMeters, durationSec, units) ?: "—", "PACE ${ActivityMeta.paceUnit(units)}", PulseColors.accent)
+                M(ActivityMeta.pace(s.distanceMeters, durationSec, units) ?: "—", stringResource(R.string.workout_pace_unit, ActivityMeta.paceUnit(units)), PulseColors.accent)
             metricSet.showsSpeed -> {
                 val parts = ActivityMeta.speedParts(s.distanceMeters, durationSec, units)
-                M(parts?.first ?: "—", parts?.second ?: "SPEED", PulseColors.accent)
+                M(parts?.first ?: "—", parts?.second ?: stringResource(R.string.workout_speed), PulseColors.accent)
             }
-            else -> M(s.calories?.let { "${it.toInt()}" } ?: "—", "CALORIES", PulseColors.calories)
+            else -> M(s.calories?.let { "${it.toInt()}" } ?: "—", stringResource(R.string.workout_calories_caps), PulseColors.calories)
         }
         listOf(
             M(dist ?: "—", UnitConverter.distanceUnit(units).uppercase(java.util.Locale.ROOT), PulseColors.distance),
-            M(dur, "DURATION", PulseColors.textPrimary),
+            M(dur, stringResource(R.string.workout_duration_caps), PulseColors.textPrimary),
             third,
         )
     } else {
         listOf(
-            M(dur, "DURATION", PulseColors.textPrimary),
-            M(durationSec?.let { "${it / 60}" } ?: "—", "ACTIVE MIN", PulseColors.success),
-            M(s.calories?.let { "${it.toInt()}" } ?: "—", "CALORIES", PulseColors.calories),
+            M(dur, stringResource(R.string.workout_duration_caps), PulseColors.textPrimary),
+            M(durationSec?.let { "${it / 60}" } ?: "—", stringResource(R.string.workout_active_min_caps), PulseColors.success),
+            M(s.calories?.let { "${it.toInt()}" } ?: "—", stringResource(R.string.workout_calories_caps), PulseColors.calories),
         )
     }
     val shape = RoundedCornerShape(20.dp)
@@ -470,10 +473,10 @@ private fun SummaryHeroBand(s: ActivitySessionEntity, durationSec: Int?, units: 
 @Composable
 private fun StatsGrid(s: ActivitySessionEntity) {
     val stats = buildList {
-        if (s.useGps) add("Calories" to (s.calories?.let { "${it.toInt()}" } ?: "—"))
-        add("Avg HR" to (s.avgHeartRate?.let { "${it.toInt()}" } ?: "—"))
-        add("Max HR" to (s.maxHeartRate?.let { "${it.toInt()}" } ?: "—"))
-        add("Min HR" to (s.minHeartRate?.let { "${it.toInt()}" } ?: "—"))
+        if (s.useGps) add(L10n.get(R.string.metric_calories) to (s.calories?.let { "${it.toInt()}" } ?: "—"))
+        add(L10n.get(R.string.workout_avg_hr) to (s.avgHeartRate?.let { "${it.toInt()}" } ?: "—"))
+        add(L10n.get(R.string.workout_max_hr) to (s.maxHeartRate?.let { "${it.toInt()}" } ?: "—"))
+        add(L10n.get(R.string.workout_min_hr) to (s.minHeartRate?.let { "${it.toInt()}" } ?: "—"))
         add("SpO₂" to (s.latestSpO2?.let { "${it.toInt()}%" } ?: "—"))
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -505,7 +508,7 @@ private fun StatsGrid(s: ActivitySessionEntity) {
 @Composable
 private fun SplitsCard(points: List<ActivityGpsPointEntity>, units: UnitSystem, activityType: String) {
     val splitMeters = if (units == UnitSystem.IMPERIAL) 1609.344 else 1000.0
-    val splitLabel = if (units == UnitSystem.IMPERIAL) "MI" else "KM"
+    val splitLabel = if (units == UnitSystem.IMPERIAL) stringResource(R.string.unit_mi).uppercase() else stringResource(R.string.unit_km).uppercase()
     val paceUnit = ActivityMeta.paceUnit(units)
     val profile = remember(activityType) { ActivityTrackingProfile.profile(activityType) }
     val splits = remember(points, splitMeters, profile) { RouteDistanceEngine.splitSeconds(points, splitMeters, profile) }
@@ -523,7 +526,7 @@ private fun SplitsCard(points: List<ActivityGpsPointEntity>, units: UnitSystem, 
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("SPLITS", fontSize = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.sp, color = PulseColors.textMuted)
+        Text(stringResource(R.string.workout_splits), fontSize = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.sp, color = PulseColors.textMuted)
         splits.forEachIndexed { index, seconds ->
             val isFastest = seconds == fastest
             val frac = if (slowest > fastest) (seconds - fastest) / (slowest - fastest) else 0.0
@@ -576,13 +579,13 @@ private fun MissingWorkout(onBack: () -> Unit) {
     ) {
         Icon(Icons.AutoMirrored.Filled.DirectionsRun, null, tint = PulseColors.textMuted, modifier = Modifier.size(48.dp))
         Spacer(Modifier.height(12.dp))
-        Text("Workout not found", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+        Text(stringResource(R.string.workout_not_found), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
         Spacer(Modifier.height(6.dp))
         Text(
-            "This workout is no longer in local storage. It may have been deleted or replaced.",
+            stringResource(R.string.workout_not_found_desc),
             fontSize = 14.sp, color = PulseColors.textMuted, textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(16.dp))
-        TextButton(onClick = onBack) { Text("Back", color = PulseColors.accent) }
+        TextButton(onClick = onBack) { Text(stringResource(R.string.action_back), color = PulseColors.accent) }
     }
 }

@@ -1,5 +1,7 @@
 package com.pulseloop.ui.components
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import androidx.compose.ui.graphics.Color
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ui.theme.MetricColors
@@ -22,8 +24,13 @@ data class MetricThresholds(
     val displayMax: Double,
     val zones: List<ThresholdZone>,
     val higherIsBetter: Boolean? = null,   // null = neutral / personal / relative
-    val unitLabel: String = "",
+    /** A unit that needs no translation ("%", "°C"). Ignored when [unitRes] is set. */
+    val unitText: String = "",
+    /** A translatable unit, resolved on each read so it follows a language change. */
+    @androidx.annotation.StringRes val unitRes: Int? = null,
 ) {
+    val unitLabel: String get() = unitRes?.let { L10n.get(it) } ?: unitText
+
     fun zoneFor(value: Double): ThresholdZone? =
         zones.firstOrNull { value >= it.start && value < it.end } ?: zones.lastOrNull()
 }
@@ -66,7 +73,7 @@ object MetricThresholdTable {
     private val heartRate = MetricThresholds(
         displayMin = 40.0, displayMax = 140.0,
         higherIsBetter = false,
-        unitLabel = "bpm",
+        unitRes = R.string.unit_bpm,
         zones = listOf(
             ThresholdZone("Low",      40.0,  50.0, MetricColors.ZoneLow),
             ThresholdZone("Good",     50.0,  90.0, MetricColors.ZoneGood),
@@ -78,7 +85,7 @@ object MetricThresholdTable {
     private val spo2 = MetricThresholds(
         displayMin = 85.0, displayMax = 100.0,
         higherIsBetter = true,
-        unitLabel = "%",
+        unitText = "%",
         zones = listOf(
             ThresholdZone("Concerning", 85.0, 90.0, MetricColors.ZoneConcern),
             ThresholdZone("Low",        90.0, 95.0, MetricColors.ZoneBorderline),
@@ -89,7 +96,7 @@ object MetricThresholdTable {
     private val stress = MetricThresholds(
         displayMin = 0.0, displayMax = 100.0,
         higherIsBetter = false,
-        unitLabel = "",
+        unitText = "",
         zones = listOf(
             ThresholdZone("Relaxed",   0.0, 30.0, MetricColors.ZoneGood),
             ThresholdZone("Normal",   30.0, 60.0, MetricColors.ZoneNormal),
@@ -101,7 +108,7 @@ object MetricThresholdTable {
     private val fatigue = MetricThresholds(
         displayMin = 0.0, displayMax = 100.0,
         higherIsBetter = false,
-        unitLabel = "",
+        unitText = "",
         zones = listOf(
             ThresholdZone("Relaxed",   0.0, 30.0, MetricColors.ZoneGood),
             ThresholdZone("Normal",   30.0, 60.0, MetricColors.ZoneNormal),
@@ -113,7 +120,7 @@ object MetricThresholdTable {
     private val hrv = MetricThresholds(
         displayMin = 0.0, displayMax = 120.0,
         higherIsBetter = true,
-        unitLabel = "ms",
+        unitRes = R.string.unit_ms,
         zones = listOf(
             ThresholdZone("Low",         0.0, 20.0, MetricColors.ZoneConcern),
             ThresholdZone("Below avg",  20.0, 50.0, MetricColors.ZoneBorderline),
@@ -124,7 +131,7 @@ object MetricThresholdTable {
     private val skinTemp = MetricThresholds(
         displayMin = 28.0, displayMax = 38.0,
         higherIsBetter = null,  // personal / relative
-        unitLabel = "°C",
+        unitText = "°C",
         zones = listOf(
             ThresholdZone("Low",      28.0, 31.0, MetricColors.ZoneLow),
             ThresholdZone("Normal",   31.0, 36.0, MetricColors.ZoneGood),
@@ -135,7 +142,7 @@ object MetricThresholdTable {
     private val bloodPressure = MetricThresholds(
         displayMin = 80.0, displayMax = 180.0,
         higherIsBetter = false,
-        unitLabel = "mmHg",
+        unitRes = R.string.unit_mmhg,
         zones = listOf(
             ThresholdZone("Normal",     80.0, 120.0, MetricColors.ZoneGood),
             ThresholdZone("Elevated",  120.0, 130.0, MetricColors.ZoneBorderline),
@@ -147,7 +154,7 @@ object MetricThresholdTable {
     private val bloodSugar = MetricThresholds(
         displayMin = 50.0, displayMax = 200.0,
         higherIsBetter = false,
-        unitLabel = "mg/dL",
+        unitRes = R.string.unit_mgdl,
         zones = listOf(
             ThresholdZone("Low",       50.0,  70.0, MetricColors.ZoneLow),
             ThresholdZone("Normal",    70.0, 100.0, MetricColors.ZoneGood),

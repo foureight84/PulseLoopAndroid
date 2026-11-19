@@ -215,9 +215,10 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
 
     override fun factoryReset() { send(CRPProtocol.factoryReset()) }
 
-    override fun powerOff() {
+    override fun powerOff(): Boolean {
         // No confirmed shut-down opcode in the v1 subset (the vendor uses a callback-gated
         // notification write). Left unsupported rather than sending a guessed command.
+        return false
     }
 
     override fun setGoal(steps: Int) {

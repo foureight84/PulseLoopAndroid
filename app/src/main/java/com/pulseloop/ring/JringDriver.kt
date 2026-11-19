@@ -270,6 +270,6 @@ class JringSyncEngine(
     }
 
     // Jring has no power-off or factory-reset capabilities — no-ops
-    override fun powerOff() {}
+    override fun powerOff(): Boolean = false
     override fun factoryReset() {}
 }

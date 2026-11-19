@@ -204,6 +204,10 @@ class YCBTEncoder {
     fun findDevice(): ByteArray =
         logical(YCBTGroup.APP_CONTROL, YCBTCommand.FIND_DEVICE, byteArrayOf(0x01, 0x05, 0x02))
 
+    /** Power the ring off (`03 16 01`); it comes back on when put on its charger (#142). */
+    fun shutDown(): ByteArray =
+        logical(YCBTGroup.APP_CONTROL, YCBTCommand.SHUT_DOWN, byteArrayOf(0x01))
+
     private fun liveMeasurement(enable: Boolean, mode: Int): ByteArray {
         return logical(YCBTGroup.APP_CONTROL, YCBTCommand.LIVE_MEASUREMENT, byteArrayOf(if (enable) 1 else 0, mode.toByte()))
     }

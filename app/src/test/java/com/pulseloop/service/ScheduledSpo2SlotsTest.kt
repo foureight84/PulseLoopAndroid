@@ -60,9 +60,16 @@ class ScheduledSpo2SlotsTest {
     fun `a late run near the top of the hour is not clear`() {
         assertTrue(ScheduledSpo2Slots.isClear(at(10, 30), 60))
         assertFalse(ScheduledSpo2Slots.isClear(at(10, 2), 60))
-        // Starting at 10:57 would still be measuring at 10:58:15 — too close to 11:00.
-        assertFalse(ScheduledSpo2Slots.isClear(at(10, 57), 60))
-        assertTrue(ScheduledSpo2Slots.isClear(at(10, 53), 60))
+        // 3 min before 11:00 gives 180 s >= 105 s for connect + sync + 75 s measurement.
+        assertTrue(ScheduledSpo2Slots.isClear(at(10, 57), 60))
+        // 2 min before 11:00 gives 120 s >= 105 s.
+        assertTrue(ScheduledSpo2Slots.isClear(at(10, 58), 60))
+        // Exact 105 s boundary.
+        assertTrue(ScheduledSpo2Slots.isClear(at(10, 58, 15), 60))
+        // 104 s < 105 s.
+        assertFalse(ScheduledSpo2Slots.isClear(at(10, 58, 16), 60))
+        // 60 s < 105 s.
+        assertFalse(ScheduledSpo2Slots.isClear(at(10, 59), 60))
     }
 
     @Test
@@ -122,8 +129,8 @@ class ScheduledSpo2SlotsTest {
         assertTrue(ScheduledSpo2Slots.isClear(at(11, 0), 120))
         // Late run at 22:25 (delayed from 22:00) is clear of 00:00 ring reading
         assertTrue(ScheduledSpo2Slots.isClear(at(22, 25), 120))
-        // 23:58 is 2 min before midnight reading => not clear
-        assertFalse(ScheduledSpo2Slots.isClear(at(23, 58), 120))
+        // 23:59 is 1 min before midnight reading => not clear
+        assertFalse(ScheduledSpo2Slots.isClear(at(23, 59), 120))
     }
 
     @Test
@@ -142,5 +149,65 @@ class ScheduledSpo2SlotsTest {
             t = ScheduledSpo2Slots.nextSlot(t, 180, 120)
             assertTrue("180m app slot $t on 120m ring grid", ScheduledSpo2Slots.isClear(t, 120))
         }
+    }
+
+    @Test
+    fun `isClearToMeasure only needs the 75 s measurement window before a reading`() {
+        // 75 s before 11:00 — exactly the measurement duration.
+        assertTrue(ScheduledSpo2Slots.isClearToMeasure(at(10, 58, 45), 60))
+        // 74 s before 11:00 — the measurement would still be running at the reading.
+        assertFalse(ScheduledSpo2Slots.isClearToMeasure(at(10, 58, 46), 60))
+        assertFalse(ScheduledSpo2Slots.isClearToMeasure(at(10, 59), 60))
+        // 90 s before 11:00: too late to start connect + sync, but fine to still be measuring.
+        assertTrue(ScheduledSpo2Slots.isClearToMeasure(at(10, 58, 30), 60))
+        assertFalse(ScheduledSpo2Slots.isClear(at(10, 58, 30), 60))
+        // Still inside the ring's own post-reading window.
+        assertFalse(ScheduledSpo2Slots.isClearToMeasure(at(10, 2), 60))
+    }
+
+    @Test
+    fun `nextClear just before the hour on a 60 min grid`() {
+        assertEquals(at(1, 5), ScheduledSpo2Slots.nextClear(at(0, 59), 60))
+        assertEquals(at(7, 5), ScheduledSpo2Slots.nextClear(at(6, 59), 60))
+        assertEquals(at(11, 5), ScheduledSpo2Slots.nextClear(at(10, 58, 30), 60))
+    }
+
+    @Test
+    fun `nextClear just after the hour on a 60 min grid`() {
+        assertEquals(at(1, 5), ScheduledSpo2Slots.nextClear(at(1, 2), 60))
+    }
+
+    @Test
+    fun `nextClear just before midnight rolls over to the next day`() {
+        assertEquals(at(0, 5, day = 22), ScheduledSpo2Slots.nextClear(at(23, 59), 60))
+        // 35 min grid: 23:55 + 5 min lands on midnight's own grid reset, so it slides to 00:05.
+        assertEquals(at(0, 5, day = 22), ScheduledSpo2Slots.nextClear(at(23, 54), 35))
+        assertEquals(at(0, 5, day = 22), ScheduledSpo2Slots.nextClear(at(23, 57), 35))
+    }
+
+    @Test
+    fun `nextClear always lands strictly after now on a clear moment`() {
+        for (interval in listOf(15, 20, 30, 35, 45, 60, 120)) {
+            for (minuteOfDay in 0 until 24 * 60) {
+                val t = at(minuteOfDay / 60, minuteOfDay % 60)
+                if (!ScheduledSpo2Slots.isClear(t, interval)) {
+                    val retry = ScheduledSpo2Slots.nextClear(t, interval)
+                    assertTrue(
+                        "interval $interval retry $retry is not after $t",
+                        retry.isAfter(t)
+                    )
+                    assertTrue(
+                        "interval $interval retry $retry is not clear",
+                        ScheduledSpo2Slots.isClear(retry, interval)
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a nextClear retry recovers onto the regular slot grid`() {
+        // A retry at 07:05 finishes measuring at 07:06:30; the next regular slot is 08:30.
+        assertEquals(at(8, 30), ScheduledSpo2Slots.nextSlot(at(7, 6, 30), 120, 60))
     }
 }

@@ -1,5 +1,7 @@
 package com.pulseloop.ring
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.*
@@ -69,7 +71,9 @@ class RingBLEClient(
         val connectionState: RingConnectionState = RingConnectionState.IDLE,
         val discovered: List<DiscoveredRing> = emptyList(),
         val batteryPercent: Int? = null,
-        val isBluetoothReady: Boolean = false,
+        /** Phone Bluetooth adapter is off (#136). Defaults false so a placeholder state never
+         *  claims it; the client sets it from the adapter at init and on every state change. */
+        val bluetoothOff: Boolean = false,
         val lastError: String? = null,
         val activeDeviceType: RingDeviceType? = null,
         /** Exact catalog model of the active connection (iOS #49), resolved at connect time. */
@@ -262,7 +266,75 @@ class RingBLEClient(
     // after ~1000ms if rejected, and never overlaps discovery with another GATT op.
     private val serviceDiscoveryStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    init { startConnectionWatchdog() }
+    /**
+     * Phone Bluetooth turned off (#136). No `onConnectionStateChange` arrives when the adapter
+     * goes down, and the watchdog skips its probes while it is off, so without this the UI kept
+     * showing "Connected" until Bluetooth came back. Every ring family needs it, not just CRP.
+     */
+    private val adapterStateReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: android.content.Intent) {
+            if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> scope.launch {
+                    updateState { copy(bluetoothOff = true) }
+                    onBluetoothOff()
+                }
+                // Back on: the message no longer describes anything, even if the ring is out of range.
+                BluetoothAdapter.STATE_ON -> scope.launch {
+                    val wasOff = _state.value.bluetoothOff
+                    updateState {
+                        copy(bluetoothOff = false, lastError = if (wasOff || lastError == BLUETOOTH_OFF_ERROR) null else lastError)
+                    }
+                }
+            }
+        }
+    }
+    private var adapterReceiverRegistered = false
+
+    init {
+        // No broadcast arrives for a state the adapter is already in, e.g. a launch with Bluetooth off.
+        updateState { copy(bluetoothOff = !isBluetoothEnabled) }
+        startConnectionWatchdog()
+        // Bluetooth broadcasts come from a privileged process outside the system UID;
+        // NOT_EXPORTED can silently miss them (same as CRPTeardownMonitor).
+        adapterReceiverRegistered = try {
+            ContextCompat.registerReceiver(
+                context.applicationContext, adapterStateReceiver,
+                android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+            true
+        } catch (e: Exception) {
+            Log.w("RingBLEClient", "Bluetooth state receiver unavailable; relying on watchdog", e)
+            false
+        }
+    }
+
+    /** Mark the link down when the adapter turns off; reconnect resumes via the watchdog. */
+    private fun onBluetoothOff() {
+        val gatt = bluetoothGatt
+        val shown = _state.value.connectionState
+        when {
+            gatt != null -> handleDisconnect(gatt)
+            shown == RingConnectionState.CONNECTED || shown == RingConnectionState.CONNECTING ||
+                shown == RingConnectionState.RECONNECTING -> {
+                updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
+                PulseEventBus.publishBlocking(
+                    PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
+                )
+            }
+            else -> return
+        }
+        Log.i("RingBLEClient", "Phone Bluetooth turned off; link marked disconnected")
+        connectingStartedAt = 0
+        // Nothing can reconnect until the adapter is back; don't leave a recovery scan pending.
+        if (crpReconnect.isRecovering || crpReconnect.isPending || teardownScanAddress != null) {
+            finishCrpRecovery()
+        }
+        if (!prefs.getBoolean(USER_DISCONNECTED_KEY, false)) {
+            updateState { copy(lastError = BLUETOOTH_OFF_ERROR) }
+        }
+    }
 
     // MARK: Public API
 
@@ -283,11 +355,11 @@ class RingBLEClient(
 
     private fun startScanningInternal() {
         if (!hasPermissions()) {
-            updateState { copy(lastError = "BLE permissions not granted") }
+            updateState { copy(lastError = L10n.get(R.string.ble_permissions)) }
             return
         }
         if (!bluetoothAdapter.isEnabled) {
-            updateState { copy(lastError = "Bluetooth is not powered on") }
+            updateState { copy(lastError = L10n.get(R.string.ble_off)) }
             return
         }
         // A user-initiated scan (pairing screen) must never be hijacked by a leftover
@@ -324,7 +396,7 @@ class RingBLEClient(
         val target = discoveredPeripherals[id] ?: run {
             try { bluetoothAdapter.getRemoteDevice(id) } catch (_: Exception) { null }
         } ?: run {
-            updateState { copy(lastError = "Ring no longer available; scan again.") }
+            updateState { copy(lastError = L10n.get(R.string.ble_ring_gone)) }
             return
         }
         val discoveredRing = _state.value.discovered.firstOrNull { it.id == id }
@@ -411,7 +483,7 @@ class RingBLEClient(
                 // The classic wedge: the ring still thinks it's connected (stale ACL in
                 // the phone's stack) so it never advertises. Only the user can fix that.
                 updateState { copy(lastError =
-                    "Ring not found in scans. It may be held by a stale Bluetooth connection — try toggling Bluetooth off and on.") }
+                    L10n.get(R.string.ble_stale)) }
             }
         }
         reconnectAttempts++
@@ -494,7 +566,16 @@ class RingBLEClient(
     }
 
     private fun connectionWatchdogTick() {
+        // Keep the UI's Bluetooth-off flag honest if an ACTION_STATE_CHANGED broadcast was missed.
+        val adapterOff = !isBluetoothEnabled
+        if (_state.value.bluetoothOff != adapterOff) updateState { copy(bluetoothOff = adapterOff) }
         if (!bluetoothAdapter.isEnabled || !hasPermissions()) {
+            // Fallback for a missed ACTION_STATE_CHANGED broadcast (#136).
+            if (!bluetoothAdapter.isEnabled && (bluetoothGatt != null ||
+                    _state.value.connectionState == RingConnectionState.CONNECTED)) {
+                onBluetoothOff()
+                return
+            }
             if (crpReconnect.isRecovering || teardownWaitJob != null || teardownScanAddress != null) {
                 finishCrpRecovery()
             }
@@ -1562,7 +1643,7 @@ class RingBLEClient(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            updateState { copy(lastError = "Scan failed: $errorCode") }
+            updateState { copy(lastError = L10n.get(R.string.ble_scan_failed, errorCode)) }
         }
     }
 
@@ -1610,7 +1691,7 @@ class RingBLEClient(
                             }
                         }
                     } else {
-                        updateState { copy(lastError = "GATT connect failed: $status") }
+                        updateState { copy(lastError = L10n.get(R.string.ble_connect_failed_gatt, status)) }
                         handleDisconnect(gatt, status)
                     }
                 }
@@ -1862,7 +1943,7 @@ class RingBLEClient(
             lastActivityAt = System.currentTimeMillis()  // GATT ACK — link is alive
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 recordDiagnostic("GATT write failed ($status)", error = true)
-                updateState { copy(lastError = "Ring command write failed (GATT $status)") }
+                updateState { copy(lastError = L10n.get(R.string.ble_write_failed_gatt, status)) }
                 // Do not advance into the next command: the failed operation may be one of the
                 // required post-subscription handshake writes, and callbacks share a channel.
                 recoverWedgedLink()
@@ -2011,7 +2092,12 @@ class RingBLEClient(
                 prependCommandWrites(immediateCommands)
             }
 
-            updateState { copy(connectionState = RingConnectionState.CONNECTED) }
+            updateState {
+                copy(
+                    connectionState = RingConnectionState.CONNECTED,
+                    lastError = lastError.takeUnless { it == BLUETOOTH_OFF_ERROR },
+                )
+            }
             lastActivityAt = System.currentTimeMillis()  // fresh link — start the staleness clock
             resetReconnectBackoff()
             startKeepalive()  // Jring only — Colmi links idle without pings (official behavior)
@@ -2127,7 +2213,7 @@ class RingBLEClient(
                 lastError = when {
                     requestedByUser -> lastError
                     status == BluetoothGatt.GATT_SUCCESS -> null
-                    else -> "Ring disconnected (GATT $status)"
+                    else -> L10n.get(R.string.ble_disconnected_gatt, status)
                 },
             )
         }
@@ -2163,6 +2249,10 @@ class RingBLEClient(
         crpReconnect.cancel()
         cancelTeardownConnect()
         watchdogJob?.cancel()
+        if (adapterReceiverRegistered) {
+            try { context.applicationContext.unregisterReceiver(adapterStateReceiver) } catch (_: Exception) {}
+            adapterReceiverRegistered = false
+        }
         ownershipRetryJob?.cancel(); ownershipRetryJob = null
         stopKeepalive()
         scanner?.stopScan(scanCallback)
@@ -2205,6 +2295,7 @@ class RingBLEClient(
         private const val PROCESS_OWNER_RETRY_MS = 1_000L
         /** How often the liveness watchdog runs. */
         private const val WATCHDOG_INTERVAL_MS = 15_000L
+        internal val BLUETOOTH_OFF_ERROR: String get() = L10n.get(R.string.hero_bluetooth_off)
         /** No GATT activity for this long while CONNECTED ⇒ zombie link ⇒ reconnect.
          *  Comfortably longer than the 15s keepalive so a single missed ACK won't trip it. */
         private const val LINK_STALE_MS = 50_000L

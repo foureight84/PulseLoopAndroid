@@ -250,4 +250,25 @@ class QuietHoursPrefsTest {
         assertFalse(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = true, gateByZenMode = false))
         assertFalse(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = false, gateByZenMode = false))
     }
+
+    /** #140: the clock window is "open" only inside a real window, never for start == end. */
+    @Test
+    fun scheduleOpenForNightInProgress() {
+        val start = 22 * 60; val end = 7 * 60
+        org.junit.Assert.assertTrue(QuietHoursPrefs.scheduleOpen(start, end, 2 * 60 + 4))
+        org.junit.Assert.assertFalse(QuietHoursPrefs.scheduleOpen(start, end, 8 * 60 + 30))
+        org.junit.Assert.assertFalse(QuietHoursPrefs.scheduleOpen(600, 600, 2 * 60))
+    }
+
+    /** #140: Bedtime opened before the night's end keeps it open; an afternoon DND doesn't. */
+    @Test
+    fun nightOpenFollowsTheNightsOwnBedtimeWindow() {
+        val h = 3600_000L
+        val end = 7 * h
+        assertTrue(QuietHoursPrefs.nightOpen(true, end - 8 * h, end, false, 0, 0, 0))
+        assertFalse(QuietHoursPrefs.nightOpen(true, end + 7 * h, end, false, 0, 0, 0))
+        assertTrue(QuietHoursPrefs.nightOpen(true, null, end, false, 0, 0, 0))
+        assertFalse(QuietHoursPrefs.nightOpen(false, null, end, false, 22 * 60, 7 * 60, 2 * 60))
+        assertTrue(QuietHoursPrefs.nightOpen(false, null, end, true, 22 * 60, 7 * 60, 2 * 60))
+    }
 }

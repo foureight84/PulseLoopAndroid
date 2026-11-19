@@ -32,14 +32,22 @@ import java.util.concurrent.TimeUnit
  * One-time work that enqueues the next slot as it finishes, rather than periodic work: a periodic
  * request can't be pinned to the half hour, and its 15-minute floor and flex would put runs on top
  * of the ring's own reading. It is best effort — Doze defers it, and [ScheduledSpo2Slots.isClear]
- * skips a run that lands too close to the ring's reading. A cancelled chain is revived by
- * [ensureScheduled] from app start and from every [RingSyncWorker] run.
+ * skips a run that lands too close to the ring's reading. A skipped run is retried shortly after
+ * the ring's own reading ([ScheduledSpo2Slots.nextClear]), so a Doze deferral that lands the run
+ * on the ring's slot does not lose the spot reading for the whole interval. A cancelled chain is
+ * revived by [ensureScheduled] from app start and from every [RingSyncWorker] run.
  *
  * The ring stops the measurement the moment the link drops (the reporter's test: start, disconnect
  * 3 s later, LED off, nothing stored), so the run holds the connection until the ring's `04 0e`.
  * It uses the app's own connection when there is one, and otherwise opens a private one the way
  * [RingSyncWorker] does, with its own [RingSyncCoordinator] so the reading is settled and stored
  * exactly as the Vitals button's is.
+ *
+ * Doze can release this worker and [RingSyncWorker] in the same maintenance window; [isMeasuring]
+ * is raised before any database work so a concurrent sync sees it and yields GATT instead of
+ * racing for the link. Because the startup sync itself can take minutes, the clearance is
+ * re-checked ([ScheduledSpo2Slots.isClearToMeasure]) after the sync, just before the sensor is
+ * taken — a run that drifted into the ring's reading during the sync is skipped and retried.
  */
 class ScheduledSpo2Worker(
     context: Context,
@@ -69,7 +77,11 @@ class ScheduledSpo2Worker(
 
         internal fun shouldEnqueueNext(isStopped: Boolean): Boolean = !isStopped
 
-        private suspend fun enqueueNext(context: Context, policy: ExistingWorkPolicy) {
+        private suspend fun enqueueNext(
+            context: Context,
+            policy: ExistingWorkPolicy,
+            retryAfterSkip: Boolean = false,
+        ) {
             val wm = WorkManager.getInstance(context)
             if (!ScheduledSpo2Prefs(context).enabled) {
                 wm.cancelUniqueWork(WORK_NAME)
@@ -81,7 +93,16 @@ class ScheduledSpo2Worker(
                 intervalMinutes(PulseLoopDatabase.getInstance(context))
             } ?: run { wm.cancelUniqueWork(WORK_NAME); return }
             val now = ZonedDateTime.now()
-            val delayMs = Duration.between(now, ScheduledSpo2Slots.nextSlot(now, appInterval, ringInterval)).toMillis()
+            val nextSlot = ScheduledSpo2Slots.nextSlot(now, appInterval, ringInterval)
+            // A run skipped for sitting on the ring's reading is retried just after that reading,
+            // unless the next regular slot already comes sooner.
+            val target = if (retryAfterSkip) {
+                val retryAt = ScheduledSpo2Slots.nextClear(now, ringInterval)
+                if (retryAt.isBefore(nextSlot)) retryAt else nextSlot
+            } else {
+                nextSlot
+            }
+            val delayMs = Duration.between(now, target).toMillis().coerceAtLeast(0L)
             val request = OneTimeWorkRequestBuilder<ScheduledSpo2Worker>()
                 .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
                 .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
@@ -129,20 +150,27 @@ class ScheduledSpo2Worker(
 
     override suspend fun doWork(): Result {
         if (!ScheduledSpo2Prefs(applicationContext).enabled) return Result.success()
+        // Raised before any database work: a RingSyncWorker released in the same Doze maintenance
+        // window sees isMeasuring and yields immediately instead of grabbing GATT for a
+        // redundant sync (issue #103).
+        isMeasuring = true
         val db = PulseLoopDatabase.getInstance(applicationContext)
+        var skippedForRingReading = false
         try {
             val ringInterval = intervalMinutes(db) ?: return Result.success()
             if (!ScheduledSpo2Prefs.isSupported(db.deviceDao().currentReal())) return Result.success()
             if (!ScheduledSpo2Slots.isClear(ZonedDateTime.now(), ringInterval)) {
                 Log.i(TAG, "Skipped: too close to the ring's own reading")
+                skippedForRingReading = true
                 return Result.success()
             }
-            measure(db)
+            skippedForRingReading = !measureInternal(db, ringInterval)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "Scheduled SpO2 failed", e)
         } finally {
+            isMeasuring = false
             // Append: the next run waits for this one, and REPLACE from inside a running worker
             // would cancel it. Always succeed, since a failed run fails its appended successor.
             // Do not enqueue a successor if stopped/cancelled: WorkManager will retry a stopped
@@ -150,23 +178,24 @@ class ScheduledSpo2Worker(
             // would cause duplicate chained runs and schedule drift (issue #103).
             if (shouldEnqueueNext(isStopped)) {
                 withContext(NonCancellable) {
-                    enqueueNext(applicationContext, ExistingWorkPolicy.APPEND_OR_REPLACE)
+                    enqueueNext(
+                        applicationContext,
+                        ExistingWorkPolicy.APPEND_OR_REPLACE,
+                        retryAfterSkip = skippedForRingReading,
+                    )
                 }
             }
         }
         return Result.success()
     }
 
-    private suspend fun measure(db: PulseLoopDatabase) {
-        isMeasuring = true
-        try {
-            measureInternal(db)
-        } finally {
-            isMeasuring = false
-        }
-    }
-
-    private suspend fun measureInternal(db: PulseLoopDatabase) {
+    /**
+     * Runs the spot SpO₂. Returns `true` when the run completed normally (or was handed off to
+     * the foreground app); `false` only when it was skipped after the startup sync because it
+     * had drifted too close to the ring's own reading — the caller then schedules a retry via
+     * [ScheduledSpo2Slots.nextClear].
+     */
+    private suspend fun measureInternal(db: PulseLoopDatabase, ringInterval: Int): Boolean {
         // The app's own link, if it has one: a second client can't connect while it holds GATT.
         AppServices.peek()?.coordinator?.let { coordinator ->
             val ran = withContext(Dispatchers.Main) {
@@ -175,13 +204,13 @@ class ScheduledSpo2Worker(
                 if (!coordinator.workoutHRActive) coordinator.measureSpO2Only()
                 true
             }
-            if (ran) return
+            if (ran) return true
         }
         // The app is opening and owns the connection it is about to make.
-        if (isAppForeground()) return
+        if (isAppForeground()) return true
 
         val client = RingBLEClient(applicationContext, transientOwner = true)
-        if (!client.hasPermissions()) { client.destroy(); return }
+        if (!client.hasPermissions()) { client.destroy(); return true }
         val coordinator = RingSyncCoordinator(client, db, ApiKeyStore(applicationContext))
         try {
             withContext(Dispatchers.Main) { coordinator.start() }
@@ -195,7 +224,7 @@ class ScheduledSpo2Worker(
             var remainingTimeoutMs = CONNECT_TIMEOUT_MS
             var syncWaitMs = 60_000L
             while (!coordinator.isConnected && remainingTimeoutMs > 0) {
-                if (isAppForeground()) return
+                if (isAppForeground()) return true
                 if (RingSyncWorker.isSyncing && syncWaitMs > 0) {
                     delay(1000)
                     syncWaitMs -= 1000
@@ -207,7 +236,7 @@ class ScheduledSpo2Worker(
                 delay(1000)
                 remainingTimeoutMs -= 1000
             }
-            if (!coordinator.isConnected) return
+            if (!coordinator.isConnected) return true
 
             // runStartupSequence opens the progress just after connect; wait for it to open, then
             // to drain (the same wait factoryResetRing uses before it takes the ring).
@@ -218,11 +247,20 @@ class ScheduledSpo2Worker(
             delay(800)
             // Hand the ring over to the app if it opened meanwhile; once measuring, finish — the
             // reading is lost if the link drops, and the app only waits for one minute.
-            if (isAppForeground() || !coordinator.isConnected) return
+            if (isAppForeground() || !coordinator.isConnected) return true
+            // The startup sync can take minutes; re-check the clearance so a run that drifted
+            // into the ring's own reading while draining history does not fight the ring for the
+            // sensor. The finally block tears GATT down cleanly and the caller retries after the
+            // ring's reading (issue #103).
+            if (!ScheduledSpo2Slots.isClearToMeasure(ZonedDateTime.now(), ringInterval)) {
+                Log.i(TAG, "Skipped after sync: too close to the ring's own reading")
+                return false
+            }
             val value = withContext(Dispatchers.Main) { coordinator.measureSpO2Only() }
             Log.i(TAG, "Scheduled SpO2: ${value ?: "no reading"}")
             // The stop frame is only enqueued; let it reach the ring before the link closes.
             client.awaitOpsFlushed()
+            return true
         } finally {
             withContext(NonCancellable) {
                 // Cancel watchdog and tear down GATT before stopping coordinator, so that a

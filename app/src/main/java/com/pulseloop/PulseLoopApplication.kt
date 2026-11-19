@@ -27,6 +27,7 @@ class PulseLoopApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.pulseloop.util.L10n.init(this)
         CrashLogger.install(this)
         RWfitSleepJournal.init(this)
         // Before any sync can read them: Bedtime tracking no longer needs the schedule (issue #126),

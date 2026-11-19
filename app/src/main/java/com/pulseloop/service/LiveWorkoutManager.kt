@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import android.content.Context
 import android.content.Intent
 import androidx.work.WorkManager
@@ -80,7 +82,7 @@ class LiveWorkoutManager(
         coordinator.startWorkoutHeartRate(type)
         if (useGps) gps.start(session.id, type)
         polling.start(session.id)
-        startForegroundService(session.type)
+        startForegroundService(session.useGps)
 
         startTick(session)
         // Fresh state (not copy): clears any previous workout's finishedSessionId/paused flags.
@@ -232,21 +234,26 @@ class LiveWorkoutManager(
         serviceIntent.apply {
             val s = _state.value
             val notification = Intent(context, WorkoutForegroundService::class.java).apply {
-                putExtra("activityName", s.activeSession?.let { ActivityMeta.label(it.type) } ?: "Workout")
+                putExtra("activityName", s.activeSession?.let { ActivityMeta.label(it.type) } ?: L10n.get(R.string.workout_generic))
                 putExtra("status", if (s.isPaused) "paused" else "recording")
                 putExtra("elapsedSeconds", s.elapsedSeconds)
                 putExtra("distanceMeters", s.distanceMeters)
                 putExtra("heartRate", s.latestHeartRate ?: 0)
+                s.activeSession?.let { putExtra(WorkoutForegroundService.EXTRA_USE_GPS, it.useGps) }
             }
             context.startService(notification)
         }
     }
 
-    private fun startForegroundService(name: String) {
+    private fun startForegroundService(useGps: Boolean) {
+        // Started while the user is on the workout screen: a location-type foreground service
+        // must be started from the foreground to keep while-in-use location (#139).
+        val intent = Intent(context, WorkoutForegroundService::class.java)
+            .putExtra(WorkoutForegroundService.EXTRA_USE_GPS, useGps)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            context.startForegroundService(Intent(context, WorkoutForegroundService::class.java))
+            context.startForegroundService(intent)
         } else {
-            context.startService(Intent(context, WorkoutForegroundService::class.java))
+            context.startService(intent)
         }
     }
 

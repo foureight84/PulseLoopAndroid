@@ -1,5 +1,7 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import androidx.compose.ui.res.stringResource
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -204,13 +206,13 @@ fun BarcodeScannerScreen(onScan: (String) -> Unit, onDismiss: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Scan barcode",
+                stringResource(R.string.nutrition_scan_barcode),
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = PulseColors.textPrimary,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
         when (availability) {
             ScanAvailability.Granted ->
@@ -236,14 +238,14 @@ fun BarcodeScannerScreen(onScan: (String) -> Unit, onDismiss: () -> Unit) {
                     )
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "Scanning unavailable",
+                        stringResource(R.string.barcode_unavailable),
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = PulseColors.textPrimary,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Barcode scanning needs a device camera and camera access. Search by name instead.",
+                        stringResource(R.string.barcode_unavailable_desc),
                         fontSize = 12.sp,
                         color = PulseColors.textMuted,
                         textAlign = TextAlign.Center,

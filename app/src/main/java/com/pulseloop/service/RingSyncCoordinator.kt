@@ -1,5 +1,7 @@
 package com.pulseloop.service
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.DeviceEntity
 import com.pulseloop.data.entity.MeasurementEntity
@@ -458,6 +460,23 @@ class RingSyncCoordinator(
         engine?.querySleep()
     }
 
+    /**
+     * Turn the ring off so it can be restarted from its charger (#142): a YCBT ring whose clock
+     * has stopped keeps connecting and syncing but logs nothing, and setting the time on connect
+     * does not restart it — a power cycle does.
+     */
+    fun restartRing(): RestartResult {
+        if (!isConnected) return RestartResult.NOT_CONNECTED
+        if (!canPowerOff) return RestartResult.UNSUPPORTED
+        return if (engine?.powerOff() == true) RestartResult.SENT else RestartResult.NOT_CONNECTED
+    }
+
+    /** The connected ring can be powered off from the app; false while disconnected. */
+    val canPowerOff: Boolean
+        get() = isConnected && client.state.value.activeCapabilities.contains(WearableCapability.POWER_OFF)
+
+    enum class RestartResult { SENT, NOT_CONNECTED, UNSUPPORTED }
+
     fun findRing() {
         if (!isConnected) return
         if (!client.state.value.activeCapabilities.contains(WearableCapability.FIND_DEVICE)) return
@@ -499,7 +518,7 @@ class RingSyncCoordinator(
     fun factoryResetRing(onProgress: (String) -> Unit = {}, onCleared: suspend () -> Unit) {
         scope.launch {
             if (isConnected) {
-                onProgress("Syncing latest data…")
+                onProgress(L10n.get(R.string.wearable_syncing_latest))
                 syncNow()
                 // Wait for the history sync to drain (progress reaches 100 or clears), capped
                 // so a stale link can never hang the reset.
@@ -507,7 +526,7 @@ class RingSyncCoordinator(
                     syncProgress.first { it == null || it >= 100 }
                 }
                 kotlinx.coroutines.delay(800)  // let the final history writes flush
-                onProgress("Resetting ring…")
+                onProgress(L10n.get(R.string.wearable_resetting_ring))
                 engine?.factoryReset()
                 // The reset frame is only ENQUEUED on the GATT op queue; wait until it has
                 // actually been written and acked before forget() tears the queue down —

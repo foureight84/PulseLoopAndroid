@@ -1,5 +1,7 @@
 package com.pulseloop.coach.tools
 
+import com.pulseloop.util.L10n
+import com.pulseloop.R
 import com.pulseloop.coach.orchestration.MealUpdates
 import com.pulseloop.coach.orchestration.PendingAction
 import com.pulseloop.coach.orchestration.PendingActionKind
@@ -74,7 +76,7 @@ object NutritionTools {
      */
     private fun makeSearchFoodDatabase() = CoachToolDef(
         name = "search_food_database",
-        publicLabel = "Checking the food database",
+        publicLabelRes = R.string.tool_food_db,
         description = "Search Open Food Facts for a food's verified nutrition (per 100 g). " +
             "Use before logging any nameable or packaged food. " +
             "If it errors, estimate instead and say so, with source 'estimate'.",
@@ -146,7 +148,7 @@ object NutritionTools {
      */
     private fun makeGetNutritionLog() = CoachToolDef(
         name = "get_nutrition_log",
-        publicLabel = "Reading your food log",
+        publicLabelRes = R.string.tool_food_log,
         description = "Get the user's logged meals and calorie/macro totals for a date (YYYY-MM-DD).",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -209,7 +211,7 @@ object NutritionTools {
      */
     private fun makeLogMeal() = CoachToolDef(
         name = "log_meal",
-        publicLabel = "Logging your meal",
+        publicLabelRes = R.string.tool_log_meal,
         description = "Log a meal/food/drink the user ate. Values are TOTALS for what was eaten. " +
             "Ground nameable foods via search_food_database first (source 'database'); " +
             "for home-cooked or unverifiable food use source 'estimate' with honest confidence " +
@@ -323,7 +325,7 @@ object NutritionTools {
      */
     private fun makeUpdateMealEntry() = CoachToolDef(
         name = "update_meal_entry",
-        publicLabel = "Updating that meal",
+        publicLabelRes = R.string.tool_update_meal,
         description = "Edit a logged meal. Applies immediately for a meal logged today; " +
             "for an older meal, returns needs_confirmation and shows a Confirm card.",
         parameters = JsonObject(mapOf(
@@ -379,8 +381,8 @@ object NutritionTools {
             ctx.pendingActions.add(PendingAction(
                 kind = PendingActionKind.UPDATE_MEAL_ENTRY,
                 activityId = mealId,
-                summary = "Update \"${entry.name}\" from ${CoachDataAccess.localDateString(entry.timestamp)}?",
-                confirmLabel = "Save changes",
+                summary = L10n.get(R.string.pa_confirm_update_meal, entry.name, CoachDataAccess.localDateString(entry.timestamp)),
+                confirmLabel = L10n.get(R.string.action_save_changes),
                 mealUpdates = updates,
             ))
             ToolResult("""{"ok":true,"needs_confirmation":true,"summary":"Awaiting your confirmation to edit that meal."}""")
@@ -395,7 +397,7 @@ object NutritionTools {
      */
     private fun makeDeleteMealEntry() = CoachToolDef(
         name = "delete_meal_entry",
-        publicLabel = "Removing that meal",
+        publicLabelRes = R.string.tool_delete_meal,
         description = "Delete a logged meal. Always returns needs_confirmation and shows a " +
             "Confirm card; the deletion only happens after the user taps Confirm.",
         parameters = JsonObject(mapOf(
@@ -417,8 +419,8 @@ object NutritionTools {
         ctx.pendingActions.add(PendingAction(
             kind = PendingActionKind.DELETE_MEAL_ENTRY,
             activityId = mealId,
-            summary = "Delete \"${entry.name}\" (${entry.calories.roundToLong()} kcal) from ${CoachDataAccess.localDateString(entry.timestamp)}?",
-            confirmLabel = "Delete",
+            summary = L10n.get(R.string.pa_confirm_delete_meal, entry.name, entry.calories.roundToLong(), CoachDataAccess.localDateString(entry.timestamp)),
+            confirmLabel = L10n.get(R.string.action_delete),
         ))
         ToolResult("""{"ok":true,"needs_confirmation":true,"summary":"Awaiting your confirmation to delete that meal."}""")
     }

@@ -139,6 +139,9 @@ object YCBTCommand {
     const val FIND_DEVICE: Int = 0x00
     const val LIVE_MEASUREMENT: Int = 0x2f
     const val LIVE_STATUS_PUSH: Int = 0x09
+    /** `appShutDown(1)` → `03 16 01` (vendor `Constants.DATATYPE.AppShutDown` = 790 = 0x0316;
+     *  `MeMoreSettingsActivity.shutDown`, offered on every ring with no support-bit gate). */
+    const val SHUT_DOWN: Int = 0x16
 
     // Group 0x06 (Real — async stream)
     const val LIVE_STATUS: Int = 0x00

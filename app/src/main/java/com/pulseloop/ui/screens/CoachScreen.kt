@@ -1,5 +1,8 @@
 package com.pulseloop.ui.screens
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
+import androidx.compose.ui.res.stringResource
 import android.content.res.Configuration
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -94,7 +97,7 @@ fun CoachScreen(
             if (state.isThinking) {
                 item {
                     Text(
-                        "Coach is thinking…",
+                        stringResource(R.string.coach_thinking),
                         fontSize = 12.sp, color = PulseColors.textMuted,
                         modifier = Modifier.padding(start = 8.dp),
                     )
@@ -102,7 +105,7 @@ fun CoachScreen(
             }
             if (state.error != null) {
                 item {
-                    Text("Error: ${state.error}", fontSize = 12.sp, color = PulseColors.danger, modifier = Modifier.padding(start = 8.dp))
+                    Text(stringResource(R.string.coach_error, state.error ?: ""), fontSize = 12.sp, color = PulseColors.danger, modifier = Modifier.padding(start = 8.dp))
                 }
             }
         }
@@ -160,8 +163,8 @@ fun CoachHeader(
             )
         }
         Column(Modifier.weight(1f)) {
-            Text("PulseLoop Coach", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
-            Text("Using your latest ring sync", fontSize = 12.sp, color = PulseColors.textMuted)
+            Text(stringResource(R.string.checkins_test_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+            Text(stringResource(R.string.coach_using_sync), fontSize = 12.sp, color = PulseColors.textMuted)
         }
         if (onOpenUsage != null) {
             Box(
@@ -173,7 +176,7 @@ fun CoachHeader(
                     .clickable(onClick = onOpenUsage),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.Info, "Usage & cost", tint = PulseColors.textSecondary, modifier = Modifier.size(16.dp))
+                Icon(Icons.Filled.Info, stringResource(R.string.coach_usage_cost), tint = PulseColors.textSecondary, modifier = Modifier.size(16.dp))
             }
         }
         if (onOpenHistory != null) {
@@ -186,7 +189,7 @@ fun CoachHeader(
                     .clickable(onClick = onOpenHistory),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.History, "Past conversations", tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.History, stringResource(R.string.coach_past_conversations), tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
             }
         }
         Box(
@@ -198,7 +201,7 @@ fun CoachHeader(
                 .clickable(onClick = onNewChat),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Filled.Add, "New chat", tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
+            Icon(Icons.Filled.Add, stringResource(R.string.coach_new_chat), tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -236,7 +239,7 @@ private fun MessageBubble(msg: CoachViewModel.ChatMessage, viewModel: CoachViewM
                         bmp?.let {
                             Image(
                                 bitmap = it.asImageBitmap(),
-                                contentDescription = "Attached photo",
+                                contentDescription = stringResource(R.string.coach_attached_photo),
                                 modifier = Modifier.size(96.dp).clip(RoundedCornerShape(10.dp)),
                                 contentScale = ContentScale.Crop,
                             )
@@ -262,11 +265,11 @@ private fun MessageBubble(msg: CoachViewModel.ChatMessage, viewModel: CoachViewM
 
 // ─────────────────────────── Composer ───────────────────────────
 
-private val SUGGESTIONS = listOf(
-    "How am I doing today?",
-    "Explain my heart rate trend",
-    "Summarize my week",
-    "How can I sleep better?",
+private val SUGGESTIONS get() = listOf(
+    L10n.get(R.string.coach_suggest_today),
+    L10n.get(R.string.coach_suggest_hr),
+    L10n.get(R.string.coach_suggest_week),
+    L10n.get(R.string.coach_suggest_sleep),
 )
 
 @Composable
@@ -348,7 +351,7 @@ private fun Composer(
                         bmp?.let {
                             Image(
                                 bitmap = it.asImageBitmap(),
-                                contentDescription = "Staged photo",
+                                contentDescription = stringResource(R.string.coach_staged_photo),
                                 modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)),
                                 contentScale = ContentScale.Crop,
                             )
@@ -359,7 +362,7 @@ private fun Composer(
                                 staged = staged - ref
                             },
                             modifier = Modifier.size(20.dp).align(Alignment.TopEnd),
-                        ) { Icon(Icons.Filled.Close, "Remove photo", Modifier.size(14.dp), tint = Color.White) }
+                        ) { Icon(Icons.Filled.Close, stringResource(R.string.meal_remove_photo), Modifier.size(14.dp), tint = Color.White) }
                     }
                 }
             }
@@ -382,7 +385,7 @@ private fun Composer(
                         .clickable(onClick = onNewChat),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.Add, "New chat", tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Add, stringResource(R.string.coach_new_chat), tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
                 }
             }
             if (imageInputEnabled) {
@@ -396,7 +399,7 @@ private fun Composer(
                         },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.Add, "Attach photo", tint = PulseColors.textMuted, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Filled.Add, stringResource(R.string.coach_attach_photo), tint = PulseColors.textMuted, modifier = Modifier.size(20.dp))
                 }
             }
             // Pill text field (iOS composer): filled capsule, no outline.
@@ -408,7 +411,7 @@ private fun Composer(
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
                 if (inputText.isEmpty()) {
-                    Text("Ask the coach...", fontSize = 14.sp, color = PulseColors.textMuted)
+                    Text(stringResource(R.string.coach_ask_placeholder), fontSize = 14.sp, color = PulseColors.textMuted)
                 }
                 BasicTextField(
                     value = inputText,
@@ -434,7 +437,7 @@ private fun Composer(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Filled.ArrowUpward, "Send",
+                    Icons.Filled.ArrowUpward, stringResource(R.string.action_send),
                     tint = if (canSend) Color.White else PulseColors.textMuted,
                     modifier = Modifier.size(20.dp),
                 )

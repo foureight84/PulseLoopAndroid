@@ -1,5 +1,7 @@
 package com.pulseloop.coach.summaries
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import com.pulseloop.coach.context.CoachContextBuilder
 import com.pulseloop.coach.context.CoachContextPacket
 import com.pulseloop.data.PulseLoopDatabase
@@ -74,16 +76,16 @@ object CoachSummaryContextBuilder {
 
         // Scripted fallback — same display value as the Today tile, so the two cannot disagree.
         val displaySteps = tp.steps ?: 0
-        val title = if (displaySteps > 0) "Today's snapshot" else "No activity synced yet"
+        val title = if (displaySteps > 0) L10n.get(R.string.summary_fb_today_title) else L10n.get(R.string.fb_no_activity_title)
         val body = if (displaySteps > 0)
-            "$displaySteps steps so far today. Your ring is tracking — sync for the latest readings."
-        else "I don't have today's activity yet. Wear your ring and sync for a daily recap."
+            L10n.plural(R.plurals.summary_fb_today_body, displaySteps, displaySteps)
+        else L10n.get(R.string.summary_fb_today_empty)
 
         return Built(
             scopeKey = todayDate,
             contextJson = contextJson,
             signature = sig,
-            fallback = CoachSummaryContent(title, body, listOf("How am I doing today?", "Summarize my week")),
+            fallback = CoachSummaryContent(title, body, listOf(L10n.get(R.string.coach_suggest_today), L10n.get(R.string.coach_suggest_week))),
         )
     }
 
@@ -151,6 +153,19 @@ object CoachSummaryContextBuilder {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    /**
+     * The coach writes in the app's language, so a cached card is stale after a language
+     * switch even when the data hasn't moved. Non-English languages are folded into the
+     * signature; English adds nothing, so signatures stored before localization still match.
+     */
     private fun signature(parts: List<String?>): String =
-        parts.joinToString("|") { it ?: "·" }
+        parts.joinToString("|") { it ?: "·" } + languageSuffix(com.pulseloop.coach.context.CoachLanguage.languageName())
+
+    private const val LANGUAGE_MARK = "|lang="
+
+    internal fun languageSuffix(language: String?): String = language?.let { LANGUAGE_MARK + it }.orEmpty()
+
+    /** The language part of a stored signature ("" for English). */
+    internal fun languageOf(signature: String): String =
+        signature.substringAfter(LANGUAGE_MARK, missingDelimiterValue = "")
 }

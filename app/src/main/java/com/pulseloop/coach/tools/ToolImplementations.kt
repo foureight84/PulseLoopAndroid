@@ -1,5 +1,7 @@
 package com.pulseloop.coach.tools
 
+import com.pulseloop.util.L10n
+import com.pulseloop.R
 import com.pulseloop.ring.MeasurementKind
 import kotlinx.serialization.json.*
 
@@ -17,7 +19,7 @@ object RetrievalTools {
 
     private fun makeProfile() = CoachToolDef(
         name = "get_profile_context",
-        publicLabel = "Checking your profile and ring status",
+        publicLabelRes = R.string.tool_profile,
         description = "Get user profile, goals, device sync status, and data-quality warnings.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -42,7 +44,7 @@ object RetrievalTools {
 
     private fun makeDailySummary() = CoachToolDef(
         name = "get_daily_summary",
-        publicLabel = "Reading that day's ring data",
+        publicLabelRes = R.string.tool_day,
         description = "Fetch daily activity and biometric summary for a local date (YYYY-MM-DD).",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -74,7 +76,7 @@ object RetrievalTools {
 
     private fun makeMetricSeries() = CoachToolDef(
         name = "get_metric_series",
-        publicLabel = "Fetching your trend data",
+        publicLabelRes = R.string.tool_trend_data,
         description = "Fetch a time series for a metric over a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -111,7 +113,7 @@ object RetrievalTools {
 
     private fun makeSleepSummary() = CoachToolDef(
         name = "get_sleep_summary",
-        publicLabel = "Looking at your sleep",
+        publicLabelRes = R.string.tool_sleep,
         description = "Get sleep summary for a date or date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -149,7 +151,7 @@ object RetrievalTools {
 
     private fun makeRangeSummary() = CoachToolDef(
         name = "get_range_summary",
-        publicLabel = "Fetching your ring data for that range",
+        publicLabelRes = R.string.tool_range,
         description = "Fetch summarized activity, HR, SpO2, and sleep over a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -195,7 +197,7 @@ object RetrievalTools {
 
     private fun makeActivitySessions() = CoachToolDef(
         name = "get_activity_sessions",
-        publicLabel = "Looking up your workouts",
+        publicLabelRes = R.string.tool_workouts,
         description = "Fetch saved activity sessions over a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -225,7 +227,7 @@ object RetrievalTools {
 
     private fun makeSummarizeSession() = CoachToolDef(
         name = "summarize_activity_session",
-        publicLabel = "Summarizing that workout",
+        publicLabelRes = R.string.tool_workout_summary,
         description = "Compute summary statistics for one activity session.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -247,7 +249,7 @@ object RetrievalTools {
 
     private fun makeSyncStatus() = CoachToolDef(
         name = "get_sync_status",
-        publicLabel = "Checking ring connection",
+        publicLabelRes = R.string.tool_ring_connection,
         description = "Get the ring's current connection state, battery, last sync time.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -265,7 +267,7 @@ object RetrievalTools {
 
     private fun makeDataAvailability() = CoachToolDef(
         name = "get_data_availability",
-        publicLabel = "Checking what data exists",
+        publicLabelRes = R.string.tool_data_coverage,
         description = "Report how many readings exist per metric in a date range.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -289,7 +291,7 @@ object RetrievalTools {
 
     private fun makeSleepTrends() = CoachToolDef(
         name = "get_sleep_trends",
-        publicLabel = "Reviewing your sleep",
+        publicLabelRes = R.string.tool_sleep_summary,
         description = "Summarize sleep over a range: average duration, nights tracked.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -314,7 +316,7 @@ object RetrievalTools {
 
     private fun makeGoalProgress() = CoachToolDef(
         name = "get_goal_progress",
-        publicLabel = "Checking your goals",
+        publicLabelRes = R.string.tool_goals,
         description = "Compare today's metrics against the user's goals.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -335,7 +337,7 @@ object RetrievalTools {
 
     private fun makeRecentAnomalies() = CoachToolDef(
         name = "get_recent_anomalies",
-        publicLabel = "Scanning for anything unusual",
+        publicLabelRes = R.string.tool_anomalies,
         description = "Detect statistical outliers in steps and resting HR over last ~14 days.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -361,7 +363,7 @@ object AnalysisTools {
 
     private val analyzeTrend = CoachToolDef(
         name = "analyze_trend",
-        publicLabel = "Analyzing your trends",
+        publicLabelRes = R.string.tool_trends,
         description = "Run a basic trend analysis on a metric series (returns slope, direction, significance).",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -391,7 +393,7 @@ object AnalysisTools {
 
     private val comparePeriods = CoachToolDef(
         name = "compare_periods",
-        publicLabel = "Comparing two time periods",
+        publicLabelRes = R.string.tool_compare_periods,
         description = "Compare a metric between two time periods (e.g., this week vs last week).",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -419,7 +421,7 @@ object AnalysisTools {
 
     private val computeCorrelation = CoachToolDef(
         name = "compute_correlation",
-        publicLabel = "Computing correlation",
+        publicLabelRes = R.string.tool_correlation,
         description = "Compute Pearson correlation between two sets of paired values.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -455,7 +457,7 @@ object AnalysisTools {
 
     private val detectOutliers = CoachToolDef(
         name = "detect_outliers",
-        publicLabel = "Detecting outliers",
+        publicLabelRes = R.string.tool_outliers,
         description = "Detect statistical outliers (z-score > 2) in a series of values.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -487,7 +489,7 @@ object AnalysisTools {
 
     private val summarizeDistribution = CoachToolDef(
         name = "summarize_distribution",
-        publicLabel = "Summarizing distribution",
+        publicLabelRes = R.string.tool_distribution,
         description = "Compute statistical summary: mean, median, min, max, std dev.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -517,7 +519,7 @@ object ChartTools {
 
     private val prepareChart = CoachToolDef(
         name = "prepare_chart",
-        publicLabel = "Preparing a chart",
+        publicLabelRes = R.string.tool_chart,
         description = "Generate a chart from data points. Call this when you want to show a chart.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -559,7 +561,7 @@ object MemoryTools {
 
     private val saveMemory = CoachToolDef(
         name = "save_memory",
-        publicLabel = "Saving this for later",
+        publicLabelRes = R.string.tool_memory,
         description = "Save a key-value memory for future conversations.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -617,7 +619,7 @@ object ActionTools {
 
     private val setGoal = CoachToolDef(
         name = "set_goal",
-        publicLabel = "Setting your goal",
+        publicLabelRes = R.string.tool_set_goal,
         description = "Set a daily step goal.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -651,7 +653,7 @@ object ActionTools {
 
     private val triggerMeasurement = CoachToolDef(
         name = "trigger_measurement",
-        publicLabel = "Taking a live reading",
+        publicLabelRes = R.string.tool_live_reading,
         description = "Trigger a live heart rate or SpO2 measurement from the ring.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -693,7 +695,7 @@ object ActionTools {
 
     private val logUserNote = CoachToolDef(
         name = "log_user_note",
-        publicLabel = "Noting that down",
+        publicLabelRes = R.string.tool_note,
         description = "Save a dated note about symptoms, perceived exertion, mood, injury, sleep, diet, or activity context.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -729,7 +731,7 @@ object ActionTools {
 
     private val logActivityCorrection = CoachToolDef(
         name = "log_activity_correction",
-        publicLabel = "Logging your activity",
+        publicLabelRes = R.string.tool_log_activity,
         description = "Log or correct a user-stated activity the ring missed or misclassified.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -773,7 +775,7 @@ object ActionTools {
 
     private val createActivitySession = CoachToolDef(
         name = "create_activity_session_from_description",
-        publicLabel = "Logging your session",
+        publicLabelRes = R.string.tool_log_session,
         description = "Create a finished manual workout from a description.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -839,7 +841,7 @@ object ActionTools {
 
     private val updateActivitySession = CoachToolDef(
         name = "update_activity_session",
-        publicLabel = "Updating that workout",
+        publicLabelRes = R.string.tool_update_workout,
         description = "Edit a saved workout. For older sessions returns needs_confirmation.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -888,8 +890,8 @@ object ActionTools {
             ctx.pendingActions.add(com.pulseloop.coach.orchestration.PendingAction(
                 kind = com.pulseloop.coach.orchestration.PendingActionKind.UPDATE_ACTIVITY_SESSION,
                 activityId = activityId,
-                summary = "Update your ${session.type} session from ${CoachDataAccess.localDateString(session.startedAt)}?",
-                confirmLabel = "Save changes",
+                summary = L10n.get(R.string.pa_confirm_update_session, com.pulseloop.coach.orchestration.PendingActionExecutor.typeLabel(session.type), CoachDataAccess.localDateString(session.startedAt)),
+                confirmLabel = L10n.get(R.string.action_save_changes),
                 updates = updates,
             ))
             ToolResult("""{"ok":true,"needs_confirmation":true,"summary":"Awaiting your confirmation to edit that workout."}""")
@@ -900,7 +902,7 @@ object ActionTools {
 
     private val deleteActivitySession = CoachToolDef(
         name = "delete_activity_session",
-        publicLabel = "Removing that workout",
+        publicLabelRes = R.string.tool_delete_workout,
         description = "Delete a workout. Always returns needs_confirmation.",
         parameters = JsonObject(mapOf(
             "type" to JsonPrimitive("object"),
@@ -925,8 +927,8 @@ object ActionTools {
         ctx.pendingActions.add(com.pulseloop.coach.orchestration.PendingAction(
             kind = com.pulseloop.coach.orchestration.PendingActionKind.DELETE_ACTIVITY_SESSION,
             activityId = activityId,
-            summary = "Delete your ${session.type} session from ${CoachDataAccess.localDateString(session.startedAt)}? This can't be undone.",
-            confirmLabel = "Delete",
+            summary = L10n.get(R.string.pa_confirm_delete_session, com.pulseloop.coach.orchestration.PendingActionExecutor.typeLabel(session.type), CoachDataAccess.localDateString(session.startedAt)),
+            confirmLabel = L10n.get(R.string.action_delete),
         ))
         ToolResult("""{"ok":true,"needs_confirmation":true,"summary":"Awaiting your confirmation to delete that workout."}""")
     }

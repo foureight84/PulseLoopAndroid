@@ -1,5 +1,7 @@
 package com.pulseloop.health
 
+import com.pulseloop.R
+import com.pulseloop.util.L10n
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.records.ExerciseRoute
@@ -693,11 +695,11 @@ class HealthConnectExporter(
         fun summary(): String {
             val bits = mutableListOf<String>()
             if (inserted.isNotEmpty()) {
-                bits += "exported " + inserted.entries.joinToString(", ") { "${it.key} ${it.value}" }
+                bits += L10n.get(R.string.hcs_exported, inserted.entries.joinToString(", ") { "${it.key} ${it.value}" })
             }
-            if (skipped.isNotEmpty()) bits += "skipped: " + skipped.joinToString("; ")
+            if (skipped.isNotEmpty()) bits += L10n.get(R.string.hcs_skipped, skipped.joinToString("; "))
             if (errors.isNotEmpty()) bits += errors.joinToString("; ")
-            return if (bits.isEmpty()) "nothing new to export" else bits.joinToString(" · ")
+            return if (bits.isEmpty()) L10n.get(R.string.hcs_nothing) else bits.joinToString(" · ")
         }
     }
 }

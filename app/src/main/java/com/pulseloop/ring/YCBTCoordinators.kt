@@ -56,6 +56,7 @@ object TK5Coordinator : WearableCoordinator {
         WearableCapability.MANUAL_HEART_RATE, WearableCapability.MANUAL_SPO2,
         WearableCapability.REALTIME_HEART_RATE, WearableCapability.REALTIME_STEPS,
         WearableCapability.FIND_DEVICE, WearableCapability.MEASUREMENT_INTERVAL,
+        WearableCapability.POWER_OFF,
     )
 
     /**
@@ -163,6 +164,7 @@ object ColmiSmartHealthCoordinator : WearableCoordinator {
         WearableCapability.MANUAL_HEART_RATE, WearableCapability.MANUAL_SPO2,
         WearableCapability.REALTIME_HEART_RATE, WearableCapability.REALTIME_STEPS,
         WearableCapability.FIND_DEVICE, WearableCapability.MEASUREMENT_INTERVAL,
+        WearableCapability.POWER_OFF,
     )
 
     /**
