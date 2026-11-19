@@ -104,7 +104,7 @@ import kotlinx.coroutines.launch
 /** Pushed-screen chrome shared by every settings detail screen: back arrow + title + scroll column. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSubScreen(
+internal fun SettingsSubScreen(
     title: String,
     onBack: () -> Unit,
     bottomOverlay: (@Composable BoxScope.() -> Unit)? = null,

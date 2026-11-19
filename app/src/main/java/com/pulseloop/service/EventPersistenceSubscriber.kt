@@ -301,6 +301,7 @@ class EventPersistenceSubscriber(
                     updatedAt = now,
                 ))
                 recordBatterySample(event.percent, now)
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.LiveSampleGate -> {
                 if (event.closed) closedGates.add(event.kind) else closedGates.remove(event.kind)
@@ -312,6 +313,7 @@ class EventPersistenceSubscriber(
                     event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
                     sourceRaw = event.sourceRaw,
                 )
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.Spo2Result -> {
                 if (!event.spot && MeasurementKind.SPO2 in closedGates) return
@@ -320,6 +322,7 @@ class EventPersistenceSubscriber(
                     event.timestamp.toEpochMilli(), awaitsRingsCopy(event.spot, event.ringWillLogIt),
                     sourceRaw = event.sourceRaw,
                 )
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.HistoryMeasurement -> {
                 val at = event.timestamp.toEpochMilli()
@@ -348,7 +351,10 @@ class EventPersistenceSubscriber(
                     sourceRaw = "colmi",
                 )
                 if (event.isHistory) upsertUnlessDeleted(measurement)
-                else db.measurementDao().insert(measurement)
+                else {
+                    db.measurementDao().insert(measurement)
+                    com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
+                }
             }
             is PulseEvent.HrvSample -> {
                 db.measurementDao().insert(MeasurementEntity(
@@ -357,6 +363,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 ))
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.BloodPressureSample -> {
                 db.withTransaction {
@@ -390,6 +397,7 @@ class EventPersistenceSubscriber(
                         db.measurementDao().insert(diastolic)
                     }
                 }
+                if (!event.isHistory) com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.BloodSugarSample -> {
                 db.measurementDao().insert(MeasurementEntity(
@@ -399,6 +407,7 @@ class EventPersistenceSubscriber(
                     timestamp = event.timestamp.toEpochMilli(),
                     sourceRaw = "live",
                 ))
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.TemperatureSample -> {
                 val measurement = MeasurementEntity(
@@ -413,13 +422,17 @@ class EventPersistenceSubscriber(
                     sourceRaw = "live",
                 )
                 if (event.isHistory) upsertUnlessDeleted(measurement)
-                else db.measurementDao().insert(measurement)
+                else {
+                    db.measurementDao().insert(measurement)
+                    com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
+                }
             }
             is PulseEvent.ActivityUpdate -> {
                 // The ring always writes its own totals, in every mode. Under Path B the phone's
                 // count lives in `phoneSteps`, so there is no ownership conflict to gate on — the
                 // read path picks which column to show at display time.
                 upsertActivityDaily(event.timestamp.toEpochMilli(), event.steps, event.calories, event.distanceMeters)
+                com.pulseloop.mqtt.MqttLivePublisher.publishLive(context)
             }
             is PulseEvent.ActivityBucket -> {
                 // Per-slice ring history: upserted by timestamp + the day total recomputed as the
@@ -462,6 +475,7 @@ class EventPersistenceSubscriber(
                     // moment new measurements can have landed. Debounced 15 s + REPLACE in the
                     // worker, so this is cheap to fire on every done.
                     HealthConnectExportWorker.enqueue(context)
+                    com.pulseloop.mqtt.MqttExportWorker.enqueue(context)
                 }
             }
             is PulseEvent.HeartRateComplete -> {}

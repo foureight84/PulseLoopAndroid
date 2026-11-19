@@ -91,6 +91,7 @@ calibration offsets.
 - **Blood pressure calibration** (Settings → Calibration) — enter reference systolic/diastolic values from a cuff to apply an offset. 56ff/Jring only.
 - **Blood sugar calibration** (Settings → Calibration) — enter a reference glucose reading from lab work or a glucometer to calibrate the ring's profile-derived blood sugar estimates. 56ff/Jring only.
 - **Privacy & Data** (Settings → Privacy & Data) — demo-data controls (reseed/clear) and the anonymized diagnostics export for bug reports.
+- **MQTT** (Settings → MQTT) — publishes real ring vitals, daily activity, sleep stages, and live workout streaming (~5 s throttle) to any MQTT broker with configurable topics, auto-discovery payloads, and background sync intervals. See [docs/mqtt.md](docs/mqtt.md) for topic formats, capability-based sensor selection, and example payloads.
 
 ### Simplified Ring Management
 - **Forget ring** — removes the ring from the app in one tap. The unbind command is sent to the ring to release it for pairing with other apps.

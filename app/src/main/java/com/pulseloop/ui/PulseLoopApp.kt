@@ -644,6 +644,9 @@ fun PulseLoopApp() {
                 paddedComposable("settings/health-connect") {
                     HealthConnectSettingsScreen(onBack = { navController.popBackStack() })
                 }
+                paddedComposable("settings/mqtt") {
+                    com.pulseloop.ui.screens.MqttSettingsScreen(onBack = { navController.popBackStack() })
+                }
                 paddedComposable("settings/nutrition") {
                     NutritionSettingsScreen(
                         onBack = { navController.popBackStack() },

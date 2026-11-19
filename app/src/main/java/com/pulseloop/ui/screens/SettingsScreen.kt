@@ -311,6 +311,9 @@ fun SettingsScreen(
                 add(SettingsRowItem(Icons.Filled.Sync, PulseColors.success, "Health Connect") {
                     navigate("settings/health-connect")
                 })
+                add(SettingsRowItem(Icons.Filled.Hub, PulseColors.info, stringResource(R.string.mqtt_row_title)) {
+                    navigate("settings/mqtt")
+                })
                 add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, stringResource(R.string.settings_about_app)) {
                     navigate("settings/about")
                 })
