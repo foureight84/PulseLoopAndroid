@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -85,8 +86,14 @@ fun SleepScreen(
     topBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
     bottomBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
-    LaunchedEffect(Unit) { onOpen() }
+    LaunchedEffect(Unit) {
+        viewModel?.refreshReferenceNight()
+        onOpen()
+    }
     val state by (viewModel?.state?.collectAsState() ?: remember { mutableStateOf(SleepViewModel.SleepState()) })
+    var confirmingTail by remember { mutableStateOf<com.pulseloop.service.SleepTailSuggestion?>(null) }
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -99,9 +106,43 @@ fun SleepScreen(
         item {
             SleepRangeSelector(state.range) { viewModel?.setRange(it) }
         }
-        if (state.range == SleepRangeKey.DAY) dayItems(state, navController, viewModel)
+        if (state.range == SleepRangeKey.DAY) dayItems(state, navController, viewModel, onExtendTail = { confirmingTail = it })
         else aggregateItems(state, navController)
         item { Spacer(Modifier.height(64.dp)) }
+    }
+
+    confirmingTail?.let { suggestion ->
+        SleepRecordEditDialog(
+            run = suggestion.run,
+            limits = remember(suggestion) {
+                com.pulseloop.service.recordEditLimits(
+                    run = suggestion.run,
+                    previous = suggestion.previousRun,
+                    next = null,
+                    wakingDay = suggestion.sessionDate,
+                )
+            },
+            initialEndAt = suggestion.suggestedEndAt,
+            onDismiss = { confirmingTail = null },
+            onSave = { newStart, newEnd ->
+                confirmingTail = null
+                scope.launch {
+                    val updated = viewModel?.editSleepRecord(
+                        suggestion.sessionId,
+                        suggestion.run.recordStartAt,
+                        newStart,
+                        newEnd,
+                    ) ?: false
+                    if (!updated) {
+                        android.widget.Toast.makeText(
+                            context,
+                            context.getString(R.string.sleep_update_failed),
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -111,6 +152,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
     state: SleepViewModel.SleepState,
     navController: androidx.navigation.NavController?,
     viewModel: SleepViewModel?,
+    onExtendTail: (com.pulseloop.service.SleepTailSuggestion) -> Unit = {},
 ) {
     // Date stepper: ‹ older · date · newer › (iOS #84).
     item { SleepDayNavHeader(state, viewModel) }
@@ -138,9 +180,23 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
             item { SleepStageSummaryCards(deep = "—", light = "—", awake = "—") }
         }
         // Single session: render exactly as before, no carousel chrome.
-        sessions.size == 1 -> sessionPageItems(sessions[0], state.dayBlocks[sessions[0].id] ?: emptyList(), viewModel)
+        sessions.size == 1 -> sessionPageItems(
+            session = sessions[0],
+            blocks = state.dayBlocks[sessions[0].id] ?: emptyList(),
+            viewModel = viewModel,
+            tailSuggestion = state.tailSuggestion,
+            onExtendTail = onExtendTail,
+        )
         // Multiple sessions (night + naps): horizontal paged carousel with dot indicators.
-        else -> item { SleepCarousel(sessions, state.dayBlocks, viewModel) }
+        else -> item {
+            SleepCarousel(
+                sessions = sessions,
+                blocksBySession = state.dayBlocks,
+                viewModel = viewModel,
+                tailSuggestion = state.tailSuggestion,
+                onExtendTail = onExtendTail,
+            )
+        }
     }
 
     item {
@@ -161,8 +217,24 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     session: SleepSessionEntity,
     blocks: List<SleepStageBlockEntity>,
     viewModel: SleepViewModel? = null,
+    tailSuggestion: com.pulseloop.service.SleepTailSuggestion? = null,
+    onExtendTail: (com.pulseloop.service.SleepTailSuggestion) -> Unit = {},
 ) {
     item { SessionHero(session, blocks) }
+    if (tailSuggestion?.sessionId == session.id) {
+        item {
+            SleepTailSuggestionCard(
+                suggestion = tailSuggestion,
+                onExtend = { onExtendTail(tailSuggestion) },
+                onDismiss = {
+                    viewModel?.dismissTailSuggestion(
+                        tailSuggestion.sessionDate,
+                        tailSuggestion.run.recordStartAt,
+                    )
+                },
+            )
+        }
+    }
     item {
         VisualizationCard(eyebrow = stringResource(R.string.sleep_stages), title = stringResource(R.string.sleep_architecture), legend = true) {
             SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = session.spanMinutes, startTs = session.startAt)
@@ -205,6 +277,8 @@ private fun SleepCarousel(
     sessions: List<SleepSessionEntity>,
     blocksBySession: Map<String, List<SleepStageBlockEntity>>,
     viewModel: SleepViewModel? = null,
+    tailSuggestion: com.pulseloop.service.SleepTailSuggestion? = null,
+    onExtendTail: (com.pulseloop.service.SleepTailSuggestion) -> Unit = {},
 ) {
     // Reset to the first page whenever the day's session set changes (a different day / fewer
     // pages): keying the composable recreates the pager state.
@@ -227,6 +301,18 @@ private fun SleepCarousel(
                     letterSpacing = 0.8.sp, color = PulseColors.textSecondary,
                 )
                 SessionHero(s, blocks)
+                if (tailSuggestion?.sessionId == s.id) {
+                    SleepTailSuggestionCard(
+                        suggestion = tailSuggestion,
+                        onExtend = { onExtendTail(tailSuggestion) },
+                        onDismiss = {
+                            viewModel?.dismissTailSuggestion(
+                                tailSuggestion.sessionDate,
+                                tailSuggestion.run.recordStartAt,
+                            )
+                        },
+                    )
+                }
                 VisualizationCard(eyebrow = stringResource(R.string.sleep_stages), title = stringResource(R.string.sleep_architecture), legend = true) {
                     SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = s.spanMinutes, startTs = s.startAt)
                 }
@@ -1204,17 +1290,69 @@ private fun SleepRecordsCard(
     }
 }
 
+/**
+ * Suggests extending the night's final ring record forward to Bedtime's end when morning steps are
+ * absent (issue #148). Hands off to [SleepRecordEditDialog] pre-filled with the suggested end time
+ * rather than mutating the record silently.
+ */
+@Composable
+private fun SleepTailSuggestionCard(
+    suggestion: com.pulseloop.service.SleepTailSuggestion,
+    onExtend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val shape = RoundedCornerShape(18.dp)
+    val endLabel = SleepFormat.clockTime(suggestion.suggestedEndAt)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(PulseColors.card)
+            .border(1.dp, PulseColors.borderSubtle, shape)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            stringResource(R.string.sleep_tail_title),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = PulseColors.textPrimary,
+        )
+        Text(
+            stringResource(
+                R.string.sleep_tail_body,
+                SleepFormat.clockTime(suggestion.ringEndedAt),
+                endLabel,
+            ),
+            fontSize = 13.sp,
+            color = PulseColors.textSecondary,
+        )
+        Row(
+            modifier = Modifier.padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(onClick = onExtend) {
+                Text(stringResource(R.string.sleep_tail_extend, endLabel))
+            }
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_no))
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SleepRecordEditDialog(
     run: com.pulseloop.service.SleepRecordRun,
     limits: com.pulseloop.service.RecordEditLimits,
+    initialEndAt: Long = run.endAt,
     onDismiss: () -> Unit,
     onSave: (newStartAt: Long, newEndAt: Long) -> Unit,
 ) {
     val zone = remember { java.time.ZoneId.systemDefault() }
-    var currentStart by remember { mutableStateOf(run.startAt) }
-    var currentEnd by remember { mutableStateOf(run.endAt) }
+    var currentStart by remember(run.recordStartAt, initialEndAt) { mutableStateOf(run.startAt) }
+    var currentEnd by remember(run.recordStartAt, initialEndAt) { mutableStateOf(initialEndAt) }
     var pickingTime by remember { mutableStateOf<String?>(null) } // "start" or "end"
     // The limit the last pick ran past, named rather than silently snapped back to (issue #106).
     var limitMessage by remember { mutableStateOf<String?>(null) }

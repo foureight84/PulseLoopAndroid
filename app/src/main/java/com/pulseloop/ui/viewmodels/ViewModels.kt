@@ -222,6 +222,9 @@ class SleepViewModel(
     /** The night-bridging rule a record delete/edit re-segments with — the sync's own (issue #105). */
     private val gapBridge: () -> com.pulseloop.service.SleepGapBridge = { com.pulseloop.service.SleepGapBridge.NONE },
     private val stepSourcePrefs: StepSourcePrefs,
+    private val bedtimeWindows: () -> List<com.pulseloop.settings.ZenWindow>? = { null },
+    private val isTailDismissed: (sessionDate: Long, recordStartAt: Long) -> Boolean = { _, _ -> false },
+    private val onDismissTail: (sessionDate: Long, recordStartAt: Long) -> Unit = { _, _ -> },
 ) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
@@ -254,6 +257,8 @@ class SleepViewModel(
         // LLM summaries when present (fallback = the scripted coach above)
         val daySummary: CoachSummaryEntity? = null,
         val rangeSummary: CoachSummaryEntity? = null,
+        // Prompt to extend the night's final record to Bedtime's end when morning steps are absent (#148).
+        val tailSuggestion: com.pulseloop.service.SleepTailSuggestion? = null,
     )
 
     private val _state = MutableStateFlow(SleepState())
@@ -272,13 +277,14 @@ class SleepViewModel(
     init {
         // Any sleep-table change retriggers a rebuild of the selected range.
         viewModelScope.launch {
-            // Combined with the step-source preference (review item 7, PR #98) so the sleep
-            // coach's step figure follows the toggle without waiting for a sleep-table write.
-            // rebuild() reads preferPhone() fresh each call, so the emit is the entire fix.
+            // Combined with stepSourcePrefs (PR #98) and lastFullSyncAt (#148) so a morning sync
+            // that logs only step buckets (no new sleep rows) still re-evaluates the sleep coach
+            // and the Bedtime tail-extension prompt immediately once sync completes.
             combine(
                 db.sleepSessionDao().recentFlow(7),
                 stepSourcePrefs.preferPhoneFlow(),
-            ) { sessions, _ -> sessions }.collect { sessions ->
+                db.deviceDao().currentFlow().map { it?.lastFullSyncAt }.distinctUntilChanged(),
+            ) { sessions, _, _ -> sessions }.collect { sessions ->
                 _state.update { it.copy(recentSessions = sessions) }
                 try { rebuild(_state.value.range) } catch (_: Exception) {}
             }
@@ -371,6 +377,44 @@ class SleepViewModel(
             db.coachSummaryDao().latest(CoachSummaryKind.sleepRange(range).rawValue)
         } catch (_: Exception) { null }
 
+        val tailSuggestion = if (range == SleepRangeKey.DAY && daySessions.isNotEmpty()) {
+            val windows = bedtimeWindows()
+            if (windows.isNullOrEmpty()) {
+                null
+            } else {
+                val bucketDays = daySessions.flatMap { s ->
+                    listOf(
+                        TimeUtil.startOfDayLocal(s.date),
+                        TimeUtil.startOfDayLocal(s.endAt),
+                        TimeUtil.startOfDayLocal(s.endAt + 2 * 3_600_000L),
+                    )
+                }.distinct()
+                val buckets = bucketDays.flatMap { day ->
+                    try { db.activityBucketDao().byDay(day) } catch (_: Exception) { emptyList() }
+                }
+                val lastFullSyncAt = try { db.deviceDao().current()?.lastFullSyncAt } catch (_: Exception) { null }
+                val editedRecords = daySessions.mapNotNull { s ->
+                    val lastRun = com.pulseloop.service.sleepRecordRuns(dayBlocks[s.id].orEmpty()).lastOrNull()
+                        ?: return@mapNotNull null
+                    val edited = try {
+                        db.measurementDeletionDao().getSleepEdit(s.date, lastRun.recordStartAt) != null
+                    } catch (_: Exception) { false }
+                    if (edited) s.date to lastRun.recordStartAt else null
+                }.toSet()
+                com.pulseloop.service.SleepTailSuggestionDetector.detect(
+                    daySessions = daySessions,
+                    dayBlocks = dayBlocks,
+                    bedtimeWindows = windows,
+                    stepBuckets = buckets,
+                    lastFullSyncAt = lastFullSyncAt,
+                    isDismissed = isTailDismissed,
+                    isEdited = { date, recordStartAt -> (date to recordStartAt) in editedRecords },
+                )
+            }
+        } else {
+            null
+        }
+
         _state.update {
             it.copy(
                 lastNight = night,
@@ -391,6 +435,7 @@ class SleepViewModel(
                 goalMinutes = goal,
                 daySummary = daySummary,
                 rangeSummary = rangeSummary,
+                tailSuggestion = tailSuggestion,
             )
         }
     }
@@ -437,6 +482,19 @@ class SleepViewModel(
             if (updated) rebuild(_state.value.range)
             updated
         } catch (_: Exception) { false }
+
+    /** Persist dismissal of the Bedtime sleep-tail prompt for this ring record (issue #148). */
+    fun dismissTailSuggestion(sessionDate: Long, recordStartAt: Long) {
+        onDismissTail(sessionDate, recordStartAt)
+        _state.update { state ->
+            val current = state.tailSuggestion
+            if (current != null && current.sessionDate == sessionDate && current.run.recordStartAt == recordStartAt) {
+                state.copy(tailSuggestion = null)
+            } else {
+                state
+            }
+        }
+    }
 
     /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
     fun jumpToDay(dayMillis: Long) {

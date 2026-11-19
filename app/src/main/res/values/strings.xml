@@ -162,6 +162,7 @@
     <string name="checkins_enable_body">Get a daily check-in from your coach. You can change this anytime in Coach Check-Ins.</string>
     <string name="action_enable">Enable</string>
     <string name="action_not_now">Not now</string>
+    <string name="action_no">No</string>
     <string name="settings_checkins">Coach Check-Ins</string>
     <string name="checkins_coach_off">AI Coach is off</string>
     <string name="checkins_coach_off_desc">Enable the AI Coach to change these — daily check-ins are written by the coach from your recent trends.</string>
@@ -519,6 +520,9 @@
     <string name="action_keep">Keep</string>
     <string name="sleep_edit_title">Edit sleep record</string>
     <string name="sleep_edit_desc">Trim this record, or extend it over time the ring missed. Added time counts as asleep but has no stage, so it stays out of the stage breakdown and score.</string>
+    <string name="sleep_tail_title">Were you still asleep?</string>
+    <string name="sleep_tail_body">The ring stopped at %1$s, but Bedtime stayed on until %2$s with no steps.</string>
+    <string name="sleep_tail_extend">Extend to %1$s</string>
     <string name="sleep_edit_start">Start: %1$s</string>
     <string name="sleep_edit_end">End: %1$s</string>
     <string name="sleep_edit_order_error">Start time must be before end time.</string>
