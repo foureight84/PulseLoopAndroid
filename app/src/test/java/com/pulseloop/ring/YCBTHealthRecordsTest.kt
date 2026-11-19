@@ -200,6 +200,116 @@ class YCBTHealthRecordsTest {
         session = session.copyOfRange(0, session.size - 8)
         val event = YCBTHealthRecords.sleep(session).first() as RingDecodedEvent.SleepTimeline
         assertEquals(10, event.stages.size)
+        assertFalse(event.completeSession)
+    }
+
+    @Test
+    fun `header longer than one day falls back instead of expanding the session`() {
+        val start = 0x31def01c
+        val record = sleepRecordAt(
+            start,
+            start + 24 * 60 * 60 + 59,
+            listOf(Triple(0xf2, start, 30 * 60)),
+        )
+        val event = YCBTHealthRecords.sleep(record).single() as RingDecodedEvent.SleepTimeline
+
+        assertFalse(event.completeSession)
+        assertEquals(30, event.stages.size)
+    }
+
+    @Test
+    fun `valid full night header on a truncated record does not invent or replace its missing tail`() {
+        val start = 0x31def01c
+        val complete = sleepRecordAt(
+            start,
+            start + 8 * 60 * 60,
+            listOf(
+                Triple(0xf2, start + 30 * 60, 60 * 60),
+                Triple(0xf1, start + 90 * 60, 6 * 60 * 60),
+            ),
+        )
+        val event = YCBTHealthRecords.sleep(complete.copyOf(complete.size - 8))
+            .single() as RingDecodedEvent.SleepTimeline
+
+        assertFalse(event.completeSession)
+        assertEquals(YCBTBytes.date(start + 30 * 60), event._timestamp)
+        assertEquals(60, event.stages.size)
+        assertTrue(event.stages.all { it == SleepStage.LIGHT })
+    }
+
+    @Test
+    fun `record with a partial segment width is not authoritative`() {
+        val start = 0x31def01c
+        val session = sleepRecordAt(
+            start,
+            start + 60 * 60,
+            listOf(Triple(0xf2, start, 60 * 60)),
+        ) + byteArrayOf(0)
+        session[2] = (session.size and 0xFF).toByte()
+        session[3] = ((session.size ushr 8) and 0xFF).toByte()
+
+        val event = YCBTHealthRecords.sleep(session).single() as RingDecodedEvent.SleepTimeline
+
+        assertFalse(event.completeSession)
+        assertEquals(60, event.stages.size)
+    }
+
+    @Test
+    fun `partial-width record advances by its declared length before the next record`() {
+        val firstStart = 0x31def01c
+        val malformed = (sleepRecordAt(
+            firstStart,
+            firstStart + 60 * 60,
+            listOf(Triple(0xf2, firstStart, 60 * 60)),
+        ) + byteArrayOf(0)).also {
+            it[2] = (it.size and 0xFF).toByte()
+            it[3] = ((it.size ushr 8) and 0xFF).toByte()
+        }
+        val secondStart = firstStart + 150 * 60
+        val valid = sleepRecordAt(
+            secondStart,
+            secondStart + 120 * 60,
+            listOf(Triple(0xf1, secondStart, 120 * 60)),
+        )
+
+        val events = YCBTHealthRecords.sleep(malformed + valid)
+            .filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(2, events.size)
+        assertFalse(events[0].completeSession)
+        assertEquals(YCBTBytes.date(secondStart), events[1]._timestamp)
+        assertTrue(events[1].completeSession)
+        assertEquals(120, events[1].stages.size)
+    }
+
+    @Test
+    fun `truncated record stops at the following record preamble instead of borrowing it`() {
+        val firstStart = 0x31def01c
+        val truncated = sleepRecordAt(
+            firstStart,
+            firstStart + 120 * 60,
+            listOf(Triple(0xf2, firstStart, 60 * 60)),
+        ).also {
+            val claimed = it.size + 8
+            it[2] = (claimed and 0xFF).toByte()
+            it[3] = ((claimed ushr 8) and 0xFF).toByte()
+        }
+        val secondStart = firstStart + 180 * 60
+        val valid = sleepRecordAt(
+            secondStart,
+            secondStart + 90 * 60,
+            listOf(Triple(0xf1, secondStart, 90 * 60)),
+        )
+
+        val events = YCBTHealthRecords.sleep(truncated + valid)
+            .filterIsInstance<RingDecodedEvent.SleepTimeline>()
+
+        assertEquals(2, events.size)
+        assertFalse(events[0].completeSession)
+        assertEquals(60, events[0].stages.size)
+        assertEquals(YCBTBytes.date(secondStart), events[1]._timestamp)
+        assertTrue(events[1].completeSession)
+        assertEquals(90, events[1].stages.size)
     }
 
     @Test

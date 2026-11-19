@@ -55,6 +55,12 @@ data class HealthConnectPrefs(
      */
     val nettingFlipDone: Boolean = false,
     /**
+     * One-time marker for replacing role-based sleep record identities with stable v2 identities.
+     * Old blobs decode to false; removal deliberately leaves this true because it deletes the
+     * calling app's Health Connect records rather than restoring legacy identities.
+     */
+    val sleepIdentityV2Done: Boolean = false,
+    /**
      * Phase 6: one-shot flag for the full-revocation reset offer (Gadgetbridge pattern). Set when
      * the user declines ("Not now") or confirms the reset; cleared on a later re-grant (a grow) so
      * a future full revocation offers again. Prevents re-offering on every settings open while the

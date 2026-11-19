@@ -6,9 +6,9 @@ import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.entity.SleepSessionEntity
+import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.health.HealthConnectTypeMappings
 import com.pulseloop.health.HealthConnectTypeMappings.EXCLUDED_SOURCES
-import com.pulseloop.health.HealthConnectTypeMappings.SleepDaySession
 import com.pulseloop.health.HealthConnectTypeMappings.SleepStageSpan
 import java.time.Instant
 import java.time.ZoneId
@@ -21,9 +21,8 @@ import java.time.ZoneId
  * ([HealthConnectTypeMappings.normalizeSleepStages]) — with the client's stage-type constants
  * (never raw ints).
  *
- * Identity (plan §3, identity trap #1): `clientRecordId = pl-sleep-<dayEpochMs>` from the
- * session's `date` — NEVER the block id (a fresh random UUID on every re-sync) nor the session
- * UUID — so a re-synced night upserts the SAME record in place. `clientRecordVersion` = the
+ * Identity: the bounded v2 `clientRecordId` is derived only from the stable
+ * [SleepSessionEntity.id], never from waking-day main/nap rank. `clientRecordVersion` = the
  * session's `updatedAt`, so the later, fuller re-sync always wins the upsert.
  *
  * The selection is watermark-driven on `updatedAt` (sleep is a mutable group: re-synced nights
@@ -76,11 +75,6 @@ class SleepExporter(private val db: PulseLoopDatabase) {
             .forSessions(sessions.map { it.id })
             .groupBy { it.sessionId }
 
-        // Main-session selection needs each day's FULL non-demo session set — the pending list
-        // alone cannot tell a night from the nap that shares its waking day (plan §3: the plain
-        // id belongs to the day's main sleep).
-        val dayCache = HashMap<Long, List<SleepSessionEntity>>()
-
         val records = mutableListOf<Record>()
         val highWaters = mutableListOf<Long>()
         var skipped = 0
@@ -91,56 +85,63 @@ class SleepExporter(private val db: PulseLoopDatabase) {
                 drop(session.updatedAt)
                 continue // the record constructor would reject it
             }
-            val day = dayCache.getOrPut(session.date) { dao.ringAllByDay(session.date) }
-            val index = day.indexOfFirst { it.id == session.id }
-            if (index < 0) {
-                skipped++
-                drop(session.updatedAt)
-                continue // cannot happen: the query filters to the same sourceRaw set
-            }
-            val recordId = HealthConnectTypeMappings.sleepSessionRecordId(
-                session.date,
-                HealthConnectTypeMappings.sleepSessionSuffix(
-                    day.map { SleepDaySession(it.startAt, it.totalMinutes.toLong()) },
-                    index,
-                ),
-            )
+            val recordId = HealthConnectTypeMappings.sleepSessionRecordIdV2(session.id)
 
-            val spans = blocksBySession[session.id].orEmpty().map {
-                SleepStageSpan(
-                    it.startAt,
-                    it.startAt + it.durationMinutes * 60_000L,
-                    HealthConnectTypeMappings.sleepStageType(it.stageRaw),
-                )
-            }
-            val stages = HealthConnectTypeMappings.normalizeSleepStages(session.startAt, session.endAt, spans)
-            if (stages.isEmpty()) {
+            val record = buildSleepSessionRecord(
+                session,
+                blocksBySession[session.id].orEmpty(),
+                recordId,
+                device,
+                zone,
+            )
+            if (record == null) {
                 skipped++
                 drop(session.updatedAt)
                 continue // Gadgetbridge parity: a session with no valid stages is not written;
                 // a later re-sync that adds stages bumps updatedAt and re-selects it
             }
 
-            val start = Instant.ofEpochMilli(session.startAt)
-            val end = Instant.ofEpochMilli(session.endAt)
-            records += SleepSessionRecord(
-                startTime = start,
-                startZoneOffset = HealthConnectTypeMappings.zoneOffsetAt(start, zone),
-                endTime = end,
-                endZoneOffset = HealthConnectTypeMappings.zoneOffsetAt(end, zone),
-                metadata = Metadata.autoRecorded(device, recordId, session.updatedAt),
-                title = null,
-                notes = null,
-                stages = stages.map {
-                    SleepSessionRecord.Stage(
-                        Instant.ofEpochMilli(it.startMs),
-                        Instant.ofEpochMilli(it.endMs),
-                        it.stageType,
-                    )
-                },
-            )
+            records += record
             highWaters += session.updatedAt
         }
         return PendingSleep(records, highWaters, skipped, droppedHigh)
     }
+}
+
+internal fun buildSleepSessionRecord(
+    session: SleepSessionEntity,
+    blocks: List<SleepStageBlockEntity>,
+    recordId: String,
+    device: Device,
+    zone: ZoneId,
+): SleepSessionRecord? {
+    if (session.endAt <= session.startAt) return null
+    val spans = blocks.map {
+        SleepStageSpan(
+            it.startAt,
+            it.startAt + it.durationMinutes * 60_000L,
+            HealthConnectTypeMappings.sleepStageType(it.stageRaw),
+        )
+    }
+    val stages = HealthConnectTypeMappings.normalizeSleepStages(session.startAt, session.endAt, spans)
+    if (stages.isEmpty()) return null
+
+    val start = Instant.ofEpochMilli(session.startAt)
+    val end = Instant.ofEpochMilli(session.endAt)
+    return SleepSessionRecord(
+        startTime = start,
+        startZoneOffset = HealthConnectTypeMappings.zoneOffsetAt(start, zone),
+        endTime = end,
+        endZoneOffset = HealthConnectTypeMappings.zoneOffsetAt(end, zone),
+        metadata = Metadata.autoRecorded(device, recordId, session.updatedAt),
+        title = null,
+        notes = null,
+        stages = stages.map {
+            SleepSessionRecord.Stage(
+                Instant.ofEpochMilli(it.startMs),
+                Instant.ofEpochMilli(it.endMs),
+                it.stageType,
+            )
+        },
+    )
 }

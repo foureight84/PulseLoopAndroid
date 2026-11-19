@@ -185,6 +185,7 @@ object YCBTHealthRecords {
                 continue
             }
             val recordLength = YCBTBytes.u16(buffer, cursor + 2)
+            val remaining = buffer.size - cursor
             // The vendor reads the session's own bounds out of the header (DataUnpack's
             // `startTime` at +4, `endTime` at +8) rather than inferring them from the segments.
             val headerStart = YCBTBytes.u32(buffer, cursor + 4)
@@ -193,11 +194,19 @@ object YCBTHealthRecords {
             val declared = maxOf(0, recordLength - headerLength) / segmentLength
             val available = (buffer.size - segmentsStart) / segmentLength
             val segmentCount = minOf(declared, available)
+            val validDeclaredWidth = recordLength >= headerLength &&
+                recordLength <= remaining &&
+                (recordLength - headerLength) % segmentLength == 0
 
             val segments = mutableListOf<SleepSegment>()
             val seenStarts = mutableSetOf<Int>()
+            var nextRecordBoundary: Int? = null
             for (index in 0 until segmentCount) {
                 val offset = segmentsStart + index * segmentLength
+                if (isSleepSessionHeader(buffer, offset)) {
+                    nextRecordBoundary = offset
+                    break
+                }
                 val stage = sleepStage(buffer[offset].toInt() and 0xFF) ?: continue
                 val segmentStart = YCBTBytes.u32(buffer, offset + 1)
                 val segmentSeconds = YCBTBytes.u24(buffer, offset + 5)
@@ -215,26 +224,34 @@ object YCBTHealthRecords {
                 if (!seenStarts.add(segmentStart)) continue
                 segments.add(SleepSegment(stage, segmentStart, segmentSeconds))
             }
-            val stages = placeStages(segments, headerStart, headerEnd)
+            val structurallyComplete = validDeclaredWidth &&
+                segmentCount == declared &&
+                nextRecordBoundary == null
+            val useHeaderBounds = structurallyComplete && usableHeaderBounds(headerStart, headerEnd)
+            val stages = placeStages(segments, headerStart, headerEnd, useHeaderBounds)
             if (segments.isNotEmpty() && stages.isNotEmpty()) {
-                val start = if (usableHeaderBounds(headerStart, headerEnd)) headerStart
-                            else segments.first().startSeconds
+                val start = if (useHeaderBounds) headerStart else segments.first().startSeconds
                 events.add(
                     RingDecodedEvent.SleepTimeline(
                         _timestamp = YCBTBytes.date(start),
                         stages = stages,
-                        completeSession = true,
+                        completeSession = useHeaderBounds,
                     )
                 )
             }
-            cursor = segmentsStart + segmentCount * segmentLength
+            cursor = when {
+                nextRecordBoundary != null -> nextRecordBoundary
+                recordLength in headerLength..remaining -> cursor + recordLength
+                recordLength > remaining -> maxOf(cursor + 1, segmentsStart + segmentCount * segmentLength)
+                else -> cursor + 1
+            }
         }
         return events
     }
 
     private fun usableHeaderBounds(startSeconds: Int, endSeconds: Int): Boolean =
         startSeconds > 0 && endSeconds > startSeconds &&
-            (endSeconds - startSeconds) / 60 <= MAX_SLEEP_SESSION_MINUTES
+            (endSeconds.toLong() - startSeconds.toLong()) <= MAX_SLEEP_SESSION_MINUTES * 60L
 
     /**
      * A record's minute-by-minute stage timeline (issue #63).
@@ -261,9 +278,10 @@ object YCBTHealthRecords {
         segments: List<SleepSegment>,
         headerStart: Int,
         headerEnd: Int,
+        useHeaderBounds: Boolean = usableHeaderBounds(headerStart, headerEnd),
     ): List<SleepStage> {
         if (segments.isEmpty()) return emptyList()
-        if (!usableHeaderBounds(headerStart, headerEnd)) {
+        if (!useHeaderBounds) {
             val stages = mutableListOf<SleepStage>()
             for (segment in segments) {
                 val remaining = MAX_SLEEP_SESSION_MINUTES - stages.size

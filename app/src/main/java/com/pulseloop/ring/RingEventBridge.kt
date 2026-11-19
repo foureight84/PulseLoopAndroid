@@ -85,7 +85,10 @@ object RingEventBridge {
             listOf(PulseEvent.SyncProgress("done"))
 
         is RingDecodedEvent.SleepTimeline -> {
-            if (!isWithinHistoryWindow(decoded._timestamp, now) || decoded.stages.isEmpty()) emptyList()
+            val end = decoded._timestamp.plusSeconds(decoded.stages.size * 60L)
+            if (!isWithinHistoryWindow(decoded._timestamp, now) ||
+                !isWithinHistoryWindow(end, now) ||
+                decoded.stages.isEmpty()) emptyList()
             else listOf(PulseEvent.SleepTimeline(decoded._timestamp, decoded.stages, decoded.completeSession))
         }
 

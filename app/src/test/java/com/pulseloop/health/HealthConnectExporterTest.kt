@@ -6,6 +6,7 @@ import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -171,6 +172,82 @@ class HealthConnectExporterTest {
         assertFalse(p.allCompleted)
         assertEquals(200, p.inserted)
         assertEquals(499L, p.lastCompletedHighWater)
+    }
+
+    @Test
+    fun sleepIdentityMigrationDeletesThenResetsThenMarks() = runTest {
+        val calls = mutableListOf<String>()
+        val migrated = migrateSleepIdentityV2(
+            required = true,
+            deleteLegacyRecords = { calls += "delete" },
+            resetSleepWatermark = { calls += "reset" },
+            markDone = { calls += "mark" },
+        )
+
+        assertTrue(migrated)
+        assertEquals(listOf("delete", "reset", "mark"), calls)
+    }
+
+    @Test
+    fun sleepIdentityMigrationDeleteFailureDoesNotResetOrMark() = runTest {
+        val calls = mutableListOf<String>()
+        val migrated = migrateSleepIdentityV2(
+            required = true,
+            deleteLegacyRecords = {
+                calls += "delete"
+                throw IllegalStateException("provider unavailable")
+            },
+            resetSleepWatermark = { calls += "reset" },
+            markDone = { calls += "mark" },
+        )
+
+        assertFalse(migrated)
+        assertEquals(listOf("delete"), calls)
+    }
+
+    @Test
+    fun sleepIdentityMigrationDoesNotSwallowCancellation() = runTest {
+        try {
+            migrateSleepIdentityV2(
+                required = true,
+                deleteLegacyRecords = { throw CancellationException("cancelled") },
+                resetSleepWatermark = { fail("must not reset after cancellation") },
+                markDone = { fail("must not mark after cancellation") },
+            )
+            fail("expected cancellation")
+        } catch (_: CancellationException) {
+            // Structured cancellation must propagate to WorkManager/coroutine ownership.
+        }
+    }
+
+    @Test
+    fun sleepIdentityMigrationGatesSkipWithoutSideEffects() = runTest {
+        val permission = HealthConnectPermissions.sleep.first()
+        val ready = HealthConnectPrefs(
+            enabled = true,
+            sleep = true,
+            backfillChoice = HealthConnectPrefs.BackfillChoice.EXPORT_ALL,
+        )
+        val gated = listOf(
+            ready.copy(enabled = false) to setOf(permission),
+            ready.copy(backfillChoice = HealthConnectPrefs.BackfillChoice.NOT_ASKED) to setOf(permission),
+            ready.copy(sleep = false) to setOf(permission),
+            ready to emptySet(),
+            ready.copy(sleepIdentityV2Done = true) to setOf(permission),
+        )
+
+        assertTrue(sleepIdentityV2MigrationRequired(ready, setOf(permission)))
+        gated.forEach { (prefs, granted) ->
+            var called = false
+            val migrated = migrateSleepIdentityV2(
+                required = sleepIdentityV2MigrationRequired(prefs, granted),
+                deleteLegacyRecords = { called = true },
+                resetSleepWatermark = { called = true },
+                markDone = { called = true },
+            )
+            assertTrue(migrated)
+            assertFalse(called)
+        }
     }
 
     // ── Phase 3: one source row can emit several records sharing one high water ──

@@ -258,4 +258,15 @@ class EventPersistenceIdentityTest {
         // Nothing of ours: nothing to adopt, whatever the ring sends.
         assertTrue(spotReadingsMatching(emptyList(), 1_000_000L).isEmpty())
     }
+
+    @Test
+    fun `corrected sleep updatedAt advances within the same millisecond`() {
+        assertEquals(1_001L, nextSleepUpdatedAt(wallClockNow = 1_000L, existingUpdatedAt = 1_000L))
+    }
+
+    @Test
+    fun `corrected sleep updatedAt advances across clock rollback and saturates safely`() {
+        assertEquals(2_001L, nextSleepUpdatedAt(wallClockNow = 1_000L, existingUpdatedAt = 2_000L))
+        assertEquals(Long.MAX_VALUE, nextSleepUpdatedAt(0L, Long.MAX_VALUE))
+    }
 }

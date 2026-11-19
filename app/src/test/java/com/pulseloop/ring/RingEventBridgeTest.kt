@@ -233,6 +233,16 @@ class RingEventBridgeTest {
         assertTrue(RingEventBridge.eventsFor(sleep, now).isEmpty())
     }
 
+    @Test
+    fun `sleep timeline whose end is over one hour in the future is dropped`() {
+        val start = now.minus(30, ChronoUnit.MINUTES)
+        val sleep = RingDecodedEvent.SleepTimeline(
+            _timestamp = start,
+            stages = List(150) { SleepStage.LIGHT },
+        )
+        assertTrue(RingEventBridge.eventsFor(sleep, now).isEmpty())
+    }
+
     // ── Battery Gating ──────────────────────────────────────────────────
 
     @Test

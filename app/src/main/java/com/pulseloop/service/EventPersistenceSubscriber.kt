@@ -887,7 +887,7 @@ class EventPersistenceSubscriber(
                     totalMinutes = totalMin,
                     score = score,
                     syncedAt = now,
-                    updatedAt = now,
+                    updatedAt = row?.let { nextSleepUpdatedAt(now, it.updatedAt) } ?: now,
                 )
             )
             seg.blocks.forEach {
@@ -1259,6 +1259,11 @@ internal fun replaceOverlappingSleepBlocks(
 
     for (block in replacements) byStart[block.startAt] = block
     return byStart.values.sortedBy { it.startAt }
+}
+
+internal fun nextSleepUpdatedAt(wallClockNow: Long, existingUpdatedAt: Long): Long {
+    val successor = if (existingUpdatedAt == Long.MAX_VALUE) Long.MAX_VALUE else existingUpdatedAt + 1L
+    return maxOf(wallClockNow, successor)
 }
 
 // Extension for Set<WearableCapability> CSV from WearableCapability.kt
