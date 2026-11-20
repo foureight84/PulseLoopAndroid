@@ -1,6 +1,7 @@
 package com.pulseloop.service
 
 import com.pulseloop.data.entity.ActivityBucketEntity
+import com.pulseloop.data.entity.MeasurementEntity
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.ring.SleepStage
@@ -405,5 +406,110 @@ class SleepTailSuggestionTest {
         assertEquals(setOf(justInside, recent), pruned)
         assertTrue(expired !in pruned)
         assertTrue(malformed !in pruned)
+    }
+
+    private fun hr(ts: Long, bpm: Double, source: String = "ring_history") = MeasurementEntity(
+        kindRaw = "HEART_RATE",
+        value = bpm,
+        unit = "bpm",
+        timestamp = ts,
+        sourceRaw = source,
+    )
+
+    @Test
+    fun `withHeartRateContext attaches single hourly reading inside gap and night average`() {
+        // Nov 16 example: ring stopped 07:54, Bedtime ended 08:52, hourly HR at 08:00 = 58, 09:00 = 104 (outside).
+        val blocks = ringBlocks(startAt = at(0, 14), durationMinutes = 460) // 00:14..07:54
+        val s = session(blocks = blocks)
+        val base = detect(
+            sessions = listOf(s),
+            blocksBySession = mapOf(s.id to blocks),
+            windows = listOf(ZenWindow(start = at(0, 0), end = at(8, 52))),
+            lastFullSyncAt = at(9, 10),
+        )!!
+
+        val enriched = SleepTailSuggestionDetector.withHeartRateContext(
+            suggestion = base,
+            sessionStartAt = s.startAt,
+            hrSamples = listOf(
+                hr(at(1, 0), 56.0),
+                hr(at(4, 0), 60.0),
+                hr(at(7, 0), 61.0),
+                hr(at(8, 0), 58.0),
+                hr(at(9, 0), 104.0),
+            ),
+        )
+
+        assertEquals(listOf(TailHeartRateReading(at(8, 0), 58)), enriched.gapHeartRates)
+        assertEquals(59, enriched.nightAvgHeartRate)
+    }
+
+    @Test
+    fun `withHeartRateContext respects boundaries filters demo and invalid values and deduplicates per minute`() {
+        val blocks = ringBlocks(startAt = at(0, 14), durationMinutes = 460) // 00:14..07:54
+        val s = session(blocks = blocks)
+        val base = detect(
+            sessions = listOf(s),
+            blocksBySession = mapOf(s.id to blocks),
+            windows = listOf(ZenWindow(start = at(0, 0), end = at(8, 52))),
+            lastFullSyncAt = at(9, 10),
+        )!!
+
+        val enriched = SleepTailSuggestionDetector.withHeartRateContext(
+            suggestion = base,
+            sessionStartAt = s.startAt,
+            hrSamples = listOf(
+                // Exact ringEndedAt counts toward night avg, not gap.
+                hr(at(7, 54), 60.0),
+                // Exact suggestedEndAt is excluded from gap.
+                hr(at(8, 52), 95.0),
+                // Demo / mock and implausible values ignored.
+                hr(at(8, 10), 62.0, source = "demo"),
+                hr(at(8, 12), 63.0, source = "mock"),
+                hr(at(8, 15), 0.0),
+                hr(at(8, 20), 25.0),
+                hr(at(8, 25), 250.0),
+                // Same-minute duplicate keeps latest (08:30:40 -> 57 bpm).
+                hr(at(8, 30, 10), 61.0),
+                hr(at(8, 30, 40), 57.0),
+            ),
+        )
+
+        assertEquals(listOf(TailHeartRateReading(at(8, 30, 40), 57)), enriched.gapHeartRates)
+        assertEquals(60, enriched.nightAvgHeartRate)
+    }
+
+    @Test
+    fun `withHeartRateContext sorts multiple gap readings ascending and handles empty night HR`() {
+        val blocks = ringBlocks(startAt = at(0, 14), durationMinutes = 460) // 00:14..07:54
+        val s = session(blocks = blocks)
+        val base = detect(
+            sessions = listOf(s),
+            blocksBySession = mapOf(s.id to blocks),
+            windows = listOf(ZenWindow(start = at(0, 0), end = at(8, 52))),
+            lastFullSyncAt = at(9, 10),
+        )!!
+
+        val enriched = SleepTailSuggestionDetector.withHeartRateContext(
+            suggestion = base,
+            sessionStartAt = s.startAt,
+            hrSamples = listOf(
+                hr(at(8, 40), 64.0),
+                hr(at(8, 0), 58.0),
+                hr(at(8, 20), 59.0),
+                hr(at(8, 10), 57.0),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                TailHeartRateReading(at(8, 0), 58),
+                TailHeartRateReading(at(8, 10), 57),
+                TailHeartRateReading(at(8, 20), 59),
+                TailHeartRateReading(at(8, 40), 64),
+            ),
+            enriched.gapHeartRates,
+        )
+        assertNull(enriched.nightAvgHeartRate)
     }
 }

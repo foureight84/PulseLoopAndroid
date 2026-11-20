@@ -1327,6 +1327,36 @@ private fun SleepTailSuggestionCard(
             fontSize = 13.sp,
             color = PulseColors.textSecondary,
         )
+        if (suggestion.gapHeartRates.isNotEmpty()) {
+            val hrSummary = when (suggestion.gapHeartRates.size) {
+                1 -> {
+                    val r = suggestion.gapHeartRates.first()
+                    stringResource(R.string.sleep_tail_hr_single, SleepFormat.clockTime(r.timestamp), r.bpm)
+                }
+                in 2..3 -> {
+                    val items = suggestion.gapHeartRates.map { r ->
+                        stringResource(R.string.sleep_tail_hr_item, r.bpm, SleepFormat.clockTime(r.timestamp))
+                    }.joinToString(", ")
+                    stringResource(R.string.sleep_tail_hr_list, items)
+                }
+                else -> {
+                    val bpms = suggestion.gapHeartRates.map { it.bpm }
+                    val avg = bpms.average().roundToInt()
+                    val min = bpms.min()
+                    val max = bpms.max()
+                    if (min == max) stringResource(R.string.sleep_tail_hr_summary_flat, avg)
+                    else stringResource(R.string.sleep_tail_hr_summary, avg, min, max)
+                }
+            }
+            val hrLine = suggestion.nightAvgHeartRate?.let { nightAvg ->
+                "$hrSummary · ${stringResource(R.string.sleep_tail_hr_night_avg, nightAvg)}"
+            } ?: hrSummary
+            Text(
+                hrLine,
+                fontSize = 12.sp,
+                color = PulseColors.textMuted,
+            )
+        }
         Row(
             modifier = Modifier.padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -523,6 +523,12 @@
     <string name="sleep_tail_title">Were you still asleep?</string>
     <string name="sleep_tail_body">The ring stopped at %1$s, but Bedtime stayed on until %2$s with no steps.</string>
     <string name="sleep_tail_extend">Extend to %1$s</string>
+    <string name="sleep_tail_hr_single">Heart rate at %1$s: %2$d bpm</string>
+    <string name="sleep_tail_hr_item">%1$d bpm at %2$s</string>
+    <string name="sleep_tail_hr_list">Heart rate: %1$s</string>
+    <string name="sleep_tail_hr_summary">Heart rate in gap: %1$d bpm avg (%2$d–%3$d)</string>
+    <string name="sleep_tail_hr_summary_flat">Heart rate in gap: %1$d bpm avg</string>
+    <string name="sleep_tail_hr_night_avg">night avg %1$d bpm</string>
     <string name="sleep_edit_start">Start: %1$s</string>
     <string name="sleep_edit_end">End: %1$s</string>
     <string name="sleep_edit_order_error">Start time must be before end time.</string>

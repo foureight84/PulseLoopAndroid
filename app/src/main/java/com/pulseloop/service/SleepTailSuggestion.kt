@@ -3,11 +3,19 @@ package com.pulseloop.service
 import android.content.Context
 import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.entity.ActivityBucketEntity
+import com.pulseloop.data.entity.MeasurementEntity
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.settings.ZenWindow
 import java.time.ZoneId
+import kotlin.math.roundToInt
+
+/** A single recorded ring heart-rate sample inside the suggested extension gap (#148). */
+data class TailHeartRateReading(
+    val timestamp: Long,
+    val bpm: Int,
+)
 
 /**
  * A prompt to extend the ring's last sleep record forward to the end of Android Bedtime (#148).
@@ -27,6 +35,8 @@ data class SleepTailSuggestion(
     val bedtimeEndedAt: Long,
     val suggestedEndAt: Long,
     val gapMinutes: Int,
+    val gapHeartRates: List<TailHeartRateReading> = emptyList(),
+    val nightAvgHeartRate: Int? = null,
 )
 
 /**
@@ -132,6 +142,46 @@ object SleepTailSuggestionDetector {
             )
         }
         return null
+    }
+
+    private const val MIN_VALID_BPM = 30
+    private const val MAX_VALID_BPM = 220
+
+    /**
+     * Enrich [suggestion] with plausible non-demo heart-rate readings inside `(ringEndedAt,
+     * suggestedEndAt)` and the night's mean HR across `sessionStartAt..ringEndedAt` (#148).
+     */
+    fun withHeartRateContext(
+        suggestion: SleepTailSuggestion,
+        sessionStartAt: Long,
+        hrSamples: List<MeasurementEntity>,
+    ): SleepTailSuggestion {
+        val plausible = hrSamples.mapNotNull { sample ->
+            if (DemoDataPolicy.isDemo(sample.sourceRaw)) return@mapNotNull null
+            if (sample.value.isNaN()) return@mapNotNull null
+            val bpm = sample.value.roundToInt()
+            if (bpm !in MIN_VALID_BPM..MAX_VALID_BPM) return@mapNotNull null
+            sample.timestamp to bpm
+        }
+
+        val gapReadings = plausible
+            .asSequence()
+            .filter { (ts, _) -> ts > suggestion.ringEndedAt && ts < suggestion.suggestedEndAt }
+            .sortedBy { (ts, _) -> ts }
+            .associateBy { (ts, _) -> ts / MINUTE_MS }
+            .values
+            .map { (ts, bpm) -> TailHeartRateReading(timestamp = ts, bpm = bpm) }
+            .sortedBy { it.timestamp }
+
+        val nightValues = plausible
+            .filter { (ts, _) -> ts in sessionStartAt..suggestion.ringEndedAt }
+            .map { (_, bpm) -> bpm }
+        val nightAvg = if (nightValues.isEmpty()) null else nightValues.average().roundToInt()
+
+        return suggestion.copy(
+            gapHeartRates = gapReadings,
+            nightAvgHeartRate = nightAvg,
+        )
     }
 }
 

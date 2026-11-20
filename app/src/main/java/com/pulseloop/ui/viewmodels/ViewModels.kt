@@ -401,7 +401,7 @@ class SleepViewModel(
                     } catch (_: Exception) { false }
                     if (edited) s.date to lastRun.recordStartAt else null
                 }.toSet()
-                com.pulseloop.service.SleepTailSuggestionDetector.detect(
+                val rawSuggestion = com.pulseloop.service.SleepTailSuggestionDetector.detect(
                     daySessions = daySessions,
                     dayBlocks = dayBlocks,
                     bedtimeWindows = windows,
@@ -410,6 +410,22 @@ class SleepViewModel(
                     isDismissed = isTailDismissed,
                     isEdited = { date, recordStartAt -> (date to recordStartAt) in editedRecords },
                 )
+                rawSuggestion?.let { suggestion ->
+                    val hrStart = daySessions.firstOrNull { it.id == suggestion.sessionId }?.startAt
+                        ?: suggestion.run.startAt
+                    val hrSamples = try {
+                        db.measurementDao().rangeReal(
+                            MeasurementKind.HEART_RATE.name,
+                            hrStart,
+                            suggestion.suggestedEndAt,
+                        )
+                    } catch (_: Exception) { emptyList() }
+                    com.pulseloop.service.SleepTailSuggestionDetector.withHeartRateContext(
+                        suggestion = suggestion,
+                        sessionStartAt = hrStart,
+                        hrSamples = hrSamples,
+                    )
+                }
             }
         } else {
             null

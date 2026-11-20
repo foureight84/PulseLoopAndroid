@@ -78,13 +78,22 @@ object SleepScore {
         // and judged against asleep time the coverage test below would be true for every ring,
         // handing a ring that never labels awake the full awake sub-score for nothing.
         //
-        // Minutes the wearer added over time the ring missed (issue #106) are asleep but carry no
-        // stage, so the score judges the night the ring measured: they leave `total` (they would
-        // dilute every stage share) and the coverage test, and stay in `span`, which held them as a
-        // between-record gap before the edit and still does.
+        // Minutes the wearer added over time the ring missed (issue #106, #148) are asleep but carry
+        // no stage, so the score judges the night the ring measured: they leave `total` (they
+        // would dilute every stage share) and the coverage test, and `span` stays the span across
+        // the ring's own measured blocks (preserving interior between-record gaps while keeping
+        // outward extensions score-neutral even when a night has no AWAKE blocks).
         val added = addedMinutes(blocks)
         val total = if (session.totalMinutes > 0) (session.totalMinutes - added).coerceAtLeast(0).toDouble() else 0.0
-        val span = session.spanMinutes.toDouble().takeIf { it > 0 } ?: total
+        val measured = blocks.filterNot { it.stageRaw == SleepStage.ADDED.name }
+        val measuredSpan = if (added > 0 && measured.isNotEmpty() && measured.all { it.startAt > 0L }) {
+            val first = measured.minOf { it.startAt }
+            val last = measured.maxOf { it.startAt + it.durationMinutes * 60_000L }
+            ((last - first) / 60_000L).toInt().coerceAtLeast(0).toDouble()
+        } else {
+            0.0
+        }
+        val span = measuredSpan.takeIf { it > 0 } ?: session.spanMinutes.toDouble().takeIf { it > 0 } ?: total
         // stageRaw is persisted as the SleepStage enum name (uppercase) — match it exactly.
         // Some rings report REM in big-data sleep; the score model has no REM band, so fold
         // REM into deep (both are restorative sleep the deep band rewards).
@@ -93,8 +102,7 @@ object SleepScore {
         val deep = minutesFor(SleepStage.DEEP, SleepStage.REM)
         val light = minutesFor(SleepStage.LIGHT)
         val awake = minutesFor(SleepStage.AWAKE)
-        val coveredStageMin = blocks.filterNot { it.stageRaw == SleepStage.ADDED.name }
-            .sumOf { it.durationMinutes.toDouble() }
+        val coveredStageMin = measured.sumOf { it.durationMinutes.toDouble() }
         val hasAwakeSignal = blocks.any { it.stageRaw == SleepStage.AWAKE.name } ||
             awake > 0 || (span > 0 && coveredStageMin >= span * 0.95)
 

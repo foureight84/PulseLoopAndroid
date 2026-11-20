@@ -292,4 +292,50 @@ class SleepRecordExtensionTest {
         )
         assertTrue(SleepSessionRecord.STAGE_TYPE_SLEEPING != SleepSessionRecord.STAGE_TYPE_UNKNOWN)
     }
+
+    @Test
+    fun `outward tail extension on 0-awake night preserves score and awake signal`() {
+        // Nov 16 shape (#148): 460m light/deep/rem with zero AWAKE blocks, extended +58m past end.
+        val stages = List(280) { SleepStage.LIGHT } + List(100) { SleepStage.DEEP } + List(80) { SleepStage.REM }
+        val ringOnly = ring(at(0, 14), stages) // 00:14..07:54
+        val extended = editedRecordBlocks(ringOnly, at(0, 14), at(0, 14), at(8, 52))!!
+
+        val without = SleepScore.calculate(session(ringOnly), ringOnly)
+        val withTail = SleepScore.calculate(session(extended), extended)
+
+        assertEquals(0, without.awakePct)
+        assertEquals(0, withTail.awakePct)
+        assertEquals(without.deepPct, withTail.deepPct)
+        assertEquals(without.lightPct, withTail.lightPct)
+        assertEquals(without.score, withTail.score)
+    }
+
+    @Test
+    fun `outward head extension on 0-awake night preserves score and awake signal`() {
+        val stages = List(280) { SleepStage.LIGHT } + List(100) { SleepStage.DEEP } + List(80) { SleepStage.REM }
+        val ringOnly = ring(at(0, 14), stages)
+        val extendedHead = editedRecordBlocks(ringOnly, at(0, 14), at(-1, 14), end(ringOnly))!!
+
+        val without = SleepScore.calculate(session(ringOnly), ringOnly)
+        val withHead = SleepScore.calculate(session(extendedHead), extendedHead)
+
+        assertEquals(0, withHead.awakePct)
+        assertEquals(without.deepPct, withHead.deepPct)
+        assertEquals(without.lightPct, withHead.lightPct)
+        assertEquals(without.score, withHead.score)
+    }
+
+    @Test
+    fun `outward tail extension on night with awake blocks preserves awakePct and score`() {
+        val stages = List(250) { SleepStage.LIGHT } + List(100) { SleepStage.DEEP } +
+            List(20) { SleepStage.AWAKE } + List(90) { SleepStage.LIGHT }
+        val ringOnly = ring(at(0, 14), stages)
+        val extended = editedRecordBlocks(ringOnly, at(0, 14), at(0, 14), at(8, 52))!!
+
+        val before = SleepScore.calculate(session(ringOnly), ringOnly)
+        val after = SleepScore.calculate(session(extended), extended)
+
+        assertEquals(before.awakePct, after.awakePct)
+        assertEquals(before.score, after.score)
+    }
 }
