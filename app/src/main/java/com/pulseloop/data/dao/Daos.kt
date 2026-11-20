@@ -201,6 +201,9 @@ interface ActivityBucketDao {
     @Query("SELECT * FROM activity_buckets WHERE date = :day ORDER BY startEpoch ASC")
     suspend fun byDay(day: Long): List<ActivityBucketEntity>
 
+    @Query("SELECT EXISTS(SELECT 1 FROM activity_buckets)")
+    suspend fun hasAny(): Boolean
+
     /** Distinct past days that have synced buckets — the DataRepairs recompute scope. */
     @Query("SELECT DISTINCT date FROM activity_buckets WHERE date < :day ORDER BY date ASC")
     suspend fun daysBefore(day: Long): List<Long>
@@ -865,6 +868,13 @@ interface MeasurementDeletionDao {
 
     suspend fun isSleepRecordDeleted(dayStart: Long, recordStartAt: Long): Boolean =
         isDeleted(sleepRecordDeleteId(dayStart, recordStartAt))
+
+    @Query(
+        "SELECT timestamp FROM measurement_deletions " +
+            "WHERE kindRaw = 'SLEEP_RECORD_DELETE' " +
+            "AND measurementId LIKE 'sleep:record:' || :dayStart || ':%'",
+    )
+    suspend fun deletedSleepRecordStarts(dayStart: Long): List<Long>
 
     companion object {
         /** The prefix `EventPersistenceSubscriber.historyMeasurementId` builds its stable ids from.

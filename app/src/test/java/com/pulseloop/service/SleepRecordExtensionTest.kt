@@ -338,4 +338,73 @@ class SleepRecordExtensionTest {
         assertEquals(before.awakePct, after.awakePct)
         assertEquals(before.score, after.score)
     }
+
+    @Test
+    fun `multi-record night with both interior gap and outward tail preserves score`() {
+        val ringOnly = a + b
+        // Keep the 72m interior gap between `a` and `b`, and extend `b`'s tail outward by 40m.
+        val withTail = a + editedRecordBlocks(b, bStart, bStart, end(b) + 40 * 60_000L)!!
+
+        val before = SleepScore.calculate(session(ringOnly), ringOnly)
+        val after = SleepScore.calculate(session(withTail), withTail)
+
+        assertEquals(before.awakePct, after.awakePct)
+        assertEquals(before.deepPct, after.deepPct)
+        assertEquals(before.lightPct, after.lightPct)
+        assertEquals(before.score, after.score)
+    }
+
+    @Test
+    fun `collapseByDay combining outward-extended night and afternoon nap preserves score`() {
+        val stages = List(280) { SleepStage.LIGHT } + List(100) { SleepStage.DEEP } + List(80) { SleepStage.REM }
+        val nightRingOnly = ring(at(0, 14), stages)
+        val nightExtended = editedRecordBlocks(nightRingOnly, at(0, 14), at(0, 14), at(8, 52))!!
+        val nap = ring(at(14, 0), List(45) { SleepStage.LIGHT }).map { it.copy(sessionId = "nap") }
+
+        val collapsedRing = SleepInsights.collapseByDay(
+            listOf(session(nightRingOnly), session(nap).copy(id = "nap")),
+        ) { id -> if (id == "nap") nap else nightRingOnly }.single()
+        val collapsedExtended = SleepInsights.collapseByDay(
+            listOf(session(nightExtended), session(nap).copy(id = "nap")),
+        ) { id -> if (id == "nap") nap else nightExtended }.single()
+
+        val before = SleepScore.calculate(collapsedRing.session, collapsedRing.blocks)
+        val after = SleepScore.calculate(collapsedExtended.session, collapsedExtended.blocks)
+
+        assertEquals(before.deepPct, after.deepPct)
+        assertEquals(before.lightPct, after.lightPct)
+        assertEquals(before.score, after.score)
+    }
+
+    @Test
+    fun `simultaneous head-trim and tail-extend matches trimmed-only score`() {
+        val trimmedOnly = editedRecordBlocks(b, bStart, bStart + 10 * 60_000L, end(b))!!
+        val trimmedAndExtended = editedRecordBlocks(b, bStart, bStart + 10 * 60_000L, end(b) + 35 * 60_000L)!!
+
+        val expected = SleepScore.calculate(session(trimmedOnly), trimmedOnly)
+        val actual = SleepScore.calculate(session(trimmedAndExtended), trimmedAndExtended)
+
+        assertEquals(expected.deepPct, actual.deepPct)
+        assertEquals(expected.lightPct, actual.lightPct)
+        assertEquals(expected.score, actual.score)
+    }
+
+    @Test
+    fun `legacy startAt zero measured blocks with ADDED fall back cleanly to session spanMinutes`() {
+        val legacyBlocks = List(400) {
+            SleepStageBlockEntity(sessionId = "s", startAt = 0L, startMinute = 0, durationMinutes = 1, stageRaw = SleepStage.LIGHT.name)
+        } + SleepStageBlockEntity(sessionId = "s", startAt = 0L, startMinute = 0, durationMinutes = 20, stageRaw = SleepStage.ADDED.name)
+        val s = SleepSessionEntity(
+            id = "s",
+            date = wakingDay,
+            startAt = at(0, 0),
+            endAt = at(7, 0),
+            totalMinutes = 420,
+            score = null,
+        )
+
+        val result = SleepScore.calculate(s, legacyBlocks)
+        assertTrue(result.score in 0..100)
+        assertEquals(0, result.awakePct)
+    }
 }

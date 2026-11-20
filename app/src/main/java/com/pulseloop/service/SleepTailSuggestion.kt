@@ -6,6 +6,7 @@ import com.pulseloop.data.entity.ActivityBucketEntity
 import com.pulseloop.data.entity.MeasurementEntity
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
+import com.pulseloop.ring.RingDeviceType
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.settings.ZenWindow
 import java.time.ZoneId
@@ -49,11 +50,20 @@ object SleepTailSuggestionDetector {
     const val MIN_GAP_MINUTES = 15
     const val MAX_GAP_MINUTES = MAX_OUTWARD_EXTENSION_MINUTES
 
+    /** Default 15-minute bucket size (YCBT, Colmi, RWfit JieLi); JRing emits 1-minute buckets. */
+    const val DEFAULT_STEP_BUCKET_DURATION_MS = 15 * 60_000L
+
     /** Activity buckets span 15 minutes from [ActivityBucketEntity.startEpoch]; a bucket starting
      *  in the final 15 minutes before Bedtime turns off straddles waking up and ending Bedtime. */
-    const val STEP_BUCKET_TAIL_MARGIN_MS = 15 * 60_000L
+    const val STEP_BUCKET_TAIL_MARGIN_MS = DEFAULT_STEP_BUCKET_DURATION_MS
 
     private const val MINUTE_MS = 60_000L
+
+    fun stepBucketDurationMsFor(deviceType: RingDeviceType?): Long =
+        if (deviceType == RingDeviceType.JRING) MINUTE_MS else DEFAULT_STEP_BUCKET_DURATION_MS
+
+    fun supportsIntradayStepBuckets(deviceType: RingDeviceType?): Boolean =
+        deviceType != RingDeviceType.CRP && deviceType != RingDeviceType.LUCK_RING
 
     fun detect(
         daySessions: List<SleepSessionEntity>,
@@ -64,17 +74,23 @@ object SleepTailSuggestionDetector {
         isDismissed: (sessionDate: Long, recordStartAt: Long) -> Boolean,
         isEdited: (sessionDate: Long, recordStartAt: Long) -> Boolean,
         zone: ZoneId = ZoneId.systemDefault(),
+        hasIntradayStepBuckets: Boolean = true,
+        stepBucketDurationMs: Long = DEFAULT_STEP_BUCKET_DURATION_MS,
+        hasDeletedRecordInGap: (sessionDate: Long, gapStart: Long, gapEnd: Long) -> Boolean = { _, _, _ -> false },
     ): SleepTailSuggestion? {
-        if (bedtimeWindows.isNullOrEmpty() || daySessions.isEmpty()) return null
+        if (!hasIntradayStepBuckets || bedtimeWindows.isNullOrEmpty() || daySessions.isEmpty()) return null
 
         val realSessions = daySessions
             .filterNot { DemoDataPolicy.isDemo(it.sourceRaw) }
-            .sortedBy { it.endAt }
         if (realSessions.isEmpty()) return null
 
-        // Check from latest session backward (an afternoon nap won't match a morning Bedtime tail,
-        // while an overlapping later morning session blocks extending an earlier one across it).
-        for (session in realSessions.asReversed()) {
+        val bucketMs = stepBucketDurationMs.coerceAtLeast(MINUTE_MS)
+        // Prefer the longest/primary session on days that also hold a short afternoon nap.
+        val candidates = realSessions.sortedWith(
+            compareByDescending<SleepSessionEntity> { it.totalMinutes }.thenByDescending { it.endAt },
+        )
+
+        for (session in candidates) {
             val runs = sleepRecordRuns(dayBlocks[session.id].orEmpty())
             if (runs.isEmpty()) continue
             val lastRun = runs.last()
@@ -94,26 +110,28 @@ object SleepTailSuggestionDetector {
                 ?: continue
             val windowEnd = matchingWindow.end ?: continue
 
-            // Never extend across another recorded session of the same day.
-            val overlapsOtherSession = realSessions.any { other ->
-                other.id != session.id && other.endAt > lastRun.endAt && other.startAt < windowEnd
-            }
-            if (overlapsOtherSession) continue
+            // Respect a user's earlier deletion of a trailing phantom record inside Bedtime.
+            if (hasDeletedRecordInGap(session.date, lastRun.endAt, windowEnd)) continue
 
-            // Wait for a full sync after Bedtime turned off so morning steps and any second ring
-            // sleep record have had a chance to import.
-            if (lastFullSyncAt != null && lastFullSyncAt < windowEnd) continue
+            // Require a completed full sync after Bedtime turned off so morning step buckets and
+            // any second sleep record have had a chance to import.
+            if (lastFullSyncAt == null || lastFullSyncAt < windowEnd) continue
 
             val rawGapMinutes = ((windowEnd - lastRun.endAt) / MINUTE_MS).toInt()
             if (rawGapMinutes < MIN_GAP_MINUTES || rawGapMinutes > MAX_GAP_MINUTES) continue
 
-            // Any step bucket wholly inside (lastRun.endAt .. windowEnd] shows real wakefulness.
-            // Buckets starting before lastRun.endAt belong to the brief get-up when the ring
-            // stopped; buckets straddling windowEnd capture turning Bedtime off.
+            // At least one full aligned bucket must sit inside [lastRun.endAt, windowEnd] so the
+            // prompt never claims "with no steps" across a gap too short/misaligned to observe any.
+            val firstAlignedBucket = Math.floorDiv(lastRun.endAt + bucketMs - 1L, bucketMs) * bucketMs
+            if (firstAlignedBucket + bucketMs > windowEnd) continue
+
+            // Any non-zero step bucket wholly inside [lastRun.endAt, windowEnd] shows wakefulness;
+            // buckets starting before lastRun.endAt belong to the brief get-up when the ring stopped
+            // and buckets straddling windowEnd capture turning Bedtime off.
             val hasStepsInGap = stepBuckets.any { b ->
                 b.steps > 0 &&
                     b.startEpoch >= lastRun.endAt &&
-                    b.startEpoch + STEP_BUCKET_TAIL_MARGIN_MS <= windowEnd
+                    b.startEpoch + bucketMs <= windowEnd
             }
             if (hasStepsInGap) continue
 
@@ -126,6 +144,14 @@ object SleepTailSuggestionDetector {
             )
             val suggestedEndAt = clampEndPick(windowEnd, limits).at
             if (suggestedEndAt <= lastRun.endAt) continue
+
+            // Never extend across another recorded session of the same day (including up to
+            // +59s grid rounding past windowEnd).
+            val extensionEnd = maxOf(windowEnd, suggestedEndAt)
+            val overlapsOtherSession = realSessions.any { other ->
+                other.id != session.id && other.endAt > lastRun.endAt && other.startAt < extensionEnd
+            }
+            if (overlapsOtherSession) continue
 
             val suggestedGapMinutes = ((suggestedEndAt - lastRun.endAt) / MINUTE_MS).toInt()
             if (suggestedGapMinutes < MIN_GAP_MINUTES) continue
@@ -148,8 +174,9 @@ object SleepTailSuggestionDetector {
     private const val MAX_VALID_BPM = 220
 
     /**
-     * Enrich [suggestion] with plausible non-demo heart-rate readings inside `(ringEndedAt,
-     * suggestedEndAt)` and the night's mean HR across `sessionStartAt..ringEndedAt` (#148).
+     * Enrich [suggestion] with plausible non-demo heart-rate readings strictly before Bedtime ended
+     * (`ringEndedAt < ts < min(suggestedEndAt, bedtimeEndedAt)`) and the minute-deduplicated mean
+     * HR across `sessionStartAt..ringEndedAt` (#148).
      */
     fun withHeartRateContext(
         suggestion: SleepTailSuggestion,
@@ -158,23 +185,29 @@ object SleepTailSuggestionDetector {
     ): SleepTailSuggestion {
         val plausible = hrSamples.mapNotNull { sample ->
             if (DemoDataPolicy.isDemo(sample.sourceRaw)) return@mapNotNull null
-            if (sample.value.isNaN()) return@mapNotNull null
+            if (!sample.value.isFinite()) return@mapNotNull null
             val bpm = sample.value.roundToInt()
             if (bpm !in MIN_VALID_BPM..MAX_VALID_BPM) return@mapNotNull null
             sample.timestamp to bpm
         }
 
+        val gapEnd = minOf(suggestion.suggestedEndAt, suggestion.bedtimeEndedAt)
         val gapReadings = plausible
             .asSequence()
-            .filter { (ts, _) -> ts > suggestion.ringEndedAt && ts < suggestion.suggestedEndAt }
+            .filter { (ts, _) -> ts > suggestion.ringEndedAt && ts < gapEnd }
             .sortedBy { (ts, _) -> ts }
             .associateBy { (ts, _) -> ts / MINUTE_MS }
             .values
             .map { (ts, bpm) -> TailHeartRateReading(timestamp = ts, bpm = bpm) }
             .sortedBy { it.timestamp }
 
+        // Deduplicate per minute before averaging so 1 Hz live HR streams do not outweigh hourly ring samples.
         val nightValues = plausible
+            .asSequence()
             .filter { (ts, _) -> ts in sessionStartAt..suggestion.ringEndedAt }
+            .sortedBy { (ts, _) -> ts }
+            .associateBy { (ts, _) -> ts / MINUTE_MS }
+            .values
             .map { (_, bpm) -> bpm }
         val nightAvg = if (nightValues.isEmpty()) null else nightValues.average().roundToInt()
 

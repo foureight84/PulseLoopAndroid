@@ -263,15 +263,29 @@ class SleepViewModel(
 
     private val _state = MutableStateFlow(SleepState())
     val state: StateFlow<SleepState> = _state.asStateFlow()
+    private var rebuildJob: kotlinx.coroutines.Job? = null
+
+    private fun scheduleRebuild(range: SleepRangeKey = _state.value.range): kotlinx.coroutines.Job {
+        rebuildJob?.cancel()
+        val job = viewModelScope.launch {
+            try {
+                rebuild(range)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {}
+        }
+        rebuildJob = job
+        return job
+    }
 
     fun setRange(range: SleepRangeKey) {
         // Returning to Day from an aggregate range always lands on today, not a stale offset.
         _state.update { it.copy(range = range, dayOffset = if (range == SleepRangeKey.DAY) 0 else it.dayOffset) }
-        viewModelScope.launch { try { rebuild(range) } catch (_: Exception) {} }
+        scheduleRebuild(range)
     }
 
     fun refreshReferenceNight() {
-        viewModelScope.launch { try { rebuild(_state.value.range) } catch (_: Exception) {} }
+        scheduleRebuild(_state.value.range)
     }
 
     init {
@@ -286,7 +300,7 @@ class SleepViewModel(
                 db.deviceDao().currentFlow().map { it?.lastFullSyncAt }.distinctUntilChanged(),
             ) { sessions, _, _ -> sessions }.collect { sessions ->
                 _state.update { it.copy(recentSessions = sessions) }
-                try { rebuild(_state.value.range) } catch (_: Exception) {}
+                scheduleRebuild(_state.value.range)
             }
         }
     }
@@ -392,7 +406,16 @@ class SleepViewModel(
                 val buckets = bucketDays.flatMap { day ->
                     try { db.activityBucketDao().byDay(day) } catch (_: Exception) { emptyList() }
                 }
-                val lastFullSyncAt = try { db.deviceDao().current()?.lastFullSyncAt } catch (_: Exception) { null }
+                val device = try { db.deviceDao().current() } catch (_: Exception) { null }
+                val lastFullSyncAt = device?.lastFullSyncAt
+                val hasIntradayBuckets =
+                    com.pulseloop.service.SleepTailSuggestionDetector.supportsIntradayStepBuckets(device?.deviceType) &&
+                        (try { db.activityBucketDao().hasAny() } catch (_: Exception) { false })
+                val bucketDurationMs =
+                    com.pulseloop.service.SleepTailSuggestionDetector.stepBucketDurationMsFor(device?.deviceType)
+                val deletedStartsByDay = daySessions.map { it.date }.distinct().associateWith { day ->
+                    try { db.measurementDeletionDao().deletedSleepRecordStarts(day) } catch (_: Exception) { emptyList() }
+                }
                 val editedRecords = daySessions.mapNotNull { s ->
                     val lastRun = com.pulseloop.service.sleepRecordRuns(dayBlocks[s.id].orEmpty()).lastOrNull()
                         ?: return@mapNotNull null
@@ -409,6 +432,11 @@ class SleepViewModel(
                     lastFullSyncAt = lastFullSyncAt,
                     isDismissed = isTailDismissed,
                     isEdited = { date, recordStartAt -> (date to recordStartAt) in editedRecords },
+                    hasIntradayStepBuckets = hasIntradayBuckets,
+                    stepBucketDurationMs = bucketDurationMs,
+                    hasDeletedRecordInGap = { date, gapStart, gapEnd ->
+                        deletedStartsByDay[date].orEmpty().any { ts -> ts > gapStart && ts < gapEnd }
+                    },
                 )
                 rawSuggestion?.let { suggestion ->
                     val hrStart = daySessions.firstOrNull { it.id == suggestion.sessionId }?.startAt
@@ -431,8 +459,10 @@ class SleepViewModel(
             null
         }
 
-        _state.update {
-            it.copy(
+        val activeTail = tailSuggestion?.takeUnless { isTailDismissed(it.sessionDate, it.run.recordStartAt) }
+        _state.update { current ->
+            if (current.range != range || current.dayOffset != offset) current
+            else current.copy(
                 lastNight = night,
                 lastNightBlocks = nightBlocks,
                 score = scoreResult,
@@ -451,7 +481,7 @@ class SleepViewModel(
                 goalMinutes = goal,
                 daySummary = daySummary,
                 rangeSummary = rangeSummary,
-                tailSuggestion = tailSuggestion,
+                tailSuggestion = activeTail,
             )
         }
     }
@@ -480,7 +510,7 @@ class SleepViewModel(
     suspend fun deleteSleepRecord(sessionId: String, recordStartAt: Long): Boolean =
         try {
             val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt, gapBridge())
-            if (removed) rebuild(_state.value.range)
+            if (removed) scheduleRebuild(_state.value.range).join()
             removed
         } catch (_: Exception) { false }
 
@@ -495,13 +525,14 @@ class SleepViewModel(
     ): Boolean =
         try {
             val updated = com.pulseloop.data.SleepRecordDeletion.edit(db, sessionId, recordStartAt, newStartAt, newEndAt, gapBridge())
-            if (updated) rebuild(_state.value.range)
+            if (updated) scheduleRebuild(_state.value.range).join()
             updated
         } catch (_: Exception) { false }
 
     /** Persist dismissal of the Bedtime sleep-tail prompt for this ring record (issue #148). */
     fun dismissTailSuggestion(sessionDate: Long, recordStartAt: Long) {
         onDismissTail(sessionDate, recordStartAt)
+        rebuildJob?.cancel()
         _state.update { state ->
             val current = state.tailSuggestion
             if (current != null && current.sessionDate == sessionDate && current.run.recordStartAt == recordStartAt) {
@@ -525,7 +556,7 @@ class SleepViewModel(
         val clamped = target.coerceIn(0, _state.value.maxDayOffset)
         if (clamped == _state.value.dayOffset) return
         _state.update { it.copy(dayOffset = clamped) }
-        viewModelScope.launch { try { rebuild(_state.value.range) } catch (_: Exception) {} }
+        scheduleRebuild(_state.value.range)
     }
 }
 

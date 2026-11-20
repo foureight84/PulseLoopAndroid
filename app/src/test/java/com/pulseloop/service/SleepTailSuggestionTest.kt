@@ -4,9 +4,11 @@ import com.pulseloop.data.entity.ActivityBucketEntity
 import com.pulseloop.data.entity.MeasurementEntity
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
+import com.pulseloop.ring.RingDeviceType
 import com.pulseloop.ring.SleepStage
 import com.pulseloop.settings.ZenWindow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -203,7 +205,7 @@ class SleepTailSuggestionTest {
     }
 
     @Test
-    fun `full sync must be at or after Bedtime end unless null`() {
+    fun `full sync must be present and at or after Bedtime end`() {
         val blocks = ringBlocks(startAt = at(2, 59), durationMinutes = 289) // -> 07:48
         val s = session(blocks = blocks)
         val windows = listOf(ZenWindow(start = at(1, 0), end = at(9, 27)))
@@ -224,7 +226,7 @@ class SleepTailSuggestionTest {
                 lastFullSyncAt = at(9, 27),
             ),
         )
-        assertNotNull(
+        assertNull(
             detect(
                 listOf(s),
                 mapOf(s.id to blocks),
@@ -511,5 +513,271 @@ class SleepTailSuggestionTest {
             enriched.gapHeartRates,
         )
         assertNull(enriched.nightAvgHeartRate)
+    }
+
+    @Test
+    fun `intraday step bucket support and bucket duration follow ring family`() {
+        assertFalse(SleepTailSuggestionDetector.supportsIntradayStepBuckets(RingDeviceType.CRP))
+        assertFalse(SleepTailSuggestionDetector.supportsIntradayStepBuckets(RingDeviceType.LUCK_RING))
+        assertTrue(SleepTailSuggestionDetector.supportsIntradayStepBuckets(RingDeviceType.YCBT))
+        assertTrue(SleepTailSuggestionDetector.supportsIntradayStepBuckets(RingDeviceType.COLMI_R02))
+        assertTrue(SleepTailSuggestionDetector.supportsIntradayStepBuckets(RingDeviceType.JRING))
+
+        assertEquals(60_000L, SleepTailSuggestionDetector.stepBucketDurationMsFor(RingDeviceType.JRING))
+        assertEquals(15 * 60_000L, SleepTailSuggestionDetector.stepBucketDurationMsFor(RingDeviceType.YCBT))
+
+        val blocks = ringBlocks(startAt = at(2, 59), durationMinutes = 289)
+        val s = session(blocks = blocks)
+        assertNull(
+            SleepTailSuggestionDetector.detect(
+                daySessions = listOf(s),
+                dayBlocks = mapOf(s.id to blocks),
+                bedtimeWindows = listOf(ZenWindow(start = at(1, 0), end = at(9, 27))),
+                stepBuckets = emptyList(),
+                lastFullSyncAt = at(9, 30),
+                isDismissed = { _, _ -> false },
+                isEdited = { _, _ -> false },
+                zone = zone,
+                hasIntradayStepBuckets = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `unaligned 28m gap suppresses on 15m buckets but fires and checks steps on 1m JRing buckets`() {
+        val blocks = ringBlocks(startAt = at(0, 1), durationMinutes = 420) // 00:01..07:01
+        val s = session(blocks = blocks)
+        val windows = listOf(ZenWindow(start = at(0, 0), end = at(7, 29))) // first aligned 15m slot 07:15..07:30 > 07:29
+
+        assertNull(
+            SleepTailSuggestionDetector.detect(
+                daySessions = listOf(s),
+                dayBlocks = mapOf(s.id to blocks),
+                bedtimeWindows = windows,
+                stepBuckets = emptyList(),
+                lastFullSyncAt = at(8, 0),
+                isDismissed = { _, _ -> false },
+                isEdited = { _, _ -> false },
+                zone = zone,
+                stepBucketDurationMs = 15 * 60_000L,
+            ),
+        )
+
+        val jringPrompt = SleepTailSuggestionDetector.detect(
+            daySessions = listOf(s),
+            dayBlocks = mapOf(s.id to blocks),
+            bedtimeWindows = windows,
+            stepBuckets = emptyList(),
+            lastFullSyncAt = at(8, 0),
+            isDismissed = { _, _ -> false },
+            isEdited = { _, _ -> false },
+            zone = zone,
+            stepBucketDurationMs = 60_000L,
+        )
+        assertNotNull(jringPrompt)
+        assertEquals(28, jringPrompt!!.gapMinutes)
+
+        assertNull(
+            SleepTailSuggestionDetector.detect(
+                daySessions = listOf(s),
+                dayBlocks = mapOf(s.id to blocks),
+                bedtimeWindows = windows,
+                stepBuckets = listOf(ActivityBucketEntity(startEpoch = at(7, 25), date = wakingDay, steps = 8)),
+                lastFullSyncAt = at(8, 0),
+                isDismissed = { _, _ -> false },
+                isEdited = { _, _ -> false },
+                zone = zone,
+                stepBucketDurationMs = 60_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `midnight crossing sleep in non-UTC timezone and spring-forward DST fires cleanly`() {
+        val la = ZoneId.of("America/Los_Angeles")
+        val dstWakingDate = ZonedDateTime.of(2026, 3, 8, 0, 0, 0, 0, la)
+        val dstDayKey = dstWakingDate.toInstant().toEpochMilli()
+        val sleepStart = ZonedDateTime.of(2026, 3, 7, 23, 15, 0, 0, la).toInstant().toEpochMilli()
+        val ringStop = ZonedDateTime.of(2026, 3, 8, 6, 58, 0, 0, la).toInstant().toEpochMilli()
+        val bedtimeStart = ZonedDateTime.of(2026, 3, 7, 22, 30, 0, 0, la).toInstant().toEpochMilli()
+        val bedtimeEnd = ZonedDateTime.of(2026, 3, 8, 7, 35, 0, 0, la).toInstant().toEpochMilli()
+        val durationMin = ((ringStop - sleepStart) / 60_000L).toInt() // 403 elapsed min across spring-forward
+
+        val blocks = ringBlocks(startAt = sleepStart, durationMinutes = durationMin)
+        val s = SleepSessionEntity(
+            id = "dst",
+            date = dstDayKey,
+            startAt = sleepStart,
+            endAt = ringStop,
+            totalMinutes = durationMin,
+            sourceRaw = "ring",
+        )
+
+        val suggestion = SleepTailSuggestionDetector.detect(
+            daySessions = listOf(s),
+            dayBlocks = mapOf(s.id to blocks),
+            bedtimeWindows = listOf(ZenWindow(start = bedtimeStart, end = bedtimeEnd)),
+            stepBuckets = emptyList(),
+            lastFullSyncAt = bedtimeEnd + 60_000L,
+            isDismissed = { _, _ -> false },
+            isEdited = { _, _ -> false },
+            zone = la,
+        )
+
+        assertNotNull(suggestion)
+        assertEquals(ringStop, suggestion!!.ringEndedAt)
+        assertEquals(bedtimeEnd, suggestion.suggestedEndAt)
+        assertEquals(37, suggestion.gapMinutes)
+    }
+
+    @Test
+    fun `zero-step bucket does not suppress while bucket starting at ringEndedAt suppresses and non-spanning window is ignored`() {
+        val blocks = ringBlocks(startAt = at(0, 0), durationMinutes = 420) // 00:00..07:00
+        val s = session(blocks = blocks)
+        val windows = listOf(ZenWindow(start = at(0, 0), end = at(7, 30)))
+
+        // Zero-step row does not count as activity.
+        assertNotNull(
+            detect(
+                listOf(s),
+                mapOf(s.id to blocks),
+                windows = windows,
+                buckets = listOf(ActivityBucketEntity(startEpoch = at(7, 15), date = wakingDay, steps = 0)),
+                lastFullSyncAt = at(8, 0),
+            ),
+        )
+
+        // Exact boundary b.startEpoch == lastRun.endAt (07:00..07:15) inside [07:00, 07:30] suppresses.
+        assertNull(
+            detect(
+                listOf(s),
+                mapOf(s.id to blocks),
+                windows = windows,
+                buckets = listOf(ActivityBucketEntity(startEpoch = at(7, 0), date = wakingDay, steps = 10)),
+                lastFullSyncAt = at(8, 0),
+            ),
+        )
+
+        // Window starting after lastRun.endAt or ending right at lastRun.endAt never triggers.
+        assertNull(
+            detect(
+                listOf(s),
+                mapOf(s.id to blocks),
+                windows = listOf(ZenWindow(start = at(7, 1), end = at(7, 30))),
+                lastFullSyncAt = at(8, 0),
+            ),
+        )
+        assertNull(
+            detect(
+                listOf(s),
+                mapOf(s.id to blocks),
+                windows = listOf(ZenWindow(start = at(0, 0), end = at(7, 0))),
+                lastFullSyncAt = at(8, 0),
+            ),
+        )
+    }
+
+    @Test
+    fun `overnight Bedtime prompt beats afternoon nap inside daytime DND`() {
+        val nightBlocks = ringBlocks("night", startAt = at(0, 14), durationMinutes = 460) // 00:14..07:54
+        val napBlocks = ringBlocks("nap", startAt = at(14, 0), durationMinutes = 60)      // 14:00..15:00
+        val night = session("night", nightBlocks)
+        val nap = session("nap", napBlocks)
+
+        val suggestion = detect(
+            sessions = listOf(night, nap),
+            blocksBySession = mapOf("night" to nightBlocks, "nap" to napBlocks),
+            windows = listOf(
+                ZenWindow(start = at(0, 0), end = at(8, 52)),
+                ZenWindow(start = at(13, 50), end = at(15, 30)),
+            ),
+            lastFullSyncAt = at(16, 0),
+        )
+
+        assertNotNull(suggestion)
+        assertEquals("night", suggestion!!.sessionId)
+        assertEquals(at(8, 52), suggestion.suggestedEndAt)
+    }
+
+    @Test
+    fun `deleted trailing phantom record inside Bedtime suppresses extension prompt`() {
+        val rec1 = ringBlocks("s1", startAt = at(0, 30), durationMinutes = 360) // 00:30..06:30
+        val s = session("s1", rec1)
+
+        assertNull(
+            SleepTailSuggestionDetector.detect(
+                daySessions = listOf(s),
+                dayBlocks = mapOf("s1" to rec1),
+                bedtimeWindows = listOf(ZenWindow(start = at(0, 0), end = at(8, 15))),
+                stepBuckets = emptyList(),
+                lastFullSyncAt = at(8, 30),
+                isDismissed = { _, _ -> false },
+                isEdited = { _, _ -> false },
+                zone = zone,
+                hasDeletedRecordInGap = { _, gapStart, gapEnd -> at(7, 0) in (gapStart + 1)..(gapEnd - 1) },
+            ),
+        )
+    }
+
+    @Test
+    fun `120m gap with sub-minute remainder keeps raw bedtimeEndedAt while clamping suggestedEndAt`() {
+        val blocks = ringBlocks(startAt = at(0, 14, 50), durationMinutes = 460) // 00:14:50..07:54:50
+        val s = session(blocks = blocks)
+        val windowEnd = at(9, 55, 10) // rawDiff = 120m 20s -> rawGapMinutes = 120
+
+        val suggestion = detect(
+            sessions = listOf(s),
+            blocksBySession = mapOf(s.id to blocks),
+            windows = listOf(ZenWindow(start = at(0, 0), end = windowEnd)),
+            lastFullSyncAt = windowEnd + 60_000L,
+        )
+
+        assertNotNull(suggestion)
+        assertEquals(windowEnd, suggestion!!.bedtimeEndedAt)
+        assertEquals(at(9, 54, 50), suggestion.suggestedEndAt)
+        assertEquals(120, suggestion.gapMinutes)
+    }
+
+    @Test
+    fun `withHeartRateContext filters non-finite enforces 30-220 deduplicates 1Hz night burst and excludes post-bedtime`() {
+        val blocks = ringBlocks(startAt = at(0, 14, 23), durationMinutes = 460) // 00:14:23..07:54:23
+        val s = session(blocks = blocks)
+        val windowEnd = at(8, 50, 10)
+        // grid-snapped suggestedEndAt = 08:50:23 > bedtimeEndedAt (08:50:10).
+        val base = detect(
+            sessions = listOf(s),
+            blocksBySession = mapOf(s.id to blocks),
+            windows = listOf(ZenWindow(start = at(0, 0), end = windowEnd)),
+            lastFullSyncAt = at(9, 10),
+        )!!
+
+        val burstMinute = (0 until 60).map { sec -> hr(at(4, 0, sec), 80.0, source = "live") }
+        val enriched = SleepTailSuggestionDetector.withHeartRateContext(
+            suggestion = base,
+            sessionStartAt = s.startAt,
+            hrSamples = burstMinute + listOf(
+                hr(at(1, 0), 56.0),
+                hr(at(2, 0), 56.0),
+                hr(at(3, 0), 56.0),
+                hr(at(5, 0), Double.NaN),
+                hr(at(5, 5), Double.POSITIVE_INFINITY),
+                hr(at(5, 10), Double.NEGATIVE_INFINITY),
+                hr(at(8, 0), 29.4),  // rounds to 29 -> out
+                hr(at(8, 5), 30.0),  // exact min -> in
+                hr(at(8, 15), 220.0), // exact max -> in
+                hr(at(8, 25), 220.6), // rounds to 221 -> out
+                hr(at(8, 50, 15), 99.0), // between bedtimeEndedAt (:10) and suggestedEndAt (:23) -> out!
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                TailHeartRateReading(at(8, 5), 30),
+                TailHeartRateReading(at(8, 15), 220),
+            ),
+            enriched.gapHeartRates,
+        )
+        // 60 burst samples at 04:00 collapse to 1 sample (80), averaged equally with 3x 56 -> (80+56*3)/4 = 62.
+        assertEquals(62, enriched.nightAvgHeartRate)
     }
 }

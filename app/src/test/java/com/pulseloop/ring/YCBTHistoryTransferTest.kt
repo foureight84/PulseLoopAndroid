@@ -457,4 +457,52 @@ class YCBTHistoryTransferTest {
         assertEquals(listOf(RingDecodedEvent.HistorySyncFinished), emitted)
         assertFalse(transfer.isActive)
     }
+
+    @Test
+    fun `syncSleepNow querySleep and syncVitalsHistory do not emit HistorySyncFinished`() = runBlocking {
+        val emitted = mutableListOf<RingDecodedEvent>()
+        val writer = FakeWriter()
+        val transfer = YCBTHistoryTransfer(
+            writer = writer,
+            inactivitySeconds = 0.05,
+            absoluteCapSeconds = 0.1,
+            onOutOfBandEvents = { emitted.addAll(it) },
+        )
+        val engine = YCBTSyncEngine(writer = writer, transfer = transfer)
+
+        // Sleep-only sync draining normally via no-data header must not stamp lastFullSyncAt.
+        engine.syncSleepNow()
+        val drainEvents = mutableListOf<RingDecodedEvent>()
+        while (true) {
+            val query = writer.sent.lastOrNull { it.size == 2 && it[0] == 0x05.toByte() } ?: break
+            writer.sent.clear()
+            drainEvents += transfer.handle(cmd = query[1].toInt() and 0xFF, payload = byteArrayOf(0x00))
+        }
+        assertTrue(drainEvents.none { it is RingDecodedEvent.HistorySyncFinished })
+        assertTrue(emitted.none { it is RingDecodedEvent.HistorySyncFinished })
+
+        // querySleep timing out via watchdog must also not emit HistorySyncFinished.
+        engine.querySleep()
+        delay(200)
+        assertFalse(transfer.isActive)
+        assertTrue(emitted.none { it is RingDecodedEvent.HistorySyncFinished })
+
+        // syncVitalsHistory draining normally must not emit HistorySyncFinished.
+        engine.syncVitalsHistory()
+        while (true) {
+            val query = writer.sent.lastOrNull { it.size == 2 && it[0] == 0x05.toByte() } ?: break
+            writer.sent.clear()
+            drainEvents += transfer.handle(cmd = query[1].toInt() and 0xFF, payload = byteArrayOf(0x00))
+        }
+        assertTrue(drainEvents.none { it is RingDecodedEvent.HistorySyncFinished })
+
+        // Full sync (refresh) restores HistorySyncFinished emission.
+        engine.refresh()
+        while (true) {
+            val query = writer.sent.lastOrNull { it.size == 2 && it[0] == 0x05.toByte() } ?: break
+            writer.sent.clear()
+            drainEvents += transfer.handle(cmd = query[1].toInt() and 0xFF, payload = byteArrayOf(0x00))
+        }
+        assertEquals(listOf(RingDecodedEvent.HistorySyncFinished), drainEvents)
+    }
 }

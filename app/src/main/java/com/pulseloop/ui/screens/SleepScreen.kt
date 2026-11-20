@@ -1295,6 +1295,7 @@ private fun SleepRecordsCard(
  * absent (issue #148). Hands off to [SleepRecordEditDialog] pre-filled with the suggested end time
  * rather than mutating the record silently.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SleepTailSuggestionCard(
     suggestion: com.pulseloop.service.SleepTailSuggestion,
@@ -1303,6 +1304,7 @@ private fun SleepTailSuggestionCard(
 ) {
     val shape = RoundedCornerShape(18.dp)
     val endLabel = SleepFormat.clockTime(suggestion.suggestedEndAt)
+    val bedtimeEndLabel = SleepFormat.clockTime(suggestion.bedtimeEndedAt)
     Column(
         Modifier
             .fillMaxWidth()
@@ -1322,7 +1324,7 @@ private fun SleepTailSuggestionCard(
             stringResource(
                 R.string.sleep_tail_body,
                 SleepFormat.clockTime(suggestion.ringEndedAt),
-                endLabel,
+                bedtimeEndLabel,
             ),
             fontSize = 13.sp,
             color = PulseColors.textSecondary,
@@ -1357,9 +1359,10 @@ private fun SleepTailSuggestionCard(
                 color = PulseColors.textMuted,
             )
         }
-        Row(
+        FlowRow(
             modifier = Modifier.padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Button(onClick = onExtend) {
                 Text(stringResource(R.string.sleep_tail_extend, endLabel))
