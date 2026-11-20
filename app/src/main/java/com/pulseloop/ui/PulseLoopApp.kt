@@ -140,6 +140,18 @@ fun PulseLoopApp() {
                 db,
                 gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) },
                 stepSourcePrefs = stepSourcePrefs,
+                bedtimeWindows = {
+                    com.pulseloop.settings.QuietHoursPrefs.activeBedtimeWindows(
+                        com.pulseloop.settings.QuietHoursPrefs(appContext),
+                        appContext,
+                    )
+                },
+                isTailDismissed = { date, recordStartAt ->
+                    com.pulseloop.service.SleepTailSuggestionStore.isDismissed(appContext, date, recordStartAt)
+                },
+                onDismissTail = { date, recordStartAt ->
+                    com.pulseloop.service.SleepTailSuggestionStore.dismiss(appContext, date, recordStartAt)
+                },
             )
         }
         val activityVM = remember { ActivityViewModel(db, stepSourcePrefs) }

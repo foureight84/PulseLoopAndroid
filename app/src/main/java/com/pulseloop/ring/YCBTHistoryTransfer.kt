@@ -35,6 +35,7 @@ class YCBTHistoryTransfer(
     private var bufferCap = DEFAULT_BUFFER_CAP
     private var watchdogJob: Job? = null
     private var typeDeadline: Long? = null
+    private var emitFinishedOnComplete = true
 
     companion object {
         private const val DEFAULT_BUFFER_CAP = 64 * 1024
@@ -45,8 +46,9 @@ class YCBTHistoryTransfer(
     val isActive: Boolean get() = state != State.IDLE
 
     @Synchronized
-    fun start(types: List<YCBTHistoryType>) {
+    fun start(types: List<YCBTHistoryType>, isFullSync: Boolean = true) {
         if (isActive) return
+        emitFinishedOnComplete = isFullSync
         queue = types.filter { !unsupported.contains(it.queryKey) }.toMutableList()
         advance()
     }
@@ -59,6 +61,7 @@ class YCBTHistoryTransfer(
         }
         if (additions.isEmpty()) return
         if (state == State.IDLE) {
+            emitFinishedOnComplete = true
             queue = additions.toMutableList()
             advance()
         } else {
@@ -73,6 +76,7 @@ class YCBTHistoryTransfer(
         currentType = null
         queue.clear()
         buffer = ByteArray(0)
+        emitFinishedOnComplete = true
     }
 
     private fun advance(): List<RingDecodedEvent> {
@@ -83,7 +87,9 @@ class YCBTHistoryTransfer(
         if (queue.isEmpty()) {
             state = State.IDLE
             currentType = null
-            return listOf(RingDecodedEvent.HistorySyncFinished)
+            val shouldEmit = emitFinishedOnComplete
+            emitFinishedOnComplete = true
+            return if (shouldEmit) listOf(RingDecodedEvent.HistorySyncFinished) else emptyList()
         }
         val next = queue.removeAt(0)
         sendQuery(next)

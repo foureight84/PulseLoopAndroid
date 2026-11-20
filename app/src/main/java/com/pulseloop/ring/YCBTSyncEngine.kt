@@ -63,7 +63,7 @@ class YCBTSyncEngine(
         )) {
             writer?.enqueue(command)
         }
-        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES))
+        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES), isFullSync = true)
     }
 
     @Synchronized
@@ -111,22 +111,22 @@ class YCBTSyncEngine(
         // Ask for current cumulative activity before the slower multi-type history walk. Without
         // this, pull-to-refresh can leave steps stale until an unsolicited live push arrives.
         writer?.enqueue(encoder.enableLiveStatus())
-        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES))
+        transfer.start(types = supportedHistoryTypes(HISTORY_TYPES), isFullSync = true)
     }
 
     @Synchronized
     override fun querySleep() {
-        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)))
+        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)), isFullSync = false)
     }
 
     @Synchronized
     override fun syncVitalsHistory() {
-        transfer.start(types = supportedHistoryTypes(VITALS_TYPES))
+        transfer.start(types = supportedHistoryTypes(VITALS_TYPES), isFullSync = false)
     }
 
     @Synchronized
     override fun syncSleepNow() {
-        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)))
+        transfer.start(types = supportedHistoryTypes(listOf(YCBTHistoryType.SLEEP)), isFullSync = false)
     }
 
     private fun supportedHistoryTypes(types: List<YCBTHistoryType>): List<YCBTHistoryType> =

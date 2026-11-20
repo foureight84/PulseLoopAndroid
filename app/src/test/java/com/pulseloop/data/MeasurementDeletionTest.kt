@@ -37,6 +37,13 @@ class MeasurementDeletionTest {
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }
+        override suspend fun deletedSleepRecordStarts(dayStart: Long): List<Long> =
+            rows.values
+                .filter {
+                    it.kindRaw == MeasurementDeletionDao.SLEEP_RECORD_DELETE_KIND &&
+                        it.measurementId.startsWith("${MeasurementDeletionDao.SLEEP_RECORD_DELETE_PREFIX}$dayStart:")
+                }
+                .map { it.timestamp }
     }
 
     private fun measurement(id: String, kind: MeasurementKind, timestamp: Long, source: String) =

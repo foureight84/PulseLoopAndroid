@@ -32,6 +32,13 @@ class SleepRecordDeletionTest {
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }
+        override suspend fun deletedSleepRecordStarts(dayStart: Long): List<Long> =
+            rows.values
+                .filter {
+                    it.kindRaw == MeasurementDeletionDao.SLEEP_RECORD_DELETE_KIND &&
+                        it.measurementId.startsWith("${MeasurementDeletionDao.SLEEP_RECORD_DELETE_PREFIX}$dayStart:")
+                }
+                .map { it.timestamp }
     }
 
     // The scenario from the issue: a record opened 23:08 that is really sofa time, tombstoned by

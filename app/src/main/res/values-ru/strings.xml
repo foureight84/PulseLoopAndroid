@@ -156,6 +156,7 @@
     <string name="checkins_enable_body">Получайте ежедневную сводку от коуча. Это можно изменить в любой момент в разделе «Сводки коуча».</string>
     <string name="action_enable">Включить</string>
     <string name="action_not_now">Не сейчас</string>
+    <string name="action_no">Нет</string>
     <string name="settings_checkins">Сводки коуча</string>
     <string name="checkins_coach_off">ИИ-коуч выключен</string>
     <string name="checkins_coach_off_desc">Включите ИИ-коуча, чтобы изменить эти настройки: ежедневные сводки коуч пишет на основе ваших недавних показателей.</string>
@@ -527,6 +528,15 @@
     <string name="action_keep">Оставить</string>
     <string name="sleep_edit_title">Изменить запись сна</string>
     <string name="sleep_edit_desc">Обрежьте запись или продлите её на время, которое кольцо пропустило. Добавленное время считается сном без фазы, поэтому не учитывается в разбивке по фазам и в оценке.</string>
+    <string name="sleep_tail_title">Вы ещё спали?</string>
+    <string name="sleep_tail_body">Кольцо остановило запись в %1$s, но режим сна оставался включённым до %2$s, и шагов не было.</string>
+    <string name="sleep_tail_extend">Продлить до %1$s</string>
+    <string name="sleep_tail_hr_single">Пульс в %1$s: %2$d уд/мин</string>
+    <string name="sleep_tail_hr_item">%1$d уд/мин в %2$s</string>
+    <string name="sleep_tail_hr_list">Пульс: %1$s</string>
+    <string name="sleep_tail_hr_summary">Пульс в промежутке: сред. %1$d уд/мин (%2$d–%3$d)</string>
+    <string name="sleep_tail_hr_summary_flat">Пульс в промежутке: сред. %1$d уд/мин</string>
+    <string name="sleep_tail_hr_night_avg">ночью в среднем %1$d уд/мин</string>
     <string name="sleep_edit_start">Начало: %1$s</string>
     <string name="sleep_edit_end">Конец: %1$s</string>
     <string name="sleep_edit_order_error">Время начала должно быть раньше времени окончания.</string>
